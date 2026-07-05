@@ -19,13 +19,8 @@ permissions:
   contents: read
 
 jobs:
-  # Docs are the product until M0 lands code; this gate keeps the spec, user stories,
-  # traceability matrix, and ADRs mutually consistent on every PR.
-  #
-  # M0 adds (as separate jobs, mirroring image-trail's shape):
-  #   rust:     cargo fmt --check, cargo clippy -- -D warnings, cargo test
-  #   frontend: lint, typecheck, unit tests, build
-  # plus path filtering + a stable gate job once an expensive E2E tier exists.
+  # Keeps the spec, user stories, traceability matrix, and ADRs mutually
+  # consistent on every PR.
   docs:
     name: Docs & traceability
     runs-on: ubuntu-latest
@@ -41,3 +36,71 @@ jobs:
 
       - name: Traceability check
         run: node scripts/check-traceability.mjs
+
+  # Rust core: format, lint-as-error, tests. The pinned toolchain comes from
+  # rust-toolchain.toml (rustup auto-installs it on first cargo call), so CI
+  # and local always agree — bump the pin deliberately.
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Compiling the tauri crate on Linux needs the webkit/gtk dev stack.
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # tauri's generate_context! macro requires the frontendDist directory to
+      # exist at compile time; the Rust job must not depend on the Frontend job
+      # for that (they run in parallel), so give it an empty placeholder.
+      - name: Placeholder frontend dist
+        run: mkdir -p ui/dist
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  # Web UI: lint, typecheck, unit tests, production build.
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build

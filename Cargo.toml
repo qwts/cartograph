@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "src-tauri"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+blake3 = "1"
+
+# Internal crates (SPEC-00 §8.1 crate map)
+core-graph = { path = "crates/core-graph" }
+core-prov = { path = "crates/core-prov" }

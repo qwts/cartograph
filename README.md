@@ -22,9 +22,14 @@ enough that a third party could re-specify the system from the document alone.
 
 ## Status
 
-Pre-M0. The specification is complete and the SDLC scaffolding is being laid
-down before the first line of product code. See the
+M0 (skeleton + stores): Tauri 2 shell boots, SQLite graph store and durable
+job spine round-trip. Next: M1 deterministic TS extraction. See the
 [milestone plan](docs/SPEC-00_master.md#14-milestone-plan-m0m10).
+
+```sh
+npm install && npm --prefix ui install
+npm run tauri dev
+```
 
 ## Documentation map
 
@@ -43,7 +48,7 @@ Work is tracked in [GitHub Issues + Project](https://github.com/qwtm/cartograph/
 ## Stack (decided — see ADRs)
 
 Tauri 2 · Rust core · React + TypeScript + Vite UI · tree-sitter ·
-Kuzu graph store (SQLite recursive-CTE fallback) · SQLite/WAL state spine ·
+SQLite/WAL graph store with recursive-CTE traversal (ADR-0008) + state spine ·
 Ollama local-first LLM with pluggable cloud providers (opt-in egress).
 
 ## Contributing

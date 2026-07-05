@@ -47,10 +47,9 @@ events, client), then compiles official spec artifacts. Master spec:
 4. **PR body links its issue** with a closing keyword (`Closes #N`) — merged
    PRs close their issues automatically via
    `.github/workflows/close-linked-issues.yml`.
-5. **Gates must pass.** CI runs the docs/traceability check today; Rust
-   (`cargo fmt --check`, `clippy -D warnings`, `cargo test`) and frontend
-   (lint, typecheck, unit tests) gates are added with M0 and are ratchets —
-   they only get stricter.
+5. **Gates must pass.** CI runs docs/traceability, Rust, and frontend gates
+   (see "Verification before done"). Gates are ratchets — they only get
+   stricter.
 6. **Traceability is enforced**, not aspirational: `node
    scripts/check-traceability.mjs` validates US ↔ AC ↔ matrix ↔ ADR
    consistency and runs in CI. Run it before pushing docs changes.
@@ -59,10 +58,12 @@ events, client), then compiles official spec artifacts. Master spec:
 
 ```sh
 node scripts/check-traceability.mjs
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+npm --prefix ui run lint && npm --prefix ui run typecheck && npm --prefix ui run test && npm --prefix ui run build
 ```
 
-(M0 adds `cargo fmt --check && cargo clippy -- -D warnings && cargo test` and
-the frontend gates; this section is the single place that lists them.)
+To see the app itself: `npm run tauri dev` (root). This section is the single
+place that lists the gates; CI mirrors it exactly.
 
 ## Documentation map
 

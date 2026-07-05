@@ -7,8 +7,9 @@ PR → gates). This file only adds Claude-specific orientation; do not duplicate
 
 ## Orientation
 
-- Pre-M0: the repo is spec + process; product code arrives with M0
-  (Tauri 2 skeleton, Rust workspace per SPEC-00 §8.1 crate map).
+- Layout: Rust workspace per SPEC-00 §8.1 (`crates/*` = analysis engine,
+  `src-tauri` = the `app` shell crate, `ui/` = React front end). Crates beyond
+  `core-graph`/`core-prov` are doc-comment stubs until their milestone.
 - When implementing a milestone, work from its exit gate in SPEC-00 §14 and
   the user stories mapped to it in `docs/US-TM.md`.
 - SPEC-00 §15 lists four "verify-at-build" claims (Kuzu fit, `hcl-rs`
