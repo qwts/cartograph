@@ -1,0 +1,16 @@
+id,title,type,priority,status,milestone,crate,depends_on,flow,adr,tests,notes
+US-0001,Add repo set and define system topology,story,Must,Ready,M0-M1,ingest,,,ADR-0001;ADR-0005,T-0001..0003,GitHub App + topology manifest
+US-0002,Deterministic server-side extraction (TS),story,Must,Ready,M1,adapters-lang-ts;adapters-fw;core-prov,US-0001,,ADR-0003;ADR-0006,T-0004..0006,TS proving ground
+US-0003,IaC resource graph + cloud capability (TF/AWS),story,Must,Draft,M2,iac,US-0001,,ADR-0003,T-0007..0009,Capability Registry AWS-first
+US-0004,Event graph channel-identity stitching,story,Must,Draft,M3-M5,events;flowtracer,US-0002,F-*,ADR-0002,T-0010..0012,cross-repo stitch
+US-0005,Client-side interaction graph (React),story,Must,Draft,M4,adapters-lang-ts;adapters-fw,US-0002,F-*,ADR-0003,T-0013..0014,FETCHES = flow anchor
+US-0006,Deterministic end-to-end flow tracer,story,Must,Draft,M3-M5,flowtracer,US-0004;US-0005,F-*,ADR-0002,T-0015..0017,T0-first; explicit gaps
+US-0007,Provenance and confidence on every fact,story,Must,Ready,M0;M8,core-prov;agents,,,ADR-0002;ADR-0006,T-0018..0020,integrity spine
+US-0008,Semantic tier with eval gating,story,Should,Draft,M7,semantic;llm,US-0006;US-0007,,ADR-0002;ADR-0004,T-0021..0022,precision floor
+US-0009,Bounded agentic tier + egress firewall,story,Should,Draft,M8,agents;llm,US-0007;US-0008,,ADR-0004,T-0023..0025,propose-only; local-first
+US-0010,Atlas graph canvas with confidence overlay,story,Must,Draft,M9,app;ui,US-0007,,ADR-0001,T-0026..0028,Cytoscape.js
+US-0011,Flow Inspector with explicit gaps,story,Must,Draft,M9,app;flowtracer;ui,US-0006,F-*,ADR-0002,T-0029..0031,React Flow + Mermaid
+US-0012,Spec Workbench curation and export,story,Must,Draft,M9-M10,spec;ui,US-0010;US-0011,,ADR-0002,T-0032..0035,accept/reject persists
+US-0013,ADR recovery and drift detection,story,Should,Draft,M9,spec;agents,US-0006,,ADR-0002,T-0036..0038,found + recovered
+US-0014,Determinism and re-ingest idempotency,story,Must,Draft,M10,core-graph;core-prov,US-0007,,ADR-0006,T-0039..0040,content-hash invariant
+US-0015,Security view of the spec,story,Should,Draft,M9,iac;spec,US-0003,,ADR-0003,T-0041..0042,IAM grants + auth edges

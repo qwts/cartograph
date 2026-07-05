@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cartograph - Atlas</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed": "#95f7bb",
+                        "primary-fixed": "#d7e3ff",
+                        "tier-inferred-weak": "#F2C94C",
+                        "surface-container": "#201f1f",
+                        "tertiary-fixed": "#ffdbc7",
+                        "primary-fixed-dim": "#abc7ff",
+                        "error": "#ffb4ab",
+                        "bg-panel": "#242424",
+                        "on-secondary-container": "#9bfcc1",
+                        "tier-gap": "#EB5757",
+                        "on-secondary-fixed-variant": "#005230",
+                        "on-primary": "#002f65",
+                        "tertiary": "#ffb688",
+                        "surface-container-high": "#2a2a2a",
+                        "background": "#131313",
+                        "surface-tint": "#abc7ff",
+                        "surface-dim": "#131313",
+                        "on-secondary-fixed": "#002110",
+                        "inverse-primary": "#005cba",
+                        "primary": "#abc7ff",
+                        "on-surface": "#e5e2e1",
+                        "surface-container-highest": "#353534",
+                        "tier-confirmed": "#27C93F",
+                        "surface-container-lowest": "#0e0e0e",
+                        "text-muted": "#888888",
+                        "inverse-surface": "#e5e2e1",
+                        "on-tertiary-fixed": "#311300",
+                        "tertiary-fixed-dim": "#ffb688",
+                        "secondary-fixed-dim": "#7adaa1",
+                        "primary-container": "#448ffd",
+                        "surface-bright": "#393939",
+                        "on-tertiary-container": "#471f00",
+                        "secondary": "#7adaa1",
+                        "on-secondary": "#003920",
+                        "on-primary-fixed": "#001b3f",
+                        "error-container": "#93000a",
+                        "on-background": "#e5e2e1",
+                        "bg-surface": "#1A1A1A",
+                        "surface-variant": "#353534",
+                        "surface": "#131313",
+                        "on-tertiary-fixed-variant": "#733600",
+                        "outline": "#8b919f",
+                        "tertiary-container": "#e07316",
+                        "on-error-container": "#ffdad6",
+                        "on-error": "#690005",
+                        "outline-variant": "#414753",
+                        "on-primary-fixed-variant": "#00458e",
+                        "on-primary-container": "#002959",
+                        "border-subtle": "#333333",
+                        "secondary-container": "#007848",
+                        "on-surface-variant": "#c1c6d5",
+                        "surface-container-low": "#1c1b1b",
+                        "tier-inferred-strong": "#2D9CDB",
+                        "inverse-on-surface": "#313030",
+                        "on-tertiary": "#512400"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "gutter": "16px",
+                        "stack-gap": "8px",
+                        "narrow-sidebar": "64px",
+                        "panel-padding": "12px",
+                        "sidebar-width": "240px"
+                    },
+                    "fontFamily": {
+                        "mono-code": ["JetBrains Mono"],
+                        "headline-md": ["Inter"],
+                        "body-md": ["Inter"],
+                        "headline-lg": ["Inter"],
+                        "label-caps": ["Inter"],
+                        "body-sm": ["Inter"]
+                    },
+                    "fontSize": {
+                        "mono-code": ["13px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "headline-md": ["18px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "headline-lg": ["24px", { "lineHeight": "32px", "fontWeight": "600" }],
+                        "label-caps": ["11px", { "lineHeight": "14px", "letterSpacing": "0.05em", "fontWeight": "700" }],
+                        "body-sm": ["12px", { "lineHeight": "16px", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .node-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        /* Map background grid pattern */
+        .bg-grid-pattern {
+            background-image: linear-gradient(to right, #333333 1px, transparent 1px),
+                              linear-gradient(to bottom, #333333 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface h-screen overflow-hidden flex font-body-md">
+<!-- Persistent Job Progress (TopAppBar equivalent) -->
+<div class="fixed top-0 w-full h-1 z-50 bg-surface-container-lowest flex items-start w-full">
+<div class="h-full bg-primary" style="width: 45%;"></div>
+</div>
+<!-- Persistent 'SideNavBar' -->
+<nav class="fixed left-0 top-0 h-full w-narrow-sidebar hover:w-sidebar-width transition-all duration-300 z-50 border-r border-border-subtle bg-bg-surface/80 backdrop-blur-xl flex flex-col py-panel-padding group overflow-hidden">
+<!-- Header -->
+<div class="flex items-center gap-3 px-4 mb-8 shrink-0">
+<div class="w-8 h-8 rounded bg-primary/20 flex items-center justify-center text-primary font-bold shrink-0">C</div>
+<div class="flex flex-col opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
+<span class="font-headline-md text-headline-md font-bold text-primary">Cartograph</span>
+<span class="font-mono-code text-mono-code text-text-muted text-[10px]">v1.0.2</span>
+</div>
+</div>
+<!-- Navigation Tabs -->
+<div class="flex flex-col gap-2 px-2 flex-1">
+<a class="flex items-center gap-4 px-2 py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-label-caps text-label-caps whitespace-nowrap" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-weight="fill">dashboard</span>
+<span class="opacity-0 group-hover:opacity-100 transition-opacity duration-300">Workspace</span>
+</a>
+<a class="flex items-center gap-4 px-2 py-2 rounded text-primary border-r-2 border-primary bg-primary/10 transition-colors font-label-caps text-label-caps whitespace-nowrap Active: scale-95 duration-150" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-weight="fill">map</span>
+<span class="opacity-0 group-hover:opacity-100 transition-opacity duration-300">Atlas</span>
+</a>
+<a class="flex items-center gap-4 px-2 py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-label-caps text-label-caps whitespace-nowrap" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-weight="fill">account_tree</span>
+<span class="opacity-0 group-hover:opacity-100 transition-opacity duration-300">Flow Inspector</span>
+</a>
+<a class="flex items-center gap-4 px-2 py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-label-caps text-label-caps whitespace-nowrap" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-weight="fill">terminal</span>
+<span class="opacity-0 group-hover:opacity-100 transition-opacity duration-300">Spec Workbench</span>
+</a>
+<a class="flex items-center gap-4 px-2 py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-label-caps text-label-caps whitespace-nowrap" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-weight="fill">receipt_long</span>
+<span class="opacity-0 group-hover:opacity-100 transition-opacity duration-300">Registers</span>
+</a>
+</div>
+<!-- Bottom Settings/User -->
+<div class="px-2 mt-auto">
+<a class="flex items-center gap-4 px-2 py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-label-caps text-label-caps whitespace-nowrap" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0">settings</span>
+<span class="opacity-0 group-hover:opacity-100 transition-opacity duration-300">Settings</span>
+</a>
+</div>
+</nav>
+<!-- Main Content Wrapper -->
+<div class="ml-narrow-sidebar flex-1 flex flex-col h-full relative">
+<!-- Top Command Palette Bar -->
+<div class="fixed top-4 left-1/2 -translate-x-1/2 w-full max-w-3xl z-40 bg-surface-container/60 backdrop-blur-md border border-border-subtle rounded-full shadow-lg flex justify-between items-center px-gutter py-2">
+<div class="flex items-center gap-2 text-on-surface-variant flex-1 focus-within:ring-1 focus-within:ring-primary rounded-full px-2 py-1">
+<span class="material-symbols-outlined text-[18px]">search</span>
+<input class="bg-transparent border-none text-body-md font-body-md text-on-surface w-full focus:outline-none focus:ring-0 placeholder:text-on-surface-variant/50" placeholder="Cmd+K to search entities, flows, or IPs..." type="text"/>
+</div>
+<div class="flex items-center gap-4 text-on-surface-variant ml-4">
+<button class="hover:text-primary transition-opacity"><span class="material-symbols-outlined">notifications</span></button>
+<button class="hover:text-primary transition-opacity"><span class="material-symbols-outlined">settings</span></button>
+<button class="hover:text-primary transition-opacity"><span class="material-symbols-outlined">account_circle</span></button>
+</div>
+</div>
+<!-- Main Workspace Area -->
+<div class="flex-1 flex w-full h-full pt-16"> <!-- pt-16 to account for absolute top bar if it wasn't fixed, but leaving space for visual balance -->
+<!-- LEFT 70% Canvas -->
+<div class="w-[70%] h-full relative bg-surface-dim bg-grid-pattern flex items-center justify-center overflow-hidden border-r border-border-subtle">
+<!-- Floating Overlay Menu (Top Right) -->
+<div class="absolute top-4 right-4 bg-bg-panel/80 backdrop-blur-md border border-border-subtle rounded-full p-1 flex gap-1 z-10 shadow-lg">
+<button class="px-3 py-1.5 rounded-full bg-surface-container-high text-primary font-label-caps text-label-caps border border-primary/30">Infrastructure</button>
+<button class="px-3 py-1.5 rounded-full hover:bg-surface-container text-on-surface-variant font-label-caps text-label-caps transition-colors">Cloud</button>
+<button class="px-3 py-1.5 rounded-full hover:bg-surface-container text-on-surface-variant font-label-caps text-label-caps transition-colors">Server</button>
+<button class="px-3 py-1.5 rounded-full hover:bg-surface-container text-on-surface-variant font-label-caps text-label-caps transition-colors">Events</button>
+<button class="px-3 py-1.5 rounded-full hover:bg-surface-container text-on-surface-variant font-label-caps text-label-caps transition-colors">Client</button>
+</div>
+<!-- Simulated Node Graph -->
+<div class="relative w-[600px] h-[500px]">
+<!-- Edges (SVG) -->
+<svg class="absolute inset-0 w-full h-full pointer-events-none" style="z-index: 1;">
+<path d="M 100 100 Q 200 50 300 150" fill="none" stroke="#333333" stroke-dasharray="4" stroke-width="2"></path>
+<path d="M 300 150 L 450 250" fill="none" stroke="#333333" stroke-width="2"></path>
+<path d="M 300 150 L 200 350" fill="none" stroke="#333333" stroke-width="2"></path>
+<path class="node-pulse" d="M 450 250 L 500 400" fill="none" stroke="#EB5757" stroke-dasharray="4" stroke-width="2"></path>
+</svg>
+<!-- Nodes -->
+<div class="absolute top-[80px] left-[80px] w-10 h-10 rounded-full bg-tier-confirmed border-2 border-background flex items-center justify-center z-10 shadow-[0_0_15px_rgba(39,201,63,0.3)] group cursor-pointer">
+<span class="material-symbols-outlined text-background text-[20px]">dns</span>
+<div class="absolute -top-8 bg-bg-panel text-on-surface text-label-caps font-label-caps px-2 py-1 rounded border border-border-subtle opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none transition-opacity">AWS Route53</div>
+</div>
+<div class="absolute top-[130px] left-[280px] w-12 h-12 rounded bg-bg-panel border border-tier-inferred-strong flex items-center justify-center z-10 shadow-[0_0_15px_rgba(45,156,219,0.2)] group cursor-pointer ring-2 ring-primary ring-offset-2 ring-offset-background">
+<span class="material-symbols-outlined text-tier-inferred-strong text-[24px]">api</span>
+<div class="absolute -top-8 bg-bg-panel text-on-surface text-label-caps font-label-caps px-2 py-1 rounded border border-border-subtle opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none transition-opacity">API Gateway</div>
+</div>
+<div class="absolute top-[330px] left-[180px] w-10 h-10 rounded-full bg-tier-inferred-weak border-2 border-background flex items-center justify-center z-10 shadow-[0_0_15px_rgba(242,201,76,0.2)] group cursor-pointer">
+<span class="material-symbols-outlined text-background text-[20px]">database</span>
+<div class="absolute -top-8 bg-bg-panel text-on-surface text-label-caps font-label-caps px-2 py-1 rounded border border-border-subtle opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none transition-opacity">Redis Cache</div>
+</div>
+<div class="absolute top-[230px] left-[430px] w-10 h-10 rounded-full bg-tier-confirmed border-2 border-background flex items-center justify-center z-10 shadow-[0_0_15px_rgba(39,201,63,0.3)] group cursor-pointer">
+<span class="material-symbols-outlined text-background text-[20px]">terminal</span>
+<div class="absolute -top-8 bg-bg-panel text-on-surface text-label-caps font-label-caps px-2 py-1 rounded border border-border-subtle opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none transition-opacity">Payment Svc</div>
+</div>
+<!-- Gap Node -->
+<div class="absolute top-[380px] left-[480px] w-10 h-10 rounded-full bg-surface border-2 border-dashed border-tier-gap flex items-center justify-center z-10 group cursor-pointer">
+<span class="material-symbols-outlined text-tier-gap text-[20px]">warning</span>
+<div class="absolute -top-8 bg-bg-panel text-on-surface text-label-caps font-label-caps px-2 py-1 rounded border border-border-subtle opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none transition-opacity">Unknown Vendor</div>
+</div>
+</div>
+<!-- Zoom controls -->
+<div class="absolute bottom-6 right-6 flex flex-col gap-1 bg-bg-panel border border-border-subtle rounded p-1">
+<button class="w-8 h-8 flex items-center justify-center hover:bg-surface-container rounded text-on-surface-variant hover:text-on-surface"><span class="material-symbols-outlined text-[18px]">add</span></button>
+<div class="h-[1px] w-full bg-border-subtle"></div>
+<button class="w-8 h-8 flex items-center justify-center hover:bg-surface-container rounded text-on-surface-variant hover:text-on-surface"><span class="material-symbols-outlined text-[18px]">remove</span></button>
+</div>
+</div>
+<!-- RIGHT 30% Evidence Panel -->
+<div class="w-[30%] bg-bg-panel flex flex-col h-full overflow-y-auto">
+<!-- Panel Header -->
+<div class="p-4 border-b border-border-subtle sticky top-0 bg-bg-panel/90 backdrop-blur z-20 flex justify-between items-center">
+<div>
+<h2 class="font-headline-md text-headline-md text-on-surface mb-1">Evidence Context</h2>
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-tier-inferred-strong"></span>
+<span class="text-label-caps font-label-caps text-on-surface-variant">Inferred Strong</span>
+</div>
+</div>
+<button class="text-on-surface-variant hover:text-on-surface"><span class="material-symbols-outlined">close</span></button>
+</div>
+<!-- Content Body -->
+<div class="p-4 flex flex-col gap-6">
+<!-- Metadata Section -->
+<div class="flex flex-col gap-2">
+<div class="flex justify-between items-center">
+<span class="text-label-caps font-label-caps text-on-surface-variant">Source File</span>
+<button class="text-primary hover:text-primary-fixed text-label-caps font-label-caps flex items-center gap-1">
+                                Open <span class="material-symbols-outlined text-[14px]">open_in_new</span>
+</button>
+</div>
+<div class="bg-surface-container-low p-2 rounded border border-border-subtle font-mono-code text-mono-code text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted text-[16px]">draft</span>
+                            src/services/payment_gateway.rs
+                        </div>
+</div>
+<!-- Code Block -->
+<div class="flex flex-col gap-2">
+<span class="text-label-caps font-label-caps text-on-surface-variant">Inferred Connection Logic</span>
+<div class="bg-surface-container-low rounded border border-border-subtle overflow-hidden">
+<div class="bg-surface-container px-3 py-1.5 border-b border-border-subtle flex gap-2">
+<div class="w-2.5 h-2.5 rounded-full bg-[#FF5F56]"></div>
+<div class="w-2.5 h-2.5 rounded-full bg-[#FFBD2E]"></div>
+<div class="w-2.5 h-2.5 rounded-full bg-[#27C93F]"></div>
+</div>
+<pre class="p-3 font-mono-code text-mono-code text-[12px] leading-tight overflow-x-auto text-on-surface"><code class="language-rust">
+<span class="text-secondary">pub async fn</span> <span class="text-primary">process_payment</span>(
+    req: PaymentRequest
+) -&gt; <span class="text-tertiary">Result</span>&lt;PaymentResponse, Error&gt; {
+    
+    <span class="text-text-muted">// Inferred call to external provider</span>
+    <span class="text-secondary">let</span> client = reqwest::Client::new();
+    <span class="text-secondary">let</span> res = client.post(<span class="text-tier-confirmed">"https://api.stripe.com/v1/charges"</span>)
+        .header(<span class="text-tier-confirmed">"Authorization"</span>, format!(<span class="text-tier-confirmed">"Bearer {}"</span>, API_KEY))
+        .json(&amp;req)
+        .send()
+        .<span class="text-primary">await</span>?;
+
+    <span class="text-secondary">if</span> res.status().is_success() {
+        <span class="text-secondary">Ok</span>(res.json().<span class="text-primary">await</span>?)
+    } <span class="text-secondary">else</span> {
+        <span class="text-secondary">Err</span>(Error::ProviderFailed)
+    }
+}
+                            </code></pre>
+</div>
+</div>
+<!-- Details Table -->
+<div class="flex flex-col gap-2">
+<span class="text-label-caps font-label-caps text-on-surface-variant">Node Properties</span>
+<div class="border border-border-subtle rounded divide-y divide-border-subtle">
+<div class="flex p-2">
+<span class="w-1/3 text-body-sm text-on-surface-variant">Protocol</span>
+<span class="w-2/3 font-mono-code text-mono-code text-on-surface">HTTPS</span>
+</div>
+<div class="flex p-2">
+<span class="w-1/3 text-body-sm text-on-surface-variant">Direction</span>
+<span class="w-2/3 font-mono-code text-mono-code text-on-surface">Egress</span>
+</div>
+<div class="flex p-2">
+<span class="w-1/3 text-body-sm text-on-surface-variant">Last Seen</span>
+<span class="w-2/3 font-mono-code text-mono-code text-on-surface">2 mins ago</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Bottom Commit / Metadata -->
+<div class="mt-auto p-4 border-t border-border-subtle bg-surface-container-low flex justify-between items-center text-label-caps font-label-caps">
+<span class="text-on-surface-variant">Commit Context</span>
+<span class="font-mono-code text-mono-code text-on-surface bg-surface px-2 py-0.5 rounded border border-border-subtle">sha: 7f681c1</span>
+</div>
+</div>
+</div>
+</div>
+</body></html>

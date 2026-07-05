@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cartograph - Flow Inspector</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-container-high": "#2a2a2a",
+                        "surface-container-highest": "#353534",
+                        "surface-variant": "#353534",
+                        "error-container": "#93000a",
+                        "on-secondary-fixed-variant": "#005230",
+                        "surface": "#131313",
+                        "surface-container": "#201f1f",
+                        "tertiary-fixed": "#ffdbc7",
+                        "surface-bright": "#393939",
+                        "on-surface": "#e5e2e1",
+                        "error": "#ffb4ab",
+                        "on-secondary-container": "#9bfcc1",
+                        "tier-inferred-strong": "#2D9CDB",
+                        "on-secondary": "#003920",
+                        "tertiary-container": "#e07316",
+                        "tier-gap": "#EB5757",
+                        "secondary-container": "#007848",
+                        "on-primary-fixed": "#001b3f",
+                        "on-primary-fixed-variant": "#00458e",
+                        "border-subtle": "#333333",
+                        "primary-fixed-dim": "#abc7ff",
+                        "on-tertiary-container": "#471f00",
+                        "secondary-fixed-dim": "#7adaa1",
+                        "tier-inferred-weak": "#F2C94C",
+                        "on-background": "#e5e2e1",
+                        "inverse-on-surface": "#313030",
+                        "bg-panel": "#242424",
+                        "bg-surface": "#1A1A1A",
+                        "tertiary-fixed-dim": "#ffb688",
+                        "secondary-fixed": "#95f7bb",
+                        "on-tertiary-fixed-variant": "#733600",
+                        "on-error-container": "#ffdad6",
+                        "on-tertiary": "#512400",
+                        "on-surface-variant": "#c1c6d5",
+                        "outline-variant": "#414753",
+                        "surface-container-low": "#1c1b1b",
+                        "on-error": "#690005",
+                        "on-primary": "#002f65",
+                        "on-tertiary-fixed": "#311300",
+                        "inverse-surface": "#e5e2e1",
+                        "on-primary-container": "#002959",
+                        "primary-fixed": "#d7e3ff",
+                        "tier-confirmed": "#27C93F",
+                        "primary": "#abc7ff",
+                        "surface-container-lowest": "#0e0e0e",
+                        "surface-tint": "#abc7ff",
+                        "surface-dim": "#131313",
+                        "tertiary": "#ffb688",
+                        "outline": "#8b919f",
+                        "background": "#131313",
+                        "secondary": "#7adaa1",
+                        "inverse-primary": "#005cba",
+                        "text-muted": "#888888",
+                        "on-secondary-fixed": "#002110",
+                        "primary-container": "#448ffd"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "gutter": "16px",
+                        "stack-gap": "8px",
+                        "sidebar-width": "240px",
+                        "panel-padding": "12px",
+                        "narrow-sidebar": "64px"
+                    },
+                    "fontFamily": {
+                        "mono-code": ["JetBrains Mono", "monospace"],
+                        "body-md": ["Inter", "sans-serif"],
+                        "headline-md": ["Inter", "sans-serif"],
+                        "headline-lg": ["Inter", "sans-serif"],
+                        "label-caps": ["Inter", "sans-serif"],
+                        "body-sm": ["Inter", "sans-serif"]
+                    },
+                    "fontSize": {
+                        "mono-code": ["13px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "headline-md": ["18px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "headline-lg": ["24px", { "lineHeight": "32px", "fontWeight": "600" }],
+                        "label-caps": ["11px", { "lineHeight": "14px", "letterSpacing": "0.05em", "fontWeight": "700" }],
+                        "body-sm": ["12px", { "lineHeight": "16px", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .custom-scrollbar::-webkit-scrollbar {
+            height: 8px;
+            width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #333333;
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background-color: #414753;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md h-screen w-screen overflow-hidden flex font-body-md antialiased selection:bg-primary-container selection:text-on-primary-container">
+<!-- JSON SideNavBar -->
+<nav class="fixed left-0 top-0 h-full w-narrow-sidebar hover:w-sidebar-width transition-all duration-300 z-50 border-r border-border-subtle bg-bg-surface/80 backdrop-blur-xl flex flex-col py-panel-padding overflow-hidden group">
+<div class="px-3 mb-8 flex items-center shrink-0">
+<div class="h-8 w-8 rounded bg-primary flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-on-primary" style="font-variation-settings: 'FILL' 1;">map</span>
+</div>
+<div class="ml-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap overflow-hidden">
+<div class="font-headline-md text-headline-md font-bold text-primary">Cartograph</div>
+<div class="font-label-caps text-label-caps text-on-surface-variant">v1.0.2</div>
+</div>
+</div>
+<div class="flex-1 space-y-2 px-2 overflow-y-auto custom-scrollbar">
+<!-- Nav Items -->
+<a class="flex items-center px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors cursor-pointer" href="#" title="Workspace">
+<span class="material-symbols-outlined shrink-0" data-icon="dashboard">dashboard</span>
+<span class="ml-4 font-label-caps text-label-caps uppercase opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">Workspace</span>
+</a>
+<a class="flex items-center px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors cursor-pointer" href="#" title="Atlas">
+<span class="material-symbols-outlined shrink-0" data-icon="map">map</span>
+<span class="ml-4 font-label-caps text-label-caps uppercase opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">Atlas</span>
+</a>
+<!-- Active Nav Item -->
+<a class="flex items-center px-3 py-2 rounded-lg text-primary border-r-2 border-primary bg-primary/10 cursor-pointer" href="#" title="Flow Inspector">
+<span class="material-symbols-outlined shrink-0" data-icon="account_tree">account_tree</span>
+<span class="ml-4 font-label-caps text-label-caps uppercase opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">Flow Inspector</span>
+</a>
+<a class="flex items-center px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors cursor-pointer" href="#" title="Spec Workbench">
+<span class="material-symbols-outlined shrink-0" data-icon="terminal">terminal</span>
+<span class="ml-4 font-label-caps text-label-caps uppercase opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">Spec Workbench</span>
+</a>
+<a class="flex items-center px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors cursor-pointer" href="#" title="Registers">
+<span class="material-symbols-outlined shrink-0" data-icon="receipt_long">receipt_long</span>
+<span class="ml-4 font-label-caps text-label-caps uppercase opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">Registers</span>
+</a>
+</div>
+</nav>
+<!-- Main Content Canvas -->
+<main class="ml-narrow-sidebar flex-1 flex flex-col h-full bg-surface-dim relative">
+<!-- Header Section -->
+<header class="px-8 py-6 border-b border-border-subtle bg-bg-surface shrink-0 z-10 flex flex-col gap-4">
+<div class="flex justify-between items-start w-full">
+<div>
+<h1 class="font-headline-lg text-headline-lg text-on-surface">Flow Inspector</h1>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1 max-w-2xl">Trace end-to-end business logic across infrastructure, service, and event layers.</p>
+</div>
+<div class="flex items-center gap-4 bg-surface-container p-1 rounded-lg border border-border-subtle">
+<button class="px-4 py-1.5 rounded-md font-label-caps text-label-caps bg-surface-container-high text-on-surface shadow-sm">Verified-only</button>
+<button class="px-4 py-1.5 rounded-md font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface">Best-effort</button>
+</div>
+</div>
+<div class="flex items-center gap-4 pt-2">
+<label class="font-label-caps text-label-caps text-on-surface-variant shrink-0 uppercase">Trigger Source</label>
+<div class="relative w-96">
+<div class="flex items-center bg-surface-container border border-border-subtle rounded-md px-3 py-2 hover:border-primary focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all cursor-pointer">
+<span class="font-mono-code text-mono-code text-primary mr-2">POST</span>
+<span class="font-mono-code text-mono-code text-on-surface flex-1">/payment/process</span>
+<span class="material-symbols-outlined text-on-surface-variant text-sm">expand_more</span>
+</div>
+</div>
+</div>
+</header>
+<!-- Canvas Area with Flowchart -->
+<div class="flex-1 overflow-x-auto overflow-y-auto custom-scrollbar p-8 relative">
+<!-- Flow Container -->
+<div class="flex items-center min-w-max h-full">
+<!-- Card 1: Client -->
+<div class="flex flex-col relative group">
+<div class="w-64 bg-surface-container-high border border-border-subtle rounded-lg p-4 hover:border-primary transition-colors flex flex-col gap-3 relative z-10 shadow-lg">
+<div class="flex justify-between items-start">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-tier-confirmed text-lg">desktop_windows</span>
+<span class="font-label-caps text-label-caps text-on-surface uppercase">Client</span>
+</div>
+<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-tier-confirmed/10 text-tier-confirmed border border-tier-confirmed/20">T0</span>
+</div>
+<div class="font-mono-code text-mono-code text-on-surface font-semibold break-words">ProcessPayment Action</div>
+<div class="flex flex-col gap-1 mt-2">
+<div class="font-mono-code text-[11px] text-on-surface-variant bg-surface-container px-2 py-1 rounded truncate">src/actions/payment.ts</div>
+</div>
+</div>
+</div>
+<!-- Connector -->
+<div class="w-16 h-px bg-border-subtle relative flex items-center justify-center shrink-0">
+<div class="absolute right-0 w-2 h-2 border-t border-r border-border-subtle transform rotate-45 -translate-x-1"></div>
+</div>
+<!-- Card 2: API -->
+<div class="flex flex-col relative group">
+<div class="w-64 bg-surface-container-high border border-border-subtle rounded-lg p-4 hover:border-primary transition-colors flex flex-col gap-3 relative z-10 shadow-lg">
+<div class="flex justify-between items-start">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-tier-confirmed text-lg">api</span>
+<span class="font-label-caps text-label-caps text-on-surface uppercase">API</span>
+</div>
+<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-tier-confirmed/10 text-tier-confirmed border border-tier-confirmed/20">T0</span>
+</div>
+<div class="font-mono-code text-mono-code text-on-surface font-semibold break-words">payment-gateway</div>
+<div class="flex flex-col gap-1 mt-2">
+<div class="font-mono-code text-[11px] text-on-surface-variant bg-surface-container px-2 py-1 rounded truncate">POST /api/v1/pay</div>
+</div>
+</div>
+</div>
+<!-- Connector -->
+<div class="w-16 h-px bg-border-subtle relative flex items-center justify-center shrink-0">
+<div class="absolute right-0 w-2 h-2 border-t border-r border-border-subtle transform rotate-45 -translate-x-1"></div>
+</div>
+<!-- Card 3: Event -->
+<div class="flex flex-col relative group">
+<div class="w-64 bg-surface-container-high border border-border-subtle rounded-lg p-4 hover:border-primary transition-colors flex flex-col gap-3 relative z-10 shadow-lg">
+<div class="flex justify-between items-start">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-tier-inferred-strong text-lg">bolt</span>
+<span class="font-label-caps text-label-caps text-on-surface uppercase">Event</span>
+</div>
+<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-tier-inferred-strong/10 text-tier-inferred-strong border border-tier-inferred-strong/20">T1</span>
+</div>
+<div class="font-mono-code text-mono-code text-on-surface font-semibold break-words">payment.initiated</div>
+<div class="flex flex-col gap-1 mt-2">
+<div class="font-mono-code text-[11px] text-on-surface-variant bg-surface-container px-2 py-1 rounded truncate">Topic: payments-prod</div>
+</div>
+</div>
+</div>
+<!-- Connector -->
+<div class="w-16 h-px bg-tier-gap border-dashed border-t relative flex items-center justify-center shrink-0 opacity-50">
+<div class="absolute right-0 w-2 h-2 border-t border-r border-tier-gap transform rotate-45 -translate-x-1"></div>
+</div>
+<!-- Card 4: GAP NODE -->
+<div class="flex flex-col relative group">
+<div class="w-72 bg-surface-container-high border-2 border-dashed border-tier-gap rounded-lg p-4 relative z-10 shadow-lg overflow-hidden">
+<!-- Warning stripe -->
+<div class="absolute top-0 left-0 w-full h-1 bg-tier-gap opacity-80"></div>
+<div class="flex justify-between items-start mb-3">
+<div class="flex items-center gap-2 text-tier-gap">
+<span class="material-symbols-outlined text-xl" style="font-variation-settings: 'FILL' 1;">warning</span>
+<span class="font-label-caps text-label-caps uppercase font-bold">GAP: UNRESOLVED HOP</span>
+</div>
+</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant p-3 bg-error-container/10 border border-tier-gap/20 rounded">
+<strong class="text-on-surface block mb-1">Reason:</strong>
+                            Runtime-computed channel identity in auth-service. No T0/T1 evidence found linking event to service.
+                        </div>
+</div>
+</div>
+<!-- Connector -->
+<div class="w-16 h-px bg-tier-gap border-dashed border-t relative flex items-center justify-center shrink-0 opacity-50">
+<div class="absolute right-0 w-2 h-2 border-t border-r border-tier-gap transform rotate-45 -translate-x-1"></div>
+</div>
+<!-- Card 5: Service -->
+<div class="flex flex-col relative group">
+<div class="w-64 bg-surface-container-high border border-border-subtle rounded-lg p-4 hover:border-primary transition-colors flex flex-col gap-3 relative z-10 shadow-lg">
+<div class="flex justify-between items-start">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-tier-inferred-weak text-lg">dns</span>
+<span class="font-label-caps text-label-caps text-on-surface uppercase">Service</span>
+</div>
+<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-tier-inferred-weak/10 text-tier-inferred-weak border border-tier-inferred-weak/20">T2</span>
+</div>
+<div class="font-mono-code text-mono-code text-on-surface font-semibold break-words">auth-service</div>
+<div class="flex flex-col gap-1 mt-2">
+<div class="font-mono-code text-[11px] text-on-surface-variant bg-surface-container px-2 py-1 rounded truncate">k8s/deployment/auth-svc</div>
+</div>
+</div>
+</div>
+<!-- Connector -->
+<div class="w-16 h-px bg-border-subtle relative flex items-center justify-center shrink-0">
+<div class="absolute right-0 w-2 h-2 border-t border-r border-border-subtle transform rotate-45 -translate-x-1"></div>
+</div>
+<!-- Card 6: DB -->
+<div class="flex flex-col relative group pr-16">
+<div class="w-64 bg-surface-container-high border border-border-subtle rounded-lg p-4 hover:border-primary transition-colors flex flex-col gap-3 relative z-10 shadow-lg">
+<div class="flex justify-between items-start">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-tertiary-container text-lg">database</span>
+<span class="font-label-caps text-label-caps text-on-surface uppercase">DB</span>
+</div>
+<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-tertiary-container/10 text-tertiary-container border border-tertiary-container/20">T3</span>
+</div>
+<div class="font-mono-code text-mono-code text-on-surface font-semibold break-words">UserAccount</div>
+<div class="flex flex-col gap-1 mt-2">
+<div class="font-mono-code text-[11px] text-on-surface-variant bg-surface-container px-2 py-1 rounded truncate">Table: users_prod</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Bottom Status Bar -->
+<footer class="h-10 border-t border-border-subtle bg-bg-surface shrink-0 flex items-center px-4 justify-between z-20">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-sm text-tier-gap" style="font-variation-settings: 'FILL' 1;">error</span>
+<span class="font-mono-code text-mono-code text-on-surface-variant">Analysis complete. 1 Gap detected in payment-flow.</span>
+</div>
+<div class="font-mono-code text-[11px] text-outline">v1.0.2</div>
+</footer>
+</main>
+</body></html>

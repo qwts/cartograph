@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+
+# Rust
+target/
+
+# Tauri
+src-tauri/gen/
+
+# Build output
+dist/
+
+# Local env / secrets — tokens live in the OS keychain, never in the repo
+.env
+.env.*
+
+# Editor
+.idea/
+*.swp
+
+# Claude Code local settings
+.claude/settings.local.json

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cartograph - Spec Workbench</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "bg-surface": "#1A1A1A",
+                      "tertiary": "#ffb688",
+                      "secondary": "#7adaa1",
+                      "on-secondary-container": "#9bfcc1",
+                      "on-surface-variant": "#c1c6d5",
+                      "surface-container-highest": "#353534",
+                      "surface-container": "#201f1f",
+                      "surface-container-high": "#2a2a2a",
+                      "inverse-surface": "#e5e2e1",
+                      "surface-container-lowest": "#0e0e0e",
+                      "on-tertiary-container": "#471f00",
+                      "surface": "#131313",
+                      "error": "#ffb4ab",
+                      "primary-container": "#448ffd",
+                      "surface-container-low": "#1c1b1b",
+                      "tier-inferred-strong": "#2D9CDB",
+                      "outline": "#8b919f",
+                      "surface-tint": "#abc7ff",
+                      "on-error": "#690005",
+                      "tertiary-fixed-dim": "#ffb688",
+                      "surface-variant": "#353534",
+                      "tier-gap": "#EB5757",
+                      "on-background": "#e5e2e1",
+                      "on-primary-container": "#002959",
+                      "on-primary": "#002f65",
+                      "inverse-primary": "#005cba",
+                      "on-tertiary-fixed": "#311300",
+                      "on-error-container": "#ffdad6",
+                      "on-tertiary": "#512400",
+                      "secondary-fixed": "#95f7bb",
+                      "bg-panel": "#242424",
+                      "outline-variant": "#414753",
+                      "tier-confirmed": "#27C93F",
+                      "primary-fixed": "#d7e3ff",
+                      "secondary-container": "#007848",
+                      "tertiary-fixed": "#ffdbc7",
+                      "tier-inferred-weak": "#F2C94C",
+                      "on-primary-fixed-variant": "#00458e",
+                      "on-secondary-fixed": "#002110",
+                      "on-surface": "#e5e2e1",
+                      "on-primary-fixed": "#001b3f",
+                      "border-subtle": "#333333",
+                      "surface-bright": "#393939",
+                      "background": "#131313",
+                      "inverse-on-surface": "#313030",
+                      "surface-dim": "#131313",
+                      "on-secondary-fixed-variant": "#005230",
+                      "text-muted": "#888888",
+                      "tertiary-container": "#e07316",
+                      "primary-fixed-dim": "#abc7ff",
+                      "primary": "#abc7ff",
+                      "on-tertiary-fixed-variant": "#733600",
+                      "on-secondary": "#003920",
+                      "error-container": "#93000a",
+                      "secondary-fixed-dim": "#7adaa1"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "gutter": "16px",
+                      "narrow-sidebar": "64px",
+                      "sidebar-width": "240px",
+                      "stack-gap": "8px",
+                      "panel-padding": "12px"
+              },
+              "fontFamily": {
+                      "mono-code": [
+                              "JetBrains Mono"
+                      ],
+                      "headline-lg": [
+                              "Inter"
+                      ],
+                      "label-caps": [
+                              "Inter"
+                      ],
+                      "body-sm": [
+                              "Inter"
+                      ],
+                      "body-md": [
+                              "Inter"
+                      ],
+                      "headline-md": [
+                              "Inter"
+                      ]
+              },
+              "fontSize": {
+                      "mono-code": [
+                              "13px",
+                              {
+                                      "lineHeight": "20px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "headline-lg": [
+                              "24px",
+                              {
+                                      "lineHeight": "32px",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "label-caps": [
+                              "11px",
+                              {
+                                      "lineHeight": "14px",
+                                      "letterSpacing": "0.05em",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "body-sm": [
+                              "12px",
+                              {
+                                      "lineHeight": "16px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "body-md": [
+                              "14px",
+                              {
+                                      "lineHeight": "20px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "headline-md": [
+                              "18px",
+                              {
+                                      "lineHeight": "24px",
+                                      "fontWeight": "600"
+                              }
+                      ]
+              }
+            }
+          }
+        }
+    </script>
+<style type="text/tailwindcss">
+        @layer utilities {
+            .scrollbar-hide::-webkit-scrollbar {
+                display: none;
+            }
+            .scrollbar-hide {
+                -ms-overflow-style: none;
+                scrollbar-width: none;
+            }
+        }
+    </style>
+</head>
+<body class="bg-[#121212] text-on-surface font-body-md text-body-md h-screen w-screen overflow-hidden antialiased selection:bg-primary-container/30 selection:text-primary">
+<!-- TopNavBar -->
+<nav class="fixed top-0 right-0 left-0 h-12 z-40 bg-surface/80 dark:bg-surface/80 backdrop-blur-md border-b border-border-subtle flex items-center justify-between px-gutter ml-narrow-sidebar">
+<div class="flex items-center gap-6">
+<div class="font-headline-md text-headline-md font-bold text-on-surface tracking-tight">Cartograph</div>
+<div class="flex items-center gap-4 hidden md:flex">
+<a class="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50 px-2 py-1 rounded cursor-pointer transition-colors" href="#">File</a>
+<a class="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50 px-2 py-1 rounded cursor-pointer transition-colors" href="#">Edit</a>
+<a class="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50 px-2 py-1 rounded cursor-pointer transition-colors" href="#">Selection</a>
+<a class="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50 px-2 py-1 rounded cursor-pointer transition-colors" href="#">View</a>
+<a class="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50 px-2 py-1 rounded cursor-pointer transition-colors" href="#">Go</a>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative hidden lg:block">
+<span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-on-surface-variant text-[16px]">search</span>
+<input class="bg-surface-container-high border border-border-subtle rounded-DEFAULT pl-8 pr-3 py-1 font-body-sm text-body-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 w-64 transition-all" placeholder="Cmd+K to search..." type="text"/>
+</div>
+<button class="text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50 p-1.5 rounded cursor-pointer transition-colors">
+<span class="material-symbols-outlined text-[20px]">notifications</span>
+</button>
+<button class="text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50 p-1.5 rounded cursor-pointer transition-colors">
+<span class="material-symbols-outlined text-[20px]">account_circle</span>
+</button>
+</div>
+</nav>
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-0 h-full w-narrow-sidebar hover:w-sidebar-width transition-all duration-300 ease-in-out z-50 border-r border-border-subtle bg-bg-surface dark:bg-bg-surface backdrop-blur-xl flex flex-col py-panel-padding group overflow-hidden">
+<div class="flex-1 flex flex-col gap-2 mt-12 px-2 w-[240px]">
+<a class="flex items-center gap-4 px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200 ease-in-out" href="#">
+<span class="material-symbols-outlined shrink-0 text-[20px]">dashboard</span>
+<span class="font-body-sm text-body-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200">Workspace</span>
+</a>
+<a class="flex items-center gap-4 px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200 ease-in-out" href="#">
+<span class="material-symbols-outlined shrink-0 text-[20px]">map</span>
+<span class="font-body-sm text-body-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200">Atlas</span>
+</a>
+<a class="flex items-center gap-4 px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200 ease-in-out" href="#">
+<span class="material-symbols-outlined shrink-0 text-[20px]">account_tree</span>
+<span class="font-body-sm text-body-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200">Flow Inspector</span>
+</a>
+<a class="flex items-center gap-4 px-3 py-2 rounded-lg text-primary border-r-2 border-primary bg-primary-container/10 transition-all duration-200 ease-in-out relative left-[-2px] pl-[14px]" href="#">
+<span class="material-symbols-outlined shrink-0 text-[20px]" style="font-variation-settings: 'FILL' 1;">description</span>
+<span class="font-body-sm text-body-sm font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200">Spec Workbench</span>
+</a>
+<a class="flex items-center gap-4 px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200 ease-in-out" href="#">
+<span class="material-symbols-outlined shrink-0 text-[20px]">memory</span>
+<span class="font-body-sm text-body-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200">Registers</span>
+</a>
+</div>
+<div class="mt-auto flex flex-col gap-2 px-2 w-[240px] pt-4 border-t border-border-subtle/50">
+<a class="flex items-center gap-4 px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200 ease-in-out" href="#">
+<span class="material-symbols-outlined shrink-0 text-[20px]">settings</span>
+<span class="font-body-sm text-body-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200">Settings</span>
+</a>
+<a class="flex items-center gap-4 px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all duration-200 ease-in-out" href="#">
+<span class="material-symbols-outlined shrink-0 text-[20px]">help_center</span>
+<span class="font-body-sm text-body-sm whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200">Support</span>
+</a>
+<div class="flex items-center gap-3 px-3 py-3 mt-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+<div class="w-8 h-8 rounded-full bg-surface-container-highest flex items-center justify-center shrink-0 border border-border-subtle">
+<span class="material-symbols-outlined text-[18px] text-on-surface-variant">person</span>
+</div>
+<div class="flex flex-col min-w-0">
+<span class="font-body-sm text-body-sm text-on-surface truncate">System Operator</span>
+<span class="font-label-caps text-label-caps text-on-surface-variant/70 truncate">v1.0.4-stable</span>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-narrow-sidebar mt-12 h-[calc(100vh-48px)] flex">
+<!-- Left Panel: Gap & Drift Registers -->
+<section class="w-1/2 h-full flex flex-col border-r border-border-subtle bg-[#161616]">
+<header class="px-6 py-4 border-b border-border-subtle flex items-center justify-between shrink-0 bg-surface/50 backdrop-blur-sm z-10">
+<h2 class="font-headline-md text-headline-md text-on-surface">Gap &amp; Drift Registers</h2>
+<div class="flex gap-2">
+<button class="p-1.5 text-on-surface-variant hover:bg-surface-container-highest rounded border border-transparent hover:border-border-subtle transition-all">
+<span class="material-symbols-outlined text-[18px]">filter_list</span>
+</button>
+<button class="p-1.5 text-on-surface-variant hover:bg-surface-container-highest rounded border border-transparent hover:border-border-subtle transition-all">
+<span class="material-symbols-outlined text-[18px]">sort</span>
+</button>
+</div>
+</header>
+<div class="flex-1 overflow-y-auto scrollbar-hide p-4">
+<div class="border border-border-subtle rounded-lg overflow-hidden bg-bg-panel">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="border-b border-border-subtle bg-surface-container-highest font-label-caps text-label-caps text-on-surface-variant">
+<th class="py-2 px-4 font-normal w-24">Layer</th>
+<th class="py-2 px-4 font-normal w-24">Flow ID</th>
+<th class="py-2 px-4 font-normal w-28">Severity</th>
+<th class="py-2 px-4 font-normal">Description</th>
+</tr>
+</thead>
+<tbody class="font-body-sm text-body-sm divide-y divide-border-subtle/50">
+<tr class="hover:bg-surface-container-highest/50 transition-colors cursor-pointer group">
+<td class="py-2 px-4 text-text-muted">Infra</td>
+<td class="py-2 px-4 font-mono-code text-mono-code text-primary-fixed-dim">F-0012</td>
+<td class="py-2 px-4">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-tier-gap"></div>
+<span class="text-error">High</span>
+</div>
+</td>
+<td class="py-2 px-4 text-on-surface-variant group-hover:text-on-surface truncate max-w-[200px]" title="Missing IAM role for S3 bucket access in eu-west-1">Missing IAM role for S3 bucket access in eu-west-1</td>
+</tr>
+<tr class="hover:bg-surface-container-highest/50 transition-colors cursor-pointer bg-primary-container/5 border-l-2 border-l-primary group">
+<td class="py-2 px-4 text-text-muted">Server</td>
+<td class="py-2 px-4 font-mono-code text-mono-code text-primary-fixed-dim">F-0045</td>
+<td class="py-2 px-4">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-tier-inferred-weak"></div>
+<span class="text-tier-inferred-weak">Med</span>
+</div>
+</td>
+<td class="py-2 px-4 text-on-surface-variant group-hover:text-on-surface truncate max-w-[200px]" title="Event payload schema mismatch with Kafka topic">Event payload schema mismatch with Kafka topic</td>
+</tr>
+<tr class="hover:bg-surface-container-highest/50 transition-colors cursor-pointer group">
+<td class="py-2 px-4 text-text-muted">Client</td>
+<td class="py-2 px-4 font-mono-code text-mono-code text-primary-fixed-dim">F-0088</td>
+<td class="py-2 px-4">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-tier-confirmed"></div>
+<span class="text-tier-confirmed">Low</span>
+</div>
+</td>
+<td class="py-2 px-4 text-on-surface-variant group-hover:text-on-surface truncate max-w-[200px]" title="Deprecated API endpoint usage in Auth module">Deprecated API endpoint usage in Auth module</td>
+</tr>
+<tr class="hover:bg-surface-container-highest/50 transition-colors cursor-pointer group">
+<td class="py-2 px-4 text-text-muted">Infra</td>
+<td class="py-2 px-4 font-mono-code text-mono-code text-primary-fixed-dim">F-0102</td>
+<td class="py-2 px-4">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-tier-gap"></div>
+<span class="text-error">High</span>
+</div>
+</td>
+<td class="py-2 px-4 text-on-surface-variant group-hover:text-on-surface truncate max-w-[200px]" title="Unencrypted EBS volume attached to primary DB">Unencrypted EBS volume attached to primary DB</td>
+</tr>
+<tr class="hover:bg-surface-container-highest/50 transition-colors cursor-pointer group">
+<td class="py-2 px-4 text-text-muted">Data</td>
+<td class="py-2 px-4 font-mono-code text-mono-code text-primary-fixed-dim">F-0115</td>
+<td class="py-2 px-4">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-tier-inferred-strong"></div>
+<span class="text-tier-inferred-strong">Info</span>
+</div>
+</td>
+<td class="py-2 px-4 text-on-surface-variant group-hover:text-on-surface truncate max-w-[200px]" title="Unusual query pattern detected on users table">Unusual query pattern detected on users table</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<!-- Right Panel: Document Viewer -->
+<section class="w-1/2 h-full flex flex-col bg-[#1A1A1A] relative">
+<header class="px-6 py-4 border-b border-border-subtle flex flex-col shrink-0 bg-surface/50 backdrop-blur-sm z-10">
+<div class="font-label-caps text-label-caps text-on-surface-variant mb-1">Architecture Decision Record</div>
+<h2 class="font-headline-md text-headline-md text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-[20px] text-primary-fixed-dim">article</span>
+                    ADR-0007: Event-driven Architecture
+                </h2>
+</header>
+<div class="flex-1 overflow-y-auto scrollbar-hide p-8 pb-24 font-body-md text-body-md text-on-surface-variant leading-relaxed">
+<div class="max-w-2xl mx-auto relative group">
+<h3 class="font-headline-lg text-headline-lg text-on-surface mb-4">Context</h3>
+<div class="relative">
+<p class="mb-4">
+                            Our current synchronous API calls between microservices are leading to cascading failures during high load. 
+                            We need a more resilient approach to handle state changes and notifications across the system boundary.
+                        </p>
+<div class="absolute right-[-140px] top-0 hidden xl:flex items-center gap-1 bg-surface-container-highest px-2 py-1 rounded border border-border-subtle text-[10px] uppercase font-bold text-tier-confirmed tracking-wider opacity-60 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-[12px]">verified</span> T0
+                        </div>
+</div>
+<h3 class="font-headline-lg text-headline-lg text-on-surface mb-4 mt-8">Decision</h3>
+<div class="relative">
+<p class="mb-4">
+                            We will adopt an event-driven architecture using Kafka as the primary message broker.
+                            Services will publish domain events indicating state changes, rather than directly invoking remote APIs.
+                        </p>
+<ul class="list-disc pl-5 mb-4 space-y-1">
+<li>Producers must define event schemas using Avro.</li>
+<li>Topics will be partitioned by entity ID to guarantee order.</li>
+<li>Consumers must be idempotent to handle at-least-once delivery.</li>
+</ul>
+<div class="absolute right-[-140px] top-0 hidden xl:flex items-center gap-1 bg-surface-container-highest px-2 py-1 rounded border border-border-subtle text-[10px] uppercase font-bold text-tier-inferred-weak tracking-wider opacity-60 group-hover:opacity-100 transition-opacity" title="Inferred from F-0045">
+<span class="material-symbols-outlined text-[12px]">psychology</span> T2 (Inferred)
+                        </div>
+</div>
+<h3 class="font-headline-lg text-headline-lg text-on-surface mb-4 mt-8">Implementation Example</h3>
+<div class="relative bg-[#0d0d0d] border border-border-subtle rounded-lg p-4 font-mono-code text-mono-code text-on-surface-variant overflow-x-auto mb-4">
+<pre><code><span class="text-primary-fixed-dim">import</span> json
+<span class="text-primary-fixed-dim">from</span> kafka <span class="text-primary-fixed-dim">import</span> KafkaProducer
+
+producer = KafkaProducer(
+    bootstrap_servers=[<span class="text-secondary-fixed-dim">'kafka:9092'</span>],
+    value_serializer=<span class="text-primary-fixed-dim">lambda</span> v: json.dumps(v).encode(<span class="text-secondary-fixed-dim">'utf-8'</span>)
+)
+
+<span class="text-text-muted"># Payload schema mismatch detected here (F-0045)</span>
+event = {
+    <span class="text-secondary-fixed-dim">"event_id"</span>: <span class="text-secondary-fixed-dim">"evt_98765"</span>,
+    <span class="text-secondary-fixed-dim">"type"</span>: <span class="text-secondary-fixed-dim">"UserCreated"</span>,
+    <span class="text-secondary-fixed-dim">"data"</span>: { <span class="text-secondary-fixed-dim">"user_id"</span>: <span class="text-secondary-fixed-dim">"u_123"</span> }
+}
+
+producer.send(<span class="text-secondary-fixed-dim">'user-events'</span>, event)
+</code></pre>
+<div class="absolute right-[-140px] top-4 hidden xl:flex items-center gap-1 bg-surface-container-highest px-2 py-1 rounded border border-border-subtle text-[10px] uppercase font-bold text-on-surface-variant tracking-wider opacity-60 group-hover:opacity-100 transition-opacity cursor-pointer hover:border-primary-fixed-dim">
+<span class="material-symbols-outlined text-[12px]">code</span> Evid: L42
+                        </div>
+</div>
+<h3 class="font-headline-lg text-headline-lg text-on-surface mb-4 mt-8">Consequences</h3>
+<p>
+                        Increased complexity in monitoring and debugging. We will need distributed tracing to correlate events across services.
+                    </p>
+</div>
+</div>
+<!-- Bottom Action Bar -->
+<div class="absolute bottom-6 left-1/2 -translate-x-1/2 bg-surface-container-high/90 backdrop-blur-md border border-border-subtle rounded-full px-4 py-3 flex items-center gap-3 shadow-2xl z-20">
+<button class="px-4 py-1.5 rounded-full bg-gradient-to-b from-primary-container to-inverse-primary text-on-primary-container font-body-sm text-body-sm font-semibold hover:brightness-110 transition-all flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">check</span>
+                    Accept
+                </button>
+<button class="px-4 py-1.5 rounded-full border border-tier-gap/50 text-error font-body-sm text-body-sm hover:bg-tier-gap/10 transition-all flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">close</span>
+                    Reject
+                </button>
+<div class="w-[1px] h-4 bg-border-subtle mx-1"></div>
+<button class="px-4 py-1.5 rounded-full text-on-surface-variant font-body-sm text-body-sm hover:text-on-surface hover:bg-surface-variant/50 transition-all flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">edit_note</span>
+                    Annotate
+                </button>
+</div>
+</section>
+</main>
+</body></html>

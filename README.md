@@ -1,0 +1,53 @@
+# Cartograph
+
+**Cross-layer spec-recovery engine.** Cartograph ingests the repos that make up a
+running system and recovers its true specification — business flows, business
+rules, ADRs, data model — as a unified, provenance-tagged knowledge graph across
+five layers: infrastructure, cloud, server, events, and client.
+
+The core thesis is a **four-tier escalation ladder**: every fact is produced by
+the lowest tier that can establish it, and carries provenance + a confidence
+tier. The engine prefers an explicit **Gap** over an unsupported assertion.
+
+| Tier | Method | Confidence |
+|---|---|---|
+| T0 Deterministic | Static parse (tree-sitter), IaC/HCL graph, framework adapters | Confirmed |
+| T1 Dynamic | Observed evidence (Terraform state, OTel traces, test runs) | Confirmed (observed) |
+| T2 Semantic | Local embeddings, similarity/contract matching | InferredStrong |
+| T3 Agentic | Bounded LLM agents proposing links with cited evidence | InferredWeak |
+
+Deliverable: an **official specification** (user stories + acceptance criteria,
+ADRs, flow dossiers, traceability matrix, gap & drift registers) trustworthy
+enough that a third party could re-specify the system from the document alone.
+
+## Status
+
+Pre-M0. The specification is complete and the SDLC scaffolding is being laid
+down before the first line of product code. See the
+[milestone plan](docs/SPEC-00_master.md#14-milestone-plan-m0m10).
+
+## Documentation map
+
+| Document | Purpose |
+|---|---|
+| [docs/SPEC-00_master.md](docs/SPEC-00_master.md) | Master specification — single source of truth |
+| [docs/cartograph_project_brief.md](docs/cartograph_project_brief.md) | Short project brief |
+| [docs/user_stories.md](docs/user_stories.md) | User stories + acceptance criteria (US/AC schema) |
+| [docs/US-TM.md](docs/US-TM.md) | Traceability matrix: US ↔ AC ↔ crate ↔ milestone ↔ ADR ↔ test |
+| [docs/adr/](docs/adr/) | Architecture decision records |
+| [docs/design/](docs/design/) | Design tokens + Stitch UI mockups |
+
+Work is tracked in [GitHub Issues + Project](https://github.com/qwtm/cartograph/issues);
+`docs/archive/tracker.csv` is the pre-import snapshot and is not maintained.
+
+## Stack (decided — see ADRs)
+
+Tauri 2 · Rust core · React + TypeScript + Vite UI · tree-sitter ·
+Kuzu graph store (SQLite recursive-CTE fallback) · SQLite/WAL state spine ·
+Ollama local-first LLM with pluggable cloud providers (opt-in egress).
+
+## Contributing
+
+This repo runs a strict, agent-first SDLC: every change lands through a gated
+PR traceable to a user story / acceptance criterion. See
+[CONTRIBUTING.md](CONTRIBUTING.md) and `AGENTS.md` for the workflow.

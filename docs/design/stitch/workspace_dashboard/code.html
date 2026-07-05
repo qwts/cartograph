@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cartograph - Workspace</title>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind Config -->
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "outline-variant": "#414753",
+                    "surface-bright": "#393939",
+                    "tier-inferred-weak": "#F2C94C",
+                    "tier-inferred-strong": "#2D9CDB",
+                    "error": "#ffb4ab",
+                    "bg-panel": "#242424",
+                    "background": "#131313",
+                    "surface-container-high": "#2a2a2a",
+                    "inverse-surface": "#e5e2e1",
+                    "secondary-fixed": "#95f7bb",
+                    "tier-confirmed": "#27C93F",
+                    "tertiary-fixed-dim": "#ffb688",
+                    "tertiary-container": "#e07316",
+                    "surface-tint": "#abc7ff",
+                    "tertiary": "#ffb688",
+                    "inverse-on-surface": "#313030",
+                    "on-surface": "#e5e2e1",
+                    "on-secondary": "#003920",
+                    "tier-gap": "#EB5757",
+                    "surface-container-low": "#1c1b1b",
+                    "surface-container": "#201f1f",
+                    "on-tertiary-container": "#471f00",
+                    "on-secondary-fixed-variant": "#005230",
+                    "secondary-fixed-dim": "#7adaa1",
+                    "inverse-primary": "#005cba",
+                    "surface-container-lowest": "#0e0e0e",
+                    "primary-fixed": "#d7e3ff",
+                    "on-primary-fixed": "#001b3f",
+                    "text-muted": "#888888",
+                    "on-background": "#e5e2e1",
+                    "tertiary-fixed": "#ffdbc7",
+                    "on-primary-container": "#002959",
+                    "surface-container-highest": "#353534",
+                    "surface-variant": "#353534",
+                    "on-tertiary": "#512400",
+                    "on-primary-fixed-variant": "#00458e",
+                    "border-subtle": "#333333",
+                    "bg-surface": "#1A1A1A",
+                    "surface-dim": "#131313",
+                    "on-error-container": "#ffdad6",
+                    "secondary-container": "#007848",
+                    "on-tertiary-fixed": "#311300",
+                    "primary": "#abc7ff",
+                    "secondary": "#7adaa1",
+                    "primary-container": "#448ffd",
+                    "on-tertiary-fixed-variant": "#733600",
+                    "on-surface-variant": "#c1c6d5",
+                    "error-container": "#93000a",
+                    "surface": "#131313",
+                    "on-secondary-container": "#9bfcc1",
+                    "on-primary": "#002f65",
+                    "on-error": "#690005",
+                    "on-secondary-fixed": "#002110",
+                    "primary-fixed-dim": "#abc7ff",
+                    "outline": "#8b919f"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "narrow-sidebar": "64px",
+                    "panel-padding": "12px",
+                    "gutter": "16px",
+                    "stack-gap": "8px",
+                    "sidebar-width": "240px"
+            },
+            "fontFamily": {
+                    "label-caps": [
+                            "Inter"
+                    ],
+                    "mono-code": [
+                            "JetBrains Mono"
+                    ],
+                    "headline-lg": [
+                            "Inter"
+                    ],
+                    "body-sm": [
+                            "Inter"
+                    ],
+                    "body-md": [
+                            "Inter"
+                    ],
+                    "headline-md": [
+                            "Inter"
+                    ]
+            },
+            "fontSize": {
+                    "label-caps": [
+                            "11px",
+                            {
+                                    "lineHeight": "14px",
+                                    "letterSpacing": "0.05em",
+                                    "fontWeight": "700"
+                            }
+                    ],
+                    "mono-code": [
+                            "13px",
+                            {
+                                    "lineHeight": "20px",
+                                    "fontWeight": "400"
+                            }
+                    ],
+                    "headline-lg": [
+                            "24px",
+                            {
+                                    "lineHeight": "32px",
+                                    "fontWeight": "600"
+                            }
+                    ],
+                    "body-sm": [
+                            "12px",
+                            {
+                                    "lineHeight": "16px",
+                                    "fontWeight": "400"
+                            }
+                    ],
+                    "body-md": [
+                            "14px",
+                            {
+                                    "lineHeight": "20px",
+                                    "fontWeight": "400"
+                            }
+                    ],
+                    "headline-md": [
+                            "18px",
+                            {
+                                    "lineHeight": "24px",
+                                    "fontWeight": "600"
+                            }
+                    ]
+            }
+          },
+        }
+      }
+    </script>
+<style>
+        body {
+            background-color: #121212; /* Fallback */
+            color: #e5e2e1;
+        }
+        /* Custom scrollbar for webkit */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #131313;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #333333;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #414753;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md min-h-screen flex flex-col relative overflow-hidden">
+<!-- TopNavBar -->
+<nav class="fixed top-4 left-1/2 -translate-x-1/2 w-full max-w-3xl z-40 bg-surface-container/60 backdrop-blur-md border border-border-subtle rounded-full shadow-lg flex justify-between items-center px-gutter py-2 focus-within:ring-1 focus-within:ring-primary hidden md:flex">
+<div class="flex items-center gap-4">
+<span class="font-headline-md text-headline-md font-black text-on-surface ml-2">Cartograph</span>
+</div>
+<!-- Minimal Command Palette Input -->
+<div class="flex-1 max-w-md mx-4 relative group">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-[18px]">search</span>
+<input class="w-full bg-surface-container-highest border border-border-subtle rounded-full py-1.5 pl-10 pr-4 text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary font-body-sm text-body-sm transition-all" placeholder="Search or run a command..." type="text"/>
+<div class="absolute right-3 top-1/2 -translate-y-1/2 hidden group-focus-within:flex items-center gap-1">
+<kbd class="font-mono-code text-[10px] text-on-surface-variant bg-surface-container border border-border-subtle rounded px-1">⌘</kbd>
+<kbd class="font-mono-code text-[10px] text-on-surface-variant bg-surface-container border border-border-subtle rounded px-1">K</kbd>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<button class="w-8 h-8 rounded-full flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-[20px]" data-icon="notifications">notifications</span>
+</button>
+<button class="w-8 h-8 rounded-full flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-[20px]" data-icon="settings">settings</span>
+</button>
+<button class="w-8 h-8 rounded-full flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-[20px]" data-icon="account_circle">account_circle</span>
+</button>
+</div>
+</nav>
+<!-- SideNavBar -->
+<nav class="fixed left-0 top-0 h-full w-narrow-sidebar hover:w-sidebar-width transition-all duration-300 z-50 bg-bg-surface dark:bg-bg-surface border-r border-border-subtle bg-bg-surface/80 backdrop-blur-xl flex flex-col py-panel-padding group overflow-hidden md:flex hidden">
+<!-- Header -->
+<div class="flex items-center px-4 mb-8 shrink-0 min-w-max">
+<div class="w-8 h-8 rounded bg-primary/20 flex items-center justify-center shrink-0">
+<span class="font-headline-md text-headline-md font-bold text-primary">C</span>
+</div>
+<div class="ml-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col">
+<span class="font-headline-md text-headline-md font-bold text-primary">Cartograph</span>
+<span class="font-label-caps text-label-caps text-on-surface-variant">v1.0.2</span>
+</div>
+</div>
+<!-- Navigation Tabs -->
+<div class="flex flex-col gap-1 px-2 flex-1">
+<a class="flex items-center px-3 py-2.5 rounded-lg text-primary border-r-2 border-primary bg-primary/10 hover:bg-surface-container-high hover:text-on-surface transition-colors active:scale-95 duration-150 min-w-max" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-icon="dashboard">dashboard</span>
+<span class="ml-4 font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 uppercase tracking-wider">Workspace</span>
+</a>
+<a class="flex items-center px-3 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors active:scale-95 duration-150 min-w-max" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-icon="map">map</span>
+<span class="ml-4 font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 uppercase tracking-wider">Atlas</span>
+</a>
+<a class="flex items-center px-3 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors active:scale-95 duration-150 min-w-max" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-icon="account_tree">account_tree</span>
+<span class="ml-4 font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 uppercase tracking-wider">Flow Inspector</span>
+</a>
+<a class="flex items-center px-3 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors active:scale-95 duration-150 min-w-max" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-icon="terminal">terminal</span>
+<span class="ml-4 font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 uppercase tracking-wider">Spec Workbench</span>
+</a>
+<a class="flex items-center px-3 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors active:scale-95 duration-150 min-w-max" href="#">
+<span class="material-symbols-outlined text-[20px] shrink-0" data-icon="receipt_long">receipt_long</span>
+<span class="ml-4 font-label-caps text-label-caps opacity-0 group-hover:opacity-100 transition-opacity duration-300 uppercase tracking-wider">Registers</span>
+</a>
+</div>
+</nav>
+<!-- Main Content Canvas -->
+<main class="flex-1 md:ml-narrow-sidebar pt-24 pb-12 px-8 lg:px-16 overflow-y-auto w-full relative z-10">
+<div class="max-w-5xl mx-auto space-y-12">
+<!-- Header -->
+<header>
+<h1 class="font-headline-lg text-[32px] leading-tight font-semibold text-on-surface tracking-tight mb-2">System Topology</h1>
+<p class="font-body-md text-on-surface-variant max-w-2xl">Map and inspect your distributed systems architecture. Ingest repositories to automatically infer structural relationships and data provenance.</p>
+</header>
+<!-- Grid Layout -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+<!-- Left Column: Actions -->
+<div class="lg:col-span-1 space-y-6">
+<!-- Add Repository Card -->
+<div class="bg-bg-panel border border-border-subtle rounded-xl p-6 relative overflow-hidden group">
+<div class="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
+<h2 class="font-headline-md text-headline-md text-on-surface mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[20px]">add_link</span>
+                            Add Repository
+                        </h2>
+<div class="space-y-4 relative z-10">
+<div>
+<label class="block font-label-caps text-label-caps text-on-surface-variant mb-1.5 uppercase tracking-wide">GitHub Repo URL</label>
+<input class="w-full bg-surface-container-low border border-border-subtle rounded-lg px-3 py-2 font-mono-code text-mono-code text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all shadow-inner" placeholder="https://github.com/org/repo" type="text"/>
+</div>
+<button class="w-full bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 rounded-lg py-2 px-4 font-body-sm font-semibold flex items-center justify-center gap-2 transition-all active:scale-95">
+<span class="material-symbols-outlined text-[18px]">play_arrow</span>
+                                Trigger Ingest
+                            </button>
+</div>
+</div>
+<!-- Recent Jobs Mini-list -->
+<div class="bg-bg-panel border border-border-subtle rounded-xl p-6">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-wide mb-4">Recent Ingests</h3>
+<div class="space-y-3">
+<div class="flex items-center justify-between group cursor-pointer">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-tier-confirmed shadow-[0_0_8px_rgba(39,201,63,0.5)]"></div>
+<span class="font-mono-code text-[12px] text-on-surface group-hover:text-primary transition-colors">payment-gateway</span>
+</div>
+<span class="font-body-sm text-[11px] text-on-surface-variant">2m ago</span>
+</div>
+<div class="flex items-center justify-between group cursor-pointer">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-tier-confirmed shadow-[0_0_8px_rgba(39,201,63,0.5)]"></div>
+<span class="font-mono-code text-[12px] text-on-surface group-hover:text-primary transition-colors">auth-service</span>
+</div>
+<span class="font-body-sm text-[11px] text-on-surface-variant">1h ago</span>
+</div>
+<div class="flex items-center justify-between group cursor-pointer">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-tier-gap shadow-[0_0_8px_rgba(235,87,87,0.5)]"></div>
+<span class="font-mono-code text-[12px] text-on-surface group-hover:text-primary transition-colors">legacy-billing</span>
+</div>
+<span class="font-body-sm text-[11px] text-error">Failed</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Column: Metrics & Overview -->
+<div class="lg:col-span-2 space-y-6">
+<!-- Provenance Health Bento Box -->
+<div class="bg-bg-panel border border-border-subtle rounded-xl p-6 h-full flex flex-col">
+<div class="flex items-center justify-between mb-6">
+<h2 class="font-headline-md text-headline-md text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-on-surface-variant text-[20px]">health_and_safety</span>
+                                Provenance Health
+                            </h2>
+<button class="text-on-surface-variant hover:text-primary transition-colors p-1">
+<span class="material-symbols-outlined text-[18px]">more_horiz</span>
+</button>
+</div>
+<!-- 2x2 Metric Grid -->
+<div class="grid grid-cols-2 gap-4 flex-1">
+<!-- Confirmed -->
+<div class="bg-surface-container-low border border-border-subtle rounded-lg p-4 flex flex-col justify-between hover:bg-surface-container transition-colors cursor-pointer group">
+<div class="flex items-center gap-2 mb-2">
+<span class="w-2 h-2 rounded-full bg-tier-confirmed"></span>
+<span class="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-wider group-hover:text-on-surface transition-colors">Confirmed</span>
+</div>
+<div class="flex items-end justify-between">
+<span class="font-headline-lg text-[32px] font-bold text-on-surface leading-none">842</span>
+<span class="material-symbols-outlined text-tier-confirmed/50 text-[24px] group-hover:text-tier-confirmed transition-colors">verified</span>
+</div>
+</div>
+<!-- InferredStrong -->
+<div class="bg-surface-container-low border border-border-subtle rounded-lg p-4 flex flex-col justify-between hover:bg-surface-container transition-colors cursor-pointer group">
+<div class="flex items-center gap-2 mb-2">
+<span class="w-2 h-2 rounded-full bg-tier-inferred-strong"></span>
+<span class="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-wider group-hover:text-on-surface transition-colors">Inferred Strong</span>
+</div>
+<div class="flex items-end justify-between">
+<span class="font-headline-lg text-[32px] font-bold text-on-surface leading-none">128</span>
+<span class="material-symbols-outlined text-tier-inferred-strong/50 text-[24px] group-hover:text-tier-inferred-strong transition-colors">model_training</span>
+</div>
+</div>
+<!-- InferredWeak -->
+<div class="bg-surface-container-low border border-border-subtle rounded-lg p-4 flex flex-col justify-between hover:bg-surface-container transition-colors cursor-pointer group">
+<div class="flex items-center gap-2 mb-2">
+<span class="w-2 h-2 rounded-full bg-tier-inferred-weak"></span>
+<span class="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-wider group-hover:text-on-surface transition-colors">Inferred Weak</span>
+</div>
+<div class="flex items-end justify-between">
+<span class="font-headline-lg text-[32px] font-bold text-on-surface leading-none">45</span>
+<span class="material-symbols-outlined text-tier-inferred-weak/50 text-[24px] group-hover:text-tier-inferred-weak transition-colors">psychiatry</span>
+</div>
+</div>
+<!-- Gap -->
+<div class="bg-surface-container-low border border-border-subtle border-dashed rounded-lg p-4 flex flex-col justify-between hover:bg-surface-container transition-colors cursor-pointer group relative overflow-hidden">
+<div class="absolute inset-0 bg-tier-gap/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<div class="flex items-center gap-2 mb-2 relative z-10">
+<span class="w-2 h-2 rounded-full bg-tier-gap animate-pulse"></span>
+<span class="font-label-caps text-[10px] text-on-surface-variant uppercase tracking-wider group-hover:text-on-surface transition-colors">Gap</span>
+</div>
+<div class="flex items-end justify-between relative z-10">
+<span class="font-headline-lg text-[32px] font-bold text-tier-gap leading-none">12</span>
+<span class="material-symbols-outlined text-tier-gap/50 text-[24px] group-hover:text-tier-gap transition-colors">broken_image</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Quick Visualizer Placeholder (Glassmorphism) -->
+<div class="bg-surface-container-highest/20 backdrop-blur-md border border-border-subtle rounded-xl p-6 h-64 flex flex-col items-center justify-center relative overflow-hidden">
+<div class="absolute inset-0 w-full h-full opacity-30 mix-blend-screen" style="background-image: radial-gradient(circle at center, #1A1A1A 0%, #121212 100%);">
+<!-- Simulate a grid background -->
+<div class="absolute inset-0" style="background-image: linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px); background-size: 20px 20px; opacity: 0.1;"></div>
+</div>
+<span class="material-symbols-outlined text-[48px] text-on-surface-variant/30 mb-4 z-10">hub</span>
+<p class="font-body-md text-on-surface-variant z-10 text-center max-w-sm">
+                    Select a node from the Flow Inspector or trigger an ingest to populate the visualizer canvas.
+                </p>
+<button class="mt-4 text-primary font-body-sm hover:underline z-10">Open Full Atlas View</button>
+</div>
+</div>
+</main>
+<!-- Global Progress Bar (TopAppBar style but positioned bottom as per prompt) -->
+<!-- Using TopAppBar specs but adapting for bottom status bar requirement -->
+<div class="fixed bottom-0 left-0 w-full z-50 flex flex-col bg-surface-container-lowest border-t border-border-subtle backdrop-blur-lg md:pl-narrow-sidebar">
+<!-- Thin progress bar indicator -->
+<div class="h-[2px] w-full bg-surface-container-high relative overflow-hidden">
+<div class="absolute top-0 left-0 h-full bg-primary transition-all duration-300 ease-in-out" style="width: 45%;"></div>
+</div>
+<!-- Status text -->
+<div class="px-4 py-1.5 flex items-center justify-between">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-[14px] text-primary animate-spin" style="animation-duration: 2s;">sync</span>
+<span class="font-mono-code text-mono-code text-secondary">Ingesting 'cartograph-core'...</span>
+</div>
+<span class="font-mono-code text-[11px] text-on-surface-variant">45%</span>
+</div>
+</div>
+</body></html>
