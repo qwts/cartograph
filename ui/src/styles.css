@@ -1,0 +1,148 @@
+/* Design tokens from docs/design/DESIGN.md (Stitch export). Tier colors are
+   load-bearing (R-INT-2): confirmed / inferred / gap must never look alike. */
+:root {
+  --surface: #131313;
+  --surface-container: #201f1f;
+  --surface-container-high: #2a2a2a;
+  --on-surface: #e5e2e1;
+  --on-surface-variant: #c1c6d5;
+  --outline-variant: #414753;
+  --primary: #abc7ff;
+  --on-primary: #002f65;
+  --bg-panel: #242424;
+  --border-subtle: #333333;
+  --text-muted: #888888;
+  --tier-confirmed: #27c93f;
+  --tier-inferred-strong: #2d9cdb;
+  --tier-inferred-weak: #f2c94c;
+  --tier-gap: #eb5757;
+}
+
+* {
+  margin: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  background: var(--surface);
+  color: var(--on-surface);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-container);
+}
+
+.topbar h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.badge {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+}
+
+.badge.up {
+  color: var(--tier-confirmed);
+  border-color: var(--tier-confirmed);
+}
+
+.badge.browser {
+  color: var(--tier-inferred-weak);
+  border-color: var(--tier-inferred-weak);
+}
+
+main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  padding: 1.25rem;
+  align-content: start;
+}
+
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+.card h2 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.stat {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--on-surface-variant);
+}
+
+.jobs-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.jobs-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface-container-high);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+button {
+  font: inherit;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--outline-variant);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover {
+  filter: brightness(1.08);
+}

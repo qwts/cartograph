@@ -1,0 +1,13 @@
+{
+  "name": "cartograph",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "check:traceability": "node scripts/check-traceability.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

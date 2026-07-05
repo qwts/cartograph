@@ -4,7 +4,7 @@
 | Field | Value |
 |---|---|
 | Doc ID | SPEC-00 |
-| Version | 0.1.1 (draft — §17 tracker amended per ADR-0007) |
+| Version | 0.1.2 (draft — §17 per ADR-0007; §4.4/§15 graph store per ADR-0008) |
 | Status | Ready-for-build planning |
 | Owner | Chris Kane |
 | Purpose | Single source of truth for design/architecture/requirements. Intended to answer ~95% of build-time questions for the author and for Claude Code. |
@@ -141,8 +141,8 @@ EvidenceRef { repo, path, span(byte_start, byte_end), commit_sha }
 `content_hash` makes re-ingest idempotent and enables stable diffs across commits.
 
 ### 4.4 Store choice
-- **Primary: Kuzu** (embedded property graph, Cypher-style, fast path queries; no server process — fits a desktop). *Verify at M0: embedding fit + maintenance status.*
-- **Fallback: SQLite/WAL** edge table + **recursive CTE** traversal. Slower on deep paths but zero-risk and already your backbone.
+- **Primary: SQLite/WAL** node/edge tables + **recursive CTE** traversal behind a `GraphStore` trait. *Amended at M0 per ADR-0008: the Kuzu verify-at-build found upstream archived (Apple acquisition, 2025-10-10); the planned fallback is promoted to primary. A Kuzu-fork adapter behind the same trait is the escape hatch if the OQ-3 benchmark demands it.*
+- ~~Primary: Kuzu~~ — archived upstream; see ADR-0008.
 - **Analytical: DuckDB** (optional) for fact-level aggregate queries (e.g., "endpoints with no inbound FETCHES").
 
 ---
@@ -361,7 +361,7 @@ Each milestone names explicit tech and an exit gate. Preference order honored th
 | Shell/runtime | **Tauri**, Electron, Wails(Go) | **Tauri** — Rust core matches deterministic ethos; small footprint; Mac+Win |
 | Core language | **Rust**, Go, C++ | **Rust** — safety + perf for the parse/graph core; strong tree-sitter/Tauri story |
 | Parsing | **tree-sitter**, native compilers/LSP, ANTLR | **tree-sitter** — uniform multi-language, incremental, you've used it |
-| Graph store | **Kuzu**, SQLite recursive-CTE, DuckDB+PGQ | **Kuzu** (verify); SQLite CTE as zero-risk fallback |
+| Graph store | Kuzu, **SQLite recursive-CTE**, DuckDB+PGQ | **SQLite CTE** per ADR-0008 (Kuzu archived upstream at M0 verify); fork adapter possible behind `GraphStore` trait |
 | Relational/state | **SQLite/WAL**, DuckDB, RocksDB | **SQLite/WAL** — your backbone; durable jobs/provenance |
 | Embedding index | **usearch**, hnsw_rs, sqlite-vec | **usearch** (verify binding); sqlite-vec fallback |
 | Local LLM | **Ollama**, llama.cpp, LM Studio | **Ollama** — your existing local rigs |
@@ -373,7 +373,7 @@ Each milestone names explicit tech and an exit gate. Preference order honored th
 | Diagram export | **Mermaid+SVG**, Graphviz/DOT, D2 | **Mermaid+SVG** — portable, Claude-Code-friendly |
 | UI state | **Zustand**, Redux Toolkit, Jotai | **Zustand** — light, sufficient |
 
-**Verify-at-build (integrity flags):** Kuzu embedding fit + maintenance; `hcl-rs` coverage of your real Terraform; `usearch`/`fastembed` Rust bindings; OTel ingest format for your stack. These are the four claims most likely to have drifted since the author's knowledge cutoff — Claude Code should confirm before relying on them.
+**Verify-at-build (integrity flags):** ~~Kuzu embedding fit + maintenance~~ (verified at M0 — archived upstream, resolved per ADR-0008); `hcl-rs` coverage of your real Terraform (verify at M2); `usearch`/`fastembed` Rust bindings (verify at M7); OTel ingest format for your stack (verify at M6). Confirm each against current reality before relying on it.
 
 ---
 

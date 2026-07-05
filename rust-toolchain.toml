@@ -1,0 +1,5 @@
+# Single source of truth for the Rust version, like .nvmrc for Node:
+# CI and local resolve the same toolchain. Bump deliberately.
+[toolchain]
+channel = "1.96.1"
+components = ["rustfmt", "clippy"]
