@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/qwtm/cartograph/discussions
+    about: For open questions that are not yet a story, task, or bug.

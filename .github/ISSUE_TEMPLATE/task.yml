@@ -1,0 +1,25 @@
+name: Task
+description: Process, tooling, or engineering work that is not itself a user story
+labels: ["task"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+      description: What needs doing and what it unblocks.
+    validations:
+      required: true
+  - type: input
+    id: trace
+    attributes:
+      label: Trace
+      description: Related US/AC, ADR, or milestone if any.
+      placeholder: "e.g. M0 · ADR-0007 · —"
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      placeholder: |
+        - [ ] …
+    validations:
+      required: true

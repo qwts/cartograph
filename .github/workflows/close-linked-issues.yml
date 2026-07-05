@@ -1,0 +1,35 @@
+name: Close linked issues
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  close-linked-issues:
+    name: Close linked issues
+    # Keep in sync with TARGET_BASE_REFS in scripts/close-linked-issues.mjs.
+    if: |
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Close issues referenced by merged PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/close-linked-issues.mjs

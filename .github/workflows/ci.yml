@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  # Post-merge signal: run the same gates on main so it can never sit red unnoticed.
+  push:
+    branches:
+      - main
+
+# Cancel superseded PR runs. Main-push runs are keyed by SHA so back-to-back merges each keep
+# their own post-merge verdict instead of replacing one another in a shared ref group.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Docs are the product until M0 lands code; this gate keeps the spec, user stories,
+  # traceability matrix, and ADRs mutually consistent on every PR.
+  #
+  # M0 adds (as separate jobs, mirroring image-trail's shape):
+  #   rust:     cargo fmt --check, cargo clippy -- -D warnings, cargo test
+  #   frontend: lint, typecheck, unit tests, build
+  # plus path filtering + a stable gate job once an expensive E2E tier exists.
+  docs:
+    name: Docs & traceability
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          # Single source of truth: CI and local resolve Node from the same .nvmrc.
+          node-version-file: .nvmrc
+
+      - name: Traceability check
+        run: node scripts/check-traceability.mjs

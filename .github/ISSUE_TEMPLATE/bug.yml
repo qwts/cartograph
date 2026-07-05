@@ -1,0 +1,31 @@
+name: Bug
+description: Something violates the spec, an AC, or an integrity rule
+labels: ["bug"]
+body:
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Cite the US/AC or integrity rule (R-INT-x) the behavior violates, if known.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit / build
+      placeholder: SHA or app version

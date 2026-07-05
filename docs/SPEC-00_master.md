@@ -4,7 +4,7 @@
 | Field | Value |
 |---|---|
 | Doc ID | SPEC-00 |
-| Version | 0.1.0 (draft) |
+| Version | 0.1.1 (draft — §17 tracker amended per ADR-0007) |
 | Status | Ready-for-build planning |
 | Owner | Chris Kane |
 | Purpose | Single source of truth for design/architecture/requirements. Intended to answer ~95% of build-time questions for the author and for Claude Code. |
@@ -393,4 +393,4 @@ Each milestone names explicit tech and an exit gate. Preference order honored th
 
 ## 17. Traceability
 
-Requirements live in `user_stories.md` (US-0001+/AC-0001+, fixed schema + status enum). The matrix `US-TM.md` binds US ↔ AC ↔ Module(crate) ↔ Milestone ↔ Flow ↔ ADR ↔ Test. The build tracker is `tracker.csv`. ADRs for *this app's own* decisions are in `adr/`.
+Requirements live in `user_stories.md` (US-0001+/AC-0001+, fixed schema + status enum). The matrix `US-TM.md` binds US ↔ AC ↔ Module(crate) ↔ Milestone ↔ Flow ↔ ADR ↔ Test. The build tracker is **GitHub Issues + the Cartograph project board** (per ADR-0007; the original `tracker.csv` is frozen at `docs/archive/tracker.csv`). ADRs for *this app's own* decisions are in `docs/adr/`.
