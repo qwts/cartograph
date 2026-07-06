@@ -190,3 +190,129 @@ fn close_over_creates_placeholders_for_unresolved_targets() {
         .expect("placeholder file node");
     assert_eq!(placeholder.props["placeholder"], true);
 }
+
+// --- Event-site detection (US-0004; stitching tested in `events`) ----------
+
+use adapters_fw::events::{ChannelRole, IdentityExpr};
+
+fn sites_for(source: &str) -> Vec<adapters_fw::events::EventSite> {
+    extract_source(source.as_bytes(), "app.ts", &id())
+        .unwrap()
+        .event_sites
+}
+
+// AC-0010 groundwork: receivers must be proven from the SDK, mirroring the
+// endpoint extractor — a look-alike `emit` on an unproven object is not a
+// producer site.
+#[test]
+fn event_receiver_must_come_from_sdk_constructor() {
+    let sites = sites_for(
+        r#"
+import { EventEmitter } from 'events';
+const bus = new EventEmitter();
+const impostor = getBus();
+function a() { bus.emit('real.event'); }
+function b() { impostor.emit('fake.event'); }
+function c() { bus.emit('also.real'); }
+"#,
+    );
+    let ids: Vec<_> = sites
+        .iter()
+        .map(|s| match &s.identity {
+            IdentityExpr::Literal(l) => l.as_str(),
+            _ => "?",
+        })
+        .collect();
+    assert_eq!(ids, ["real.event", "also.real"]);
+}
+
+// A constructor imported from the wrong module is not an SDK command.
+#[test]
+fn command_constructor_must_be_imported_from_sdk_module() {
+    let sites = sites_for(
+        r#"
+import { SendMessageCommand } from './local-fake';
+new SendMessageCommand({ QueueUrl: 'https://q' });
+"#,
+    );
+    assert!(sites.is_empty(), "look-alike ctor from a relative module");
+}
+
+// AWS SDK v2 method style: receiver proven from `new AWS.SQS()`.
+#[test]
+fn aws_v2_send_message_is_detected_with_key_identity() {
+    let sites = sites_for(
+        r#"
+import AWS from 'aws-sdk';
+const sqs = new AWS.SQS();
+export function push() {
+  sqs.sendMessage({ QueueUrl: 'https://sqs.example/q', MessageBody: 'x' });
+}
+"#,
+    );
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].kind, "sqs-queue");
+    assert_eq!(sites[0].role, ChannelRole::Produces);
+    assert_eq!(
+        sites[0].identity,
+        IdentityExpr::Literal("https://sqs.example/q".into())
+    );
+    assert_eq!(sites[0].symbol.as_deref(), Some("sym:app.ts#push"));
+}
+
+// EventBridge: the identity key is found nested inside Entries[].
+#[test]
+fn eventbridge_detail_type_is_found_nested() {
+    let sites = sites_for(
+        r#"
+import { PutEventsCommand } from '@aws-sdk/client-eventbridge';
+new PutEventsCommand({
+  Entries: [{ Source: 'app', DetailType: 'order.placed', Detail: '{}' }],
+});
+"#,
+    );
+    assert_eq!(sites.len(), 1);
+    assert_eq!(
+        sites[0].identity,
+        IdentityExpr::Literal("order.placed".into())
+    );
+    assert_eq!(sites[0].kind, "eventbridge-detail-type");
+}
+
+// A local `const` bound to a string literal resolves at T0 (same file,
+// deterministic); an unbound identifier stays computed (escalates).
+#[test]
+fn local_const_identity_is_literal_unknown_identifier_is_computed() {
+    let sites = sites_for(
+        r#"
+import { EventEmitter } from 'events';
+const bus = new EventEmitter();
+const TOPIC = 'orders.created';
+function a(dynamic: string) {
+  bus.emit(TOPIC);
+  bus.emit(dynamic);
+}
+"#,
+    );
+    assert_eq!(sites.len(), 2);
+    assert_eq!(
+        sites[0].identity,
+        IdentityExpr::Literal("orders.created".into())
+    );
+    assert_eq!(sites[1].identity, IdentityExpr::Computed("dynamic".into()));
+}
+
+// A registry key that is not statically present is a computed identity —
+// the site is kept (it escalates), never silently dropped (AC-0012).
+#[test]
+fn missing_identity_key_yields_computed_not_dropped() {
+    let sites = sites_for(
+        r#"
+import { SendMessageCommand } from '@aws-sdk/client-sqs';
+declare const params: any;
+new SendMessageCommand(params);
+"#,
+    );
+    assert_eq!(sites.len(), 1);
+    assert!(matches!(sites[0].identity, IdentityExpr::Computed(_)));
+}

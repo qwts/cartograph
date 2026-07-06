@@ -1,6 +1,9 @@
 //! Framework registries: versioned deterministic knowledge mapping framework
-//! registration patterns to endpoints (SPEC-00 §3.3). Registries are data,
-//! not inference — a language adapter consults them while walking the AST.
+//! registration patterns to endpoints (SPEC-00 §3.3) and event SDK call
+//! shapes to channels (§3.4). Registries are data, not inference — a
+//! language adapter consults them while walking the AST.
+
+pub mod events;
 
 /// HTTP framework registry (Express family first; Fastify/Nest at M1+).
 ///

@@ -23,5 +23,6 @@ core-graph = { path = "crates/core-graph" }
 core-prov = { path = "crates/core-prov" }
 adapters-fw = { path = "crates/adapters-fw" }
 adapters-lang-ts = { path = "crates/adapters-lang-ts" }
+events = { path = "crates/events" }
 iac = { path = "crates/iac" }
 spec = { path = "crates/spec" }

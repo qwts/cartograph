@@ -108,6 +108,17 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
     let tf = iac::extract_dir(&root, &tf_id).map_err(|e| fail(e.to_string(), &state, job_id))?;
     extraction.nodes.extend(tf.nodes);
     extraction.edges.extend(tf.edges);
+    // Third layer over the same tree: channel stitching (US-0004). Event
+    // sites from the TS pass resolve against env files present in the repo.
+    let cfg =
+        events::ConfigIndex::from_dir(&root).map_err(|e| fail(e.to_string(), &state, job_id))?;
+    let ev_id = events::SourceId {
+        repo: "local",
+        commit: "workdir",
+    };
+    let stitched = events::stitch(&extraction.event_sites, &cfg, &ev_id);
+    extraction.nodes.extend(stitched.nodes);
+    extraction.edges.extend(stitched.edges);
 
     let files = extraction
         .nodes
@@ -254,7 +265,16 @@ resource "aws_lambda_event_source_mapping" "m" {
 "#,
         )
         .unwrap();
-        std::fs::write(dir.path().join("app.ts"), "export function run() {}").unwrap();
+        std::fs::write(
+            dir.path().join("app.ts"),
+            r#"
+import { EventEmitter } from 'events';
+const bus = new EventEmitter();
+export function run() { bus.emit('order.placed'); }
+export function listen() { bus.on('order.placed', () => {}); }
+"#,
+        )
+        .unwrap();
 
         let ts_id = adapters_lang_ts::SourceId {
             repo: "local",
@@ -267,10 +287,26 @@ resource "aws_lambda_event_source_mapping" "m" {
         let mut store = SqliteGraphStore::open_in_memory().unwrap();
         let ts = adapters_lang_ts::extract_dir(dir.path(), &ts_id).unwrap();
         let tf = iac::extract_dir(dir.path(), &tf_id).unwrap();
-        for n in ts.nodes.iter().chain(tf.nodes.iter()) {
+        let cfg = events::ConfigIndex::from_dir(dir.path()).unwrap();
+        let ev_id = events::SourceId {
+            repo: "local",
+            commit: "workdir",
+        };
+        let ev = events::stitch(&ts.event_sites, &cfg, &ev_id);
+        for n in ts
+            .nodes
+            .iter()
+            .chain(tf.nodes.iter())
+            .chain(ev.nodes.iter())
+        {
             store.put_node(n).unwrap();
         }
-        for e in ts.edges.iter().chain(tf.edges.iter()) {
+        for e in ts
+            .edges
+            .iter()
+            .chain(tf.edges.iter())
+            .chain(ev.edges.iter())
+        {
             store.put_edge(e).unwrap();
         }
 
@@ -282,5 +318,12 @@ resource "aws_lambda_event_source_mapping" "m" {
         );
         // The TS layer coexists without leaking onto the infra artifact.
         assert!(!mmd.contains("app_ts"));
+
+        // The event layer stitched: producer and consumer share one channel
+        // (US-0004), and channels stay off the infra artifact too.
+        let channels = store.nodes_with_label("Channel").unwrap();
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].id, "chan:inproc-event:order.placed");
+        assert!(!mmd.contains("order.placed"));
     }
 }
