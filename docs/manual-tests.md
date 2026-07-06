@@ -69,6 +69,21 @@ PR — per-PR verification is CI's job.
    as a `GAP: …` hop truncating that branch (M4 exit gate: flows anchored
    at Screen).
 
+## MT-M5-01 — Cross-repo flow via the system manifest
+
+1. Write a `cartograph.system.toml` declaring 2+ repos that share a channel
+   (a queue URL / topic in both, or via the manifest `[env]` block); paste
+   its path into **Ingest** (fresh graph — #50 clears stale schemes
+   automatically).
+2. The summary lists every repo as `identity@sha12`.
+3. The **Flows** card shows one flow whose trigger lives in one repo and
+   whose consumer hops land in another — inspect the dossier: the
+   `SUBSCRIBES` hop's target carries the other repo's identity.
+4. **Pass:** the cross-repo flow is Verified when both sides resolve
+   (literal or manifest identity); an unresolved side appears as a `GAP: …`
+   hop, never a silent stitch (M5 exit gate: cross-repo flow via literal
+   channel ids).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.
