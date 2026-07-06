@@ -189,6 +189,22 @@ fn export_topology(state: State<'_, AppState>) -> Result<String, String> {
     Ok(spec::topology_mermaid(&nodes, &edges))
 }
 
+/// The flow-dossier artifact as Markdown (SPEC-00 §7, M3 exit gate):
+/// every T0-traceable flow with per-hop tiers, Gap truncation, and score.
+#[tauri::command]
+fn export_flows(state: State<'_, AppState>) -> Result<String, String> {
+    let graph = state.graph.lock().map_err(|e| e.to_string())?;
+    let mut nodes = Vec::new();
+    for label in flowtracer::FLOW_NODE_LABELS {
+        nodes.extend(graph.nodes_with_label(label).map_err(|e| e.to_string())?);
+    }
+    let edges = graph
+        .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
+        .map_err(|e| e.to_string())?;
+    let flows = flowtracer::trace(&nodes, &edges);
+    Ok(spec::flow_dossier(&flows))
+}
+
 /// Nodes carrying `label` (e.g. `Endpoint`, `Repo`), ordered by id.
 #[tauri::command]
 fn list_nodes(label: String, state: State<'_, AppState>) -> Result<Vec<Node>, String> {
@@ -242,7 +258,8 @@ fn main() {
             ingest_path,
             list_nodes,
             read_evidence,
-            export_topology
+            export_topology,
+            export_flows
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cartograph");
@@ -272,9 +289,12 @@ resource "aws_lambda_event_source_mapping" "m" {
         std::fs::write(
             dir.path().join("app.ts"),
             r#"
+import express from 'express';
 import { EventEmitter } from 'events';
+const app = express();
 const bus = new EventEmitter();
-export function run() { bus.emit('order.placed'); }
+app.post('/orders', (req, res) => { placeOrder(); });
+export function placeOrder() { bus.emit('order.placed'); }
 export function listen() { bus.on('order.placed', () => {}); }
 // A class-method producer: the TS pass emits no Symbol node for methods,
 // so the stitched edge source only exists via the post-stitch close-over.
@@ -345,5 +365,20 @@ export class Shipper {
                 .iter()
                 .any(|s| s.id == "sym:app.ts#ship" && s.props["placeholder"] == true)
         );
+
+        // M3 exit gate: an end-to-end T0 flow from the endpoint trigger
+        // through the channel to the consumer, exported as a dossier.
+        let mut flow_nodes = Vec::new();
+        for label in flowtracer::FLOW_NODE_LABELS {
+            flow_nodes.extend(store.nodes_with_label(label).unwrap());
+        }
+        let flow_edges = store
+            .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
+            .unwrap();
+        let flows = flowtracer::trace(&flow_nodes, &flow_edges);
+        let dossier = spec::flow_dossier(&flows);
+        assert!(dossier.contains("## POST /orders — Verified (score 1.00)"));
+        assert!(dossier.contains("SUBSCRIBES [Confirmed]"));
+        assert!(dossier.contains("chan:inproc-event:order.placed"));
     }
 }

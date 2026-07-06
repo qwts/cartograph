@@ -44,6 +44,18 @@ PR — per-PR verification is CI's job.
    the extractor could not resolve appears as a visibly distinct `?` node,
    never silently dropped (M2 exit gate: topology map artifact).
 
+## MT-M3-01 — Trace flows, export the dossier
+
+1. `npm run tauri dev`; ingest a TypeScript repo with Express endpoints and
+   event SDK usage (emitter/Kafka/SQS — any repo exercising US-0004).
+2. The **Flows** card lists each traced flow with a status and score; any
+   runtime-computed channel appears as a `GAP: …` hop with a reason, and
+   its branch stops there — never silently completed (R-INT-4).
+3. Click **Copy dossier**, paste into a Markdown+Mermaid renderer.
+4. **Pass:** each flow renders a sequence diagram (Gap arrows broken `--x`)
+   and a provenance table with tier + confidence + evidence span on every
+   hop (M3 exit gate: flow dossier export).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

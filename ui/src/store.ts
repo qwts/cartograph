@@ -66,6 +66,8 @@ export interface AppStore {
   endpoints: GraphNode[];
   /** Topology map artifact (Mermaid text); null with no backend. */
   topology: string | null;
+  /** Flow-dossier artifact (Markdown); null with no backend. */
+  flows: string | null;
   ingestBusy: boolean;
   ingestSummary: IngestSummary | null;
   ingestError: string | null;
@@ -96,6 +98,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   jobs: [],
   endpoints: [],
   topology: null,
+  flows: null,
   ingestBusy: false,
   ingestSummary: null,
   ingestError: null,
@@ -111,16 +114,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
         jobs: [],
         endpoints: [],
         topology: null,
+        flows: null,
       });
       return;
     }
-    const [stats, jobs, endpoints, topology] = await Promise.all([
+    const [stats, jobs, endpoints, topology, flows] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
       invokeOr<string | null>('export_topology', null),
+      invokeOr<string | null>('export_flows', null),
     ]);
-    set({ backend: 'up', version: ping.version, stats, jobs, endpoints, topology });
+    set({ backend: 'up', version: ping.version, stats, jobs, endpoints, topology, flows });
   },
 
   enqueueJob: async (kind: string) => {

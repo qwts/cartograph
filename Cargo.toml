@@ -24,5 +24,6 @@ core-prov = { path = "crates/core-prov" }
 adapters-fw = { path = "crates/adapters-fw" }
 adapters-lang-ts = { path = "crates/adapters-lang-ts" }
 events = { path = "crates/events" }
+flowtracer = { path = "crates/flowtracer" }
 iac = { path = "crates/iac" }
 spec = { path = "crates/spec" }

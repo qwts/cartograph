@@ -78,6 +78,8 @@ function installFakeCore() {
       }
       case 'read_evidence':
         return { text: FAKE_SOURCE, window_start: 0, truncated: false };
+      case 'export_flows':
+        return '# Flow dossier\n\n## GET /users — Verified (score 1.00)\n';
       case 'export_topology':
         return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
       case 'ingest_path':
@@ -114,6 +116,7 @@ const meta = {
       jobs: [],
       endpoints: [],
       topology: null,
+      flows: null,
       ingestBusy: false,
       ingestSummary: null,
       ingestError: null,

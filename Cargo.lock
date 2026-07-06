@@ -78,6 +78,7 @@ dependencies = [
  "core-graph",
  "core-prov",
  "events",
+ "flowtracer",
  "iac",
  "rusqlite",
  "serde",
@@ -904,6 +905,10 @@ dependencies = [
 [[package]]
 name = "flowtracer"
 version = "0.0.1"
+dependencies = [
+ "core-graph",
+ "serde_json",
+]
 
 [[package]]
 name = "fnv"
@@ -3058,6 +3063,7 @@ name = "spec"
 version = "0.0.1"
 dependencies = [
  "core-graph",
+ "flowtracer",
  "serde_json",
 ]
 

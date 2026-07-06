@@ -1,10 +1,12 @@
 //! Spec compiler: graph → official artifacts (SPEC-00 §7).
 //!
-//! M2 brings the first artifact: the resource/topology map as Mermaid
-//! (portable, renderable anywhere, diffable in a PR). The full artifact set
-//! (US/AC, flow dossiers, registers) arrives at M9.
+//! M2 brought the first artifact (resource/topology map); M3 adds flow
+//! dossiers (Markdown + Mermaid sequence + provenance table per flow).
+//! Both are portable, renderable anywhere, diffable in a PR. The full
+//! artifact set (US/AC, registers) arrives at M9.
 
 use core_graph::{Edge, Node};
+use flowtracer::Flow;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
@@ -98,6 +100,85 @@ pub fn topology_mermaid(nodes: &[Node], edges: &[Edge]) -> String {
     out
 }
 
+/// Compile the flow-dossier artifact (SPEC-00 §7: Markdown + Mermaid
+/// sequence + provenance table per flow). Deterministic for a given trace
+/// (US-0014); statuses and tiers are always visible (R-INT-2), Gap hops
+/// render with a distinct broken arrow (R-INT-4).
+pub fn flow_dossier(flows: &[Flow]) -> String {
+    let mut out = String::from("# Flow dossier\n");
+    for flow in flows {
+        writeln!(
+            out,
+            "\n## {} — {} (score {:.2})\n",
+            flow.trigger_name,
+            flow.status.as_str(),
+            flow.score
+        )
+        .expect("write to string");
+        writeln!(out, "Trigger: {} `{}`", flow.trigger_kind, flow.trigger)
+            .expect("write to string");
+
+        if flow.hops.is_empty() {
+            out.push_str("\nNo hops resolved from this trigger.\n");
+            continue;
+        }
+
+        // Mermaid sequence: participants in first-appearance order, one
+        // arrow per hop; Gap hops get the broken arrow.
+        let mut participants: Vec<(String, String)> = Vec::new(); // (id, name)
+        let alias = |participants: &mut Vec<(String, String)>, id: &str, name: &str| -> String {
+            if let Some(i) = participants.iter().position(|(pid, _)| pid == id) {
+                format!("p{i}")
+            } else {
+                participants.push((id.to_string(), name.to_string()));
+                format!("p{}", participants.len() - 1)
+            }
+        };
+        let mut arrows = String::new();
+        for hop in &flow.hops {
+            let a = alias(&mut participants, &hop.src, &hop.src_name);
+            let b = alias(&mut participants, &hop.dst, &hop.dst_name);
+            let arrow = if hop.confidence == "Gap" {
+                "--x"
+            } else {
+                "->>"
+            };
+            writeln!(
+                arrows,
+                "    {}{}{}: {} [{}]",
+                a, arrow, b, hop.label, hop.confidence
+            )
+            .expect("write to string");
+        }
+        out.push_str("\n```mermaid\nsequenceDiagram\n");
+        for (i, (_, name)) in participants.iter().enumerate() {
+            writeln!(out, "    participant p{i} as {}", name.replace('\n', " "))
+                .expect("write to string");
+        }
+        out.push_str(&arrows);
+        out.push_str("```\n");
+
+        // Provenance table (R-INT-2: tier + confidence on every hop).
+        out.push_str("\n| # | Hop | Tier | Confidence | Evidence |\n");
+        out.push_str("|---|-----|------|------------|----------|\n");
+        for (i, hop) in flow.hops.iter().enumerate() {
+            writeln!(
+                out,
+                "| {} | {} `{}` → `{}` | {} | {} | {} |",
+                i + 1,
+                hop.label,
+                hop.src,
+                hop.dst,
+                hop.tier,
+                hop.confidence,
+                hop.evidence.as_deref().unwrap_or("—"),
+            )
+            .expect("write to string");
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +244,45 @@ mod tests {
         unresolved.props = serde_json::json!({ "placeholder": true });
         let mmd = topology_mermaid(&[unresolved], &[]);
         assert!(mmd.contains(r#"res_module_vpc(["module.vpc ?"])"#));
+    }
+
+    fn hop(label: &str, src: &str, dst: &str, confidence: &str) -> flowtracer::Hop {
+        flowtracer::Hop {
+            label: label.into(),
+            src: src.into(),
+            dst: dst.into(),
+            src_name: src.into(),
+            dst_name: dst.into(),
+            tier: "Deterministic".into(),
+            confidence: confidence.into(),
+            evidence: Some("src/app.ts bytes 1..9".into()),
+        }
+    }
+
+    #[test]
+    fn flow_dossier_renders_sequence_and_provenance_table() {
+        let flows = vec![Flow {
+            trigger: "ep:GET:/users".into(),
+            trigger_kind: "Endpoint".into(),
+            trigger_name: "GET /users".into(),
+            hops: vec![
+                hop("HANDLES", "ep:GET:/users", "sym:app.ts#list", "Confirmed"),
+                hop("PUBLISHES", "sym:app.ts#list", "gap:chan:app.ts@5", "Gap"),
+            ],
+            status: flowtracer::FlowStatus::Partial,
+            score: 0.5,
+        }];
+        let dossier = flow_dossier(&flows);
+        assert!(dossier.starts_with("# Flow dossier\n"));
+        assert!(dossier.contains("## GET /users — Partial (score 0.50)"));
+        assert!(dossier.contains("sequenceDiagram"));
+        // Confirmed hops are solid, Gap hops visibly broken (R-INT-4).
+        assert!(dossier.contains("p0->>p1: HANDLES [Confirmed]"));
+        assert!(dossier.contains("p1--xp2: PUBLISHES [Gap]"));
+        // Provenance table carries tier + confidence + evidence (R-INT-2).
+        assert!(dossier.contains("| 1 | HANDLES `ep:GET:/users` → `sym:app.ts#list` | Deterministic | Confirmed | src/app.ts bytes 1..9 |"));
+        // Deterministic (US-0014).
+        assert_eq!(dossier, flow_dossier(&flows));
     }
 
     #[test]
