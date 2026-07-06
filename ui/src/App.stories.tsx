@@ -80,6 +80,18 @@ function installFakeCore() {
         return { text: FAKE_SOURCE, window_start: 0, truncated: false };
       case 'export_flows':
         return '# Flow dossier\n\n## GET /users — Verified (score 1.00)\n';
+      case 'list_flows':
+        return [
+          {
+            trigger: 'ep:GET:/users',
+            trigger_kind: 'Endpoint',
+            trigger_name: 'GET /users',
+            hops: [{}],
+            status: 'Verified',
+            score: 1.0,
+            depth_limited: false,
+          },
+        ];
       case 'export_topology':
         return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
       case 'ingest_path':
@@ -117,6 +129,7 @@ const meta = {
       endpoints: [],
       topology: null,
       flows: null,
+      flowList: [],
       ingestBusy: false,
       ingestSummary: null,
       ingestError: null,

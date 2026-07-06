@@ -47,6 +47,17 @@ export interface IngestSummary {
   edges: number;
 }
 
+/** One traced flow as returned by `list_flows` (flowtracer::Flow). */
+export interface Flow {
+  trigger: string;
+  trigger_kind: string;
+  trigger_name: string;
+  hops: unknown[];
+  status: 'Verified' | 'Partial' | 'Inferred';
+  score: number;
+  depth_limited: boolean;
+}
+
 export interface EvidenceSource {
   text: string;
   /** Byte offset of the window within the file (large files are windowed). */
@@ -68,6 +79,8 @@ export interface AppStore {
   topology: string | null;
   /** Flow-dossier artifact (Markdown); null with no backend. */
   flows: string | null;
+  /** Traced flows as data (status/score per R-INT-2). */
+  flowList: Flow[];
   ingestBusy: boolean;
   ingestSummary: IngestSummary | null;
   ingestError: string | null;
@@ -99,6 +112,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   endpoints: [],
   topology: null,
   flows: null,
+  flowList: [],
   ingestBusy: false,
   ingestSummary: null,
   ingestError: null,
@@ -115,17 +129,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
         endpoints: [],
         topology: null,
         flows: null,
+        flowList: [],
       });
       return;
     }
-    const [stats, jobs, endpoints, topology, flows] = await Promise.all([
+    const [stats, jobs, endpoints, topology, flows, flowList] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
       invokeOr<string | null>('export_topology', null),
       invokeOr<string | null>('export_flows', null),
+      invokeOr<Flow[]>('list_flows', []),
     ]);
-    set({ backend: 'up', version: ping.version, stats, jobs, endpoints, topology, flows });
+    set({
+      backend: 'up',
+      version: ping.version,
+      stats,
+      jobs,
+      endpoints,
+      topology,
+      flows,
+      flowList,
+    });
   },
 
   enqueueJob: async (kind: string) => {

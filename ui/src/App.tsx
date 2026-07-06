@@ -18,6 +18,7 @@ export default function App() {
     endpoints,
     topology,
     flows,
+    flowList,
     ingestBusy,
     ingestSummary,
     ingestError,
@@ -60,7 +61,7 @@ export default function App() {
         <div className="card-grid artifacts">
           <EndpointsCard endpoints={endpoints} onSelect={(node) => void select(node)} />
           <TopologyCard mermaid={topology} />
-          <FlowsCard dossier={flows} />
+          <FlowsCard flows={flowList} dossier={flows} />
         </div>
       </main>
       {selected && (

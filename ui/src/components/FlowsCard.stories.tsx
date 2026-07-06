@@ -1,6 +1,28 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, within } from 'storybook/test';
+import type { Flow } from '../store';
 import { FlowsCard } from './FlowsCard';
+
+const FLOWS: Flow[] = [
+  {
+    trigger: 'ep:POST:/orders',
+    trigger_kind: 'Endpoint',
+    trigger_name: 'POST /orders',
+    hops: [{}],
+    status: 'Verified',
+    score: 1.0,
+    depth_limited: false,
+  },
+  {
+    trigger: 'ep:POST:/notify',
+    trigger_kind: 'Endpoint',
+    trigger_name: 'POST /notify',
+    hops: [{}, {}],
+    status: 'Partial',
+    score: 0.5,
+    depth_limited: false,
+  },
+];
 
 const SAMPLE = `# Flow dossier
 
@@ -47,7 +69,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Empty: Story = {
-  args: { dossier: '# Flow dossier\n' },
+  args: { flows: [], dossier: '# Flow dossier\n' },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(/no flows traced yet/i)).toBeInTheDocument();
@@ -55,19 +77,26 @@ export const Empty: Story = {
 };
 
 export const NoBackend: Story = {
-  args: { dossier: null },
+  args: { flows: [], dossier: null },
 };
 
 export const Populated: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // Status and score are structured UI, not just dossier text (R-INT-2):
+    // one row per flow, chip colored by status, numeric score visible.
+    const verified = canvas.getByText('Verified');
+    await expect(verified).toHaveClass('tier-confirmed');
+    const partial = canvas.getByText('Partial');
+    await expect(partial).toHaveClass('tier-gap');
+    await expect(canvas.getByText('1.00')).toBeInTheDocument();
+    await expect(canvas.getByText('0.50')).toBeInTheDocument();
+
     const pre = canvas.getByTestId('flows-dossier');
-    // Statuses and scores are visible (R-INT-2)…
     await expect(pre.textContent).toContain('POST /orders — Verified (score 1.00)');
-    // …and a Gap is visibly a Gap, truncating its flow (R-INT-4).
-    await expect(pre.textContent).toContain('Partial (score 0.50)');
+    // A Gap is visibly a Gap, truncating its flow (R-INT-4).
     await expect(pre.textContent).toContain('p1--xp2: PUBLISHES [Gap]');
     await expect(canvas.getByRole('button', { name: /copy dossier/i })).toBeEnabled();
   },
-  args: { dossier: SAMPLE },
+  args: { flows: FLOWS, dossier: SAMPLE },
 };

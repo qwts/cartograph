@@ -12,6 +12,7 @@
 //! ladder at M6–M8.
 
 use core_graph::{Edge, Node};
+use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 
 /// Edge labels the tracer walks — callers use this to query exactly the
@@ -25,7 +26,7 @@ pub const FLOW_NODE_LABELS: &[&str] = &["Endpoint", "Symbol", "Channel", "Gap", 
 const MAX_DEPTH: usize = 64;
 
 /// Flow confidence status per SPEC-00 §5.3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum FlowStatus {
     /// Every hop Confirmed.
     Verified,
@@ -47,7 +48,7 @@ impl FlowStatus {
 }
 
 /// One resolved hop of a flow.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Hop {
     /// Edge label (`HANDLES`, `CALLS`, `PUBLISHES`, `SUBSCRIBES`).
     pub label: String,
@@ -69,7 +70,7 @@ pub struct Hop {
 }
 
 /// One traced flow: a trigger and every hop reachable from it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Flow {
     /// Trigger node id.
     pub trigger: String,

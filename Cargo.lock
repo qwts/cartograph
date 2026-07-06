@@ -907,6 +907,7 @@ name = "flowtracer"
 version = "0.0.1"
 dependencies = [
  "core-graph",
+ "serde",
  "serde_json",
 ]
 

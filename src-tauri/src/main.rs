@@ -205,6 +205,21 @@ fn export_flows(state: State<'_, AppState>) -> Result<String, String> {
     Ok(spec::flow_dossier(&flows))
 }
 
+/// The traced flows as data (same graph slice as `export_flows`) — the UI
+/// surfaces status and score per R-INT-2 without parsing the dossier.
+#[tauri::command]
+fn list_flows(state: State<'_, AppState>) -> Result<Vec<flowtracer::Flow>, String> {
+    let graph = state.graph.lock().map_err(|e| e.to_string())?;
+    let mut nodes = Vec::new();
+    for label in flowtracer::FLOW_NODE_LABELS {
+        nodes.extend(graph.nodes_with_label(label).map_err(|e| e.to_string())?);
+    }
+    let edges = graph
+        .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
+        .map_err(|e| e.to_string())?;
+    Ok(flowtracer::trace(&nodes, &edges))
+}
+
 /// Nodes carrying `label` (e.g. `Endpoint`, `Repo`), ordered by id.
 #[tauri::command]
 fn list_nodes(label: String, state: State<'_, AppState>) -> Result<Vec<Node>, String> {
@@ -259,7 +274,8 @@ fn main() {
             list_nodes,
             read_evidence,
             export_topology,
-            export_flows
+            export_flows,
+            list_flows
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cartograph");

@@ -264,6 +264,37 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.flow-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.flow-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface-container-high);
+}
+
+.flow-trigger {
+  flex: 1;
+  font-family: ui-monospace, monospace;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.flow-score {
+  font-variant-numeric: tabular-nums;
+  color: var(--on-surface-variant);
+  flex-shrink: 0;
+}
+
 .evidence-area {
   padding: 0 1.25rem 1.25rem;
 }
