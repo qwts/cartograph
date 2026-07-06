@@ -4,7 +4,7 @@
 | Field | Value |
 |---|---|
 | Doc ID | SPEC-00 |
-| Version | 0.1.2 (draft — §17 per ADR-0007; §4.4/§15 graph store per ADR-0008) |
+| Version | 0.1.3 (draft — §17 per ADR-0007; §4.4/§15 graph store per ADR-0008; §14 M3 gate wording at M3 open) |
 | Status | Ready-for-build planning |
 | Owner | Chris Kane |
 | Purpose | Single source of truth for design/architecture/requirements. Intended to answer ~95% of build-time questions for the author and for Claude Code. |
@@ -341,7 +341,7 @@ Each milestone names explicit tech and an exit gate. Preference order honored th
 | **M0** | Skeleton + stores | Tauri 2, Rust workspace, Kuzu (verify) + SQLite/WAL, React+Vite+TS, Zustand | App boots; empty graph round-trips; job table durable |
 | **M1** | Deterministic single-repo (TS) | tree-sitter-typescript, Express/Nest fw adapter | Import+call graph + endpoints for one TS repo; evidence jump-to-source |
 | **M2** | IaC + cloud (Terraform/AWS) | `hcl-rs`, AWS Capability Registry | Resource graph + TRIGGERS/ROUTES edges; topology map artifact |
-| **M3** | Events + deterministic flow tracer | events SDK registry, `flowtracer` (T0 only) | End-to-end T0 flow Screen→…→DataEntity within one repo; flow dossier export |
+| **M3** | Events + deterministic flow tracer | events SDK registry, `flowtracer` (T0 only) | End-to-end T0 flow Trigger(Endpoint\|Channel)→…→terminal within one repo (the Screen anchor is M4 tech and joins there); flow dossier export |
 | **M4** | Client-side anchor | tree-sitter-tsx, React Router/Next adapter, react-query/fetch detector | FETCHES edges; flows anchored at Screen.action |
 | **M5** | Multi-repo stitching | `cartograph.system.toml`, channel-identity matcher | Cross-repo flow via literal channel ids; Gap nodes where unresolved |
 | **M6** | Dynamic tier | `terraform show -json`, `pulumi stack export`, OTel/test-run ingest | T1 resolves a previously-Gap hop; observed-fact provenance |

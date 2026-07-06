@@ -17,6 +17,7 @@ core-graph = { workspace = true }
 core-prov = { workspace = true }
 adapters-lang-ts = { workspace = true }
 iac = { workspace = true }
+events = { workspace = true }
 spec = { workspace = true }
 
 [dev-dependencies]

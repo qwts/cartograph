@@ -13,6 +13,9 @@
 //! (AC-0004, AC-0006). This tier never calls an LLM.
 
 use adapters_fw::EXPRESS;
+use adapters_fw::events::{
+    ChannelRole, EVENT_SDKS, EventSite, IdentityArg, IdentityExpr, SdkPattern,
+};
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
 use std::collections::HashMap;
@@ -41,6 +44,9 @@ pub struct Extraction {
     pub nodes: Vec<Node>,
     /// Graph edges (props carry provenance under `prov`).
     pub edges: Vec<Edge>,
+    /// Producer/consumer call sites (US-0004) — not yet graph facts; the
+    /// `events` crate resolves identities and stitches them into channels.
+    pub event_sites: Vec<EventSite>,
 }
 
 impl Extraction {
@@ -173,6 +179,104 @@ fn enclosing_symbol(cx: &FileCx, mut node: TsNode) -> Option<String> {
         }
     }
     None
+}
+
+/// Bare module specifiers compare with the `node:` scheme stripped
+/// (`node:events` and `events` are the same module).
+fn norm_module(spec: &str) -> String {
+    spec.strip_prefix("node:").unwrap_or(spec).to_string()
+}
+
+/// Module a constructor came from, proven via the import map: for
+/// `AWS.SQS` the base `AWS` must be import-bound; for `EventEmitter` the
+/// name itself. `None` when the constructor is not import-proven.
+fn ctor_module(ctor: &str, import_modules: &HashMap<String, String>) -> Option<String> {
+    let base = ctor.split('.').next().unwrap_or(ctor);
+    import_modules.get(base).map(|m| norm_module(m))
+}
+
+/// Classify a channel-identity expression at T0 (US-0004): literal,
+/// env-file-resolvable, or runtime-computed. Local `const X = 'lit'`
+/// bindings count as literals — same-file resolution is deterministic.
+fn classify_identity(
+    cx: &FileCx,
+    expr: &TsNode,
+    const_strings: &HashMap<String, String>,
+) -> IdentityExpr {
+    match expr.kind() {
+        "string" => {
+            let mut w = expr.walk();
+            let frag = expr
+                .children(&mut w)
+                .find(|c| c.kind() == "string_fragment")
+                .map(|f| cx.text(&f).to_string())
+                .unwrap_or_default();
+            IdentityExpr::Literal(frag)
+        }
+        "template_string" => {
+            let mut w = expr.walk();
+            if expr
+                .children(&mut w)
+                .any(|c| c.kind() == "template_substitution")
+            {
+                IdentityExpr::Computed(cx.text(expr).to_string())
+            } else {
+                IdentityExpr::Literal(cx.text(expr).trim_matches('`').to_string())
+            }
+        }
+        "identifier" => match const_strings.get(cx.text(expr)) {
+            Some(lit) => IdentityExpr::Literal(lit.clone()),
+            None => IdentityExpr::Computed(cx.text(expr).to_string()),
+        },
+        "member_expression" => {
+            let text = cx.text(expr);
+            match text.strip_prefix("process.env.") {
+                Some(key) if !key.is_empty() && !key.contains('.') => {
+                    IdentityExpr::EnvRef(key.to_string())
+                }
+                _ => IdentityExpr::Computed(text.to_string()),
+            }
+        }
+        _ => IdentityExpr::Computed(cx.text(expr).to_string()),
+    }
+}
+
+/// Locate the channel identity inside a call's arguments per the registry
+/// entry and classify it. A missing argument/key is `Computed` — the site
+/// is real but its identity is not statically visible (escalates, AC-0012).
+fn identity_in_args(
+    cx: &FileCx,
+    args: &TsNode,
+    spec: IdentityArg,
+    classify: &impl Fn(&TsNode) -> IdentityExpr,
+) -> IdentityExpr {
+    let mut w = args.walk();
+    let Some(first) = args.children(&mut w).find(|c| c.is_named()) else {
+        return IdentityExpr::Computed("<no argument>".into());
+    };
+    match spec {
+        IdentityArg::First => classify(&first),
+        IdentityArg::Key(key) => {
+            // DFS for a `pair` with the registry key anywhere in the first
+            // argument (handles nesting: `{ Entries: [{ DetailType: … }] }`).
+            let mut stack = vec![first];
+            while let Some(node) = stack.pop() {
+                if node.kind() == "pair"
+                    && let Some(k) = node.child_by_field_name("key")
+                    && cx.text(&k).trim_matches(['"', '\'']) == key
+                    && let Some(v) = node.child_by_field_name("value")
+                {
+                    return classify(&v);
+                }
+                let mut w = node.walk();
+                let children: Vec<_> = node.children(&mut w).collect();
+                // Reverse so the stack pops in document order — the first
+                // matching pair wins deterministically.
+                stack.extend(children.into_iter().rev());
+            }
+            IdentityExpr::Computed(cx.text(&first).to_string())
+        }
+    }
 }
 
 /// Extract facts from one TypeScript source file.
@@ -451,6 +555,220 @@ pub fn extract_source(
         }
     }
 
+    // --- Event sites: SDK producer/consumer calls (US-0004) ------------------
+    // Receiver proof mirrors the endpoint extractor: a site only matches when
+    // its constructor/receiver provably comes from the SDK module — never
+    // guessed from variable names.
+
+    // Local `const X = 'literal'` bindings resolve identifiers to literals
+    // at T0 (same-file, deterministic).
+    let q_consts = Query::new(
+        &language,
+        r#"
+        (variable_declarator
+            name: (identifier) @name
+            value: (string (string_fragment) @lit))
+        "#,
+    )
+    .expect("static query");
+    let mut const_strings: HashMap<String, String> = HashMap::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&q_consts, root, source);
+    while let Some(m) = matches.next() {
+        let (mut name, mut lit) = (None, None);
+        for c in m.captures {
+            match q_consts.capture_names()[c.index as usize] {
+                "name" => name = Some(cx.text(&c.node).to_string()),
+                "lit" => lit = Some(cx.text(&c.node).to_string()),
+                _ => {}
+            }
+        }
+        if let (Some(name), Some(lit)) = (name, lit) {
+            const_strings.insert(name, lit);
+        }
+    }
+
+    // Vars bound to `new Ctor(...)` — receiver proof for Method patterns.
+    let q_news = Query::new(
+        &language,
+        r#"
+        (variable_declarator
+            name: (identifier) @var
+            value: (new_expression
+                constructor: [(identifier) (member_expression)] @ctor))
+        "#,
+    )
+    .expect("static query");
+    let mut constructed: HashMap<String, String> = HashMap::new(); // var -> ctor text
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&q_news, root, source);
+    while let Some(m) = matches.next() {
+        let (mut var, mut ctor) = (None, None);
+        for c in m.captures {
+            match q_news.capture_names()[c.index as usize] {
+                "var" => var = Some(cx.text(&c.node).to_string()),
+                "ctor" => ctor = Some(cx.text(&c.node).to_string()),
+                _ => {}
+            }
+        }
+        if let (Some(var), Some(ctor)) = (var, ctor) {
+            constructed.insert(var, ctor);
+        }
+    }
+
+    // Vars bound to `obj.factory()` where `obj` was constructed from the SDK
+    // module — receiver proof for FactoryMethod patterns (kafkajs).
+    let q_factory_recv = Query::new(
+        &language,
+        r#"
+        (variable_declarator
+            name: (identifier) @var
+            value: (call_expression
+                function: (member_expression
+                    object: (identifier) @obj
+                    property: (property_identifier) @factory)))
+        "#,
+    )
+    .expect("static query");
+    // var -> (module of obj's constructor, factory name)
+    let mut factory_receivers: HashMap<String, (String, String)> = HashMap::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&q_factory_recv, root, source);
+    while let Some(m) = matches.next() {
+        let (mut var, mut obj, mut factory) = (None, None, None);
+        for c in m.captures {
+            match q_factory_recv.capture_names()[c.index as usize] {
+                "var" => var = Some(cx.text(&c.node).to_string()),
+                "obj" => obj = Some(cx.text(&c.node).to_string()),
+                "factory" => factory = Some(cx.text(&c.node).to_string()),
+                _ => {}
+            }
+        }
+        let (Some(var), Some(obj), Some(factory)) = (var, obj, factory) else {
+            continue;
+        };
+        // Chain of proof: obj <- new Ctor(...), Ctor imported from module.
+        if let Some(ctor) = constructed.get(&obj)
+            && let Some(module) = ctor_module(ctor, &import_modules)
+        {
+            factory_receivers.insert(var, (module, factory));
+        }
+    }
+
+    let classify = |expr: &TsNode| -> IdentityExpr { classify_identity(&cx, expr, &const_strings) };
+    let push_site = |out: &mut Extraction,
+                     kind: &str,
+                     role: ChannelRole,
+                     identity: IdentityExpr,
+                     site: &TsNode| {
+        out.event_sites.push(EventSite {
+            kind: kind.into(),
+            role,
+            identity,
+            symbol: enclosing_symbol(&cx, *site),
+            path: path.into(),
+            byte_start: site.start_byte() as u64,
+            byte_end: site.end_byte() as u64,
+        });
+    };
+
+    // Constructor pattern: `new SendMessageCommand({ QueueUrl: … })`.
+    let q_cmd = Query::new(
+        &language,
+        r#"
+        (new_expression
+            constructor: (identifier) @ctor
+            arguments: (arguments) @args) @new
+        "#,
+    )
+    .expect("static query");
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&q_cmd, root, source);
+    while let Some(m) = matches.next() {
+        let (mut ctor, mut args, mut site) = (None, None, None);
+        for c in m.captures {
+            match q_cmd.capture_names()[c.index as usize] {
+                "ctor" => ctor = Some(cx.text(&c.node).to_string()),
+                "args" => args = Some(c.node),
+                "new" => site = Some(c.node),
+                _ => {}
+            }
+        }
+        let (Some(ctor), Some(args), Some(site)) = (ctor, args, site) else {
+            continue;
+        };
+        let from = import_modules.get(&ctor).map(|m| norm_module(m));
+        for sdk in EVENT_SDKS {
+            let SdkPattern::Constructor { module, ctor: c } = sdk.pattern else {
+                continue;
+            };
+            if ctor != c || from.as_deref() != Some(module) {
+                continue;
+            }
+            let identity = identity_in_args(&cx, &args, sdk.identity, &classify);
+            push_site(&mut out, sdk.kind, sdk.role, identity, &site);
+        }
+    }
+
+    // Method + FactoryMethod patterns: `recv.method(…)` with proven receiver.
+    let q_member_calls = Query::new(
+        &language,
+        r#"
+        (call_expression
+            function: (member_expression
+                object: (identifier) @recv
+                property: (property_identifier) @method)
+            arguments: (arguments) @args) @call
+        "#,
+    )
+    .expect("static query");
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&q_member_calls, root, source);
+    while let Some(m) = matches.next() {
+        let (mut recv, mut method, mut args, mut site) = (None, None, None, None);
+        for c in m.captures {
+            match q_member_calls.capture_names()[c.index as usize] {
+                "recv" => recv = Some(cx.text(&c.node).to_string()),
+                "method" => method = Some(cx.text(&c.node).to_string()),
+                "args" => args = Some(c.node),
+                "call" => site = Some(c.node),
+                _ => {}
+            }
+        }
+        let (Some(recv), Some(method), Some(args), Some(site)) = (recv, method, args, site) else {
+            continue;
+        };
+        for sdk in EVENT_SDKS {
+            let matched = match sdk.pattern {
+                SdkPattern::Method {
+                    module,
+                    ctor,
+                    method: m,
+                } => {
+                    method == m
+                        && constructed.get(&recv).map(String::as_str) == Some(ctor)
+                        && ctor_module(ctor, &import_modules).as_deref() == Some(module)
+                }
+                SdkPattern::FactoryMethod {
+                    module,
+                    factory,
+                    method: m,
+                } => {
+                    method == m
+                        && factory_receivers
+                            .get(&recv)
+                            .map(|(mo, f)| (mo.as_str(), f.as_str()))
+                            == Some((module, factory))
+                }
+                SdkPattern::Constructor { .. } => false,
+            };
+            if matched {
+                let identity = identity_in_args(&cx, &args, sdk.identity, &classify);
+                push_site(&mut out, sdk.kind, sdk.role, identity, &site);
+            }
+        }
+    }
+
     // --- Calls: caller symbol -> callee symbol (local or import-bound) ------
     let q_calls = Query::new(
         &language,
@@ -512,6 +830,7 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
         let ex = extract_source(&source, rel, id)?;
         out.nodes.extend(ex.nodes);
         out.edges.extend(ex.edges);
+        out.event_sites.extend(ex.event_sites);
     }
     out.close_over_endpoints();
     Ok(out)
