@@ -61,6 +61,8 @@ pub trait GraphStore {
     /// optionally restricted to one edge label. Excludes `start` itself
     /// unless it lies on a cycle.
     fn reachable_from(&self, start: &str, label: Option<&str>) -> Result<Vec<String>, GraphError>;
+    /// All nodes carrying `label`, ordered by id.
+    fn nodes_with_label(&self, label: &str) -> Result<Vec<Node>, GraphError>;
 }
 
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
@@ -180,6 +182,29 @@ impl GraphStore for SqliteGraphStore {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
     }
+
+    fn nodes_with_label(&self, label: &str) -> Result<Vec<Node>, GraphError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, label, props FROM nodes WHERE label = ?1 ORDER BY id")?;
+        let rows = stmt.query_map(params![label], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut nodes = Vec::new();
+        for row in rows {
+            let (id, label, props) = row?;
+            nodes.push(Node {
+                id,
+                label,
+                props: serde_json::from_str(&props)?,
+            });
+        }
+        Ok(nodes)
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +270,17 @@ mod tests {
         }
         assert_eq!(store.node_count().unwrap(), 2);
         assert_eq!(store.edge_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn nodes_with_label_filters_and_orders() {
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        store.put_node(&node("ep:b", "Endpoint")).unwrap();
+        store.put_node(&node("ep:a", "Endpoint")).unwrap();
+        store.put_node(&node("f1", "File")).unwrap();
+        let eps = store.nodes_with_label("Endpoint").unwrap();
+        let ids: Vec<_> = eps.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["ep:a", "ep:b"]);
     }
 
     #[test]

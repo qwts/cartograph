@@ -1,0 +1,54 @@
+import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, fn, userEvent, within } from 'storybook/test';
+import type { GraphNode } from '../store';
+import { EndpointsCard } from './EndpointsCard';
+
+export function endpointFixture(method: string, path: string): GraphNode {
+  return {
+    id: `ep:${method}:${path}`,
+    label: 'Endpoint',
+    props: {
+      method,
+      path,
+      prov: {
+        tier: 'Deterministic',
+        confidence_tier: 'Confirmed',
+        evidence: [
+          { repo: 'local', path: 'src/app.ts', byte_start: 64, byte_end: 92, commit_sha: 'workdir' },
+        ],
+        extractor_id: 't0.adapter-ts',
+        content_hash: 'a'.repeat(64),
+      },
+    },
+  };
+}
+
+const meta = {
+  title: 'Atlas/EndpointsCard',
+  component: EndpointsCard,
+  args: { onSelect: fn() },
+  // endpointFixture is a shared helper, not a story.
+  excludeStories: ['endpointFixture'],
+} satisfies Meta<typeof EndpointsCard>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Empty: Story = {
+  args: { endpoints: [] },
+};
+
+export const Populated: Story = {
+  args: {
+    endpoints: [endpointFixture('GET', '/users'), endpointFixture('POST', '/users')],
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // Confidence tier is visible on every row (R-INT-2).
+    await expect(canvas.getAllByText('Confirmed')).toHaveLength(2);
+    await userEvent.click(canvas.getByText('GET'));
+    await expect(args.onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'ep:GET:/users' }),
+    );
+  },
+};
