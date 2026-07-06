@@ -15,7 +15,7 @@ missing_docs = "warn"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 blake3 = "1"
 
 # Internal crates (SPEC-00 §8.1 crate map)
