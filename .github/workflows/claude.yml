@@ -1,0 +1,48 @@
+name: Claude agent
+
+# Agent-on-issue (ADR-0007 "automation as early as applicable"):
+# - mention @claude in an issue/PR comment to dispatch an agent, or
+# - add the `agent:go` label to an issue to have it implemented outright.
+# The agent works in this repo's context (AGENTS.md/CLAUDE.md), opens a
+# branch + PR, and everything still passes the same gates and review as a
+# human-authored change. Requires the ANTHROPIC_API_KEY repo secret (or swap
+# in claude_code_oauth_token from the Claude GitHub App).
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (
+        contains(github.event.issue.body, '@claude') ||
+        github.event.label.name == 'agent:go'
+      ))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

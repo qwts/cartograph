@@ -1,0 +1,32 @@
+# Version updates (security updates are enabled repo-side already).
+# Weekly, grouped minor+patch so bumps arrive as one gated PR per ecosystem.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-root-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+    groups:
+      npm-ui-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
