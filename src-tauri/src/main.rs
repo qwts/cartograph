@@ -431,8 +431,9 @@ export function App() {
             "resolvable fetch is Confirmed (AC-0014)"
         );
 
-        // M3 exit gate: an end-to-end T0 flow from the endpoint trigger
-        // through the channel to the consumer, exported as a dossier.
+        // M4 exit gate: the flow anchors at the Screen (the fetched endpoint
+        // is mid-flow, not a trigger) and runs end to end through the
+        // channel to the consumer, exported as a dossier.
         let mut flow_nodes = Vec::new();
         for label in flowtracer::FLOW_NODE_LABELS {
             flow_nodes.extend(store.nodes_with_label(label).unwrap());
@@ -442,7 +443,12 @@ export function App() {
             .unwrap();
         let flows = flowtracer::trace(&flow_nodes, &flow_edges);
         let dossier = spec::flow_dossier(&flows);
-        assert!(dossier.contains("## POST /orders — Verified (score 1.00)"));
+        assert!(dossier.contains("## Screen /checkout — Verified (score 1.00)"));
+        assert!(
+            !dossier.contains("## POST /orders"),
+            "the fetched endpoint must not double-report as its own flow"
+        );
+        assert!(dossier.contains("FETCHES [Confirmed]"));
         assert!(dossier.contains("SUBSCRIBES [Confirmed]"));
         assert!(dossier.contains("chan:inproc-event:order.placed"));
     }

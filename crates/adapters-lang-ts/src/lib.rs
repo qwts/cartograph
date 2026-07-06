@@ -192,6 +192,36 @@ fn enclosing_symbol(cx: &FileCx, mut node: TsNode) -> Option<String> {
     None
 }
 
+/// Walk all ancestors and return the *outermost* enclosing capitalized
+/// function — the React component a site belongs to (SPEC-00 §3.5:
+/// `FETCHES(component → Endpoint)`). A fetch inside an event-handler
+/// closure (`const submit = () => fetch(…)`) anchors at the component,
+/// not the closure, so the screen's RENDERS chain reaches it.
+fn enclosing_component(cx: &FileCx, node: TsNode) -> Option<String> {
+    let mut current = node;
+    let mut component = None;
+    while let Some(parent) = current.parent() {
+        let name = match parent.kind() {
+            "function_declaration" | "method_definition" => parent
+                .child_by_field_name("name")
+                .map(|n| cx.text(&n).to_string()),
+            "arrow_function" | "function_expression" => parent
+                .parent()
+                .filter(|p| p.kind() == "variable_declarator")
+                .and_then(|d| d.child_by_field_name("name"))
+                .map(|n| cx.text(&n).to_string()),
+            _ => None,
+        };
+        if let Some(name) = name
+            && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        {
+            component = Some(sym_id(cx.path, &name));
+        }
+        current = parent;
+    }
+    component
+}
+
 /// Bare module specifiers compare with the `node:` scheme stripped
 /// (`node:events` and `events` are the same module).
 fn norm_module(spec: &str) -> String {
@@ -991,7 +1021,8 @@ pub fn extract_source(
                 out.fetch_sites.push(FetchSite {
                     method,
                     url,
-                    symbol: enclosing_symbol(&cx, *site),
+                    symbol: enclosing_component(&cx, *site)
+                        .or_else(|| enclosing_symbol(&cx, *site)),
                     path: path.into(),
                     byte_start: site.start_byte() as u64,
                     byte_end: site.end_byte() as u64,
