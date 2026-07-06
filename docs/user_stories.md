@@ -34,7 +34,7 @@
 ### US-0003 — IaC resource graph + cloud capability resolution (Terraform/AWS)
 - **Actor:** Engine
 - **As a** engineer **I want** a deterministic resource graph with cloud-capability edges **so that** infra/cloud topology is Confirmed.
-- **Priority:** Must · **Status:** Draft
+- **Priority:** Must · **Status:** In-Progress
 - **AC-0007** Given Terraform HCL, when parsed, then a resource DAG is built from interpolation references.
 - **AC-0008** Given AWS resources, when resolved against the Capability Registry, then TRIGGERS/ROUTES/GRANTS edges are emitted deterministically.
 - **AC-0009** Given Terraform state/plan JSON, when available, then T1 enrichment supersedes ambiguous T0 refs (observed provenance).
