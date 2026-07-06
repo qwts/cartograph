@@ -46,3 +46,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # The action has its own trigger gate whose label default is
+          # `claude`; the agent:go path in the job `if` above must be
+          # mirrored here or label-driven runs enter the job and no-op.
+          label_trigger: "agent:go"
