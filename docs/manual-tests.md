@@ -56,6 +56,19 @@ PR — per-PR verification is CI's job.
    and a provenance table with tier + confidence + evidence span on every
    hop (M3 exit gate: flow dossier export).
 
+## MT-M4-01 — Screen-anchored flows
+
+1. `npm run tauri dev`; ingest a repo with a React client (React Router or
+   Next.js `pages/`) fetching its own backend's endpoints.
+2. The **Flows** card anchors flows at screens (`Screen /route`), not at
+   the endpoints those screens fetch; endpoints nothing fetches keep their
+   own flows.
+3. Copy the dossier and render it.
+4. **Pass:** a screen flow runs `RENDERS → FETCHES → HANDLES → …` end to
+   end with tier + confidence per hop; an unresolvable fetch URL appears
+   as a `GAP: …` hop truncating that branch (M4 exit gate: flows anchored
+   at Screen).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

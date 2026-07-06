@@ -1,8 +1,10 @@
 //! Cross-layer flow tracer (SPEC-00 §5, US-0006) — the deterministic (T0)
 //! path engine.
 //!
-//! A flow starts at a trigger (`Endpoint`, or a `Channel` no local producer
-//! publishes to) and walks the graph hop by hop: `HANDLES` into the handler
+//! A flow starts at a trigger — a `Screen` (M4, the user-action anchor),
+//! an `Endpoint` nothing local fetches, or a `Channel` no local producer
+//! publishes to — and walks the graph hop by hop: `RENDERS` into
+//! components, `FETCHES` into endpoints, `HANDLES` into the handler
 //! symbol, `CALLS` through the call graph, `PUBLISHES` onto channels,
 //! `SUBSCRIBES` out to consumers. Each hop records the tier and confidence
 //! of the edge that resolved it (AC-0015). A hop into a `Gap` node
@@ -17,10 +19,25 @@ use std::collections::{BTreeMap, HashSet};
 
 /// Edge labels the tracer walks — callers use this to query exactly the
 /// edges a trace needs.
-pub const FLOW_EDGE_LABELS: &[&str] = &["HANDLES", "CALLS", "PUBLISHES", "SUBSCRIBES"];
+pub const FLOW_EDGE_LABELS: &[&str] = &[
+    "RENDERS",
+    "FETCHES",
+    "HANDLES",
+    "CALLS",
+    "PUBLISHES",
+    "SUBSCRIBES",
+];
 
 /// Node labels the tracer needs (for classification and display names).
-pub const FLOW_NODE_LABELS: &[&str] = &["Endpoint", "Symbol", "Channel", "Gap", "File"];
+pub const FLOW_NODE_LABELS: &[&str] = &[
+    "Screen",
+    "Component",
+    "Endpoint",
+    "Symbol",
+    "Channel",
+    "Gap",
+    "File",
+];
 
 /// Traversal bound (SPEC-00 US-0006 performance note: path queries bounded).
 const MAX_DEPTH: usize = 64;
@@ -93,11 +110,15 @@ pub struct Flow {
 fn display_name(node: &Node) -> String {
     let p = &node.props;
     match node.label.as_str() {
+        "Screen" => p["route"]
+            .as_str()
+            .map(|r| format!("Screen {r}"))
+            .unwrap_or_else(|| node.id.clone()),
         "Endpoint" => match (p["method"].as_str(), p["path"].as_str()) {
             (Some(m), Some(path)) => format!("{m} {path}"),
             _ => node.id.clone(),
         },
-        "Symbol" => p["name"].as_str().map(String::from).unwrap_or_else(|| {
+        "Symbol" | "Component" => p["name"].as_str().map(String::from).unwrap_or_else(|| {
             node.id
                 .split('#')
                 .next_back()
@@ -154,12 +175,16 @@ pub fn trace(nodes: &[Node], edges: &[Edge]) -> Vec<Flow> {
     let mut out_edges: BTreeMap<&str, Vec<&Edge>> = BTreeMap::new();
     let mut chan_consumers: BTreeMap<&str, Vec<&Edge>> = BTreeMap::new();
     let mut published_to: HashSet<&str> = HashSet::new();
+    let mut fetched: HashSet<&str> = HashSet::new();
     for edge in edges {
         match edge.label.as_str() {
-            "HANDLES" | "CALLS" | "PUBLISHES" => {
+            "RENDERS" | "FETCHES" | "HANDLES" | "CALLS" | "PUBLISHES" => {
                 out_edges.entry(edge.src.as_str()).or_default().push(edge);
                 if edge.label == "PUBLISHES" {
                     published_to.insert(edge.dst.as_str());
+                }
+                if edge.label == "FETCHES" {
+                    fetched.insert(edge.dst.as_str());
                 }
             }
             "SUBSCRIBES" => {
@@ -178,9 +203,15 @@ pub fn trace(nodes: &[Node], edges: &[Edge]) -> Vec<Flow> {
         v.sort_by(|a, b| a.src.cmp(&b.src));
     }
 
-    // Triggers: every Endpoint, plus channels nothing local publishes to
-    // (an event entering from outside this repo slice).
-    let mut triggers: Vec<&Node> = nodes.iter().filter(|n| n.label == "Endpoint").collect();
+    // Triggers (SPEC-00 §5.1): every Screen (the user-action anchor);
+    // endpoints only when no local screen fetches them (an external API
+    // consumer); channels nothing local publishes to (an external event).
+    let mut triggers: Vec<&Node> = nodes.iter().filter(|n| n.label == "Screen").collect();
+    triggers.extend(
+        nodes
+            .iter()
+            .filter(|n| n.label == "Endpoint" && !fetched.contains(n.id.as_str())),
+    );
     triggers.extend(nodes.iter().filter(|n| {
         n.label == "Channel"
             && !published_to.contains(n.id.as_str())
@@ -275,10 +306,16 @@ fn trace_one(
             }
         }
 
-        for (hop, dst) in next.into_iter().rev() {
+        // Record hops in sorted expansion order (the dossier's narrative
+        // order); the stack gets them reversed so LIFO pops match.
+        let mut dsts = Vec::with_capacity(next.len());
+        for (hop, dst) in next {
             if seen_hops.insert((hop.label.clone(), hop.src.clone(), hop.dst.clone())) {
                 hops.push(hop);
             }
+            dsts.push(dst);
+        }
+        for dst in dsts.into_iter().rev() {
             stack.push((dst, depth + 1));
         }
     }

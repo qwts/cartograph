@@ -341,3 +341,139 @@ fn depth_bound_marks_the_flow_partial_not_verified() {
     assert!(!flows[0].depth_limited);
     assert_eq!(flows[0].status, FlowStatus::Verified);
 }
+
+// M4 exit gate: flows anchor at the Screen — the user action leads the
+// trace through RENDERS/FETCHES into the server chain, and the fetched
+// endpoint stops being its own trigger.
+#[test]
+fn screen_anchored_flow_walks_the_full_chain() {
+    let (mut nodes, mut edges) = event_chain();
+    nodes.push(node(
+        "screen:/checkout",
+        "Screen",
+        serde_json::json!({"route": "/checkout"}),
+    ));
+    nodes.push(node(
+        "sym:client.tsx#Checkout",
+        "Component",
+        serde_json::json!({"name": "Checkout"}),
+    ));
+    edges.push(edge(
+        "screen:/checkout",
+        "sym:client.tsx#Checkout",
+        "RENDERS",
+        "Confirmed",
+    ));
+    edges.push(edge(
+        "sym:client.tsx#Checkout",
+        "ep:POST:/orders",
+        "FETCHES",
+        "Confirmed",
+    ));
+
+    let flows = trace(&nodes, &edges);
+    // One flow: the screen. The fetched endpoint is mid-flow, not a trigger.
+    assert_eq!(flows.len(), 1);
+    let flow = &flows[0];
+    assert_eq!(flow.trigger, "screen:/checkout");
+    assert_eq!(flow.trigger_kind, "Screen");
+    assert_eq!(flow.trigger_name, "Screen /checkout");
+    // Screen -> component -> endpoint -> handler -> ... -> consumer: the
+    // whole chain under one anchor, all hops Confirmed.
+    let labels: Vec<&str> = flow.hops.iter().map(|h| h.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "RENDERS",
+            "FETCHES",
+            "HANDLES",
+            "CALLS",
+            "PUBLISHES",
+            "SUBSCRIBES"
+        ]
+    );
+    assert_eq!(flow.status, FlowStatus::Verified);
+}
+
+// An endpoint nothing fetches keeps its own flow (external API consumers
+// exist); a fetched one does not double-report.
+#[test]
+fn unfetched_endpoints_remain_triggers() {
+    let (mut nodes, mut edges) = event_chain();
+    nodes.push(node(
+        "ep:GET:/health",
+        "Endpoint",
+        serde_json::json!({"method": "GET", "path": "/health"}),
+    ));
+    nodes.push(node(
+        "screen:/checkout",
+        "Screen",
+        serde_json::json!({"route": "/checkout"}),
+    ));
+    nodes.push(node(
+        "sym:c.tsx#C",
+        "Component",
+        serde_json::json!({"name": "C"}),
+    ));
+    edges.push(edge(
+        "screen:/checkout",
+        "sym:c.tsx#C",
+        "RENDERS",
+        "Confirmed",
+    ));
+    edges.push(edge(
+        "sym:c.tsx#C",
+        "ep:POST:/orders",
+        "FETCHES",
+        "Confirmed",
+    ));
+
+    let flows = trace(&nodes, &edges);
+    let triggers: Vec<&str> = flows.iter().map(|f| f.trigger.as_str()).collect();
+    assert!(triggers.contains(&"screen:/checkout"));
+    assert!(triggers.contains(&"ep:GET:/health"), "unfetched endpoint");
+    assert!(
+        !triggers.contains(&"ep:POST:/orders"),
+        "fetched endpoint is mid-flow"
+    );
+}
+
+// A fetch that could not resolve truncates the screen's flow at its Gap —
+// the client-side analog of the channel Gap (R-INT-4).
+#[test]
+fn unresolved_fetch_truncates_the_screen_flow() {
+    let nodes = vec![
+        node(
+            "screen:/admin",
+            "Screen",
+            serde_json::json!({"route": "/admin"}),
+        ),
+        node(
+            "sym:a.tsx#Admin",
+            "Component",
+            serde_json::json!({"name": "Admin"}),
+        ),
+        node(
+            "gap:fetch:a.tsx@30",
+            "Gap",
+            serde_json::json!({"reason": "runtime-computed fetch URL"}),
+        ),
+    ];
+    let edges = vec![
+        edge("screen:/admin", "sym:a.tsx#Admin", "RENDERS", "Confirmed"),
+        edge("sym:a.tsx#Admin", "gap:fetch:a.tsx@30", "FETCHES", "Gap"),
+    ];
+    let flows = trace(&nodes, &edges);
+    assert_eq!(flows[0].status, FlowStatus::Partial);
+    let gap_hop = flows[0]
+        .hops
+        .iter()
+        .find(|h| h.confidence == "Gap")
+        .unwrap();
+    assert_eq!(gap_hop.label, "FETCHES");
+    assert!(
+        gap_hop
+            .dst_name
+            .starts_with("GAP: runtime-computed fetch URL")
+    );
+}

@@ -577,3 +577,24 @@ export function C() {
     assert_eq!(out.fetch_sites.len(), 1);
     assert_eq!(out.fetch_sites[0].method, "GET");
 }
+
+// A fetch inside an event-handler closure anchors at the component, not
+// the closure (SPEC-00 §3.5: FETCHES(component → Endpoint)) — otherwise
+// the screen's RENDERS chain can never reach it.
+#[test]
+fn fetch_in_handler_closure_anchors_at_the_component() {
+    let out = client_extract(
+        "checkout.tsx",
+        r#"
+export function Checkout() {
+  const submit = () => fetch('/orders', { method: 'POST' });
+  return <button onClick={submit}>Order</button>;
+}
+"#,
+    );
+    assert_eq!(out.fetch_sites.len(), 1);
+    assert_eq!(
+        out.fetch_sites[0].symbol.as_deref(),
+        Some("sym:checkout.tsx#Checkout")
+    );
+}
