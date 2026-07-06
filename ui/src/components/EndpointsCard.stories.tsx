@@ -53,8 +53,9 @@ export const Populated: Story = {
   },
 };
 
-// Regression for #41: a long route must not push the tier badge outside
-// its row (the badge is the R-INT-2 signal — it may never be clipped).
+// Regression for #41: a long route wraps in full — never clipped, never
+// ellipsized (the route is the content) — and the tier badge stays inside
+// its row (the badge is the R-INT-2 signal).
 export const LongPath: Story = {
   args: {
     endpoints: [
@@ -72,5 +73,11 @@ export const LongPath: Story = {
     const rowBox = row.getBoundingClientRect();
     await expect(badgeBox.right).toBeLessThanOrEqual(rowBox.right + 1);
     await expect(badgeBox.left).toBeGreaterThanOrEqual(rowBox.left - 1);
+    // The full route is rendered and not horizontally clipped: it wraps.
+    const path = row.querySelector('.endpoint-path')!;
+    await expect(path.scrollWidth).toBeLessThanOrEqual(path.clientWidth + 1);
+    await expect(path.textContent).toBe(
+      '/api/v2/tenants/:tenantId/workspaces/:workspaceId/members/:memberId/notifications',
+    );
   },
 };
