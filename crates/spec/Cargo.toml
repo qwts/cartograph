@@ -1,7 +1,13 @@
 [package]
 name = "spec"
+description = "Spec compiler: graph -> official artifacts (SPEC-00 §7)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
+core-graph = { workspace = true }
+serde_json = { workspace = true }
