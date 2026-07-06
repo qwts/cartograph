@@ -8,6 +8,17 @@ use core_graph::{Edge, Node};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+/// Edge labels that appear on the topology map — callers use this to query
+/// exactly the edges the artifact renders.
+pub const TOPOLOGY_EDGE_LABELS: &[&str] = &[
+    "TRIGGERS",
+    "ROUTES",
+    "SUBSCRIBES",
+    "GRANTS",
+    "DEPENDS_ON",
+    "REFERENCES",
+];
+
 /// Edge labels that appear on the topology map, with their arrow style.
 /// Capability edges are solid and labeled; the raw reference DAG is dotted.
 const TOPOLOGY_EDGES: &[(&str, &str)] = &[

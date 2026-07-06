@@ -63,6 +63,8 @@ pub trait GraphStore {
     fn reachable_from(&self, start: &str, label: Option<&str>) -> Result<Vec<String>, GraphError>;
     /// All nodes carrying `label`, ordered by id.
     fn nodes_with_label(&self, label: &str) -> Result<Vec<Node>, GraphError>;
+    /// All edges whose label is one of `labels`, ordered by (src, dst, label).
+    fn edges_with_labels(&self, labels: &[&str]) -> Result<Vec<Edge>, GraphError>;
 }
 
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
@@ -209,6 +211,36 @@ impl GraphStore for SqliteGraphStore {
         }
         Ok(nodes)
     }
+
+    fn edges_with_labels(&self, labels: &[&str]) -> Result<Vec<Edge>, GraphError> {
+        if labels.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; labels.len()].join(",");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT src, dst, label, props FROM edges
+             WHERE label IN ({placeholders}) ORDER BY src, dst, label"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(labels), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut edges = Vec::new();
+        for row in rows {
+            let (src, dst, label, props) = row?;
+            edges.push(Edge {
+                src,
+                dst,
+                label,
+                props: serde_json::from_str(&props)?,
+            });
+        }
+        Ok(edges)
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +306,26 @@ mod tests {
         }
         assert_eq!(store.node_count().unwrap(), 2);
         assert_eq!(store.edge_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn edges_with_labels_filters_and_orders() {
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        for id in ["a", "b", "c"] {
+            store.put_node(&node(id, "Resource")).unwrap();
+        }
+        store.put_edge(&edge("b", "c", "TRIGGERS")).unwrap();
+        store.put_edge(&edge("a", "b", "REFERENCES")).unwrap();
+        store.put_edge(&edge("a", "c", "CALLS")).unwrap();
+        let got = store
+            .edges_with_labels(&["TRIGGERS", "REFERENCES"])
+            .unwrap();
+        let pairs: Vec<_> = got
+            .iter()
+            .map(|e| (e.src.as_str(), e.label.as_str()))
+            .collect();
+        assert_eq!(pairs, vec![("a", "REFERENCES"), ("b", "TRIGGERS")]);
+        assert!(store.edges_with_labels(&[]).unwrap().is_empty());
     }
 
     #[test]

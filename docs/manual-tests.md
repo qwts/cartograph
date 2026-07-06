@@ -31,6 +31,19 @@ PR — per-PR verification is CI's job.
    highlighted text is the actual registration in the actual file
    (M1 exit gate: evidence jump-to-source).
 
+## MT-M2-01 — Ingest Terraform, export the topology map
+
+1. `npm run tauri dev`; paste the path of a repo containing `.tf` files into
+   **Ingest** and submit.
+2. Graph stats grow; the **Topology map** card shows Mermaid text with
+   `Resource` nodes and solid `TRIGGERS`/`ROUTES`/`SUBSCRIBES`/`GRANTS` edges
+   where the Capability Registry matched (dotted for the reference DAG).
+3. Click **Copy Mermaid**, paste into a Mermaid renderer (e.g.
+   mermaid.live).
+4. **Pass:** the rendered diagram matches the repo's infrastructure; anything
+   the extractor could not resolve appears as a visibly distinct `?` node,
+   never silently dropped (M2 exit gate: topology map artifact).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

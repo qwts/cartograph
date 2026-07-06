@@ -78,6 +78,8 @@ function installFakeCore() {
       }
       case 'read_evidence':
         return { text: FAKE_SOURCE, window_start: 0, truncated: false };
+      case 'export_topology':
+        return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
       case 'ingest_path':
         return { job_id: 1, files: 2, nodes: 12, edges: 18 };
       case 'enqueue_job': {
@@ -111,6 +113,7 @@ const meta = {
       stats: null,
       jobs: [],
       endpoints: [],
+      topology: null,
       ingestBusy: false,
       ingestSummary: null,
       ingestError: null,

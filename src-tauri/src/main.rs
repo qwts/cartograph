@@ -92,13 +92,22 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
 
     // Local unversioned tree: repo/commit identify the workdir until the
     // GitHub ingest (US-0001) supplies real clone coordinates.
-    let id = adapters_lang_ts::SourceId {
+    let root = std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
+    let ts_id = adapters_lang_ts::SourceId {
         repo: "local",
         commit: "workdir",
     };
-    let root = std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let extraction = adapters_lang_ts::extract_dir(&root, &id)
+    let mut extraction = adapters_lang_ts::extract_dir(&root, &ts_id)
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
+    // Same tree, second layer: Terraform (US-0003). Both extractors are T0;
+    // their node id schemes are disjoint (file:/sym:/ep: vs res:).
+    let tf_id = iac::SourceId {
+        repo: "local",
+        commit: "workdir",
+    };
+    let tf = iac::extract_dir(&root, &tf_id).map_err(|e| fail(e.to_string(), &state, job_id))?;
+    extraction.nodes.extend(tf.nodes);
+    extraction.edges.extend(tf.edges);
 
     let files = extraction
         .nodes
@@ -122,7 +131,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         .expect("within ceiling");
         graph
             .put_node(&Node {
-                id: format!("repo:{}", id.repo),
+                id: format!("repo:{}", ts_id.repo),
                 label: "Repo".into(),
                 props: serde_json::json!({
                     "root": root.to_string_lossy(),
@@ -149,6 +158,20 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
     })
+}
+
+/// The resource/topology map artifact as Mermaid text (SPEC-00 §7, M2 exit
+/// gate). Deterministic for a given graph.
+#[tauri::command]
+fn export_topology(state: State<'_, AppState>) -> Result<String, String> {
+    let graph = state.graph.lock().map_err(|e| e.to_string())?;
+    let nodes = graph
+        .nodes_with_label("Resource")
+        .map_err(|e| e.to_string())?;
+    let edges = graph
+        .edges_with_labels(spec::TOPOLOGY_EDGE_LABELS)
+        .map_err(|e| e.to_string())?;
+    Ok(spec::topology_mermaid(&nodes, &edges))
 }
 
 /// Nodes carrying `label` (e.g. `Endpoint`, `Repo`), ordered by id.
@@ -203,8 +226,61 @@ fn main() {
             list_jobs,
             ingest_path,
             list_nodes,
-            read_evidence
+            read_evidence,
+            export_topology
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cartograph");
+}
+
+#[cfg(test)]
+mod tests {
+    use core_graph::{GraphStore, SqliteGraphStore};
+
+    #[test]
+    fn ingest_chain_produces_topology_artifact() {
+        // The ingest -> graph -> spec pipeline, minus the Tauri shell:
+        // mixed TS + Terraform tree in, Mermaid topology out (M2 exit gate).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("main.tf"),
+            r#"
+resource "aws_sqs_queue" "orders" {}
+resource "aws_lambda_function" "fulfill" {}
+resource "aws_lambda_event_source_mapping" "m" {
+  event_source_arn = aws_sqs_queue.orders.arn
+  function_name    = aws_lambda_function.fulfill.arn
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("app.ts"), "export function run() {}").unwrap();
+
+        let ts_id = adapters_lang_ts::SourceId {
+            repo: "local",
+            commit: "workdir",
+        };
+        let tf_id = iac::SourceId {
+            repo: "local",
+            commit: "workdir",
+        };
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        let ts = adapters_lang_ts::extract_dir(dir.path(), &ts_id).unwrap();
+        let tf = iac::extract_dir(dir.path(), &tf_id).unwrap();
+        for n in ts.nodes.iter().chain(tf.nodes.iter()) {
+            store.put_node(n).unwrap();
+        }
+        for e in ts.edges.iter().chain(tf.edges.iter()) {
+            store.put_edge(e).unwrap();
+        }
+
+        let nodes = store.nodes_with_label("Resource").unwrap();
+        let edges = store.edges_with_labels(spec::TOPOLOGY_EDGE_LABELS).unwrap();
+        let mmd = spec::topology_mermaid(&nodes, &edges);
+        assert!(
+            mmd.contains("res_aws_sqs_queue_orders -->|TRIGGERS| res_aws_lambda_function_fulfill")
+        );
+        // The TS layer coexists without leaking onto the infra artifact.
+        assert!(!mmd.contains("app_ts"));
+    }
 }

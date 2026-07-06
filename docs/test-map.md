@@ -21,7 +21,7 @@ rows in the same PR (see AGENTS.md).
 | T-0005 | AC-0005 | rust | adapters-lang-ts::call_edges_are_symbol_to_symbol, adapters-lang-ts::imports_resolve_relative_files_and_modules | intra-proc + import-bound; typed inter-proc still open (#2) |
 | T-0006 | AC-0006 | rust | adapters-lang-ts::every_fact_carries_confirmed_t0_provenance, adapters-lang-ts::evidence_spans_point_at_the_actual_source | plus story:Atlas/EvidencePanel/WithSource and manual:MT-M1-01 |
 | T-0007 | AC-0007 | rust | iac::resources_data_and_modules_become_resource_nodes, iac::interpolation_references_build_the_dag, iac::depends_on_is_distinct_from_references | resource DAG from HCL |
-| T-0008 | AC-0008 | rust | iac::capability_registry_emits_triggers_deterministically, iac::capability_registry_emits_subscribes, iac::iam_policy_grants_reference_target_resources_with_actions | TRIGGERS/SUBSCRIBES/GRANTS via registry |
+| T-0008 | AC-0008 | rust | iac::capability_registry_emits_triggers_deterministically, iac::capability_registry_emits_subscribes, iac::iam_policy_grants_reference_target_resources_with_actions | TRIGGERS/SUBSCRIBES/GRANTS via registry, plus manual:MT-M2-01 |
 | T-0009 | AC-0009 | reserved | — | M6: terraform state/plan T1 enrichment |
 | T-0010 | AC-0010 | reserved | — | M3: channel-identity literal match |
 | T-0011 | AC-0011 | reserved | — | M3: config resolver |

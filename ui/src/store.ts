@@ -64,6 +64,8 @@ export interface AppStore {
   stats: GraphStats | null;
   jobs: Job[];
   endpoints: GraphNode[];
+  /** Topology map artifact (Mermaid text); null with no backend. */
+  topology: string | null;
   ingestBusy: boolean;
   ingestSummary: IngestSummary | null;
   ingestError: string | null;
@@ -93,6 +95,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   stats: null,
   jobs: [],
   endpoints: [],
+  topology: null,
   ingestBusy: false,
   ingestSummary: null,
   ingestError: null,
@@ -101,15 +104,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
   refresh: async () => {
     const ping = await invokeOr<{ app: string; version: string } | null>('ping', null);
     if (ping === null) {
-      set({ backend: 'browser', version: null, stats: null, jobs: [], endpoints: [] });
+      set({
+        backend: 'browser',
+        version: null,
+        stats: null,
+        jobs: [],
+        endpoints: [],
+        topology: null,
+      });
       return;
     }
-    const [stats, jobs, endpoints] = await Promise.all([
+    const [stats, jobs, endpoints, topology] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
+      invokeOr<string | null>('export_topology', null),
     ]);
-    set({ backend: 'up', version: ping.version, stats, jobs, endpoints });
+    set({ backend: 'up', version: ping.version, stats, jobs, endpoints, topology });
   },
 
   enqueueJob: async (kind: string) => {

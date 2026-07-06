@@ -6,6 +6,7 @@ import { JobsCard } from './components/JobsCard';
 import { IngestCard } from './components/IngestCard';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
+import { TopologyCard } from './components/TopologyCard';
 
 export default function App() {
   const {
@@ -14,6 +15,7 @@ export default function App() {
     stats,
     jobs,
     endpoints,
+    topology,
     ingestBusy,
     ingestSummary,
     ingestError,
@@ -45,6 +47,7 @@ export default function App() {
         />
         <GraphStatsCard stats={stats} />
         <EndpointsCard endpoints={endpoints} onSelect={(node) => void select(node)} />
+        <TopologyCard mermaid={topology} />
         <JobsCard
           jobs={jobs}
           canEnqueue={backend === 'up'}
