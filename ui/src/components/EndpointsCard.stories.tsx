@@ -52,3 +52,25 @@ export const Populated: Story = {
     );
   },
 };
+
+// Regression for #41: a long route must not push the tier badge outside
+// its row (the badge is the R-INT-2 signal — it may never be clipped).
+export const LongPath: Story = {
+  args: {
+    endpoints: [
+      endpointFixture(
+        'POST',
+        '/api/v2/tenants/:tenantId/workspaces/:workspaceId/members/:memberId/notifications',
+      ),
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const badge = canvas.getByText('Confirmed');
+    const row = badge.closest('.endpoint-row')!;
+    const badgeBox = badge.getBoundingClientRect();
+    const rowBox = row.getBoundingClientRect();
+    await expect(badgeBox.right).toBeLessThanOrEqual(rowBox.right + 1);
+    await expect(badgeBox.left).toBeGreaterThanOrEqual(rowBox.left - 1);
+  },
+};

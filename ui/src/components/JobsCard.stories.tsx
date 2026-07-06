@@ -42,3 +42,30 @@ export const NoBackend: Story = {
     await expect(canvas.getByRole('button', { name: /enqueue test job/i })).toBeDisabled();
   },
 };
+
+// Regression for #41: an unbreakable ingest path wraps inside its row
+// instead of widening it (one wide row used to blow out the whole grid
+// track and scroll the shell sideways).
+export const LongIngestPath: Story = {
+  args: {
+    jobs: [
+      {
+        id: 19,
+        kind: 'ingest:/private/tmp/claude-503/-Users-chris-Code-cartograph/0de32f46-7d74-4fe2-a33c-43b3999d518f/scratchpad/mt-m3-fixture',
+        status: 'done',
+        created_at: '2026-07-06T05:00:00Z',
+        updated_at: '2026-07-06T05:00:02Z',
+      },
+    ],
+    canEnqueue: true,
+  },
+  play: async ({ canvasElement }) => {
+    const row = canvasElement.querySelector('.jobs-list li')!;
+    const card = canvasElement.querySelector('.card')!;
+    await expect(row.getBoundingClientRect().width).toBeLessThanOrEqual(
+      card.getBoundingClientRect().width,
+    );
+    // The path wrapped rather than overflowed.
+    await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
+  },
+};
