@@ -67,6 +67,9 @@ impl Extraction {
                     Some("sym") => "Symbol",
                     Some("mod") => "Module",
                     Some("ep") => "Endpoint",
+                    Some("res") => "Resource",
+                    Some("chan") => "Channel",
+                    Some("gap") => "Gap",
                     _ => "Unknown",
                 };
                 placeholders.push(Node {
@@ -235,6 +238,20 @@ fn classify_identity(
                     IdentityExpr::EnvRef(key.to_string())
                 }
                 _ => IdentityExpr::Computed(text.to_string()),
+            }
+        }
+        // Bracket form: `process.env['KEY']` — same deterministic env ref.
+        "subscript_expression" => {
+            let object = expr.child_by_field_name("object");
+            let index = expr.child_by_field_name("index");
+            match (object, index) {
+                (Some(o), Some(i)) if cx.text(&o) == "process.env" && i.kind() == "string" => {
+                    match classify_identity(cx, &i, const_strings) {
+                        IdentityExpr::Literal(key) if !key.is_empty() => IdentityExpr::EnvRef(key),
+                        _ => IdentityExpr::Computed(cx.text(expr).to_string()),
+                    }
+                }
+                _ => IdentityExpr::Computed(cx.text(expr).to_string()),
             }
         }
         _ => IdentityExpr::Computed(cx.text(expr).to_string()),
@@ -561,13 +578,15 @@ pub fn extract_source(
     // guessed from variable names.
 
     // Local `const X = 'literal'` bindings resolve identifiers to literals
-    // at T0 (same-file, deterministic).
+    // at T0 (same-file, deterministic). Only `const` counts: `let`/`var`
+    // bindings are reassignable, so promoting them would stamp Confirmed on
+    // a runtime value — those stay computed and escalate (AC-0012).
     let q_consts = Query::new(
         &language,
         r#"
         (variable_declarator
             name: (identifier) @name
-            value: (string (string_fragment) @lit))
+            value: (string (string_fragment) @lit)) @decl
         "#,
     )
     .expect("static query");
@@ -575,15 +594,21 @@ pub fn extract_source(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&q_consts, root, source);
     while let Some(m) = matches.next() {
-        let (mut name, mut lit) = (None, None);
+        let (mut name, mut lit, mut decl) = (None, None, None);
         for c in m.captures {
             match q_consts.capture_names()[c.index as usize] {
                 "name" => name = Some(cx.text(&c.node).to_string()),
                 "lit" => lit = Some(cx.text(&c.node).to_string()),
+                "decl" => decl = Some(c.node),
                 _ => {}
             }
         }
-        if let (Some(name), Some(lit)) = (name, lit) {
+        let is_const = decl
+            .and_then(|d| d.parent())
+            .filter(|p| p.kind() == "lexical_declaration")
+            .and_then(|p| p.child(0))
+            .is_some_and(|kw| kw.kind() == "const");
+        if let (Some(name), Some(lit), true) = (name, lit, is_const) {
             const_strings.insert(name, lit);
         }
     }

@@ -24,8 +24,8 @@ rows in the same PR (see AGENTS.md).
 | T-0008 | AC-0008 | rust | iac::capability_registry_emits_triggers_deterministically, iac::capability_registry_emits_subscribes, iac::iam_policy_grants_reference_target_resources_with_actions | TRIGGERS/SUBSCRIBES/GRANTS via registry, plus manual:MT-M2-01 |
 | T-0009 | AC-0009 | reserved | — | M6: terraform state/plan T1 enrichment |
 | T-0010 | AC-0010 | rust | events::literal_channel_ids_link_producer_and_consumer, events::kafka_producer_and_consumer_stitch_across_files, adapters-lang-ts::event_receiver_must_come_from_sdk_constructor | literal ids stitch; receivers proven from SDK |
-| T-0011 | AC-0011 | rust | events::config_resolved_channel_is_confirmed_via_env_file, events::config_index_parses_env_files_deterministically | env-file resolver; JSON/YAML config at M5 with the manifest |
-| T-0012 | AC-0012 | rust | events::computed_channel_emits_gap_with_reason, events::missing_env_key_emits_gap_naming_the_key | T0→Gap with reason; T1/T2 rungs join at M6/M7, cross-repo at M5 |
+| T-0011 | AC-0011 | rust | events::config_resolved_channel_is_confirmed_via_env_file, events::config_index_parses_env_files_deterministically, adapters-lang-ts::bracketed_env_access_is_an_env_ref | env-file resolver; JSON/YAML config at M5 with the manifest |
+| T-0012 | AC-0012 | rust | events::computed_channel_emits_gap_with_reason, events::missing_env_key_emits_gap_naming_the_key, adapters-lang-ts::let_bound_identity_stays_computed | T0→Gap with reason; T1/T2 rungs join at M6/M7, cross-repo at M5 |
 | T-0013 | AC-0013 | reserved | — | M4: Screen/Component + FETCHES |
 | T-0014 | AC-0014 | reserved | — | M4: fetch-site resolution |
 | T-0015 | AC-0015 | reserved | — | M3–M5: flowtracer hop tiers |

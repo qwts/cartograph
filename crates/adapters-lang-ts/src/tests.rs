@@ -316,3 +316,42 @@ new SendMessageCommand(params);
     assert_eq!(sites.len(), 1);
     assert!(matches!(sites[0].identity, IdentityExpr::Computed(_)));
 }
+
+// Only immutable `const` bindings promote to literal identities: a `let`
+// can be reassigned before the emit, so stamping Confirmed on it would
+// fabricate a channel for a runtime value (AC-0012 boundary).
+#[test]
+fn let_bound_identity_stays_computed() {
+    let sites = sites_for(
+        r#"
+import { EventEmitter } from 'events';
+const bus = new EventEmitter();
+let topic = 'orders';
+function a() { bus.emit(topic); }
+"#,
+    );
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].identity, IdentityExpr::Computed("topic".into()));
+}
+
+// Bracketed env access is the same deterministic config ref as dotted
+// access (AC-0011): `process.env['KEY']` resolves, computed keys do not.
+#[test]
+fn bracketed_env_access_is_an_env_ref() {
+    let sites = sites_for(
+        r#"
+import { EventEmitter } from 'events';
+const bus = new EventEmitter();
+function a(k: string) {
+  bus.emit(process.env['ORDERS_TOPIC']);
+  bus.emit(process.env[k]);
+}
+"#,
+    );
+    assert_eq!(sites.len(), 2);
+    assert_eq!(
+        sites[0].identity,
+        IdentityExpr::EnvRef("ORDERS_TOPIC".into())
+    );
+    assert!(matches!(sites[1].identity, IdentityExpr::Computed(_)));
+}

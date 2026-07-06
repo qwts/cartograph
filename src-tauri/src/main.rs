@@ -119,6 +119,10 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
     let stitched = events::stitch(&extraction.event_sites, &cfg, &ev_id);
     extraction.nodes.extend(stitched.nodes);
     extraction.edges.extend(stitched.edges);
+    // Stitched edge sources can name symbols the TS pass did not node-ify
+    // (class methods, non-handler arrows). Close over the combined facts so
+    // every endpoint exists before the FK-enforcing store sees the edges.
+    extraction.close_over_endpoints();
 
     let files = extraction
         .nodes
@@ -272,6 +276,11 @@ import { EventEmitter } from 'events';
 const bus = new EventEmitter();
 export function run() { bus.emit('order.placed'); }
 export function listen() { bus.on('order.placed', () => {}); }
+// A class-method producer: the TS pass emits no Symbol node for methods,
+// so the stitched edge source only exists via the post-stitch close-over.
+export class Shipper {
+  ship() { bus.emit('order.shipped'); }
+}
 "#,
         )
         .unwrap();
@@ -285,28 +294,25 @@ export function listen() { bus.on('order.placed', () => {}); }
             commit: "workdir",
         };
         let mut store = SqliteGraphStore::open_in_memory().unwrap();
-        let ts = adapters_lang_ts::extract_dir(dir.path(), &ts_id).unwrap();
+        // Mirrors ingest_path: TS + TF + stitch into one extraction, closed
+        // over before anything reaches the FK-enforcing store.
+        let mut extraction = adapters_lang_ts::extract_dir(dir.path(), &ts_id).unwrap();
         let tf = iac::extract_dir(dir.path(), &tf_id).unwrap();
+        extraction.nodes.extend(tf.nodes);
+        extraction.edges.extend(tf.edges);
         let cfg = events::ConfigIndex::from_dir(dir.path()).unwrap();
         let ev_id = events::SourceId {
             repo: "local",
             commit: "workdir",
         };
-        let ev = events::stitch(&ts.event_sites, &cfg, &ev_id);
-        for n in ts
-            .nodes
-            .iter()
-            .chain(tf.nodes.iter())
-            .chain(ev.nodes.iter())
-        {
+        let ev = events::stitch(&extraction.event_sites, &cfg, &ev_id);
+        extraction.nodes.extend(ev.nodes);
+        extraction.edges.extend(ev.edges);
+        extraction.close_over_endpoints();
+        for n in &extraction.nodes {
             store.put_node(n).unwrap();
         }
-        for e in ts
-            .edges
-            .iter()
-            .chain(tf.edges.iter())
-            .chain(ev.edges.iter())
-        {
+        for e in &extraction.edges {
             store.put_edge(e).unwrap();
         }
 
@@ -322,8 +328,22 @@ export function listen() { bus.on('order.placed', () => {}); }
         // The event layer stitched: producer and consumer share one channel
         // (US-0004), and channels stay off the infra artifact too.
         let channels = store.nodes_with_label("Channel").unwrap();
-        assert_eq!(channels.len(), 1);
-        assert_eq!(channels[0].id, "chan:inproc-event:order.placed");
+        let ids: Vec<&str> = channels.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "chan:inproc-event:order.placed",
+                "chan:inproc-event:order.shipped"
+            ]
+        );
         assert!(!mmd.contains("order.placed"));
+        // The class-method producer landed via a placeholder Symbol — the
+        // edge inserted without violating the store's foreign keys.
+        let symbols = store.nodes_with_label("Symbol").unwrap();
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.id == "sym:app.ts#ship" && s.props["placeholder"] == true)
+        );
     }
 }
