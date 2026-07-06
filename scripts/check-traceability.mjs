@@ -130,11 +130,24 @@ const expandTestRange = (cell) => {
   return ids;
 };
 
+// US-TM reserves AC and T ranges in parallel order (nth T realizes nth AC),
+// so the expected T -> AC pairing is derivable and enforced below.
 const reservedTestIds = new Set();
+const expectedAcForTest = new Map();
 for (const line of matrixSrc.split('\n')) {
-  if (/^\|\s*US-\d{4}\s*\|/u.test(line)) {
-    for (const id of expandTestRange(line)) reservedTestIds.add(id);
+  const row = line.match(/^\|\s*(US-\d{4})\s*\|([^|]*)\|/u);
+  if (!row) continue;
+  const acs = [...expandAcRange(row[2])];
+  const tids = [...expandTestRange(line)];
+  if (tids.length > 0 && tids.length !== acs.length) {
+    fail(
+      `${row[1]}: US-TM reserves ${tids.length} test ids for ${acs.length} ACs — ranges must pair 1:1`,
+    );
   }
+  tids.forEach((tid, i) => {
+    reservedTestIds.add(tid);
+    if (acs[i]) expectedAcForTest.set(tid, acs[i]);
+  });
 }
 
 const mapSrc = await readFile(path.join(ROOT, 'docs/test-map.md'), 'utf8');
@@ -155,7 +168,9 @@ async function collectFiles(dir, suffix, out) {
   }
 }
 
-const rustFns = new Map(); // crate name -> Set of fn names
+// Only #[test]-annotated functions count as realized coverage — a `rust:`
+// ref pointing at a production/helper fn must NOT satisfy the gate.
+const rustFns = new Map(); // crate name -> Set of #[test] fn names
 for (const base of ['crates', 'src-tauri']) {
   const files = [];
   await collectFiles(path.join(ROOT, base), '.rs', files);
@@ -163,8 +178,16 @@ for (const base of ['crates', 'src-tauri']) {
     const crate =
       base === 'src-tauri' ? 'app' : path.relative(path.join(ROOT, 'crates'), file).split(path.sep)[0];
     const fns = rustFns.get(crate) ?? new Set();
-    for (const m of (await readFile(file, 'utf8')).matchAll(/\bfn\s+(\w+)\s*[(<]/gu)) {
-      fns.add(m[1]);
+    let armed = false; // saw a #[test]-like attribute; other attrs/comments may sit between
+    for (const line of (await readFile(file, 'utf8')).split('\n')) {
+      if (/^\s*#\[(?:[\w:]+::)?test(?:[\](]|$)/u.test(line)) {
+        armed = true;
+        continue;
+      }
+      if (/^\s*(#\[|\/\/)/u.test(line) || line.trim() === '') continue;
+      const m = line.match(/\bfn\s+(\w+)\s*[(<]/u);
+      if (m && armed) fns.add(m[1]);
+      armed = false;
     }
     rustFns.set(crate, fns);
   }
@@ -208,6 +231,10 @@ for (const line of mapSrc.split('\n')) {
   mappedTestIds.add(tid);
   if (!reservedTestIds.has(tid)) fail(`${tid} is in test-map.md but reserved by no US-TM row`);
   if (!seenAcs.has(ac)) fail(`${tid} maps to ${ac}, which no story defines`);
+  const expected = expectedAcForTest.get(tid);
+  if (expected && expected !== ac) {
+    fail(`${tid} maps to ${ac}, but US-TM reserves it for ${expected}`);
+  }
   const refs = refCell.trim();
   if (kind === 'reserved') {
     if (refs !== '—' && refs !== '-') fail(`${tid} is reserved but has a reference "${refs}"`);
