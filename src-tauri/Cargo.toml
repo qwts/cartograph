@@ -19,6 +19,7 @@ adapters-lang-ts = { workspace = true }
 iac = { workspace = true }
 events = { workspace = true }
 flowtracer = { workspace = true }
+ingest = { workspace = true }
 spec = { workspace = true }
 
 [dev-dependencies]

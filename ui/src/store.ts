@@ -97,10 +97,12 @@ async function loadEndpoints(): Promise<GraphNode[]> {
   return invokeOr<GraphNode[]>('list_nodes', [], { label: 'Endpoint' });
 }
 
-/** The ingest root recorded on the Repo node; evidence reads are confined to it. */
-async function repoRoot(): Promise<string | null> {
+/** The ingest root for an evidence ref's repo — each Repo node carries its
+ *  own tree root, so multi-repo graphs resolve evidence per repo. */
+async function repoRoot(repo: string): Promise<string | null> {
   const repos = await invokeOr<GraphNode[]>('list_nodes', [], { label: 'Repo' });
-  const root = repos[0]?.props?.root;
+  const match = repos.find((r) => r.id === `repo:${repo}`) ?? repos[0];
+  const root = match?.props?.root;
   return typeof root === 'string' ? root : null;
 }
 
@@ -161,8 +163,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   ingest: async (path: string) => {
     // Clear prior outcome up front so a failed run never shows a stale summary.
     set({ ingestBusy: true, ingestError: null, ingestSummary: null });
+    // A GitHub reference clones with real identity (US-0001); anything else
+    // ingests as a local tree.
+    const isRepoUrl = /^(https:\/\/github\.com\/|git@github\.com:)/.test(path.trim());
     try {
-      const summary = await invokeOr<IngestSummary | null>('ingest_path', null, { path });
+      const summary = await invokeOr<IngestSummary | null>(
+        isRepoUrl ? 'add_repo' : 'ingest_path',
+        null,
+        isRepoUrl ? { url: path.trim() } : { path },
+      );
       set({ ingestSummary: summary });
     } catch (e) {
       set({ ingestError: String(e) });
@@ -180,7 +189,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     };
     const ev = node.props.prov?.evidence[0];
     if (!ev) return done('unavailable');
-    const root = await repoRoot();
+    const root = await repoRoot(ev.repo);
     if (root === null) return done('unavailable');
     try {
       const source = await invokeOr<EvidenceSource | null>('read_evidence', null, {

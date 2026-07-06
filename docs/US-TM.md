@@ -36,3 +36,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0006 | Kuzu graph store + SQLite/WAL spine + content-addressed determinism |
 | ADR-0007 | Strict agentic SDLC from inception; dogfood v1, expand scope later |
 | ADR-0008 | SQLite recursive-CTE as primary graph store (Kuzu archived upstream) |
+| ADR-0009 | v1 GitHub auth ladder: env token → gh CLI; GitHub App deferred |

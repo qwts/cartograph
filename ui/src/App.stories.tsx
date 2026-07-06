@@ -96,6 +96,15 @@ function installFakeCore() {
         return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
       case 'ingest_path':
         return { job_id: 1, files: 2, nodes: 12, edges: 18 };
+      case 'add_repo':
+        return {
+          job_id: 2,
+          repo: 'acme/shop',
+          commit_sha: 'a'.repeat(40),
+          files: 3,
+          nodes: 20,
+          edges: 30,
+        };
       case 'enqueue_job': {
         const job: MockJob = {
           id: jobs.length + 1,

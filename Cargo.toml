@@ -25,5 +25,6 @@ adapters-fw = { path = "crates/adapters-fw" }
 adapters-lang-ts = { path = "crates/adapters-lang-ts" }
 events = { path = "crates/events" }
 flowtracer = { path = "crates/flowtracer" }
+ingest = { path = "crates/ingest" }
 iac = { path = "crates/iac" }
 spec = { path = "crates/spec" }

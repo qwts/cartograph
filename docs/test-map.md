@@ -14,9 +14,9 @@ rows in the same PR (see AGENTS.md).
 
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
-| T-0001 | AC-0001 | reserved | — | M-next: GitHub ingest (US-0001) |
+| T-0001 | AC-0001 | rust | ingest::clone_lists_repo_with_commit_sha, ingest::repo_urls_parse_to_identities | offline file:// fixtures; live clone + UI listing at slice complete |
 | T-0002 | AC-0002 | reserved | — | topology manifest (US-0001) |
-| T-0003 | AC-0003 | reserved | — | auth failure path (US-0001) |
+| T-0003 | AC-0003 | rust | ingest::failed_clone_leaves_nothing_behind, ingest::auth_errors_carry_remediation | typed remediation; live 401 path manual at the milestone boundary |
 | T-0004 | AC-0004 | rust | adapters-lang-ts::extracts_express_endpoints_not_arbitrary_calls, adapters-lang-ts::endpoint_receiver_must_come_from_framework_factory, adapters-lang-ts::handles_edges_bind_named_and_anonymous_handlers | Express registry; receiver proven from factory |
 | T-0005 | AC-0005 | rust | adapters-lang-ts::call_edges_are_symbol_to_symbol, adapters-lang-ts::imports_resolve_relative_files_and_modules | intra-proc + import-bound; typed inter-proc still open (#2) |
 | T-0006 | AC-0006 | rust | adapters-lang-ts::every_fact_carries_confirmed_t0_provenance, adapters-lang-ts::evidence_spans_point_at_the_actual_source | plus story:Atlas/EvidencePanel/WithSource and manual:MT-M1-01 |

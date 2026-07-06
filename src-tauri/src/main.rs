@@ -70,8 +70,77 @@ struct IngestSummary {
     edges: u64,
 }
 
-/// Run T0 TypeScript extraction over a local directory and load the facts
-/// into the graph (M1 slice of US-0002; GitHub clone ingest is US-0001).
+/// The four-layer T0 pipeline over one tree: TypeScript, Terraform,
+/// channel stitching, client fetch resolution — closed over so the
+/// FK-enforcing store never sees a dangling endpoint.
+fn extract_tree(
+    root: &std::path::Path,
+    repo: &str,
+    commit: &str,
+) -> Result<adapters_lang_ts::Extraction, String> {
+    let ts_id = adapters_lang_ts::SourceId { repo, commit };
+    let mut extraction = adapters_lang_ts::extract_dir(root, &ts_id).map_err(|e| e.to_string())?;
+    let tf_id = iac::SourceId { repo, commit };
+    let tf = iac::extract_dir(root, &tf_id).map_err(|e| e.to_string())?;
+    extraction.nodes.extend(tf.nodes);
+    extraction.edges.extend(tf.edges);
+    let cfg = events::ConfigIndex::from_dir(root).map_err(|e| e.to_string())?;
+    let ev_id = events::SourceId { repo, commit };
+    let stitched = events::stitch(&extraction.event_sites, &cfg, &ev_id);
+    extraction.nodes.extend(stitched.nodes);
+    extraction.edges.extend(stitched.edges);
+    let endpoint_ids: Vec<String> = extraction
+        .nodes
+        .iter()
+        .filter(|n| n.label == "Endpoint")
+        .map(|n| n.id.clone())
+        .collect();
+    let fetched = events::stitch_fetches(&extraction.fetch_sites, &endpoint_ids, &cfg, &ev_id);
+    extraction.nodes.extend(fetched.nodes);
+    extraction.edges.extend(fetched.edges);
+    extraction.close_over_endpoints();
+    Ok(extraction)
+}
+
+/// Load an extraction plus its `Repo` node (`repo:{identity}`, carrying the
+/// tree root and commit so evidence reads resolve per repo).
+fn load_into_graph(
+    graph: &mut SqliteGraphStore,
+    extraction: &adapters_lang_ts::Extraction,
+    repo: &str,
+    root: &std::path::Path,
+    commit: &str,
+) -> Result<(), String> {
+    let repo_prov = core_prov::Provenance::new(
+        core_prov::Tier::Deterministic,
+        core_prov::ConfidenceTier::Confirmed,
+        vec![],
+        "app.ingest",
+        root.to_string_lossy().as_bytes(),
+    )
+    .expect("within ceiling");
+    graph
+        .put_node(&Node {
+            id: format!("repo:{repo}"),
+            label: "Repo".into(),
+            props: serde_json::json!({
+                "root": root.to_string_lossy(),
+                "commit": commit,
+                "prov": serde_json::to_value(repo_prov).expect("serializes"),
+            }),
+        })
+        .map_err(|e| e.to_string())?;
+    for node in &extraction.nodes {
+        graph.put_node(node).map_err(|e| e.to_string())?;
+    }
+    for edge in &extraction.edges {
+        graph.put_edge(edge).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Run T0 extraction over a local directory and load the facts into the
+/// graph (US-0002 local path; GitHub clone ingest is `add_repo`).
 #[tauri::command]
 fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary, String> {
     let job_id = {
@@ -90,51 +159,11 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         e
     };
 
-    // Local unversioned tree: repo/commit identify the workdir until the
-    // GitHub ingest (US-0001) supplies real clone coordinates.
+    // Local unversioned tree: identified by directory basename until a
+    // real clone supplies owner/name@sha (`add_repo`).
     let root = std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let ts_id = adapters_lang_ts::SourceId {
-        repo: "local",
-        commit: "workdir",
-    };
-    let mut extraction = adapters_lang_ts::extract_dir(&root, &ts_id)
-        .map_err(|e| fail(e.to_string(), &state, job_id))?;
-    // Same tree, second layer: Terraform (US-0003). Both extractors are T0;
-    // their node id schemes are disjoint (file:/sym:/ep: vs res:).
-    let tf_id = iac::SourceId {
-        repo: "local",
-        commit: "workdir",
-    };
-    let tf = iac::extract_dir(&root, &tf_id).map_err(|e| fail(e.to_string(), &state, job_id))?;
-    extraction.nodes.extend(tf.nodes);
-    extraction.edges.extend(tf.edges);
-    // Third layer over the same tree: channel stitching (US-0004). Event
-    // sites from the TS pass resolve against env files present in the repo.
-    let cfg =
-        events::ConfigIndex::from_dir(&root).map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let ev_id = events::SourceId {
-        repo: "local",
-        commit: "workdir",
-    };
-    let stitched = events::stitch(&extraction.event_sites, &cfg, &ev_id);
-    extraction.nodes.extend(stitched.nodes);
-    extraction.edges.extend(stitched.edges);
-    // Fourth layer: client fetch sites resolve against the endpoints the
-    // server pass just recovered (US-0005).
-    let endpoint_ids: Vec<String> = extraction
-        .nodes
-        .iter()
-        .filter(|n| n.label == "Endpoint")
-        .map(|n| n.id.clone())
-        .collect();
-    let fetched = events::stitch_fetches(&extraction.fetch_sites, &endpoint_ids, &cfg, &ev_id);
-    extraction.nodes.extend(fetched.nodes);
-    extraction.edges.extend(fetched.edges);
-    // Stitched edge sources can name symbols the TS pass did not node-ify
-    // (class methods, non-handler arrows). Close over the combined facts so
-    // every endpoint exists before the FK-enforcing store sees the edges.
-    extraction.close_over_endpoints();
-
+    let extraction =
+        extract_tree(&root, "local", "workdir").map_err(|e| fail(e, &state, job_id))?;
     let files = extraction
         .nodes
         .iter()
@@ -145,41 +174,90 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
             .graph
             .lock()
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        // Repo node records where the tree lives so evidence views can read
-        // source later (survives restarts with the graph).
-        let repo_prov = core_prov::Provenance::new(
-            core_prov::Tier::Deterministic,
-            core_prov::ConfidenceTier::Confirmed,
-            vec![],
-            "app.ingest",
-            root.to_string_lossy().as_bytes(),
-        )
-        .expect("within ceiling");
-        graph
-            .put_node(&Node {
-                id: format!("repo:{}", ts_id.repo),
-                label: "Repo".into(),
-                props: serde_json::json!({
-                    "root": root.to_string_lossy(),
-                    "prov": serde_json::to_value(repo_prov).expect("serializes"),
-                }),
-            })
-            .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        for node in &extraction.nodes {
-            graph
-                .put_node(node)
-                .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        }
-        for edge in &extraction.edges {
-            graph
-                .put_edge(edge)
-                .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        }
+        load_into_graph(&mut graph, &extraction, "local", &root, "workdir")
+            .map_err(|e| fail(e, &state, job_id))?;
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
     Ok(IngestSummary {
         job_id,
+        files,
+        nodes: extraction.nodes.len() as u64,
+        edges: extraction.edges.len() as u64,
+    })
+}
+
+#[derive(Serialize)]
+struct AddRepoSummary {
+    job_id: i64,
+    repo: String,
+    commit_sha: String,
+    files: u64,
+    nodes: u64,
+    edges: u64,
+}
+
+/// Clone a GitHub repo (read-only, shallow) and ingest it with its real
+/// identity — every fact's evidence carries owner/name@sha (US-0001,
+/// AC-0001). Auth per the ADR-0009 ladder; failures carry remediation and
+/// leave no partial clone (AC-0003).
+#[tauri::command]
+fn add_repo(
+    url: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AddRepoSummary, String> {
+    let job_id = {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        let job = jobs
+            .enqueue(&format!("add-repo:{url}"))
+            .map_err(|e| e.to_string())?;
+        jobs.set_status(job.id, "running")
+            .map_err(|e| e.to_string())?;
+        job.id
+    };
+    let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
+        if let Ok(mut jobs) = state.jobs.lock() {
+            let _ = jobs.set_status(job_id, "failed");
+        }
+        e
+    };
+
+    let repos_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| fail(e.to_string(), &state, job_id))?
+        .join("repos");
+    let token = ingest::discover_token();
+    let cloned = ingest::clone_repo(&url, &repos_dir, token.as_deref())
+        .map_err(|e| fail(e.to_string(), &state, job_id))?;
+    let extraction = extract_tree(&cloned.path, &cloned.repo, &cloned.commit_sha)
+        .map_err(|e| fail(e, &state, job_id))?;
+    let files = extraction
+        .nodes
+        .iter()
+        .filter(|n| n.label == "File" && n.props.get("placeholder").is_none())
+        .count() as u64;
+    {
+        let mut graph = state
+            .graph
+            .lock()
+            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        load_into_graph(
+            &mut graph,
+            &extraction,
+            &cloned.repo,
+            &cloned.path,
+            &cloned.commit_sha,
+        )
+        .map_err(|e| fail(e, &state, job_id))?;
+    }
+    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+    jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
+    Ok(AddRepoSummary {
+        job_id,
+        repo: cloned.repo,
+        commit_sha: cloned.commit_sha,
         files,
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
@@ -286,7 +364,8 @@ fn main() {
             read_evidence,
             export_topology,
             export_flows,
-            list_flows
+            list_flows,
+            add_repo
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cartograph");
@@ -295,6 +374,84 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use core_graph::{GraphStore, SqliteGraphStore};
+
+    #[test]
+    fn cloned_repo_ingests_with_real_identity() {
+        // US-0001 (AC-0001): clone -> extract -> every fact carries
+        // owner-ish identity + commit SHA instead of local@workdir.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src-repo");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("app.ts"),
+            "import express from 'express';\nconst app = express();\napp.get('/ping', (req, res) => {});\n",
+        )
+        .unwrap();
+        let git = |args: &[&str], cwd: &std::path::Path| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q", "-b", "main"], &src);
+        git(&["add", "."], &src);
+        git(&["commit", "-q", "-m", "init"], &src);
+        let bare = dir.path().join("shop.git");
+        git(
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                src.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+            dir.path(),
+        );
+
+        let cloned = ingest::clone_repo(
+            &format!("file://{}", bare.display()),
+            &dir.path().join("clones"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(cloned.repo, "local/shop");
+        assert_eq!(cloned.commit_sha.len(), 40);
+
+        let extraction =
+            crate::extract_tree(&cloned.path, &cloned.repo, &cloned.commit_sha).unwrap();
+        let ep = extraction
+            .nodes
+            .iter()
+            .find(|n| n.label == "Endpoint")
+            .expect("endpoint recovered from the clone");
+        let ev = &ep.props["prov"]["evidence"][0];
+        assert_eq!(ev["repo"], "local/shop");
+        assert_eq!(ev["commit_sha"].as_str().unwrap(), cloned.commit_sha);
+
+        // Repo node carries root + commit for per-repo evidence resolution.
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        crate::load_into_graph(
+            &mut store,
+            &extraction,
+            &cloned.repo,
+            &cloned.path,
+            &cloned.commit_sha,
+        )
+        .unwrap();
+        let repos = store.nodes_with_label("Repo").unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].id, "repo:local/shop");
+        assert_eq!(
+            repos[0].props["commit"].as_str().unwrap(),
+            cloned.commit_sha
+        );
+    }
 
     #[test]
     fn ingest_chain_produces_topology_artifact() {

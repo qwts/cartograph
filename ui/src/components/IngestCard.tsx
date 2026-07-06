@@ -27,7 +27,7 @@ export function IngestCard({ busy, summary, error, canIngest, onIngest }: Ingest
         <input
           type="text"
           value={path}
-          placeholder="/path/to/a/typescript/repo"
+          placeholder="/path/to/a/repo or https://github.com/owner/name"
           aria-label="Directory to ingest"
           onChange={(e) => setPath(e.target.value)}
           disabled={!canIngest || busy}
