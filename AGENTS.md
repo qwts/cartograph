@@ -65,6 +65,13 @@ npm --prefix ui run lint && npm --prefix ui run typecheck && npm --prefix ui run
 To see the app itself: `npm run tauri dev` (root). This section is the single
 place that lists the gates; CI mirrors it exactly.
 
+**UI components ship with a story.** `ui/` components are presentational
+(props in, callbacks out) with a `*.stories.tsx` next to them; interaction
+behavior goes in `play` functions (they run as tests via the vitest storybook
+project — part of `npm run test`). Stories needing backend data mock the Rust
+core with `mockIPC` from `@tauri-apps/api/mocks` (pattern: `App.stories.tsx`).
+Storybook itself: `npm run storybook` (from `ui/`).
+
 ## Documentation map
 
 - `docs/SPEC-00_master.md` — master spec (single source of truth)
