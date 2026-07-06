@@ -78,13 +78,13 @@ fn resources_data_and_modules_become_resource_nodes() {
     // AC-0007: resource DAG built from HCL.
     let ex = extract_source(MAIN_TF, "main.tf", &id()).unwrap();
     let ids: Vec<_> = ex.nodes.iter().map(|n| n.id.as_str()).collect();
-    assert!(ids.contains(&"res:aws_sqs_queue.orders"));
-    assert!(ids.contains(&"res:data.aws_ami.app"));
-    assert!(ids.contains(&"res:module.vpc"));
+    assert!(ids.contains(&"res:qwtm/infra@aws_sqs_queue.orders"));
+    assert!(ids.contains(&"res:qwtm/infra@data.aws_ami.app"));
+    assert!(ids.contains(&"res:qwtm/infra@module.vpc"));
     let queue = ex
         .nodes
         .iter()
-        .find(|n| n.id == "res:aws_sqs_queue.orders")
+        .find(|n| n.id == "res:qwtm/infra@aws_sqs_queue.orders")
         .unwrap();
     assert_eq!(queue.props["provider"], "aws");
     assert_eq!(queue.props["type"], "aws_sqs_queue");
@@ -96,11 +96,17 @@ fn interpolation_references_build_the_dag() {
     // var.* / count.* never do.
     let ex = extract_source(MAIN_TF, "main.tf", &id()).unwrap();
     let refs = edge_pairs(&ex, "REFERENCES");
-    assert!(refs.contains(&("res:aws_instance.app", "res:data.aws_ami.app")));
-    assert!(refs.contains(&("res:aws_instance.app", "res:module.vpc")));
     assert!(refs.contains(&(
-        "res:aws_lambda_function.fulfill",
-        "res:aws_iam_role.lambda_role"
+        "res:qwtm/infra@aws_instance.app",
+        "res:qwtm/infra@data.aws_ami.app"
+    )));
+    assert!(refs.contains(&(
+        "res:qwtm/infra@aws_instance.app",
+        "res:qwtm/infra@module.vpc"
+    )));
+    assert!(refs.contains(&(
+        "res:qwtm/infra@aws_lambda_function.fulfill",
+        "res:qwtm/infra@aws_iam_role.lambda_role"
     )));
     assert!(
         !ex.edges
@@ -114,8 +120,8 @@ fn depends_on_is_distinct_from_references() {
     let ex = extract_source(MAIN_TF, "main.tf", &id()).unwrap();
     let deps = edge_pairs(&ex, "DEPENDS_ON");
     assert!(deps.contains(&(
-        "res:aws_sns_topic_subscription.alerts",
-        "res:aws_sqs_queue.orders"
+        "res:qwtm/infra@aws_sns_topic_subscription.alerts",
+        "res:qwtm/infra@aws_sqs_queue.orders"
     )));
 }
 
@@ -127,14 +133,14 @@ fn capability_registry_emits_triggers_deterministically() {
     assert_eq!(
         triggers,
         vec![(
-            "res:aws_sqs_queue.orders",
-            "res:aws_lambda_function.fulfill"
+            "res:qwtm/infra@aws_sqs_queue.orders",
+            "res:qwtm/infra@aws_lambda_function.fulfill"
         )]
     );
     let edge = ex.edges.iter().find(|e| e.label == "TRIGGERS").unwrap();
     assert_eq!(
         edge.props["via"],
-        "res:aws_lambda_event_source_mapping.orders_to_fulfill"
+        "res:qwtm/infra@aws_lambda_event_source_mapping.orders_to_fulfill"
     );
     assert_eq!(edge.props["registry"], registry::REGISTRY_VERSION);
 }
@@ -145,7 +151,10 @@ fn capability_registry_emits_subscribes() {
     let subs = edge_pairs(&ex, "SUBSCRIBES");
     assert_eq!(
         subs,
-        vec![("res:aws_sqs_queue.orders", "res:aws_sns_topic.alerts")]
+        vec![(
+            "res:qwtm/infra@aws_sqs_queue.orders",
+            "res:qwtm/infra@aws_sns_topic.alerts"
+        )]
     );
 }
 
@@ -157,8 +166,8 @@ fn iam_policy_grants_reference_target_resources_with_actions() {
     assert_eq!(
         grants,
         vec![(
-            "res:aws_iam_role_policy.fulfill_policy",
-            "res:aws_sqs_queue.orders"
+            "res:qwtm/infra@aws_iam_role_policy.fulfill_policy",
+            "res:qwtm/infra@aws_sqs_queue.orders"
         )]
     );
     let edge = ex.edges.iter().find(|e| e.label == "GRANTS").unwrap();
@@ -191,7 +200,7 @@ fn evidence_span_covers_the_declaring_block() {
     let mapping = ex
         .nodes
         .iter()
-        .find(|n| n.id == "res:aws_lambda_event_source_mapping.orders_to_fulfill")
+        .find(|n| n.id == "res:qwtm/infra@aws_lambda_event_source_mapping.orders_to_fulfill")
         .unwrap();
     let ev = &mapping.props["prov"]["evidence"][0];
     let span = &MAIN_TF

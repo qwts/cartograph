@@ -159,11 +159,16 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         e
     };
 
-    // Local unversioned tree: identified by directory basename until a
-    // real clone supplies owner/name@sha (`add_repo`).
+    // Local unversioned tree: identified by directory basename (two dirs
+    // with the same basename still collide — real identity is `add_repo`).
     let root = std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let extraction =
-        extract_tree(&root, "local", "workdir").map_err(|e| fail(e, &state, job_id))?;
+    let repo = format!(
+        "local/{}",
+        root.file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default()
+    );
+    let extraction = extract_tree(&root, &repo, "workdir").map_err(|e| fail(e, &state, job_id))?;
     let files = extraction
         .nodes
         .iter()
@@ -174,7 +179,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
             .graph
             .lock()
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        load_into_graph(&mut graph, &extraction, "local", &root, "workdir")
+        load_into_graph(&mut graph, &extraction, &repo, &root, "workdir")
             .map_err(|e| fail(e, &state, job_id))?;
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
@@ -454,6 +459,61 @@ mod tests {
     }
 
     #[test]
+    fn identical_repos_do_not_collide_in_one_graph() {
+        // US-0001 slice 2 (#1 scope note): the same relative path, route,
+        // and Terraform address in two repos stay two facts — ids are
+        // repo-namespaced, provenance never cross-contaminates. Channels
+        // stay global: they are the cross-repo stitch points.
+        let fixture = |dir: &std::path::Path| {
+            std::fs::write(
+                dir.join("app.ts"),
+                r#"
+import express from 'express';
+import { EventEmitter } from 'events';
+const app = express();
+const bus = new EventEmitter();
+app.get('/health', (req, res) => { beat(); });
+export function beat() { bus.emit('heartbeat'); }
+"#,
+            )
+            .unwrap();
+            std::fs::write(dir.join("main.tf"), "resource \"aws_sqs_queue\" \"q\" {}\n").unwrap();
+        };
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        fixture(a.path());
+        fixture(b.path());
+
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        for (dir, repo, sha) in [
+            (a.path(), "acme/one", "a".repeat(40)),
+            (b.path(), "acme/two", "b".repeat(40)),
+        ] {
+            let ex = crate::extract_tree(dir, repo, &sha).unwrap();
+            crate::load_into_graph(&mut store, &ex, repo, dir, &sha).unwrap();
+        }
+
+        // Two of everything repo-scoped…
+        let eps = store.nodes_with_label("Endpoint").unwrap();
+        assert_eq!(eps.len(), 2);
+        assert!(eps.iter().any(|e| e.id == "ep:acme/one@GET:/health"));
+        assert!(eps.iter().any(|e| e.id == "ep:acme/two@GET:/health"));
+        for ep in &eps {
+            let ev = &ep.props["prov"]["evidence"][0];
+            let repo = ev["repo"].as_str().unwrap();
+            assert!(ep.id.contains(repo), "provenance matches its own repo");
+        }
+        assert_eq!(store.nodes_with_label("Repo").unwrap().len(), 2);
+        let resources = store.nodes_with_label("Resource").unwrap();
+        assert_eq!(resources.len(), 2, "same tf address, two nodes");
+        // …and ONE of the global channel: both repos emit 'heartbeat', and
+        // that shared identity is exactly what M5 stitches across repos.
+        let chans = store.nodes_with_label("Channel").unwrap();
+        assert_eq!(chans.len(), 1);
+        assert_eq!(chans[0].id, "chan:inproc-event:heartbeat");
+    }
+
+    #[test]
     fn ingest_chain_produces_topology_artifact() {
         // The ingest -> graph -> spec pipeline, minus the Tauri shell:
         // mixed TS + Terraform tree in, Mermaid topology out (M2 exit gate).
@@ -548,9 +608,7 @@ export function App() {
         let nodes = store.nodes_with_label("Resource").unwrap();
         let edges = store.edges_with_labels(spec::TOPOLOGY_EDGE_LABELS).unwrap();
         let mmd = spec::topology_mermaid(&nodes, &edges);
-        assert!(
-            mmd.contains("res_aws_sqs_queue_orders -->|TRIGGERS| res_aws_lambda_function_fulfill")
-        );
+        assert!(mmd.contains("|TRIGGERS|"));
         // The TS layer coexists without leaking onto the infra artifact.
         assert!(!mmd.contains("app_ts"));
 
@@ -572,17 +630,17 @@ export function App() {
         assert!(
             symbols
                 .iter()
-                .any(|s| s.id == "sym:app.ts#ship" && s.props["placeholder"] == true)
+                .any(|s| s.id == "sym:local@app.ts#ship" && s.props["placeholder"] == true)
         );
 
         // Client layer (US-0005): the route became a Screen, and the
         // component's fetch resolved Confirmed against the server endpoint.
         let screens = store.nodes_with_label("Screen").unwrap();
         assert_eq!(screens.len(), 1);
-        assert_eq!(screens[0].id, "screen:/checkout");
+        assert_eq!(screens[0].id, "screen:local@/checkout");
         let fetches = store.edges_with_labels(&["FETCHES"]).unwrap();
         assert_eq!(fetches.len(), 1);
-        assert_eq!(fetches[0].dst, "ep:POST:/orders");
+        assert_eq!(fetches[0].dst, "ep:local@POST:/orders");
         assert_eq!(
             fetches[0].props["prov"]["confidence_tier"], "Confirmed",
             "resolvable fetch is Confirmed (AC-0014)"

@@ -132,12 +132,16 @@ impl FileCx<'_> {
     }
 }
 
-fn file_id(path: &str) -> String {
-    format!("file:{path}")
+/// Node ids are repo-namespaced (`{kind}:{repo}@{rest}`, US-0001 slice 2):
+/// the same relative path or route in two repos must never collide.
+/// Channels (`chan:`) and npm modules (`mod:`) stay global — they are the
+/// cross-repo stitch points.
+fn file_id(repo: &str, path: &str) -> String {
+    format!("file:{repo}@{path}")
 }
 
-fn sym_id(path: &str, name: &str) -> String {
-    format!("sym:{path}#{name}")
+fn sym_id(repo: &str, path: &str, name: &str) -> String {
+    format!("sym:{repo}@{path}#{name}")
 }
 
 /// Resolve a relative import specifier against the importing file's path.
@@ -171,7 +175,7 @@ fn enclosing_symbol(cx: &FileCx, mut node: TsNode) -> Option<String> {
         match parent.kind() {
             "function_declaration" | "method_definition" => {
                 let name = parent.child_by_field_name("name")?;
-                return Some(sym_id(cx.path, cx.text(&name)));
+                return Some(sym_id(cx.id.repo, cx.path, cx.text(&name)));
             }
             "arrow_function" | "function_expression" => {
                 // Named via `const f = () => {}`?
@@ -180,11 +184,15 @@ fn enclosing_symbol(cx: &FileCx, mut node: TsNode) -> Option<String> {
                     .filter(|p| p.kind() == "variable_declarator")
                     && let Some(name) = decl.child_by_field_name("name")
                 {
-                    return Some(sym_id(cx.path, cx.text(&name)));
+                    return Some(sym_id(cx.id.repo, cx.path, cx.text(&name)));
                 }
                 // Anonymous (e.g. inline route handler): stable offset-keyed id,
                 // shared with the endpoint extractor.
-                return Some(sym_id(cx.path, &format!("anon@{}", parent.start_byte())));
+                return Some(sym_id(
+                    cx.id.repo,
+                    cx.path,
+                    &format!("anon@{}", parent.start_byte()),
+                ));
             }
             _ => node = parent,
         }
@@ -215,7 +223,7 @@ fn enclosing_component(cx: &FileCx, node: TsNode) -> Option<String> {
         if let Some(name) = name
             && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
         {
-            return Some(sym_id(cx.path, &name));
+            return Some(sym_id(cx.id.repo, cx.path, &name));
         }
         current = parent;
     }
@@ -359,7 +367,7 @@ pub fn extract_source(
 
     // File node spans the whole file.
     out.nodes.push(Node {
-        id: file_id(path),
+        id: file_id(id.repo, path),
         label: "File".into(),
         props: serde_json::json!({ "path": path, "prov": cx.prov(&root, &format!("File {path}")) }),
     });
@@ -394,7 +402,7 @@ pub fn extract_source(
             continue;
         };
         let name = cx.text(&name_node).to_string();
-        let sid = sym_id(path, &name);
+        let sid = sym_id(id.repo, path, &name);
         // A capitalized function in a .tsx file is a React component
         // (SPEC-00 §3.5) — same node id, so call edges keep working.
         let is_component = is_tsx && name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
@@ -409,7 +417,7 @@ pub fn extract_source(
         });
         out.edges.push(Edge {
             src: sid.clone(),
-            dst: file_id(path),
+            dst: file_id(id.repo, path),
             label: "DEFINED_IN".into(),
             props: serde_json::json!({ "prov": cx.prov(&def_node, &format!("DEFINED_IN {sid}")) }),
         });
@@ -447,11 +455,11 @@ pub fn extract_source(
         };
         let target_file = resolve_relative(path, &spec);
         let dst = match &target_file {
-            Some(f) => file_id(f),
+            Some(f) => file_id(id.repo, f),
             None => format!("mod:{spec}"),
         };
         out.edges.push(Edge {
-            src: file_id(path),
+            src: file_id(id.repo, path),
             dst: dst.clone(),
             label: "IMPORTS".into(),
             props: serde_json::json!({
@@ -480,8 +488,10 @@ pub fn extract_source(
                             // `import { a as b }` binds `b` locally.
                             let local = s.child_by_field_name("alias").unwrap_or(name);
                             if let Some(f) = &target_file {
-                                imported
-                                    .insert(cx.text(&local).to_string(), sym_id(f, cx.text(&name)));
+                                imported.insert(
+                                    cx.text(&local).to_string(),
+                                    sym_id(id.repo, f, cx.text(&name)),
+                                );
                             } else {
                                 import_modules.insert(cx.text(&local).to_string(), spec.clone());
                             }
@@ -566,7 +576,7 @@ pub fn extract_source(
         let Some(verb) = EXPRESS.http_method(&method) else {
             continue;
         };
-        let ep_id = format!("ep:{verb}:{route}");
+        let ep_id = format!("ep:{}@{verb}:{route}", id.repo);
         out.nodes.push(Node {
             id: ep_id.clone(),
             label: "Endpoint".into(),
@@ -590,7 +600,7 @@ pub fn extract_source(
                     locals.get(name).cloned().or_else(|| imported.get(name).cloned())
                 }
                 "arrow_function" | "function_expression" => {
-                    let sid = sym_id(path, &format!("anon@{}", h.start_byte()));
+                    let sid = sym_id(id.repo, path, &format!("anon@{}", h.start_byte()));
                     out.nodes.push(Node {
                         id: sid.clone(),
                         label: "Symbol".into(),
@@ -602,7 +612,7 @@ pub fn extract_source(
                     });
                     out.edges.push(Edge {
                         src: sid.clone(),
-                        dst: file_id(path),
+                        dst: file_id(id.repo, path),
                         label: "DEFINED_IN".into(),
                         props: serde_json::json!({ "prov": cx.prov(&h, &format!("DEFINED_IN {sid}")) }),
                     });
@@ -958,7 +968,7 @@ pub fn extract_source(
             let Some(route) = route_path else {
                 continue;
             };
-            let screen_id = format!("screen:{route}");
+            let screen_id = format!("screen:{}@{route}", id.repo);
             out.nodes.push(Node {
                 id: screen_id.clone(),
                 label: "Screen".into(),
@@ -1138,7 +1148,7 @@ pub fn extract_source(
             let target = stmt
                 .child_by_field_name("declaration")
                 .and_then(|d| d.child_by_field_name("name"))
-                .map(|n| sym_id(path, cx.text(&n)))
+                .map(|n| sym_id(id.repo, path, cx.text(&n)))
                 .or_else(|| {
                     stmt.child_by_field_name("value")
                         .filter(|v| v.kind() == "identifier")
@@ -1262,7 +1272,7 @@ fn next_pages_screens(out: &mut Extraction, id: &SourceId) {
                 route = "/".into();
             }
         }
-        let screen_id = format!("screen:{route}");
+        let screen_id = format!("screen:{}@{route}", id.repo);
         let prov = Provenance::new(
             Tier::Deterministic,
             ConfidenceTier::Confirmed,

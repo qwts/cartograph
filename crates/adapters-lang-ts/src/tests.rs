@@ -62,7 +62,10 @@ fn extracts_express_endpoints_not_arbitrary_calls() {
     let ex = extract_source(APP_TS.as_bytes(), "src/app.ts", &id()).unwrap();
     let endpoints: Vec<_> = ex.nodes.iter().filter(|n| n.label == "Endpoint").collect();
     let ids: Vec<_> = endpoints.iter().map(|n| n.id.as_str()).collect();
-    assert_eq!(ids, vec!["ep:GET:/users", "ep:POST:/users"]);
+    assert_eq!(
+        ids,
+        vec!["ep:qwtm/example@GET:/users", "ep:qwtm/example@POST:/users"]
+    );
     // `app.listen(3000)` and non-router receivers must not become endpoints.
     assert!(!ids.iter().any(|i| i.contains("listen")));
 }
@@ -83,13 +86,16 @@ fn handles_edges_bind_named_and_anonymous_handlers() {
     let ex = extract_source(APP_TS.as_bytes(), "src/app.ts", &id()).unwrap();
     let handles = edge_pairs(&ex, "HANDLES");
     // Named handler resolves through the import — cross-file, deterministically.
-    assert!(handles.contains(&("ep:GET:/users", "sym:src/users.ts#listUsers")));
+    assert!(handles.contains(&(
+        "ep:qwtm/example@GET:/users",
+        "sym:qwtm/example@src/users.ts#listUsers"
+    )));
     // Anonymous handler gets a stable offset-keyed symbol in this file.
     let (_, anon) = handles
         .iter()
-        .find(|(src, _)| *src == "ep:POST:/users")
+        .find(|(src, _)| *src == "ep:qwtm/example@POST:/users")
         .expect("POST handler edge");
-    assert!(anon.starts_with("sym:src/app.ts#anon@"));
+    assert!(anon.starts_with("sym:qwtm/example@src/app.ts#anon@"));
 }
 
 #[test]
@@ -98,21 +104,25 @@ fn call_edges_are_symbol_to_symbol() {
     let ex = extract_source(APP_TS.as_bytes(), "src/app.ts", &id()).unwrap();
     let calls = edge_pairs(&ex, "CALLS");
     // Anonymous POST handler calls createUser; createUser calls validate.
-    assert!(
-        calls
-            .iter()
-            .any(|(src, dst)| src.starts_with("sym:src/app.ts#anon@")
-                && *dst == "sym:src/app.ts#createUser")
-    );
-    assert!(calls.contains(&("sym:src/app.ts#createUser", "sym:src/app.ts#validate")));
+    assert!(calls.iter().any(
+        |(src, dst)| src.starts_with("sym:qwtm/example@src/app.ts#anon@")
+            && *dst == "sym:qwtm/example@src/app.ts#createUser"
+    ));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@src/app.ts#createUser",
+        "sym:qwtm/example@src/app.ts#validate"
+    )));
 }
 
 #[test]
 fn imports_resolve_relative_files_and_modules() {
     let ex = extract_source(APP_TS.as_bytes(), "src/app.ts", &id()).unwrap();
     let imports = edge_pairs(&ex, "IMPORTS");
-    assert!(imports.contains(&("file:src/app.ts", "file:src/users.ts")));
-    assert!(imports.contains(&("file:src/app.ts", "mod:express")));
+    assert!(imports.contains(&(
+        "file:qwtm/example@src/app.ts",
+        "file:qwtm/example@src/users.ts"
+    )));
+    assert!(imports.contains(&("file:qwtm/example@src/app.ts", "mod:express")));
 }
 
 #[test]
@@ -141,7 +151,11 @@ fn every_fact_carries_confirmed_t0_provenance() {
 #[test]
 fn evidence_spans_point_at_the_actual_source() {
     let ex = extract_source(APP_TS.as_bytes(), "src/app.ts", &id()).unwrap();
-    let ep = ex.nodes.iter().find(|n| n.id == "ep:GET:/users").unwrap();
+    let ep = ex
+        .nodes
+        .iter()
+        .find(|n| n.id == "ep:qwtm/example@GET:/users")
+        .unwrap();
     let ev = &ep.props["prov"]["evidence"][0];
     let span = &APP_TS.as_bytes()
         [ev["byte_start"].as_u64().unwrap() as usize..ev["byte_end"].as_u64().unwrap() as usize];
@@ -165,7 +179,13 @@ fn dir_walk_skips_noise_and_is_deterministic() {
         .filter(|n| n.label == "File" && n.props.get("placeholder").is_none())
         .map(|n| n.id.as_str())
         .collect();
-    assert_eq!(files, vec!["file:src/app.ts", "file:src/users.ts"]);
+    assert_eq!(
+        files,
+        vec![
+            "file:qwtm/example@src/app.ts",
+            "file:qwtm/example@src/users.ts"
+        ]
+    );
     // US-0014 groundwork: identical input -> identical facts (incl. hashes).
     assert_eq!(
         serde_json::to_string(&a.nodes).unwrap(),
@@ -186,7 +206,7 @@ fn close_over_creates_placeholders_for_unresolved_targets() {
     let placeholder = ex
         .nodes
         .iter()
-        .find(|n| n.id == "file:src/missing.ts")
+        .find(|n| n.id == "file:qwtm/example@src/missing.ts")
         .expect("placeholder file node");
     assert_eq!(placeholder.props["placeholder"], true);
 }
@@ -257,7 +277,10 @@ export function push() {
         sites[0].identity,
         IdentityExpr::Literal("https://sqs.example/q".into())
     );
-    assert_eq!(sites[0].symbol.as_deref(), Some("sym:app.ts#push"));
+    assert_eq!(
+        sites[0].symbol.as_deref(),
+        Some("sym:qwtm/example@app.ts#push")
+    );
 }
 
 // EventBridge: the identity key is found nested inside Entries[].
@@ -389,20 +412,20 @@ export function App() {
         .iter()
         .find(|n| n.label == "Screen")
         .expect("screen node");
-    assert_eq!(screen.id, "screen:/orders");
+    assert_eq!(screen.id, "screen:qwtm/example@/orders");
     assert_eq!(screen.props["route"], "/orders");
     // The screen renders the routed (imported) component.
     // Import binding resolves to .ts by default (extension-aware
     // resolution rides typed inter-proc work, #2); close-over placeholders
     // keep the edge valid either way.
     assert!(out.edges.iter().any(|e| e.label == "RENDERS"
-        && e.src == "screen:/orders"
-        && e.dst == "sym:orders.ts#Orders"));
+        && e.src == "screen:qwtm/example@/orders"
+        && e.dst == "sym:qwtm/example@orders.ts#Orders"));
     // App itself is a Component (capitalized, tsx).
     let app = out
         .nodes
         .iter()
-        .find(|n| n.id == "sym:app.tsx#App")
+        .find(|n| n.id == "sym:qwtm/example@app.tsx#App")
         .unwrap();
     assert_eq!(app.label, "Component");
 }
@@ -446,8 +469,14 @@ export function Page() {
         .filter(|e| e.label == "RENDERS")
         .map(|e| (e.src.as_str(), e.dst.as_str()))
         .collect();
-    assert!(renders.contains(&("sym:page.tsx#Page", "sym:header.ts#Header")));
-    assert!(renders.contains(&("sym:page.tsx#Page", "sym:page.tsx#Body")));
+    assert!(renders.contains(&(
+        "sym:qwtm/example@page.tsx#Page",
+        "sym:qwtm/example@header.ts#Header"
+    )));
+    assert!(renders.contains(&(
+        "sym:qwtm/example@page.tsx#Page",
+        "sym:qwtm/example@page.tsx#Body"
+    )));
     // <main>/<div> never produce edges.
     assert_eq!(renders.len(), 2);
 }
@@ -482,13 +511,13 @@ fn next_pages_convention_yields_screens() {
         .filter(|n| n.label == "Screen")
         .map(|n| n.id.as_str())
         .collect();
-    assert!(screens.contains(&"screen:/"));
-    assert!(screens.contains(&"screen:/users/[id]"));
+    assert!(screens.contains(&"screen:qwtm/example@/"));
+    assert!(screens.contains(&"screen:qwtm/example@/users/[id]"));
     assert!(!screens.iter().any(|s| s.contains("_app")));
     // The screen renders the page's default export.
     assert!(out.edges.iter().any(|e| e.label == "RENDERS"
-        && e.src == "screen:/users/[id]"
-        && e.dst == "sym:pages/users/[id].tsx#UserDetail"));
+        && e.src == "screen:qwtm/example@/users/[id]"
+        && e.dst == "sym:qwtm/example@pages/users/[id].tsx#UserDetail"));
 }
 
 // Fetch sites classify their URL like channel identities: literal, env
@@ -533,7 +562,7 @@ function buildUrl(): string { return '/x'; }
     assert!(
         out.fetch_sites
             .iter()
-            .all(|s| s.symbol.as_deref() == Some("sym:api.tsx#Orders"))
+            .all(|s| s.symbol.as_deref() == Some("sym:qwtm/example@api.tsx#Orders"))
     );
 }
 
@@ -595,7 +624,7 @@ export function Checkout() {
     assert_eq!(out.fetch_sites.len(), 1);
     assert_eq!(
         out.fetch_sites[0].symbol.as_deref(),
-        Some("sym:checkout.tsx#Checkout")
+        Some("sym:qwtm/example@checkout.tsx#Checkout")
     );
 }
 
@@ -619,6 +648,6 @@ export function Checkout() {
     assert_eq!(out.fetch_sites.len(), 1);
     assert_eq!(
         out.fetch_sites[0].symbol.as_deref(),
-        Some("sym:checkout.tsx#CouponLookup")
+        Some("sym:qwtm/example@checkout.tsx#CouponLookup")
     );
 }

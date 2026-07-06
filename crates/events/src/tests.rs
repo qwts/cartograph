@@ -68,9 +68,9 @@ function handle() {}
         .iter()
         .find(|e| e.label == "SUBSCRIBES")
         .expect("subscribe edge");
-    assert_eq!(publish.src, "sym:bus.ts#placeOrder");
+    assert_eq!(publish.src, "sym:test@bus.ts#placeOrder");
     assert_eq!(publish.dst, chan.id);
-    assert_eq!(subscribe.src, "sym:bus.ts#onOrderPlaced");
+    assert_eq!(subscribe.src, "sym:test@bus.ts#onOrderPlaced");
     assert_eq!(subscribe.dst, chan.id);
     assert_eq!(confidence(&publish.props), "Confirmed");
     assert_eq!(publish.props["resolver"], "literal");
@@ -117,7 +117,7 @@ export function enqueue(body: string) {
         .find(|e| e.label == "PUBLISHES")
         .expect("publish edge");
     assert_eq!(publish.props["resolver"], "config:.env");
-    assert_eq!(publish.src, "sym:send.ts#enqueue");
+    assert_eq!(publish.src, "sym:test@send.ts#enqueue");
 }
 
 // AC-0012: a runtime-computed channel id cannot resolve at T0; the hop
@@ -253,12 +253,12 @@ export async function listen() {
     assert!(
         out.edges
             .iter()
-            .any(|e| e.label == "PUBLISHES" && e.src == "sym:producer.ts#publishOrder")
+            .any(|e| e.label == "PUBLISHES" && e.src == "sym:test@producer.ts#publishOrder")
     );
     assert!(
         out.edges
             .iter()
-            .any(|e| e.label == "SUBSCRIBES" && e.src == "sym:consumer.ts#listen")
+            .any(|e| e.label == "SUBSCRIBES" && e.src == "sym:test@consumer.ts#listen")
     );
 }
 
@@ -270,7 +270,7 @@ fn fetch_site(method: &str, url: IdentityExpr) -> FetchSite {
     FetchSite {
         method: method.into(),
         url,
-        symbol: Some("sym:app.tsx#Orders".into()),
+        symbol: Some("sym:test@app.tsx#Orders".into()),
         path: "app.tsx".into(),
         byte_start: 10,
         byte_end: 40,
@@ -285,7 +285,7 @@ fn eps(ids: &[&str]) -> Vec<String> {
 // FETCHES edge — exact and :param-template routes both match. (T-0014)
 #[test]
 fn resolvable_fetch_urls_confirm_against_endpoints() {
-    let endpoints = eps(&["ep:GET:/api/users/:id", "ep:POST:/api/orders"]);
+    let endpoints = eps(&["ep:test@GET:/api/users/:id", "ep:test@POST:/api/orders"]);
     let cfg = ConfigIndex::default();
     let id = SourceId {
         repo: "test",
@@ -313,8 +313,8 @@ fn resolvable_fetch_urls_confirm_against_endpoints() {
     assert_eq!(
         fetches,
         [
-            ("sym:app.tsx#Orders", "ep:POST:/api/orders"),
-            ("sym:app.tsx#Orders", "ep:GET:/api/users/:id"),
+            ("sym:test@app.tsx#Orders", "ep:test@POST:/api/orders"),
+            ("sym:test@app.tsx#Orders", "ep:test@GET:/api/users/:id"),
         ]
     );
     for e in out.edges.iter().filter(|e| e.label == "FETCHES") {
@@ -327,7 +327,7 @@ fn resolvable_fetch_urls_confirm_against_endpoints() {
 // reason — computed URL, no matching endpoint, ambiguous match. (T-0014)
 #[test]
 fn unresolvable_fetches_emit_gaps_with_reasons() {
-    let endpoints = eps(&["ep:GET:/api/users/:id", "ep:GET:/api/:section/42"]);
+    let endpoints = eps(&["ep:test@GET:/api/users/:id", "ep:test@GET:/api/:section/42"]);
     let cfg = ConfigIndex::default();
     let id = SourceId {
         repo: "test",
@@ -382,12 +382,12 @@ fn env_resolved_fetch_url_confirms() {
             "POST",
             IdentityExpr::EnvRef("ORDERS_API".into()),
         )],
-        &eps(&["ep:POST:/api/orders"]),
+        &eps(&["ep:test@POST:/api/orders"]),
         &cfg,
         &id,
     );
     let edge = out.edges.iter().find(|e| e.label == "FETCHES").unwrap();
-    assert_eq!(edge.dst, "ep:POST:/api/orders");
+    assert_eq!(edge.dst, "ep:test@POST:/api/orders");
     assert_eq!(edge.props["resolver"], "config:.env");
     assert_eq!(confidence(&edge.props), "Confirmed");
 }

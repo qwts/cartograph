@@ -141,11 +141,11 @@ fn prov(
 }
 
 /// Graph endpoint a site's edge starts from: its enclosing symbol, or the
-/// file itself for top-level sites.
-fn site_source(site: &EventSite) -> String {
-    site.symbol
+/// file itself for top-level sites (repo-namespaced like every file id).
+fn site_source(repo: &str, symbol: &Option<String>, path: &str) -> String {
+    symbol
         .clone()
-        .unwrap_or_else(|| format!("file:{}", site.path))
+        .unwrap_or_else(|| format!("file:{repo}@{path}"))
 }
 
 /// Stitch event sites into channel facts. Deterministic: channels are
@@ -160,7 +160,7 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
             ChannelRole::Produces => "PUBLISHES",
             ChannelRole::Consumes => "SUBSCRIBES",
         };
-        let src = site_source(site);
+        let src = site_source(id.repo, &site.symbol, &site.path);
 
         // Resolve the identity at T0: literal as-is (AC-0010), env ref via
         // the config index (AC-0011).
@@ -216,7 +216,7 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
                     }
                     IdentityExpr::Literal(_) => unreachable!("literals always resolve"),
                 };
-                let gap_id = format!("gap:chan:{}@{}", site.path, site.byte_start);
+                let gap_id = format!("gap:chan:{}@{}@{}", id.repo, site.path, site.byte_start);
                 out.nodes.push(Node {
                     id: gap_id.clone(),
                     label: "Gap".into(),
@@ -289,11 +289,13 @@ pub fn stitch_fetches(
     cfg: &ConfigIndex,
     id: &SourceId,
 ) -> Extraction {
-    // ep:VERB:route, parsed once.
+    // ep:{repo}@VERB:route (repo-namespaced), parsed once. Fetch sites only
+    // match endpoints of their own repo at T0; cross-repo is M5 manifest work.
+    let ns = format!("{}@", id.repo);
     let endpoints: Vec<(&str, &str, &str)> = endpoint_ids
         .iter()
         .filter_map(|eid| {
-            let rest = eid.strip_prefix("ep:")?;
+            let rest = eid.strip_prefix("ep:")?.strip_prefix(&ns)?;
             let (verb, route) = rest.split_once(':')?;
             Some((eid.as_str(), verb, route))
         })
@@ -301,10 +303,7 @@ pub fn stitch_fetches(
 
     let mut out = Extraction::default();
     for site in sites {
-        let src = site
-            .symbol
-            .clone()
-            .unwrap_or_else(|| format!("file:{}", site.path));
+        let src = site_source(id.repo, &site.symbol, &site.path);
         let fetch_prov = |confidence: ConfidenceTier, fact: &str| {
             prov(
                 id,
@@ -365,7 +364,7 @@ pub fn stitch_fetches(
                 });
             }
             Err(reason) => {
-                let gap_id = format!("gap:fetch:{}@{}", site.path, site.byte_start);
+                let gap_id = format!("gap:fetch:{}@{}@{}", id.repo, site.path, site.byte_start);
                 out.nodes.push(Node {
                     id: gap_id.clone(),
                     label: "Gap".into(),

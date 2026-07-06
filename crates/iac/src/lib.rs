@@ -194,8 +194,10 @@ fn literal_actions(raw: &str) -> Vec<String> {
     actions.into_iter().collect()
 }
 
-fn resource_id(address: &str) -> String {
-    format!("res:{address}")
+/// Resource ids are repo-namespaced (US-0001 slice 2): the same Terraform
+/// address in two repos must never merge into one node.
+fn resource_id(repo: &str, address: &str) -> String {
+    format!("res:{repo}@{address}")
 }
 
 /// Extract facts from one Terraform file.
@@ -221,7 +223,7 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
             ("module", [name]) => format!("module.{name}"),
             _ => continue,
         };
-        let node_id = resource_id(&address);
+        let node_id = resource_id(id.repo, &address);
         let rtype = if kind == "module" {
             "module".to_string()
         } else {
@@ -244,7 +246,7 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
         for dep in refs_for_attr(block, "depends_on") {
             out.edges.push(Edge {
                 src: node_id.clone(),
-                dst: resource_id(&dep),
+                dst: resource_id(id.repo, &dep),
                 label: "DEPENDS_ON".into(),
                 props: serde_json::json!({
                     "prov": prov(id, path, &span, &format!("DEPENDS_ON {address} -> {dep}")),
@@ -260,7 +262,7 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
             }
             out.edges.push(Edge {
                 src: node_id.clone(),
-                dst: resource_id(&referenced),
+                dst: resource_id(id.repo, &referenced),
                 label: "REFERENCES".into(),
                 props: serde_json::json!({
                     "prov": prov(id, path, &span, &format!("REFERENCES {address} -> {referenced}")),
@@ -279,8 +281,8 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
             for s in &sources {
                 for t in &targets {
                     out.edges.push(Edge {
-                        src: resource_id(s),
-                        dst: resource_id(t),
+                        src: resource_id(id.repo, s),
+                        dst: resource_id(id.repo, t),
                         label: cap.kind.edge_label().into(),
                         props: serde_json::json!({
                             "via": node_id,
@@ -301,7 +303,7 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
             for target in refs_for_attr(block, "policy") {
                 out.edges.push(Edge {
                     src: node_id.clone(),
-                    dst: resource_id(&target),
+                    dst: resource_id(id.repo, &target),
                     label: "GRANTS".into(),
                     props: serde_json::json!({
                         "actions": actions,
