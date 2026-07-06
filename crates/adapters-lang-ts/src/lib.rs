@@ -952,29 +952,33 @@ pub fn extract_source(
 
         // Fetch sites: fetch(url, {method}) and import-proven axios calls.
         // The URL classifies exactly like a channel identity (AC-0014).
+        // Only a *direct* property of the options object is the HTTP method —
+        // a nested `headers: { method: … }` or `data: { method: … }` is not.
+        let top_level_key = |obj: &TsNode, key: &str| -> Option<IdentityExpr> {
+            if obj.kind() != "object" {
+                return None;
+            }
+            let mut w = obj.walk();
+            for pair in obj.children(&mut w).filter(|c| c.kind() == "pair") {
+                if let Some(k) = pair.child_by_field_name("key")
+                    && cx.text(&k).trim_matches(['"', '\'']) == key
+                    && let Some(v) = pair.child_by_field_name("value")
+                {
+                    return Some(classify_identity(&cx, &v, &const_strings));
+                }
+            }
+            None
+        };
         let method_in_args = |args: &TsNode, position: usize| -> Option<String> {
             let mut w = args.walk();
             let arg = args
                 .children(&mut w)
                 .filter(|c| c.is_named())
                 .nth(position)?;
-            let mut stack = vec![arg];
-            while let Some(n) = stack.pop() {
-                if n.kind() == "pair"
-                    && let Some(k) = n.child_by_field_name("key")
-                    && cx.text(&k).trim_matches(['"', '\'']) == "method"
-                    && let Some(v) = n.child_by_field_name("value")
-                {
-                    return match classify_identity(&cx, &v, &const_strings) {
-                        IdentityExpr::Literal(m) => Some(m.to_ascii_uppercase()),
-                        _ => Some("?".into()),
-                    };
-                }
-                let mut w2 = n.walk();
-                let children: Vec<_> = n.children(&mut w2).collect();
-                stack.extend(children.into_iter().rev());
+            match top_level_key(&arg, "method")? {
+                IdentityExpr::Literal(m) => Some(m.to_ascii_uppercase()),
+                _ => Some("?".into()),
             }
-            None
         };
         let first_arg_classified = |args: &TsNode| -> Option<IdentityExpr> {
             let mut w = args.walk();
@@ -1015,7 +1019,13 @@ pub fn extract_source(
             let (Some(fn_name), Some(args), Some(call)) = (fn_name, args, call) else {
                 continue;
             };
-            if fn_name == "fetch" {
+            // A locally defined or imported `fetch` is application code, not
+            // the browser API — confirming it against an endpoint would
+            // corrupt the graph.
+            let fetch_shadowed = locals.contains_key("fetch")
+                || imported.contains_key("fetch")
+                || import_modules.contains_key("fetch");
+            if fn_name == "fetch" && !fetch_shadowed {
                 let Some(url) = first_arg_classified(&args) else {
                     continue;
                 };
@@ -1024,27 +1034,14 @@ pub fn extract_source(
             } else if fn_name == "axios"
                 && import_modules.get("axios").map(String::as_str) == Some("axios")
             {
-                // axios({ url, method }) object form.
+                // axios({ url, method }) object form — top-level keys only.
                 let mut w = args.walk();
                 let Some(first) = args.children(&mut w).find(|c| c.is_named()) else {
                     continue;
                 };
-                let mut url = None;
-                let mut stack = vec![first];
-                while let Some(n) = stack.pop() {
-                    if n.kind() == "pair"
-                        && let Some(k) = n.child_by_field_name("key")
-                        && cx.text(&k).trim_matches(['"', '\'']) == "url"
-                        && let Some(v) = n.child_by_field_name("value")
-                    {
-                        url = Some(classify_identity(&cx, &v, &const_strings));
-                        break;
-                    }
-                    let mut w2 = n.walk();
-                    let children: Vec<_> = n.children(&mut w2).collect();
-                    stack.extend(children.into_iter().rev());
-                }
-                let Some(url) = url else { continue };
+                let Some(url) = top_level_key(&first, "url") else {
+                    continue;
+                };
                 let method = method_in_args(&args, 0).unwrap_or_else(|| "GET".into());
                 push_fetch(&mut out, method, url, &call);
             }

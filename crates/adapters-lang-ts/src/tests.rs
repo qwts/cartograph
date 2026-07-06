@@ -536,3 +536,44 @@ function buildUrl(): string { return '/x'; }
             .all(|s| s.symbol.as_deref() == Some("sym:api.tsx#Orders"))
     );
 }
+
+// A shadowed `fetch` (imported or locally defined) is application code —
+// treating it as the browser API would confirm FETCHES against the wrong
+// target and corrupt the graph.
+#[test]
+fn shadowed_fetch_is_not_a_fetch_site() {
+    let imported_shadow = client_extract(
+        "a.tsx",
+        r#"
+import { fetch } from './cache';
+export function A() { fetch('/orders'); return <div/>; }
+"#,
+    );
+    assert!(imported_shadow.fetch_sites.is_empty());
+
+    let local_shadow = client_extract(
+        "b.tsx",
+        r#"
+function fetch(url: string) { return url; }
+export function B() { fetch('/orders'); return <div/>; }
+"#,
+    );
+    assert!(local_shadow.fetch_sites.is_empty());
+}
+
+// Only a direct property of the options object sets the HTTP method — a
+// `method` key nested under headers/data does not.
+#[test]
+fn nested_method_key_does_not_set_the_http_method() {
+    let out = client_extract(
+        "c.tsx",
+        r#"
+export function C() {
+  fetch('/orders', { headers: { method: 'POST' } });
+  return <div/>;
+}
+"#,
+    );
+    assert_eq!(out.fetch_sites.len(), 1);
+    assert_eq!(out.fetch_sites[0].method, "GET");
+}
