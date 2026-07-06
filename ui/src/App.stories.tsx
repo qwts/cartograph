@@ -18,12 +18,17 @@ interface MockJob {
   updated_at: string;
 }
 
-const FAKE_SOURCE = `import express from 'express';
+// Non-ASCII before the span keeps this honest: provenance spans are UTF-8
+// byte offsets, so compute them with TextEncoder, never UTF-16 indexOf.
+const FAKE_SOURCE = `// naïve café route — voilà 🚀
+import express from 'express';
 const app = express();
 app.get('/users', listUsers);
 `;
-const SPAN_START = FAKE_SOURCE.indexOf('app.get');
-const SPAN_END = FAKE_SOURCE.indexOf(');\n', SPAN_START);
+const byteLen = (s: string) => new TextEncoder().encode(s).length;
+const SPAN_TEXT = "app.get('/users', listUsers)";
+const SPAN_START = byteLen(FAKE_SOURCE.slice(0, FAKE_SOURCE.indexOf(SPAN_TEXT)));
+const SPAN_END = SPAN_START + byteLen(SPAN_TEXT);
 
 const FAKE_ENDPOINT = {
   id: 'ep:GET:/users',
@@ -72,7 +77,7 @@ function installFakeCore() {
         return [];
       }
       case 'read_evidence':
-        return { text: FAKE_SOURCE, truncated: false };
+        return { text: FAKE_SOURCE, window_start: 0, truncated: false };
       case 'ingest_path':
         return { job_id: 1, files: 2, nodes: 12, edges: 18 };
       case 'enqueue_job': {
@@ -141,7 +146,7 @@ export const EvidenceJumpToSource: Story = {
     await userEvent.click(canvas.getByText('/users'));
     await waitFor(() => {
       const mark = canvasElement.querySelector('.evidence-source mark');
-      expect(mark?.textContent).toBe("app.get('/users', listUsers");
+      expect(mark?.textContent).toBe(SPAN_TEXT);
     });
     await expect(canvas.getByText(/t0\.adapter-ts/)).toBeInTheDocument();
 

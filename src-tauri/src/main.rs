@@ -161,16 +161,26 @@ fn list_nodes(label: String, state: State<'_, AppState>) -> Result<Vec<Node>, St
 #[derive(Serialize)]
 struct EvidenceSource {
     text: String,
+    window_start: u64,
     truncated: bool,
 }
 
-/// Read-only source for an evidence span's file, confined to the ingest root
-/// recorded on the `Repo` node (NG1: navigation, never edit).
+/// Read-only source window containing an evidence span, confined to the
+/// ingest root recorded on the `Repo` node (NG1: navigation, never edit).
 #[tauri::command]
-fn read_evidence(root: String, path: String) -> Result<EvidenceSource, String> {
-    let (text, truncated) =
-        evidence::read_source(std::path::Path::new(&root), &path).map_err(|e| e.to_string())?;
-    Ok(EvidenceSource { text, truncated })
+fn read_evidence(
+    root: String,
+    path: String,
+    byte_start: u64,
+    byte_end: u64,
+) -> Result<EvidenceSource, String> {
+    let window = evidence::read_source(std::path::Path::new(&root), &path, &(byte_start..byte_end))
+        .map_err(|e| e.to_string())?;
+    Ok(EvidenceSource {
+        text: window.text,
+        window_start: window.window_start,
+        truncated: window.truncated,
+    })
 }
 
 fn main() {

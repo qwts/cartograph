@@ -49,8 +49,13 @@ export interface IngestSummary {
 
 export interface EvidenceSource {
   text: string;
+  /** Byte offset of the window within the file (large files are windowed). */
+  window_start: number;
   truncated: boolean;
 }
+
+/** Source view state: loading → window, or unavailable (file moved, no root). */
+export type SourceState = EvidenceSource | 'loading' | 'unavailable';
 
 export interface AppStore {
   /** Backend liveness: unknown until the first ping resolves. */
@@ -62,8 +67,8 @@ export interface AppStore {
   ingestBusy: boolean;
   ingestSummary: IngestSummary | null;
   ingestError: string | null;
-  /** Node selected for evidence view, with its loaded source. */
-  selected: { node: GraphNode; source: EvidenceSource | null } | null;
+  /** Node selected for evidence view, with its source window state. */
+  selected: { node: GraphNode; source: SourceState } | null;
   refresh: () => Promise<void>;
   enqueueJob: (kind: string) => Promise<void>;
   ingest: (path: string) => Promise<void>;
@@ -113,7 +118,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   ingest: async (path: string) => {
-    set({ ingestBusy: true, ingestError: null });
+    // Clear prior outcome up front so a failed run never shows a stale summary.
+    set({ ingestBusy: true, ingestError: null, ingestSummary: null });
     try {
       const summary = await invokeOr<IngestSummary | null>('ingest_path', null, { path });
       set({ ingestSummary: summary });
@@ -126,20 +132,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   select: async (node: GraphNode) => {
-    set({ selected: { node, source: null } });
+    set({ selected: { node, source: 'loading' } });
+    const done = (source: SourceState) => {
+      // Ignore if the user selected something else meanwhile.
+      if (get().selected?.node.id === node.id) set({ selected: { node, source } });
+    };
     const ev = node.props.prov?.evidence[0];
-    if (!ev) return;
+    if (!ev) return done('unavailable');
     const root = await repoRoot();
-    if (root === null) return;
+    if (root === null) return done('unavailable');
     try {
       const source = await invokeOr<EvidenceSource | null>('read_evidence', null, {
         root,
         path: ev.path,
+        byteStart: ev.byte_start,
+        byteEnd: ev.byte_end,
       });
-      // Ignore if the user selected something else meanwhile.
-      if (get().selected?.node.id === node.id) set({ selected: { node, source } });
+      done(source ?? 'unavailable');
     } catch {
       // Source unavailable (file moved since ingest): panel shows metadata only.
+      done('unavailable');
     }
   },
 
