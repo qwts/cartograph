@@ -83,6 +83,10 @@ pub struct Flow {
     pub status: FlowStatus,
     /// Mean hop weight per §5.3 (Confirmed 1.0 … Gap 0.0).
     pub score: f64,
+    /// True when the traversal depth bound cut the walk short — downstream
+    /// hops exist that are not in `hops`. Forces `Partial` (R-INT-4: a
+    /// bounded trace is an unresolved continuation, never a silent finish).
+    pub depth_limited: bool,
 }
 
 fn display_name(node: &Node) -> String {
@@ -200,9 +204,18 @@ fn trace_one(
     let mut seen_hops: HashSet<(String, String, String)> = HashSet::new();
     let mut visited: HashSet<String> = HashSet::new();
     let mut stack: Vec<(String, usize)> = vec![(trigger.id.clone(), 0)];
+    let mut depth_limited = false;
 
     while let Some((id, depth)) = stack.pop() {
-        if depth >= MAX_DEPTH || !visited.insert(id.clone()) {
+        if depth >= MAX_DEPTH {
+            // The bound cut the walk while this node still had somewhere to
+            // go — that is a truncation, not a completion.
+            if out_edges.contains_key(id.as_str()) || chan_consumers.contains_key(id.as_str()) {
+                depth_limited = true;
+            }
+            continue;
+        }
+        if !visited.insert(id.clone()) {
             continue;
         }
         let label = by_id.get(id.as_str()).map(|n| n.label.as_str());
@@ -273,7 +286,7 @@ fn trace_one(
         h.confidence == "Gap" || by_id.get(h.dst.as_str()).is_some_and(|n| n.label == "Gap")
     });
     let all_confirmed = !hops.is_empty() && hops.iter().all(|h| h.confidence == "Confirmed");
-    let status = if has_gap || hops.is_empty() {
+    let status = if has_gap || hops.is_empty() || depth_limited {
         FlowStatus::Partial
     } else if all_confirmed {
         FlowStatus::Verified
@@ -293,6 +306,7 @@ fn trace_one(
         hops,
         status,
         score,
+        depth_limited,
     }
 }
 
