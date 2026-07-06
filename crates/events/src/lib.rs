@@ -118,7 +118,8 @@ fn collect_env_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io:
 
 fn prov(
     id: &SourceId,
-    site: &EventSite,
+    path: &str,
+    span: (u64, u64),
     confidence: ConfidenceTier,
     fact: &str,
 ) -> serde_json::Value {
@@ -127,9 +128,9 @@ fn prov(
         confidence,
         vec![EvidenceRef {
             repo: id.repo.into(),
-            path: site.path.clone(),
-            byte_start: site.byte_start,
-            byte_end: site.byte_end,
+            path: path.into(),
+            byte_start: span.0,
+            byte_end: span.1,
             commit_sha: id.commit.into(),
         }],
         EXTRACTOR_ID,
@@ -181,8 +182,8 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
                         "kind": site.kind,
                         "identity": identity,
                         "prov": prov(
-                            id, site, ConfidenceTier::Confirmed,
-                            &format!("Channel {chan_id}"),
+                            id, &site.path, (site.byte_start, site.byte_end),
+                            ConfidenceTier::Confirmed, &format!("Channel {chan_id}"),
                         ),
                     }),
                 });
@@ -194,8 +195,8 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
                         "resolver": resolver,
                         "registry": EVENT_SDK_VERSION,
                         "prov": prov(
-                            id, site, ConfidenceTier::Confirmed,
-                            &format!("{edge_label} -> {chan_id}"),
+                            id, &site.path, (site.byte_start, site.byte_end),
+                            ConfidenceTier::Confirmed, &format!("{edge_label} -> {chan_id}"),
                         ),
                     }),
                 });
@@ -225,8 +226,8 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
                         "kind": site.kind,
                         "attempted_tiers": ["T0"],
                         "prov": prov(
-                            id, site, ConfidenceTier::Gap,
-                            &format!("Gap {gap_id}"),
+                            id, &site.path, (site.byte_start, site.byte_end),
+                            ConfidenceTier::Gap, &format!("Gap {gap_id}"),
                         ),
                     }),
                 });
@@ -237,8 +238,8 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
                     props: serde_json::json!({
                         "registry": EVENT_SDK_VERSION,
                         "prov": prov(
-                            id, site, ConfidenceTier::Gap,
-                            &format!("{edge_label} -> {gap_id}"),
+                            id, &site.path, (site.byte_start, site.byte_end),
+                            ConfidenceTier::Gap, &format!("{edge_label} -> {gap_id}"),
                         ),
                     }),
                 });
@@ -247,6 +248,145 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
     }
 
     out.nodes.extend(channels.into_values());
+    out
+}
+
+/// Path portion of a fetch URL: query/fragment stripped, scheme+host
+/// stripped when present (`https://api.example/users?x=1` → `/users`).
+fn url_path(url: &str) -> String {
+    let u = url.split(['?', '#']).next().unwrap_or(url);
+    if let Some(i) = u.find("://") {
+        let rest = &u[i + 3..];
+        match rest.find('/') {
+            Some(j) => rest[j..].to_string(),
+            None => "/".to_string(),
+        }
+    } else {
+        u.to_string()
+    }
+}
+
+/// True when a concrete request path matches an endpoint's route pattern:
+/// exact segments, or `:param` segments matching any single segment.
+fn route_matches(pattern: &str, concrete: &str) -> bool {
+    let ps: Vec<&str> = pattern.split('/').collect();
+    let cs: Vec<&str> = concrete.split('/').collect();
+    ps.len() == cs.len()
+        && ps
+            .iter()
+            .zip(&cs)
+            .all(|(p, c)| p == c || (p.starts_with(':') && !c.is_empty()))
+}
+
+/// Stitch data-fetch sites against recovered endpoints (US-0005, AC-0014):
+/// a resolvable URL whose method+path matches exactly one endpoint route is
+/// a Confirmed `FETCHES` edge; anything else — computed URL, unresolved env
+/// key, no match, ambiguous match — emits an explicit `Gap` with a reason
+/// (the ladder above T0 is empty until M6/M7; never silently dropped).
+pub fn stitch_fetches(
+    sites: &[adapters_fw::client::FetchSite],
+    endpoint_ids: &[String],
+    cfg: &ConfigIndex,
+    id: &SourceId,
+) -> Extraction {
+    // ep:VERB:route, parsed once.
+    let endpoints: Vec<(&str, &str, &str)> = endpoint_ids
+        .iter()
+        .filter_map(|eid| {
+            let rest = eid.strip_prefix("ep:")?;
+            let (verb, route) = rest.split_once(':')?;
+            Some((eid.as_str(), verb, route))
+        })
+        .collect();
+
+    let mut out = Extraction::default();
+    for site in sites {
+        let src = site
+            .symbol
+            .clone()
+            .unwrap_or_else(|| format!("file:{}", site.path));
+        let fetch_prov = |confidence: ConfidenceTier, fact: &str| {
+            prov(
+                id,
+                &site.path,
+                (site.byte_start, site.byte_end),
+                confidence,
+                fact,
+            )
+        };
+
+        let resolved: Option<(String, String)> = match &site.url {
+            IdentityExpr::Literal(u) => Some((url_path(u), "literal".into())),
+            IdentityExpr::EnvRef(key) => cfg
+                .resolve(key)
+                .map(|(value, file)| (url_path(value), format!("config:{file}"))),
+            IdentityExpr::Computed(_) => None,
+        };
+
+        let outcome: Result<(&str, String), String> = match (&resolved, site.method.as_str()) {
+            (None, _) => Err(match &site.url {
+                IdentityExpr::EnvRef(key) => {
+                    format!("env key {key} not found in any env file in the repo")
+                }
+                _ => "runtime-computed fetch URL".to_string(),
+            }),
+            (Some(_), "?") => Err("runtime-computed HTTP method".to_string()),
+            (Some((path, resolver)), method) => {
+                let hits: Vec<&str> = endpoints
+                    .iter()
+                    .filter(|(_, verb, route)| *verb == method && route_matches(route, path))
+                    .map(|(eid, _, _)| *eid)
+                    .collect();
+                match hits.as_slice() {
+                    [one] => Ok((one, resolver.clone())),
+                    [] => Err(format!("no recovered endpoint matches {method} {path}")),
+                    many => Err(format!(
+                        "ambiguous endpoint match for {method} {path} ({} candidates)",
+                        many.len()
+                    )),
+                }
+            }
+        };
+
+        match outcome {
+            Ok((ep_id, resolver)) => {
+                out.edges.push(Edge {
+                    src,
+                    dst: ep_id.to_string(),
+                    label: "FETCHES".into(),
+                    props: serde_json::json!({
+                        "method": site.method,
+                        "resolver": resolver,
+                        "prov": fetch_prov(
+                            ConfidenceTier::Confirmed,
+                            &format!("FETCHES -> {ep_id}"),
+                        ),
+                    }),
+                });
+            }
+            Err(reason) => {
+                let gap_id = format!("gap:fetch:{}@{}", site.path, site.byte_start);
+                out.nodes.push(Node {
+                    id: gap_id.clone(),
+                    label: "Gap".into(),
+                    props: serde_json::json!({
+                        "reason": reason,
+                        "attempted_tiers": ["T0"],
+                        "prov": fetch_prov(ConfidenceTier::Gap, &format!("Gap {gap_id}")),
+                    }),
+                });
+                out.edges.push(Edge {
+                    src,
+                    dst: gap_id.clone(),
+                    label: "FETCHES".into(),
+                    props: serde_json::json!({
+                        "method": site.method,
+                        "prov": fetch_prov(ConfidenceTier::Gap, &format!("FETCHES -> {gap_id}")),
+                    }),
+                });
+            }
+        }
+    }
     out
 }
 

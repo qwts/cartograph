@@ -261,3 +261,133 @@ export async function listen() {
             .any(|e| e.label == "SUBSCRIBES" && e.src == "sym:consumer.ts#listen")
     );
 }
+
+// --- FETCHES resolution (US-0005, AC-0014) ---------------------------------
+
+use adapters_fw::client::FetchSite;
+
+fn fetch_site(method: &str, url: IdentityExpr) -> FetchSite {
+    FetchSite {
+        method: method.into(),
+        url,
+        symbol: Some("sym:app.tsx#Orders".into()),
+        path: "app.tsx".into(),
+        byte_start: 10,
+        byte_end: 40,
+    }
+}
+
+fn eps(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|s| s.to_string()).collect()
+}
+
+// AC-0014: a resolvable fetch URL matching one endpoint is a Confirmed
+// FETCHES edge — exact and :param-template routes both match. (T-0014)
+#[test]
+fn resolvable_fetch_urls_confirm_against_endpoints() {
+    let endpoints = eps(&["ep:GET:/api/users/:id", "ep:POST:/api/orders"]);
+    let cfg = ConfigIndex::default();
+    let id = SourceId {
+        repo: "test",
+        commit: "deadbeef",
+    };
+    let out = stitch_fetches(
+        &[
+            fetch_site("POST", IdentityExpr::Literal("/api/orders".into())),
+            // Query string stripped; :id template matches a concrete segment.
+            fetch_site(
+                "GET",
+                IdentityExpr::Literal("https://api.example.com/api/users/42?full=1".into()),
+            ),
+        ],
+        &endpoints,
+        &cfg,
+        &id,
+    );
+    let fetches: Vec<(&str, &str)> = out
+        .edges
+        .iter()
+        .filter(|e| e.label == "FETCHES")
+        .map(|e| (e.src.as_str(), e.dst.as_str()))
+        .collect();
+    assert_eq!(
+        fetches,
+        [
+            ("sym:app.tsx#Orders", "ep:POST:/api/orders"),
+            ("sym:app.tsx#Orders", "ep:GET:/api/users/:id"),
+        ]
+    );
+    for e in out.edges.iter().filter(|e| e.label == "FETCHES") {
+        assert_eq!(confidence(&e.props), "Confirmed");
+    }
+    assert!(out.nodes.iter().all(|n| n.label != "Gap"));
+}
+
+// AC-0014: everything unresolvable escalates to an explicit Gap with a
+// reason — computed URL, no matching endpoint, ambiguous match. (T-0014)
+#[test]
+fn unresolvable_fetches_emit_gaps_with_reasons() {
+    let endpoints = eps(&["ep:GET:/api/users/:id", "ep:GET:/api/:section/42"]);
+    let cfg = ConfigIndex::default();
+    let id = SourceId {
+        repo: "test",
+        commit: "deadbeef",
+    };
+    let out = stitch_fetches(
+        &[
+            fetch_site("GET", IdentityExpr::Computed("buildUrl()".into())),
+            fetch_site("DELETE", IdentityExpr::Literal("/api/nothing".into())),
+            // Matches both template endpoints — ambiguous is not Confirmed.
+            fetch_site("GET", IdentityExpr::Literal("/api/users/42".into())),
+        ],
+        &endpoints,
+        &cfg,
+        &id,
+    );
+    let reasons: Vec<&str> = out
+        .nodes
+        .iter()
+        .filter(|n| n.label == "Gap")
+        .map(|n| n.props["reason"].as_str().unwrap())
+        .collect();
+    assert_eq!(reasons.len(), 3);
+    assert_eq!(reasons[0], "runtime-computed fetch URL");
+    assert_eq!(
+        reasons[1],
+        "no recovered endpoint matches DELETE /api/nothing"
+    );
+    assert!(reasons[2].starts_with("ambiguous endpoint match for GET /api/users/42"));
+    // Every gap edge is Gap-confidence and the site is never dropped.
+    let gap_edges = out.edges.iter().filter(|e| e.label == "FETCHES").count();
+    assert_eq!(gap_edges, 3);
+}
+
+// An env-resolved base URL confirms through the config resolver, same as
+// channel identities (AC-0011 discipline applied to AC-0014).
+#[test]
+fn env_resolved_fetch_url_confirms() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".env"),
+        "ORDERS_API=https://api.example.com/api/orders\n",
+    )
+    .unwrap();
+    let cfg = ConfigIndex::from_dir(dir.path()).unwrap();
+    let id = SourceId {
+        repo: "test",
+        commit: "deadbeef",
+    };
+    let out = stitch_fetches(
+        &[fetch_site(
+            "POST",
+            IdentityExpr::EnvRef("ORDERS_API".into()),
+        )],
+        &eps(&["ep:POST:/api/orders"]),
+        &cfg,
+        &id,
+    );
+    let edge = out.edges.iter().find(|e| e.label == "FETCHES").unwrap();
+    assert_eq!(edge.dst, "ep:POST:/api/orders");
+    assert_eq!(edge.props["resolver"], "config:.env");
+    assert_eq!(confidence(&edge.props), "Confirmed");
+}

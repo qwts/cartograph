@@ -3,6 +3,7 @@
 //! shapes to channels (§3.4). Registries are data, not inference — a
 //! language adapter consults them while walking the AST.
 
+pub mod client;
 pub mod events;
 
 /// HTTP framework registry (Express family first; Fastify/Nest at M1+).

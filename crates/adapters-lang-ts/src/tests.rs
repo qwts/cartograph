@@ -355,3 +355,184 @@ function a(k: string) {
     );
     assert!(matches!(sites[1].identity, IdentityExpr::Computed(_)));
 }
+
+// --- Client-side extraction (US-0005) --------------------------------------
+
+use adapters_fw::client::FetchSite;
+
+fn client_extract(path: &str, source: &str) -> Extraction {
+    extract_source(source.as_bytes(), path, &id()).unwrap()
+}
+
+// AC-0013: a React Router repo yields Screen nodes, Component nodes, and
+// RENDERS edges — routes import-proven, components capitalized-in-tsx.
+// (T-0013)
+#[test]
+fn react_router_routes_become_screens_with_renders() {
+    let out = client_extract(
+        "app.tsx",
+        r#"
+import { Routes, Route } from 'react-router-dom';
+import { Orders } from './orders';
+
+export function App() {
+  return (
+    <Routes>
+      <Route path="/orders" element={<Orders />} />
+    </Routes>
+  );
+}
+"#,
+    );
+    let screen = out
+        .nodes
+        .iter()
+        .find(|n| n.label == "Screen")
+        .expect("screen node");
+    assert_eq!(screen.id, "screen:/orders");
+    assert_eq!(screen.props["route"], "/orders");
+    // The screen renders the routed (imported) component.
+    // Import binding resolves to .ts by default (extension-aware
+    // resolution rides typed inter-proc work, #2); close-over placeholders
+    // keep the edge valid either way.
+    assert!(out.edges.iter().any(|e| e.label == "RENDERS"
+        && e.src == "screen:/orders"
+        && e.dst == "sym:orders.ts#Orders"));
+    // App itself is a Component (capitalized, tsx).
+    let app = out
+        .nodes
+        .iter()
+        .find(|n| n.id == "sym:app.tsx#App")
+        .unwrap();
+    assert_eq!(app.label, "Component");
+}
+
+// A Route look-alike without the react-router import is not a screen.
+#[test]
+fn route_component_must_be_import_proven() {
+    let out = client_extract(
+        "app.tsx",
+        r#"
+import { Route } from './my-own-router';
+export function App() {
+  return <Route path="/fake" element={<div />} />;
+}
+"#,
+    );
+    assert!(out.nodes.iter().all(|n| n.label != "Screen"));
+}
+
+// Component-to-component JSX usage becomes RENDERS; HTML tags do not.
+#[test]
+fn jsx_usage_becomes_renders_edges() {
+    let out = client_extract(
+        "page.tsx",
+        r#"
+import { Header } from './header';
+function Body() { return <div>content</div>; }
+export function Page() {
+  return (
+    <main>
+      <Header />
+      <Body />
+    </main>
+  );
+}
+"#,
+    );
+    let renders: Vec<(&str, &str)> = out
+        .edges
+        .iter()
+        .filter(|e| e.label == "RENDERS")
+        .map(|e| (e.src.as_str(), e.dst.as_str()))
+        .collect();
+    assert!(renders.contains(&("sym:page.tsx#Page", "sym:header.ts#Header")));
+    assert!(renders.contains(&("sym:page.tsx#Page", "sym:page.tsx#Body")));
+    // <main>/<div> never produce edges.
+    assert_eq!(renders.len(), 2);
+}
+
+// AC-0013 (Next.js half): pages/ files are screens by convention; index
+// collapses; _app is chrome. (T-0013)
+#[test]
+fn next_pages_convention_yields_screens() {
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    std::fs::create_dir_all(pages.join("users")).unwrap();
+    std::fs::write(
+        pages.join("index.tsx"),
+        "export default function Home() { return <div/>; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pages.join("users").join("[id].tsx"),
+        "export default function UserDetail() { return <div/>; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pages.join("_app.tsx"),
+        "export default function MyApp() { return <div/>; }\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let screens: Vec<&str> = out
+        .nodes
+        .iter()
+        .filter(|n| n.label == "Screen")
+        .map(|n| n.id.as_str())
+        .collect();
+    assert!(screens.contains(&"screen:/"));
+    assert!(screens.contains(&"screen:/users/[id]"));
+    assert!(!screens.iter().any(|s| s.contains("_app")));
+    // The screen renders the page's default export.
+    assert!(out.edges.iter().any(|e| e.label == "RENDERS"
+        && e.src == "screen:/users/[id]"
+        && e.dst == "sym:pages/users/[id].tsx#UserDetail"));
+}
+
+// Fetch sites classify their URL like channel identities: literal, env
+// ref, or computed — and the method comes from the call shape. (T-0014
+// groundwork; resolution against endpoints is tested in `events`.)
+#[test]
+fn fetch_and_axios_sites_are_detected_and_classified() {
+    let out = client_extract(
+        "api.tsx",
+        r#"
+import axios from 'axios';
+export function Orders() {
+  fetch('/api/orders');
+  fetch('/api/orders', { method: 'POST', body: '{}' });
+  fetch(process.env.API_BASE);
+  axios.get('/api/users?page=2');
+  axios({ url: '/api/ping', method: 'delete' });
+  fetch(buildUrl());
+  return <div/>;
+}
+function buildUrl(): string { return '/x'; }
+"#,
+    );
+    let sites: Vec<(&str, &FetchSite)> = out
+        .fetch_sites
+        .iter()
+        .map(|s| (s.method.as_str(), s))
+        .collect();
+    assert_eq!(sites.len(), 6);
+    // Call-form pass first (fetch + axios object form, document order),
+    // then the member-form pass.
+    assert!(matches!(&sites[0].1.url, IdentityExpr::Literal(u) if u == "/api/orders"));
+    assert_eq!(sites[0].0, "GET");
+    assert_eq!(sites[1].0, "POST");
+    assert!(matches!(&sites[2].1.url, IdentityExpr::EnvRef(k) if k == "API_BASE"));
+    assert_eq!(sites[3].0, "DELETE");
+    assert!(matches!(&sites[3].1.url, IdentityExpr::Literal(u) if u == "/api/ping"));
+    assert!(matches!(&sites[4].1.url, IdentityExpr::Computed(_)));
+    assert_eq!(sites[5].0, "GET");
+    assert!(matches!(&sites[5].1.url, IdentityExpr::Literal(u) if u == "/api/users?page=2"));
+    // All sites anchor at the enclosing component.
+    assert!(
+        out.fetch_sites
+            .iter()
+            .all(|s| s.symbol.as_deref() == Some("sym:api.tsx#Orders"))
+    );
+}

@@ -13,6 +13,7 @@
 //! (AC-0004, AC-0006). This tier never calls an LLM.
 
 use adapters_fw::EXPRESS;
+use adapters_fw::client::{FetchSite, NEXT_PAGES_DIR, REACT_ROUTER};
 use adapters_fw::events::{
     ChannelRole, EVENT_SDKS, EventSite, IdentityArg, IdentityExpr, SdkPattern,
 };
@@ -47,6 +48,12 @@ pub struct Extraction {
     /// Producer/consumer call sites (US-0004) — not yet graph facts; the
     /// `events` crate resolves identities and stitches them into channels.
     pub event_sites: Vec<EventSite>,
+    /// Data-fetch call sites (US-0005) — the `events` crate resolves their
+    /// URLs against recovered endpoints into FETCHES edges.
+    pub fetch_sites: Vec<FetchSite>,
+    /// Default-exported symbol per file (`path` → sym id) — Next.js pages
+    /// resolve their screen component through this.
+    pub default_exports: HashMap<String, String>,
 }
 
 impl Extraction {
@@ -70,6 +77,7 @@ impl Extraction {
                     Some("res") => "Resource",
                     Some("chan") => "Channel",
                     Some("gap") => "Gap",
+                    Some("screen") => "Screen",
                     _ => "Unknown",
                 };
                 placeholders.push(Node {
@@ -302,7 +310,14 @@ pub fn extract_source(
     path: &str,
     id: &SourceId,
 ) -> Result<Extraction, ExtractError> {
-    let language: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+    // TSX needs its own grammar (JSX node kinds); plain TS keeps the
+    // TypeScript grammar. The queries below are valid against both.
+    let is_tsx = path.ends_with(".tsx");
+    let language: tree_sitter::Language = if is_tsx {
+        tree_sitter_typescript::LANGUAGE_TSX.into()
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+    };
     let mut parser = Parser::new();
     parser.set_language(&language)?;
     let tree = parser
@@ -350,12 +365,15 @@ pub fn extract_source(
         };
         let name = cx.text(&name_node).to_string();
         let sid = sym_id(path, &name);
+        // A capitalized function in a .tsx file is a React component
+        // (SPEC-00 §3.5) — same node id, so call edges keep working.
+        let is_component = is_tsx && name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
         out.nodes.push(Node {
             id: sid.clone(),
-            label: "Symbol".into(),
+            label: if is_component { "Component" } else { "Symbol" }.into(),
             props: serde_json::json!({
                 "name": name,
-                "kind": "Function",
+                "kind": if is_component { "Component" } else { "Function" },
                 "prov": cx.prov(&def_node, &format!("Symbol {sid}")),
             }),
         });
@@ -794,6 +812,321 @@ pub fn extract_source(
         }
     }
 
+    // --- Client side (US-0005, .tsx only): screens, renders, fetch sites ----
+    if is_tsx {
+        // JSX usage: <Comp/> inside a component body -> RENDERS edge. Only
+        // capitalized names resolved through locals/imports count — plain
+        // HTML tags and unproven names are skipped.
+        let q_jsx = Query::new(
+            &language,
+            r#"
+            [
+                (jsx_self_closing_element name: (identifier) @tag) @el
+                (jsx_opening_element name: (identifier) @tag) @el
+            ]
+            "#,
+        )
+        .expect("static query");
+        let mut renders: Vec<(String, String, TsNode)> = Vec::new();
+        let mut route_elements: Vec<TsNode> = Vec::new();
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&q_jsx, root, source);
+        while let Some(m) = matches.next() {
+            let (mut tag, mut el) = (None, None);
+            for c in m.captures {
+                match q_jsx.capture_names()[c.index as usize] {
+                    "tag" => tag = Some(c.node),
+                    "el" => el = Some(c.node),
+                    _ => {}
+                }
+            }
+            let (Some(tag), Some(el)) = (tag, el) else {
+                continue;
+            };
+            let name = cx.text(&tag);
+            if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                continue;
+            }
+            // Router registration is not a render relationship.
+            if name == REACT_ROUTER.route_component
+                && import_modules
+                    .get(name)
+                    .is_some_and(|m| REACT_ROUTER.modules.contains(&m.as_str()))
+            {
+                route_elements.push(el);
+                continue;
+            }
+            let Some(dst) = locals
+                .get(name)
+                .cloned()
+                .or_else(|| imported.get(name).cloned())
+            else {
+                continue;
+            };
+            if let Some(src) = enclosing_symbol(&cx, el)
+                && src != dst
+            {
+                renders.push((src, dst, el));
+            }
+        }
+        let mut seen_renders = std::collections::HashSet::new();
+        for (src, dst, el) in renders {
+            if seen_renders.insert((src.clone(), dst.clone())) {
+                out.edges.push(Edge {
+                    src: src.clone(),
+                    dst: dst.clone(),
+                    label: "RENDERS".into(),
+                    props: serde_json::json!({
+                        "prov": cx.prov(&el, &format!("RENDERS {src} -> {dst}")),
+                    }),
+                });
+            }
+        }
+
+        // React Router screens: <Route path="/x" element={<Comp/>}/> with
+        // Route import-proven. The screen renders the routed component.
+        for el in route_elements {
+            let mut route_path = None;
+            let mut element_comp = None;
+            let mut w = el.walk();
+            for attr in el.children(&mut w).filter(|c| c.kind() == "jsx_attribute") {
+                let Some(attr_name) = attr.child(0) else {
+                    continue;
+                };
+                match cx.text(&attr_name) {
+                    "path" => {
+                        // path="/x" — a string attribute value.
+                        if let Some(v) = attr.child(2)
+                            && v.kind() == "string"
+                        {
+                            route_path = Some(cx.text(&v).trim_matches(['"', '\'']).to_string());
+                        }
+                    }
+                    "element" => {
+                        // element={<Comp/>} — find the JSX name inside.
+                        let mut stack = vec![attr];
+                        while let Some(n) = stack.pop() {
+                            if matches!(
+                                n.kind(),
+                                "jsx_self_closing_element" | "jsx_opening_element"
+                            ) && let Some(name) = n.child_by_field_name("name")
+                            {
+                                element_comp = locals
+                                    .get(cx.text(&name))
+                                    .cloned()
+                                    .or_else(|| imported.get(cx.text(&name)).cloned());
+                                break;
+                            }
+                            let mut w2 = n.walk();
+                            let children: Vec<_> = n.children(&mut w2).collect();
+                            stack.extend(children.into_iter().rev());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(route) = route_path else {
+                continue;
+            };
+            let screen_id = format!("screen:{route}");
+            out.nodes.push(Node {
+                id: screen_id.clone(),
+                label: "Screen".into(),
+                props: serde_json::json!({
+                    "route": route,
+                    "router": "react-router",
+                    "prov": cx.prov(&el, &format!("Screen {route}")),
+                }),
+            });
+            if let Some(comp) = element_comp {
+                out.edges.push(Edge {
+                    src: screen_id.clone(),
+                    dst: comp,
+                    label: "RENDERS".into(),
+                    props: serde_json::json!({
+                        "prov": cx.prov(&el, &format!("RENDERS {screen_id}")),
+                    }),
+                });
+            }
+        }
+
+        // Fetch sites: fetch(url, {method}) and import-proven axios calls.
+        // The URL classifies exactly like a channel identity (AC-0014).
+        let method_in_args = |args: &TsNode, position: usize| -> Option<String> {
+            let mut w = args.walk();
+            let arg = args
+                .children(&mut w)
+                .filter(|c| c.is_named())
+                .nth(position)?;
+            let mut stack = vec![arg];
+            while let Some(n) = stack.pop() {
+                if n.kind() == "pair"
+                    && let Some(k) = n.child_by_field_name("key")
+                    && cx.text(&k).trim_matches(['"', '\'']) == "method"
+                    && let Some(v) = n.child_by_field_name("value")
+                {
+                    return match classify_identity(&cx, &v, &const_strings) {
+                        IdentityExpr::Literal(m) => Some(m.to_ascii_uppercase()),
+                        _ => Some("?".into()),
+                    };
+                }
+                let mut w2 = n.walk();
+                let children: Vec<_> = n.children(&mut w2).collect();
+                stack.extend(children.into_iter().rev());
+            }
+            None
+        };
+        let first_arg_classified = |args: &TsNode| -> Option<IdentityExpr> {
+            let mut w = args.walk();
+            args.children(&mut w)
+                .find(|c| c.is_named())
+                .map(|a| classify_identity(&cx, &a, &const_strings))
+        };
+        let push_fetch =
+            |out: &mut Extraction, method: String, url: IdentityExpr, site: &TsNode| {
+                out.fetch_sites.push(FetchSite {
+                    method,
+                    url,
+                    symbol: enclosing_symbol(&cx, *site),
+                    path: path.into(),
+                    byte_start: site.start_byte() as u64,
+                    byte_end: site.end_byte() as u64,
+                });
+            };
+
+        // fetch(url, opts?) — the browser global.
+        let q_fetch = Query::new(
+            &language,
+            r#"(call_expression function: (identifier) @fn arguments: (arguments) @args) @call"#,
+        )
+        .expect("static query");
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&q_fetch, root, source);
+        while let Some(m) = matches.next() {
+            let (mut fn_name, mut args, mut call) = (None, None, None);
+            for c in m.captures {
+                match q_fetch.capture_names()[c.index as usize] {
+                    "fn" => fn_name = Some(cx.text(&c.node).to_string()),
+                    "args" => args = Some(c.node),
+                    "call" => call = Some(c.node),
+                    _ => {}
+                }
+            }
+            let (Some(fn_name), Some(args), Some(call)) = (fn_name, args, call) else {
+                continue;
+            };
+            if fn_name == "fetch" {
+                let Some(url) = first_arg_classified(&args) else {
+                    continue;
+                };
+                let method = method_in_args(&args, 1).unwrap_or_else(|| "GET".into());
+                push_fetch(&mut out, method, url, &call);
+            } else if fn_name == "axios"
+                && import_modules.get("axios").map(String::as_str) == Some("axios")
+            {
+                // axios({ url, method }) object form.
+                let mut w = args.walk();
+                let Some(first) = args.children(&mut w).find(|c| c.is_named()) else {
+                    continue;
+                };
+                let mut url = None;
+                let mut stack = vec![first];
+                while let Some(n) = stack.pop() {
+                    if n.kind() == "pair"
+                        && let Some(k) = n.child_by_field_name("key")
+                        && cx.text(&k).trim_matches(['"', '\'']) == "url"
+                        && let Some(v) = n.child_by_field_name("value")
+                    {
+                        url = Some(classify_identity(&cx, &v, &const_strings));
+                        break;
+                    }
+                    let mut w2 = n.walk();
+                    let children: Vec<_> = n.children(&mut w2).collect();
+                    stack.extend(children.into_iter().rev());
+                }
+                let Some(url) = url else { continue };
+                let method = method_in_args(&args, 0).unwrap_or_else(|| "GET".into());
+                push_fetch(&mut out, method, url, &call);
+            }
+        }
+
+        // axios.get/post/… (url) — member form, import-proven.
+        let q_axios = Query::new(
+            &language,
+            r#"
+            (call_expression
+                function: (member_expression
+                    object: (identifier) @obj
+                    property: (property_identifier) @method)
+                arguments: (arguments) @args) @call
+            "#,
+        )
+        .expect("static query");
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&q_axios, root, source);
+        while let Some(m) = matches.next() {
+            let (mut obj, mut method, mut args, mut call) = (None, None, None, None);
+            for c in m.captures {
+                match q_axios.capture_names()[c.index as usize] {
+                    "obj" => obj = Some(cx.text(&c.node).to_string()),
+                    "method" => method = Some(cx.text(&c.node).to_string()),
+                    "args" => args = Some(c.node),
+                    "call" => call = Some(c.node),
+                    _ => {}
+                }
+            }
+            let (Some(obj), Some(method), Some(args), Some(call)) = (obj, method, args, call)
+            else {
+                continue;
+            };
+            if obj != "axios" || import_modules.get("axios").map(String::as_str) != Some("axios") {
+                continue;
+            }
+            if !["get", "post", "put", "delete", "patch", "head"].contains(&method.as_str()) {
+                continue;
+            }
+            let Some(url) = first_arg_classified(&args) else {
+                continue;
+            };
+            push_fetch(&mut out, method.to_ascii_uppercase(), url, &call);
+        }
+
+        // Default export (Next.js pages resolve their screen through it).
+        let mut w = root.walk();
+        for stmt in root
+            .children(&mut w)
+            .filter(|c| c.kind() == "export_statement")
+        {
+            let mut has_default = false;
+            let mut w2 = stmt.walk();
+            for child in stmt.children(&mut w2) {
+                if child.kind() == "default" {
+                    has_default = true;
+                }
+            }
+            if !has_default {
+                continue;
+            }
+            let target = stmt
+                .child_by_field_name("declaration")
+                .and_then(|d| d.child_by_field_name("name"))
+                .map(|n| sym_id(path, cx.text(&n)))
+                .or_else(|| {
+                    stmt.child_by_field_name("value")
+                        .filter(|v| v.kind() == "identifier")
+                        .and_then(|v| {
+                            locals
+                                .get(cx.text(&v))
+                                .cloned()
+                                .or_else(|| imported.get(cx.text(&v)).cloned())
+                        })
+                });
+            if let Some(target) = target {
+                out.default_exports.insert(path.to_string(), target);
+            }
+        }
+    }
+
     // --- Calls: caller symbol -> callee symbol (local or import-bound) ------
     let q_calls = Query::new(
         &language,
@@ -856,9 +1189,103 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
         out.nodes.extend(ex.nodes);
         out.edges.extend(ex.edges);
         out.event_sites.extend(ex.event_sites);
+        out.fetch_sites.extend(ex.fetch_sites);
+        out.default_exports.extend(ex.default_exports);
     }
+    next_pages_screens(&mut out, id);
     out.close_over_endpoints();
     Ok(out)
+}
+
+/// Next.js pages-router convention (SPEC-00 §3.5): a `.tsx` file under a
+/// `pages/` directory *is* a screen — `pages/users/[id].tsx` → route
+/// `/users/[id]`, rendering the file's default export. File-structural,
+/// so it runs over the whole walk rather than per file.
+fn next_pages_screens(out: &mut Extraction, id: &SourceId) {
+    let mut screens = Vec::new();
+    for node in &out.nodes {
+        if node.label != "File" {
+            continue;
+        }
+        let Some(path) = node.props["path"].as_str() else {
+            continue;
+        };
+        let Some(idx) = path
+            .strip_prefix(&format!("{NEXT_PAGES_DIR}/"))
+            .map(|r| (0, r))
+            .or_else(|| {
+                path.find(&format!("/{NEXT_PAGES_DIR}/"))
+                    .map(|i| (i + 1, &path[i + 1 + NEXT_PAGES_DIR.len() + 1..]))
+            })
+        else {
+            continue;
+        };
+        let (_, rel) = idx;
+        if !path.ends_with(".tsx") || rel.starts_with('_') {
+            continue; // _app.tsx/_document.tsx are chrome, not screens.
+        }
+        let mut route = format!("/{}", rel.trim_end_matches(".tsx"));
+        if route.ends_with("/index") || route == "/index" {
+            route = route
+                .trim_end_matches("index")
+                .trim_end_matches('/')
+                .to_string();
+            if route.is_empty() {
+                route = "/".into();
+            }
+        }
+        let screen_id = format!("screen:{route}");
+        let prov = Provenance::new(
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+            vec![EvidenceRef {
+                repo: id.repo.into(),
+                path: path.into(),
+                byte_start: 0,
+                byte_end: 0,
+                commit_sha: id.commit.into(),
+            }],
+            EXTRACTOR_ID,
+            format!("Screen {route}").as_bytes(),
+        )
+        .expect("Deterministic/Confirmed is always within ceiling");
+        screens.push((screen_id, route, path.to_string(), prov));
+    }
+    for (screen_id, route, path, prov) in screens {
+        out.nodes.push(Node {
+            id: screen_id.clone(),
+            label: "Screen".into(),
+            props: serde_json::json!({
+                "route": route,
+                "router": "next-pages",
+                "prov": serde_json::to_value(prov).expect("provenance serializes"),
+            }),
+        });
+        if let Some(comp) = out.default_exports.get(&path).cloned() {
+            let edge_prov = Provenance::new(
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+                vec![EvidenceRef {
+                    repo: id.repo.into(),
+                    path: path.clone(),
+                    byte_start: 0,
+                    byte_end: 0,
+                    commit_sha: id.commit.into(),
+                }],
+                EXTRACTOR_ID,
+                format!("RENDERS {screen_id} -> {comp}").as_bytes(),
+            )
+            .expect("within ceiling");
+            out.edges.push(Edge {
+                src: screen_id,
+                dst: comp,
+                label: "RENDERS".into(),
+                props: serde_json::json!({
+                    "prov": serde_json::to_value(edge_prov).expect("serializes"),
+                }),
+            });
+        }
+    }
 }
 
 fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {

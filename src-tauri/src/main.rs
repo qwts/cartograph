@@ -119,6 +119,17 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
     let stitched = events::stitch(&extraction.event_sites, &cfg, &ev_id);
     extraction.nodes.extend(stitched.nodes);
     extraction.edges.extend(stitched.edges);
+    // Fourth layer: client fetch sites resolve against the endpoints the
+    // server pass just recovered (US-0005).
+    let endpoint_ids: Vec<String> = extraction
+        .nodes
+        .iter()
+        .filter(|n| n.label == "Endpoint")
+        .map(|n| n.id.clone())
+        .collect();
+    let fetched = events::stitch_fetches(&extraction.fetch_sites, &endpoint_ids, &cfg, &ev_id);
+    extraction.nodes.extend(fetched.nodes);
+    extraction.edges.extend(fetched.edges);
     // Stitched edge sources can name symbols the TS pass did not node-ify
     // (class methods, non-handler arrows). Close over the combined facts so
     // every endpoint exists before the FK-enforcing store sees the edges.
@@ -320,6 +331,22 @@ export class Shipper {
 "#,
         )
         .unwrap();
+        // Client layer (US-0005): a routed component fetching the endpoint
+        // the server file above registers.
+        std::fs::write(
+            dir.path().join("client.tsx"),
+            r#"
+import { Routes, Route } from 'react-router-dom';
+export function Checkout() {
+  const submit = () => fetch('/orders', { method: 'POST' });
+  return <button onClick={submit}>Order</button>;
+}
+export function App() {
+  return <Routes><Route path="/checkout" element={<Checkout />} /></Routes>;
+}
+"#,
+        )
+        .unwrap();
 
         let ts_id = adapters_lang_ts::SourceId {
             repo: "local",
@@ -344,6 +371,15 @@ export class Shipper {
         let ev = events::stitch(&extraction.event_sites, &cfg, &ev_id);
         extraction.nodes.extend(ev.nodes);
         extraction.edges.extend(ev.edges);
+        let endpoint_ids: Vec<String> = extraction
+            .nodes
+            .iter()
+            .filter(|n| n.label == "Endpoint")
+            .map(|n| n.id.clone())
+            .collect();
+        let fetched = events::stitch_fetches(&extraction.fetch_sites, &endpoint_ids, &cfg, &ev_id);
+        extraction.nodes.extend(fetched.nodes);
+        extraction.edges.extend(fetched.edges);
         extraction.close_over_endpoints();
         for n in &extraction.nodes {
             store.put_node(n).unwrap();
@@ -380,6 +416,19 @@ export class Shipper {
             symbols
                 .iter()
                 .any(|s| s.id == "sym:app.ts#ship" && s.props["placeholder"] == true)
+        );
+
+        // Client layer (US-0005): the route became a Screen, and the
+        // component's fetch resolved Confirmed against the server endpoint.
+        let screens = store.nodes_with_label("Screen").unwrap();
+        assert_eq!(screens.len(), 1);
+        assert_eq!(screens[0].id, "screen:/checkout");
+        let fetches = store.edges_with_labels(&["FETCHES"]).unwrap();
+        assert_eq!(fetches.len(), 1);
+        assert_eq!(fetches[0].dst, "ep:POST:/orders");
+        assert_eq!(
+            fetches[0].props["prov"]["confidence_tier"], "Confirmed",
+            "resolvable fetch is Confirmed (AC-0014)"
         );
 
         // M3 exit gate: an end-to-end T0 flow from the endpoint trigger
