@@ -29,7 +29,7 @@ rows in the same PR (see AGENTS.md).
 | T-0013 | AC-0013 | reserved | — | M4: Screen/Component + FETCHES |
 | T-0014 | AC-0014 | reserved | — | M4: fetch-site resolution |
 | T-0015 | AC-0015 | rust | flowtracer::hops_record_tier_across_the_full_chain, flowtracer::orphan_channel_is_a_trigger_published_channel_is_not | all hops T0 at M3; T1–T3 rungs join M6–M8 |
-| T-0016 | AC-0016 | rust | flowtracer::gap_truncates_the_branch, spec::flow_dossier_renders_sequence_and_provenance_table | truncation in trace + visibly broken in the artifact |
+| T-0016 | AC-0016 | rust | flowtracer::gap_truncates_the_branch, flowtracer::depth_bound_marks_the_flow_partial_not_verified, spec::flow_dossier_renders_sequence_and_provenance_table | truncation in trace + visibly broken in the artifact |
 | T-0017 | AC-0017 | rust | flowtracer::flow_status_follows_the_scoring_rule | Verified/Partial/Inferred per §5.3, plus manual:MT-M3-01 |
 | T-0018 | AC-0018 | rust | core-prov::provenance_serde_round_trips, core-prov::content_hash_is_deterministic_and_content_sensitive, core-prov::confidence_ceilings_match_spec | provenance shape + hashing |
 | T-0019 | AC-0019 | rust | core-prov::r_int_1_t2_t3_never_touch_confirmed, core-prov::provenance_rejects_confidence_above_ceiling | R-INT-1 as executable code |

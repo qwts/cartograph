@@ -117,6 +117,11 @@ pub fn flow_dossier(flows: &[Flow]) -> String {
         .expect("write to string");
         writeln!(out, "Trigger: {} `{}`", flow.trigger_kind, flow.trigger)
             .expect("write to string");
+        if flow.depth_limited {
+            out.push_str(
+                "\n**Truncated at the traversal depth bound** — downstream hops exist that are not shown.\n",
+            );
+        }
 
         if flow.hops.is_empty() {
             out.push_str("\nNo hops resolved from this trigger.\n");
@@ -271,6 +276,7 @@ mod tests {
             ],
             status: flowtracer::FlowStatus::Partial,
             score: 0.5,
+            depth_limited: false,
         }];
         let dossier = flow_dossier(&flows);
         assert!(dossier.starts_with("# Flow dossier\n"));

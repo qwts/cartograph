@@ -296,3 +296,48 @@ fn trace_is_deterministic_under_input_reordering() {
         assert_eq!(ha, hb);
     }
 }
+
+// The depth bound never silently completes a flow (AC-0016, R-INT-4): a
+// chain longer than the bound is emitted Partial and flagged truncated.
+#[test]
+fn depth_bound_marks_the_flow_partial_not_verified() {
+    let mut nodes = vec![node(
+        "ep:GET:/deep",
+        "Endpoint",
+        serde_json::json!({"method": "GET", "path": "/deep"}),
+    )];
+    let mut edges = vec![edge("ep:GET:/deep", "sym:d.ts#f0", "HANDLES", "Confirmed")];
+    for i in 0..80 {
+        nodes.push(node(
+            &format!("sym:d.ts#f{i}"),
+            "Symbol",
+            serde_json::json!({"name": format!("f{i}")}),
+        ));
+        edges.push(edge(
+            &format!("sym:d.ts#f{i}"),
+            &format!("sym:d.ts#f{}", i + 1),
+            "CALLS",
+            "Confirmed",
+        ));
+    }
+    nodes.push(node(
+        "sym:d.ts#f80",
+        "Symbol",
+        serde_json::json!({"name": "f80"}),
+    ));
+
+    let flows = trace(&nodes, &edges);
+    let flow = &flows[0];
+    assert!(flow.depth_limited, "the 81-hop chain exceeds the bound");
+    assert_eq!(
+        flow.status,
+        FlowStatus::Partial,
+        "a bounded trace must not report Verified"
+    );
+
+    // A short chain stays unflagged and Verified.
+    let (nodes, edges) = event_chain();
+    let flows = trace(&nodes, &edges);
+    assert!(!flows[0].depth_limited);
+    assert_eq!(flows[0].status, FlowStatus::Verified);
+}
