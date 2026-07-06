@@ -67,6 +67,13 @@ pub trait GraphStore {
     fn edges_with_labels(&self, labels: &[&str]) -> Result<Vec<Edge>, GraphError>;
 }
 
+/// Version of the graph's fact schema — the node/edge *id scheme*, not the
+/// SQL shape. Bumped when ids change meaning (v2: repo-namespaced ids,
+/// US-0001 slice 2). A mismatched db is cleared on open: the graph is a
+/// disposable ingest artifact (ADR-0008), and stale-scheme rows can never
+/// be upserted again — they would shadow every re-ingest as zombies (#50).
+pub const GRAPH_SCHEMA_VERSION: u32 = 2;
+
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
 pub struct SqliteGraphStore {
     conn: Connection,
@@ -103,6 +110,13 @@ impl SqliteGraphStore {
              CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
              CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);",
         )?;
+        let version: u32 = conn.query_row("SELECT * FROM pragma_user_version", [], |r| r.get(0))?;
+        if version != GRAPH_SCHEMA_VERSION {
+            // Pre-versioned or older-scheme db: clear the facts, keep the
+            // shape. Deletion order respects the edge → node foreign keys.
+            conn.execute_batch("DELETE FROM edges; DELETE FROM nodes;")?;
+            conn.pragma_update(None, "user_version", GRAPH_SCHEMA_VERSION)?;
+        }
         Ok(Self { conn })
     }
 }
@@ -246,6 +260,39 @@ impl GraphStore for SqliteGraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #50: an older id-scheme db is cleared on open (zombie rows from a
+    // previous scheme can never be upserted and would shadow re-ingests);
+    // a current-version db keeps its facts.
+    #[test]
+    fn version_mismatch_clears_the_graph_current_version_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        {
+            let mut store = SqliteGraphStore::open(&path).unwrap();
+            store
+                .put_node(&Node {
+                    id: "sym:acme/shop@a.ts#f".into(),
+                    label: "Symbol".into(),
+                    props: serde_json::json!({}),
+                })
+                .unwrap();
+        }
+        // Same version: facts survive reopen.
+        {
+            let store = SqliteGraphStore::open(&path).unwrap();
+            assert_eq!(store.node_count().unwrap(), 1);
+        }
+        // Simulate a db written by an older scheme.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "user_version", GRAPH_SCHEMA_VERSION - 1)
+                .unwrap();
+        }
+        let store = SqliteGraphStore::open(&path).unwrap();
+        assert_eq!(store.node_count().unwrap(), 0, "stale-scheme facts cleared");
+        assert_eq!(store.edge_count().unwrap(), 0);
+    }
 
     fn node(id: &str, label: &str) -> Node {
         Node {
