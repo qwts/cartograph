@@ -12,3 +12,4 @@ workspace = true
 core-graph = { workspace = true }
 flowtracer = { workspace = true }
 serde_json = { workspace = true }
+blake3 = { workspace = true }

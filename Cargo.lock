@@ -3149,6 +3149,7 @@ dependencies = [
 name = "spec"
 version = "0.0.1"
 dependencies = [
+ "blake3",
  "core-graph",
  "flowtracer",
  "serde_json",
