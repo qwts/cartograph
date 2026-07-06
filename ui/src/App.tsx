@@ -40,22 +40,28 @@ export default function App() {
         <StatusBadge backend={backend} version={version} />
       </header>
       <main>
-        <IngestCard
-          busy={ingestBusy}
-          summary={ingestSummary}
-          error={ingestError}
-          canIngest={backend === 'up'}
-          onIngest={(path) => void ingest(path)}
-        />
-        <GraphStatsCard stats={stats} />
-        <EndpointsCard endpoints={endpoints} onSelect={(node) => void select(node)} />
-        <TopologyCard mermaid={topology} />
-        <FlowsCard dossier={flows} />
-        <JobsCard
-          jobs={jobs}
-          canEnqueue={backend === 'up'}
-          onEnqueue={(kind) => void enqueueJob(kind)}
-        />
+        {/* Compact utility strip: drive the engine, watch its vitals. */}
+        <div className="card-grid utility">
+          <IngestCard
+            busy={ingestBusy}
+            summary={ingestSummary}
+            error={ingestError}
+            canIngest={backend === 'up'}
+            onIngest={(path) => void ingest(path)}
+          />
+          <GraphStatsCard stats={stats} />
+          <JobsCard
+            jobs={jobs}
+            canEnqueue={backend === 'up'}
+            onEnqueue={(kind) => void enqueueJob(kind)}
+          />
+        </div>
+        {/* Recovered spec: content-heavy cards get wide tracks. */}
+        <div className="card-grid artifacts">
+          <EndpointsCard endpoints={endpoints} onSelect={(node) => void select(node)} />
+          <TopologyCard mermaid={topology} />
+          <FlowsCard dossier={flows} />
+        </div>
       </main>
       {selected && (
         <div className="evidence-area">

@@ -76,14 +76,27 @@ body {
 
 main {
   flex: 1;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
   padding: 1.25rem;
-  align-content: start;
-  /* Cards hug their content instead of stretching to the tallest row
-     neighbor. */
+}
+
+.card-grid {
+  display: grid;
+  gap: 1rem;
   align-items: start;
+}
+
+/* Utility strip: small fixed-purpose cards, comfortable at ~280px. */
+.card-grid.utility {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+/* Recovered-spec artifacts are the payload — they need real width to be
+   readable (routes, Mermaid, dossier tables). */
+.card-grid.artifacts {
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
 }
 
 .card {
@@ -123,6 +136,9 @@ main {
   flex-direction: column;
   gap: 0.4rem;
   font-size: 0.85rem;
+  /* History grows unbounded; the card should not. */
+  max-height: 16rem;
+  overflow-y: auto;
 }
 
 .jobs-list li {
@@ -221,7 +237,7 @@ button:disabled {
 .endpoint-row {
   width: 100%;
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 0.6rem;
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border-subtle);
@@ -242,11 +258,10 @@ button:disabled {
 .endpoint-path {
   flex: 1;
   font-family: ui-monospace, monospace;
-  /* Long routes truncate; the tier badge stays inside the row. */
+  /* The route is the content: wrap it in full rather than clip it. The
+     tier badge stays pinned inside the row (flex-shrink: 0 on .tier-badge). */
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .evidence-area {
