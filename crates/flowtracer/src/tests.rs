@@ -477,3 +477,46 @@ fn unresolved_fetch_truncates_the_screen_flow() {
             .starts_with("GAP: runtime-computed fetch URL")
     );
 }
+
+// A FETCHES edge from a component no screen renders must not suppress the
+// endpoint's own flow — coverage comes from actual screen traversal, not
+// the mere existence of an edge.
+#[test]
+fn endpoint_fetched_only_by_an_unrendered_component_keeps_its_flow() {
+    let (mut nodes, mut edges) = event_chain();
+    nodes.push(node(
+        "screen:/about",
+        "Screen",
+        serde_json::json!({"route": "/about"}),
+    ));
+    nodes.push(node(
+        "sym:about.tsx#About",
+        "Component",
+        serde_json::json!({"name": "About"}),
+    ));
+    nodes.push(node(
+        "sym:dead.tsx#Unused",
+        "Component",
+        serde_json::json!({"name": "Unused"}),
+    ));
+    edges.push(edge(
+        "screen:/about",
+        "sym:about.tsx#About",
+        "RENDERS",
+        "Confirmed",
+    ));
+    // The only fetch of the endpoint sits in a component nothing renders.
+    edges.push(edge(
+        "sym:dead.tsx#Unused",
+        "ep:POST:/orders",
+        "FETCHES",
+        "Confirmed",
+    ));
+
+    let flows = trace(&nodes, &edges);
+    let triggers: Vec<&str> = flows.iter().map(|f| f.trigger.as_str()).collect();
+    assert!(
+        triggers.contains(&"ep:POST:/orders"),
+        "no screen reaches the fetch, so the server flow must not disappear"
+    );
+}

@@ -598,3 +598,27 @@ export function Checkout() {
         Some("sym:checkout.tsx#Checkout")
     );
 }
+
+// A fetch inside a *nested* component belongs to that nested component —
+// attributing it to the outer one would confirm FETCHES onto screens that
+// never render the child.
+#[test]
+fn fetch_in_nested_component_anchors_at_the_nearest_component() {
+    let out = client_extract(
+        "checkout.tsx",
+        r#"
+export function Checkout() {
+  const CouponLookup = () => {
+    fetch('/coupons');
+    return <input />;
+  };
+  return <div>checkout</div>;
+}
+"#,
+    );
+    assert_eq!(out.fetch_sites.len(), 1);
+    assert_eq!(
+        out.fetch_sites[0].symbol.as_deref(),
+        Some("sym:checkout.tsx#CouponLookup")
+    );
+}

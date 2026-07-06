@@ -175,16 +175,12 @@ pub fn trace(nodes: &[Node], edges: &[Edge]) -> Vec<Flow> {
     let mut out_edges: BTreeMap<&str, Vec<&Edge>> = BTreeMap::new();
     let mut chan_consumers: BTreeMap<&str, Vec<&Edge>> = BTreeMap::new();
     let mut published_to: HashSet<&str> = HashSet::new();
-    let mut fetched: HashSet<&str> = HashSet::new();
     for edge in edges {
         match edge.label.as_str() {
             "RENDERS" | "FETCHES" | "HANDLES" | "CALLS" | "PUBLISHES" => {
                 out_edges.entry(edge.src.as_str()).or_default().push(edge);
                 if edge.label == "PUBLISHES" {
                     published_to.insert(edge.dst.as_str());
-                }
-                if edge.label == "FETCHES" {
-                    fetched.insert(edge.dst.as_str());
                 }
             }
             "SUBSCRIBES" => {
@@ -203,27 +199,41 @@ pub fn trace(nodes: &[Node], edges: &[Edge]) -> Vec<Flow> {
         v.sort_by(|a, b| a.src.cmp(&b.src));
     }
 
-    // Triggers (SPEC-00 §5.1): every Screen (the user-action anchor);
-    // endpoints only when no local screen fetches them (an external API
-    // consumer); channels nothing local publishes to (an external event).
-    let mut triggers: Vec<&Node> = nodes.iter().filter(|n| n.label == "Screen").collect();
-    triggers.extend(
-        nodes
-            .iter()
-            .filter(|n| n.label == "Endpoint" && !fetched.contains(n.id.as_str())),
-    );
-    triggers.extend(nodes.iter().filter(|n| {
+    // Triggers (SPEC-00 §5.1): every Screen (the user-action anchor) is
+    // traced first; an endpoint keeps its own flow unless a screen's
+    // traversal actually *reached* it (a FETCHES edge from an unrendered
+    // component must not make the server flow disappear); channels nothing
+    // local publishes to are external events entering the slice.
+    let mut screens: Vec<&Node> = nodes.iter().filter(|n| n.label == "Screen").collect();
+    screens.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut flows: Vec<Flow> = screens
+        .iter()
+        .map(|t| trace_one(t, &by_id, &out_edges, &chan_consumers))
+        .collect();
+    let covered: HashSet<&str> = flows
+        .iter()
+        .flat_map(|f| f.hops.iter())
+        .filter(|h| h.label == "FETCHES")
+        .map(|h| h.dst.as_str())
+        .collect();
+
+    let mut rest: Vec<&Node> = nodes
+        .iter()
+        .filter(|n| n.label == "Endpoint" && !covered.contains(n.id.as_str()))
+        .collect();
+    rest.extend(nodes.iter().filter(|n| {
         n.label == "Channel"
             && !published_to.contains(n.id.as_str())
             && chan_consumers.contains_key(n.id.as_str())
     }));
-    triggers.sort_by(|a, b| a.id.cmp(&b.id));
-    triggers.dedup_by(|a, b| a.id == b.id);
-
-    triggers
-        .iter()
-        .map(|t| trace_one(t, &by_id, &out_edges, &chan_consumers))
-        .collect()
+    rest.sort_by(|a, b| a.id.cmp(&b.id));
+    rest.dedup_by(|a, b| a.id == b.id);
+    flows.extend(
+        rest.iter()
+            .map(|t| trace_one(t, &by_id, &out_edges, &chan_consumers)),
+    );
+    flows.sort_by(|a, b| a.trigger.cmp(&b.trigger));
+    flows
 }
 
 fn trace_one(

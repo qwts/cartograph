@@ -192,14 +192,14 @@ fn enclosing_symbol(cx: &FileCx, mut node: TsNode) -> Option<String> {
     None
 }
 
-/// Walk all ancestors and return the *outermost* enclosing capitalized
-/// function — the React component a site belongs to (SPEC-00 §3.5:
+/// Walk ancestors and return the *nearest* enclosing capitalized function
+/// — the React component a site belongs to (SPEC-00 §3.5:
 /// `FETCHES(component → Endpoint)`). A fetch inside an event-handler
 /// closure (`const submit = () => fetch(…)`) anchors at the component,
-/// not the closure, so the screen's RENDERS chain reaches it.
+/// not the closure — but a fetch inside a *nested* component belongs to
+/// that nested component, never the outer one (which may not render it).
 fn enclosing_component(cx: &FileCx, node: TsNode) -> Option<String> {
     let mut current = node;
-    let mut component = None;
     while let Some(parent) = current.parent() {
         let name = match parent.kind() {
             "function_declaration" | "method_definition" => parent
@@ -215,11 +215,11 @@ fn enclosing_component(cx: &FileCx, node: TsNode) -> Option<String> {
         if let Some(name) = name
             && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
         {
-            component = Some(sym_id(cx.path, &name));
+            return Some(sym_id(cx.path, &name));
         }
         current = parent;
     }
-    component
+    None
 }
 
 /// Bare module specifiers compare with the `node:` scheme stripped
