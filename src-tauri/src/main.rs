@@ -770,7 +770,7 @@ const app = express();
 const sqs = new SQSClient({});
 app.post('/orders', (req, res) => { queueOrder(); });
 export function queueOrder() {
-  return sqs.send(new SendMessageCommand({ QueueUrl: process.env.ORDERS_QUEUE, MessageBody: '{}' }));
+  return sqs.send(new SendMessageCommand({ QueueUrl: 'https://sqs.us-east-1.amazonaws.com/1/orders', MessageBody: '{}' }));
 }
 "#,
         )
@@ -780,7 +780,7 @@ export function queueOrder() {
             r#"
 import { Consumer } from 'sqs-consumer';
 export function startWorker() {
-  return new Consumer({ queueUrl: process.env.ORDERS_QUEUE, handleMessage: handle });
+  return new Consumer({ queueUrl: 'https://sqs.us-east-1.amazonaws.com/1/orders', handleMessage: handle });
 }
 function handle() {}
 "#,
@@ -796,9 +796,6 @@ layers = ["server", "events"]
 [[repos]]
 url = "mailer"
 layers = ["events", "server"]
-
-[env]
-ORDERS_QUEUE = "https://sqs.us-east-1.amazonaws.com/1/orders"
 "#,
         )
         .unwrap();
@@ -846,7 +843,8 @@ ORDERS_QUEUE = "https://sqs.us-east-1.amazonaws.com/1/orders"
             "consumer hop lands in the other repo: {}",
             sub.dst
         );
-        // No gaps anywhere: both sides resolved via the manifest identity.
+        // No gaps anywhere: both sides carry the same literal identity
+        // (AC-0010); the config-resolved path is AC-0011's manifest test.
         assert!(store.nodes_with_label("Gap").unwrap().is_empty());
     }
 
