@@ -53,9 +53,6 @@ impl JobStore {
     }
 
     /// Transition a job to `status`.
-    // Orchestration starts calling this at M1 (ingest jobs); until then only
-    // the durability test exercises it.
-    #[allow(dead_code)]
     pub fn set_status(&mut self, id: i64, status: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE jobs SET status = ?2,

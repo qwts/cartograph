@@ -61,6 +61,74 @@ fn list_jobs(state: State<'_, AppState>) -> Result<Vec<Job>, String> {
     jobs.list().map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct IngestSummary {
+    job_id: i64,
+    files: u64,
+    nodes: u64,
+    edges: u64,
+}
+
+/// Run T0 TypeScript extraction over a local directory and load the facts
+/// into the graph (M1 slice of US-0002; GitHub clone ingest is US-0001).
+#[tauri::command]
+fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary, String> {
+    let job_id = {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        let job = jobs
+            .enqueue(&format!("ingest:{path}"))
+            .map_err(|e| e.to_string())?;
+        jobs.set_status(job.id, "running")
+            .map_err(|e| e.to_string())?;
+        job.id
+    };
+    let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
+        if let Ok(mut jobs) = state.jobs.lock() {
+            let _ = jobs.set_status(job_id, "failed");
+        }
+        e
+    };
+
+    // Local unversioned tree: repo/commit identify the workdir until the
+    // GitHub ingest (US-0001) supplies real clone coordinates.
+    let id = adapters_lang_ts::SourceId {
+        repo: "local",
+        commit: "workdir",
+    };
+    let extraction = adapters_lang_ts::extract_dir(std::path::Path::new(&path), &id)
+        .map_err(|e| fail(e.to_string(), &state, job_id))?;
+
+    let files = extraction
+        .nodes
+        .iter()
+        .filter(|n| n.label == "File" && n.props.get("placeholder").is_none())
+        .count() as u64;
+    {
+        let mut graph = state
+            .graph
+            .lock()
+            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        for node in &extraction.nodes {
+            graph
+                .put_node(node)
+                .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        }
+        for edge in &extraction.edges {
+            graph
+                .put_edge(edge)
+                .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        }
+    }
+    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+    jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
+    Ok(IngestSummary {
+        job_id,
+        files,
+        nodes: extraction.nodes.len() as u64,
+        edges: extraction.edges.len() as u64,
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -78,7 +146,8 @@ fn main() {
             ping,
             graph_stats,
             enqueue_job,
-            list_jobs
+            list_jobs,
+            ingest_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cartograph");
