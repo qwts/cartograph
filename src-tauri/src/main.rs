@@ -752,6 +752,105 @@ ORDERS_QUEUE = "https://sqs.example/orders"
     }
 
     #[test]
+    fn cross_repo_flow_stitches_via_literal_channel_identity() {
+        // M5 exit gate (US-0004 AC-0010 at cross-repo scope): a producer
+        // repo and a consumer repo, declared as one system, stitch through
+        // the global channel — one flow spans both repos, every hop T0.
+        let dir = tempfile::tempdir().unwrap();
+        let producer = dir.path().join("orders-api");
+        let consumer = dir.path().join("mailer");
+        std::fs::create_dir_all(&producer).unwrap();
+        std::fs::create_dir_all(&consumer).unwrap();
+        std::fs::write(
+            producer.join("app.ts"),
+            r#"
+import express from 'express';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+const app = express();
+const sqs = new SQSClient({});
+app.post('/orders', (req, res) => { queueOrder(); });
+export function queueOrder() {
+  return sqs.send(new SendMessageCommand({ QueueUrl: process.env.ORDERS_QUEUE, MessageBody: '{}' }));
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            consumer.join("worker.ts"),
+            r#"
+import { Consumer } from 'sqs-consumer';
+export function startWorker() {
+  return new Consumer({ queueUrl: process.env.ORDERS_QUEUE, handleMessage: handle });
+}
+function handle() {}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("cartograph.system.toml"),
+            r#"
+[[repos]]
+url = "orders-api"
+layers = ["server", "events"]
+
+[[repos]]
+url = "mailer"
+layers = ["events", "server"]
+
+[env]
+ORDERS_QUEUE = "https://sqs.us-east-1.amazonaws.com/1/orders"
+"#,
+        )
+        .unwrap();
+
+        let manifest = ingest::manifest::SystemManifest::load(dir.path()).unwrap();
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        for entry in &manifest.repos {
+            let root = std::fs::canonicalize(dir.path().join(&entry.url)).unwrap();
+            let name = root.file_name().unwrap().to_string_lossy().into_owned();
+            let repo = format!("local/{name}");
+            let ex =
+                crate::extract_tree(&root, &repo, "workdir", &entry.layers, &manifest.env).unwrap();
+            crate::load_into_graph(&mut store, &ex, &repo, &root, "workdir").unwrap();
+        }
+
+        // One global channel, published from repo A, subscribed from repo B.
+        let chans = store.nodes_with_label("Channel").unwrap();
+        assert_eq!(chans.len(), 1);
+        assert_eq!(
+            chans[0].id,
+            "chan:sqs-queue:https://sqs.us-east-1.amazonaws.com/1/orders"
+        );
+
+        // One flow, triggered in the producer repo, terminating in the
+        // consumer repo — the cross-repo hop rides the channel.
+        let mut flow_nodes = Vec::new();
+        for label in flowtracer::FLOW_NODE_LABELS {
+            flow_nodes.extend(store.nodes_with_label(label).unwrap());
+        }
+        let flow_edges = store
+            .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
+            .unwrap();
+        let flows = flowtracer::trace(&flow_nodes, &flow_edges);
+        assert_eq!(flows.len(), 1, "one system, one flow");
+        let flow = &flows[0];
+        assert_eq!(flow.trigger, "ep:local/orders-api@POST:/orders");
+        assert_eq!(flow.status, flowtracer::FlowStatus::Verified);
+        let sub = flow
+            .hops
+            .iter()
+            .find(|h| h.label == "SUBSCRIBES")
+            .expect("flow crosses the channel");
+        assert!(
+            sub.dst.contains("local/mailer@"),
+            "consumer hop lands in the other repo: {}",
+            sub.dst
+        );
+        // No gaps anywhere: both sides resolved via the manifest identity.
+        assert!(store.nodes_with_label("Gap").unwrap().is_empty());
+    }
+
+    #[test]
     fn ingest_chain_produces_topology_artifact() {
         // The ingest -> graph -> spec pipeline, minus the Tauri shell:
         // mixed TS + Terraform tree in, Mermaid topology out (M2 exit gate).
