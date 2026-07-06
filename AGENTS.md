@@ -51,8 +51,14 @@ events, client), then compiles official spec artifacts. Master spec:
    (see "Verification before done"). Gates are ratchets — they only get
    stricter.
 6. **Traceability is enforced**, not aspirational: `node
-   scripts/check-traceability.mjs` validates US ↔ AC ↔ matrix ↔ ADR
+   scripts/check-traceability.mjs` validates US ↔ AC ↔ matrix ↔ ADR ↔ test-map
    consistency and runs in CI. Run it before pushing docs changes.
+7. **Tests are traced.** Every reserved T-XXXX id has a row in
+   `docs/test-map.md` binding it to real tests (`rust:`/`story:`) or a
+   procedure in `docs/manual-tests.md`; CI verifies the referenced tests
+   exist. A PR that realizes an AC updates its map row in the same PR, and
+   test code cites its AC in a comment. Manual procedures run at milestone
+   boundaries, results recorded on the milestone's task issue.
 
 ## Verification before "done"
 
