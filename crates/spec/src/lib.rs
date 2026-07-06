@@ -32,10 +32,17 @@ const TOPOLOGY_EDGES: &[(&str, &str)] = &[
     ("REFERENCES", "-.->"),
 ];
 
+/// Mermaid identifier for a graph node id: sanitized for readability plus
+/// a short content hash for uniqueness — sanitization alone collapses ids
+/// differing only in punctuation (`acme/foo-bar` vs `acme/foo_bar`), which
+/// would visually re-merge nodes the graph keeps distinct.
 fn mermaid_id(id: &str) -> String {
-    id.chars()
+    let sanitized: String = id
+        .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
+        .collect();
+    let hash = blake3::hash(id.as_bytes()).to_hex();
+    format!("{sanitized}_{}", &hash.as_str()[..8])
 }
 
 /// Compile the resource/topology map (SPEC-00 §7 artifact table) from
@@ -234,10 +241,10 @@ mod tests {
         ];
         let mmd = topology_mermaid(&nodes, &edges);
         assert!(mmd.starts_with("flowchart LR\n"));
-        assert!(mmd.contains(r#"res_aws_sqs_queue_orders["aws_sqs_queue.orders"]"#));
-        assert!(
-            mmd.contains("res_aws_sqs_queue_orders -->|TRIGGERS| res_aws_lambda_function_fulfill")
-        );
+        let q = mermaid_id("res:aws_sqs_queue.orders");
+        let f = mermaid_id("res:aws_lambda_function.fulfill");
+        assert!(mmd.contains(&format!(r#"{q}["aws_sqs_queue.orders"]"#)));
+        assert!(mmd.contains(&format!("{q} -->|TRIGGERS| {f}")));
         assert!(mmd.contains("-.->|REFERENCES|"));
         assert!(!mmd.contains("CALLS"));
     }
@@ -248,7 +255,10 @@ mod tests {
         let mut unresolved = resource("res:module.vpc", "module.vpc");
         unresolved.props = serde_json::json!({ "placeholder": true });
         let mmd = topology_mermaid(&[unresolved], &[]);
-        assert!(mmd.contains(r#"res_module_vpc(["module.vpc ?"])"#));
+        assert!(mmd.contains(&format!(
+            r#"{}(["module.vpc ?"])"#,
+            mermaid_id("res:module.vpc")
+        )));
     }
 
     fn hop(label: &str, src: &str, dst: &str, confidence: &str) -> flowtracer::Hop {
@@ -292,6 +302,17 @@ mod tests {
     }
 
     #[test]
+    fn punctuation_variant_repos_render_distinctly() {
+        // Sanitization alone maps acme/foo-bar and acme/foo_bar to the same
+        // Mermaid identifier; the hash suffix keeps them apart.
+        let a = mermaid_id("res:acme/foo-bar@aws_sqs_queue.q");
+        let b = mermaid_id("res:acme/foo_bar@aws_sqs_queue.q");
+        assert_ne!(a, b);
+        // Deterministic: same id, same key.
+        assert_eq!(a, mermaid_id("res:acme/foo-bar@aws_sqs_queue.q"));
+    }
+
+    #[test]
     fn output_is_deterministic() {
         let nodes = vec![resource("res:b.b", "b.b"), resource("res:a.a", "a.a")];
         let edges = vec![
@@ -304,8 +325,8 @@ mod tests {
         );
         // Nodes are ordered by id regardless of input order.
         let mmd = topology_mermaid(&nodes, &edges);
-        let a_pos = mmd.find("res_a_a[").unwrap();
-        let b_pos = mmd.find("res_b_b[").unwrap();
+        let a_pos = mmd.find(&format!("{}[", mermaid_id("res:a.a"))).unwrap();
+        let b_pos = mmd.find(&format!("{}[", mermaid_id("res:b.b"))).unwrap();
         assert!(a_pos < b_pos);
     }
 }
