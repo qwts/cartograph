@@ -10,7 +10,8 @@ export interface IngestCardProps {
   onIngest: (path: string) => void;
 }
 
-/** Point the T0 TypeScript extractor at a local directory (M1 slice). */
+/** Point the T0 extractors at a local directory or a GitHub repo
+ *  (US-0001: a cloned repo is listed with its commit SHA). */
 export function IngestCard({ busy, summary, error, canIngest, onIngest }: IngestCardProps) {
   const [path, setPath] = useState('');
 
@@ -39,6 +40,14 @@ export function IngestCard({ busy, summary, error, canIngest, onIngest }: Ingest
       {error && <p className="error-text">{error}</p>}
       {summary && !busy && (
         <p className="muted">
+          {summary.repo && summary.commit_sha && (
+            <>
+              <code data-testid="cloned-repo">
+                {summary.repo} @ {summary.commit_sha.slice(0, 12)}
+              </code>{' '}
+              —{' '}
+            </>
+          )}
           Job #{summary.job_id}: {summary.files} files → {summary.nodes} nodes,{' '}
           {summary.edges} edges.
         </p>

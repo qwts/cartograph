@@ -32,6 +32,25 @@ export const WithSummary: Story = {
   args: { summary: { job_id: 3, files: 12, nodes: 84, edges: 141 } },
 };
 
+// AC-0001: a cloned GitHub repo is listed with its commit SHA.
+export const WithClonedRepo: Story = {
+  args: {
+    summary: {
+      job_id: 4,
+      files: 3,
+      nodes: 20,
+      edges: 30,
+      repo: 'acme/shop',
+      commit_sha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const listed = canvas.getByTestId('cloned-repo');
+    await expect(listed.textContent).toBe('acme/shop @ a1b2c3d4e5f6');
+  },
+};
+
 export const Failed: Story = {
   args: { error: 'io: No such file or directory (os error 2)' },
 };

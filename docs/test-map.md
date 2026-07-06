@@ -14,7 +14,7 @@ rows in the same PR (see AGENTS.md).
 
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
-| T-0001 | AC-0001 | rust | ingest::clone_lists_repo_with_commit_sha, ingest::repo_urls_parse_to_identities | offline file:// fixtures; live clone + UI listing at slice complete |
+| T-0001 | AC-0001 | rust | ingest::clone_lists_repo_with_commit_sha, ingest::repo_urls_parse_to_identities | offline file:// fixtures; SHA listed in UI, plus story:Shell/IngestCard/WithClonedRepo, live clone manual at the milestone boundary |
 | T-0002 | AC-0002 | reserved | — | topology manifest (US-0001) |
 | T-0003 | AC-0003 | rust | ingest::failed_clone_leaves_nothing_behind, ingest::auth_errors_carry_remediation | typed remediation; live 401 path manual at the milestone boundary |
 | T-0004 | AC-0004 | rust | adapters-lang-ts::extracts_express_endpoints_not_arbitrary_calls, adapters-lang-ts::endpoint_receiver_must_come_from_framework_factory, adapters-lang-ts::handles_edges_bind_named_and_anonymous_handlers | Express registry; receiver proven from factory |

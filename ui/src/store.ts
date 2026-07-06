@@ -45,6 +45,9 @@ export interface IngestSummary {
   files: number;
   nodes: number;
   edges: number;
+  /** Set for GitHub adds: the cloned repo listed with its SHA (AC-0001). */
+  repo?: string;
+  commit_sha?: string;
 }
 
 /** One traced flow as returned by `list_flows` (flowtracer::Flow). */
