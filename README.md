@@ -27,8 +27,10 @@ job spine round-trip. Next: M1 deterministic TS extraction. See the
 [milestone plan](docs/SPEC-00_master.md#14-milestone-plan-m0m10).
 
 ```sh
+# prerequisites: Node (see .nvmrc) and Rust via rustup — https://rustup.rs
+# (rust-toolchain.toml pins the exact toolchain; rustup picks it up automatically)
 npm install && npm --prefix ui install
-npm run tauri dev
+npm run tauri dev   # first run compiles the Rust workspace — takes a few minutes
 ```
 
 ## Documentation map

@@ -4,9 +4,10 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod evidence;
 mod jobs;
 
-use core_graph::{GraphStore, SqliteGraphStore};
+use core_graph::{GraphStore, Node, SqliteGraphStore};
 use jobs::{Job, JobStore};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -95,7 +96,8 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         repo: "local",
         commit: "workdir",
     };
-    let extraction = adapters_lang_ts::extract_dir(std::path::Path::new(&path), &id)
+    let root = std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
+    let extraction = adapters_lang_ts::extract_dir(&root, &id)
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
 
     let files = extraction
@@ -107,6 +109,26 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         let mut graph = state
             .graph
             .lock()
+            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        // Repo node records where the tree lives so evidence views can read
+        // source later (survives restarts with the graph).
+        let repo_prov = core_prov::Provenance::new(
+            core_prov::Tier::Deterministic,
+            core_prov::ConfidenceTier::Confirmed,
+            vec![],
+            "app.ingest",
+            root.to_string_lossy().as_bytes(),
+        )
+        .expect("within ceiling");
+        graph
+            .put_node(&Node {
+                id: format!("repo:{}", id.repo),
+                label: "Repo".into(),
+                props: serde_json::json!({
+                    "root": root.to_string_lossy(),
+                    "prov": serde_json::to_value(repo_prov).expect("serializes"),
+                }),
+            })
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
         for node in &extraction.nodes {
             graph
@@ -129,6 +151,38 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
     })
 }
 
+/// Nodes carrying `label` (e.g. `Endpoint`, `Repo`), ordered by id.
+#[tauri::command]
+fn list_nodes(label: String, state: State<'_, AppState>) -> Result<Vec<Node>, String> {
+    let graph = state.graph.lock().map_err(|e| e.to_string())?;
+    graph.nodes_with_label(&label).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct EvidenceSource {
+    text: String,
+    window_start: u64,
+    truncated: bool,
+}
+
+/// Read-only source window containing an evidence span, confined to the
+/// ingest root recorded on the `Repo` node (NG1: navigation, never edit).
+#[tauri::command]
+fn read_evidence(
+    root: String,
+    path: String,
+    byte_start: u64,
+    byte_end: u64,
+) -> Result<EvidenceSource, String> {
+    let window = evidence::read_source(std::path::Path::new(&root), &path, &(byte_start..byte_end))
+        .map_err(|e| e.to_string())?;
+    Ok(EvidenceSource {
+        text: window.text,
+        window_start: window.window_start,
+        truncated: window.truncated,
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -147,7 +201,9 @@ fn main() {
             graph_stats,
             enqueue_job,
             list_jobs,
-            ingest_path
+            ingest_path,
+            list_nodes,
+            read_evidence
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cartograph");

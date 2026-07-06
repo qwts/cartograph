@@ -146,3 +146,128 @@ button {
 button:hover {
   filter: brightness(1.08);
 }
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Confidence tiers (R-INT-2): confirmed / inferred / gap never look alike. */
+.tier-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid currentcolor;
+  white-space: nowrap;
+}
+
+.tier-confirmed {
+  color: var(--tier-confirmed);
+}
+
+.tier-inferredstrong {
+  color: var(--tier-inferred-strong);
+}
+
+.tier-inferredweak {
+  color: var(--tier-inferred-weak);
+}
+
+.tier-gap {
+  color: var(--tier-gap);
+}
+
+.ingest-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.ingest-form input {
+  flex: 1;
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+}
+
+.error-text {
+  color: var(--tier-gap);
+  font-size: 0.85rem;
+}
+
+.endpoint-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.endpoint-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+
+.endpoint-method {
+  font-weight: 700;
+  color: var(--primary);
+  min-width: 3.2rem;
+}
+
+.endpoint-path {
+  flex: 1;
+  font-family: ui-monospace, monospace;
+}
+
+.evidence-area {
+  padding: 0 1.25rem 1.25rem;
+}
+
+.evidence-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.evidence-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  margin-bottom: 0.6rem;
+}
+
+.evidence-source {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  background: var(--surface-container-lowest, #0e0e0e);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 0.75rem;
+  overflow: auto;
+  max-height: 40vh;
+  white-space: pre-wrap;
+}
+
+.evidence-source mark {
+  background: color-mix(in srgb, var(--tier-confirmed) 25%, transparent);
+  color: var(--on-surface);
+  border-radius: 3px;
+  outline: 1px solid var(--tier-confirmed);
+}
