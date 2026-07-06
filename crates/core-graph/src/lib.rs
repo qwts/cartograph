@@ -155,15 +155,19 @@ impl GraphStore for SqliteGraphStore {
     }
 
     fn node_count(&self) -> Result<u64, GraphError> {
-        Ok(self
+        // SQLite integers are i64; rusqlite 0.40 dropped FromSql for u64.
+        // COUNT(*) is never negative, so the cast is lossless.
+        let n: i64 = self
             .conn
-            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?)
+            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?;
+        Ok(n as u64)
     }
 
     fn edge_count(&self) -> Result<u64, GraphError> {
-        Ok(self
+        let n: i64 = self
             .conn
-            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?)
+            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
+        Ok(n as u64)
     }
 
     fn reachable_from(&self, start: &str, label: Option<&str>) -> Result<Vec<String>, GraphError> {
