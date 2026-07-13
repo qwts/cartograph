@@ -868,10 +868,13 @@ fn pulumi_aws_constructors_emit_resources_dependencies_and_capabilities() {
     // relationship semantics come from the same registry as Terraform.
     let source = r#"
 import * as aws from '@pulumi/aws';
+import * as pulumi from '@pulumi/pulumi';
 import { Bucket as LogsBucket } from '@pulumi/aws/s3';
 
 const queue = new aws.sqs.Queue('orders', {});
 const logs = new LogsBucket('logs', {});
+new aws.s3.Bucket('audit', {});
+const archive = new pulumi.asset.FileAsset('archive.zip');
 const worker = new aws.lambda.Function('worker', {});
 const mapping = new aws.lambda.EventSourceMapping('orders-worker', {
   eventSourceArn: queue.arn,
@@ -884,7 +887,7 @@ const mapping = new aws.lambda.EventSourceMapping('orders-worker', {
         .iter()
         .filter(|node| node.label == "Resource")
         .collect::<Vec<_>>();
-    assert_eq!(resources.len(), 4);
+    assert_eq!(resources.len(), 5);
     assert!(resources.iter().all(|node| {
         node.props["source"] == "pulumi"
             && node.props["prov"]["tier"] == "Deterministic"
@@ -892,6 +895,7 @@ const mapping = new aws.lambda.EventSourceMapping('orders-worker', {
     }));
     let queue = "res:qwtm/example@pulumi:aws:sqs/queue:Queue:orders";
     let logs = "res:qwtm/example@pulumi:aws:s3/bucket:Bucket:logs";
+    let audit = "res:qwtm/example@pulumi:aws:s3/bucket:Bucket:audit";
     let worker = "res:qwtm/example@pulumi:aws:lambda/function:Function:worker";
     let mapping =
         "res:qwtm/example@pulumi:aws:lambda/eventSourceMapping:EventSourceMapping:orders-worker";
@@ -901,6 +905,12 @@ const mapping = new aws.lambda.EventSourceMapping('orders-worker', {
     assert!(edge_pairs(&ex, "DEPENDS_ON").contains(&(mapping, worker)));
     assert!(edge_pairs(&ex, "TRIGGERS").contains(&(queue, worker)));
     assert!(resources.iter().any(|node| node.id == logs));
+    assert!(resources.iter().any(|node| node.id == audit));
+    assert!(
+        resources
+            .iter()
+            .all(|node| node.props["logical_id"] != "archive.zip")
+    );
     let trigger = ex
         .edges
         .iter()
@@ -908,6 +918,48 @@ const mapping = new aws.lambda.EventSourceMapping('orders-worker', {
         .unwrap();
     assert_eq!(trigger.props["via"], mapping);
     assert_eq!(trigger.props["registry"], iac::registry::REGISTRY_VERSION);
+}
+
+#[test]
+fn pulumi_imported_resources_resolve_directory_relationships() {
+    // AC-0051/T-0051: relative imports are proven only after the whole
+    // directory is recovered, then REFERENCES and registry edges target the
+    // imported resources rather than disappearing at the file boundary.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("queue.ts"),
+        "import * as aws from '@pulumi/aws';\nexport const queue = new aws.sqs.Queue('orders', {});\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("worker.ts"),
+        "import * as aws from '@pulumi/aws';\nexport const worker = new aws.lambda.Function('worker', {});\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("mapping.ts"),
+        r#"
+import * as aws from '@pulumi/aws';
+import { queue } from './queue';
+import { worker } from './worker';
+new aws.lambda.EventSourceMapping('orders-worker', {
+  eventSourceArn: queue.arn,
+  functionName: worker.arn,
+}, { dependsOn: [queue, worker] });
+"#,
+    )
+    .unwrap();
+
+    let ex = extract_dir(dir.path(), &id()).unwrap();
+    let queue = "res:qwtm/example@pulumi:aws:sqs/queue:Queue:orders";
+    let worker = "res:qwtm/example@pulumi:aws:lambda/function:Function:worker";
+    let mapping =
+        "res:qwtm/example@pulumi:aws:lambda/eventSourceMapping:EventSourceMapping:orders-worker";
+    assert!(edge_pairs(&ex, "REFERENCES").contains(&(mapping, queue)));
+    assert!(edge_pairs(&ex, "REFERENCES").contains(&(mapping, worker)));
+    assert!(edge_pairs(&ex, "DEPENDS_ON").contains(&(mapping, queue)));
+    assert!(edge_pairs(&ex, "DEPENDS_ON").contains(&(mapping, worker)));
+    assert!(edge_pairs(&ex, "TRIGGERS").contains(&(queue, worker)));
 }
 
 #[test]

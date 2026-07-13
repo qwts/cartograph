@@ -58,6 +58,12 @@ pub struct Extraction {
     /// the target exists. Failed proof becomes an explicit CALLS Gap rather
     /// than disappearing from the escalation ladder.
     pending_calls: Vec<PendingCall>,
+    /// Per-file Pulumi variable symbols mapped to their recovered Resource;
+    /// directory-wide resolution uses these for relative imports.
+    pulumi_bindings: HashMap<String, String>,
+    /// Pulumi relationships whose imported endpoint can only be proven after
+    /// all files have been recovered.
+    pending_pulumi_edges: Vec<PendingPulumiEdge>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +71,28 @@ struct PendingCall {
     resolved_edge: Edge,
     gap_node: Node,
     gap_edge: Edge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum PulumiEndpoint {
+    Resource(String),
+    ImportedSymbol(String),
+}
+
+impl PulumiEndpoint {
+    fn evidence_id(&self) -> &str {
+        match self {
+            Self::Resource(id) | Self::ImportedSymbol(id) => id,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingPulumiEdge {
+    src: PulumiEndpoint,
+    dst: PulumiEndpoint,
+    label: String,
+    props: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +142,9 @@ fn retarget_commit(extraction: &mut Extraction, commit: &str) {
         retarget_props_commit(&mut pending.gap_node.props, commit);
         retarget_props_commit(&mut pending.gap_edge.props, commit);
     }
+    for pending in &mut extraction.pending_pulumi_edges {
+        retarget_props_commit(&mut pending.props, commit);
+    }
 }
 
 impl Extraction {
@@ -138,6 +169,8 @@ impl Extraction {
         self.event_sites.clear();
         self.fetch_sites.clear();
         self.pending_calls.clear();
+        self.pulumi_bindings.clear();
+        self.pending_pulumi_edges.clear();
     }
 
     /// Ensure every edge endpoint exists as a node; unresolved targets become
@@ -650,8 +683,8 @@ fn selector_values<'tree>(
 fn resource_refs(
     cx: &FileCx<'_>,
     node: TsNode<'_>,
-    resources: &HashMap<String, String>,
-) -> BTreeSet<String> {
+    resources: &HashMap<String, PulumiEndpoint>,
+) -> BTreeSet<PulumiEndpoint> {
     let mut refs = BTreeSet::new();
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
@@ -666,14 +699,39 @@ fn resource_refs(
                 .filter(|parent| parent.kind() == "pair")
                 .and_then(|parent| parent.child_by_field_name("key"))
                 == Some(current);
-            if !is_pair_key && let Some(id) = resources.get(cx.text(&current)) {
-                refs.insert(id.clone());
+            if !is_pair_key && let Some(endpoint) = resources.get(cx.text(&current)) {
+                refs.insert(endpoint.clone());
             }
         }
         let mut walk = current.walk();
         stack.extend(current.named_children(&mut walk));
     }
     refs
+}
+
+fn push_pulumi_edge(
+    out: &mut Extraction,
+    src: PulumiEndpoint,
+    dst: PulumiEndpoint,
+    label: &str,
+    props: serde_json::Value,
+) {
+    match (&src, &dst) {
+        (PulumiEndpoint::Resource(src), PulumiEndpoint::Resource(dst)) => {
+            out.edges.push(Edge {
+                src: src.clone(),
+                dst: dst.clone(),
+                label: label.into(),
+                props,
+            });
+        }
+        _ => out.pending_pulumi_edges.push(PendingPulumiEdge {
+            src,
+            dst,
+            label: label.into(),
+            props,
+        }),
+    }
 }
 
 /// Locate the channel identity inside a call's arguments per the registry
@@ -938,7 +996,7 @@ pub fn extract_source(
 
     // --- Pulumi resources: import-proven provider constructors (AC-0051) ---
     struct PulumiDecl<'tree> {
-        variable: String,
+        variable: Option<String>,
         node_id: String,
         terraform_type: String,
         pulumi_type: String,
@@ -951,38 +1009,53 @@ pub fn extract_source(
     let q_pulumi = Query::new(
         &language,
         r#"
-        (variable_declarator
-            name: (identifier) @var
-            value: (new_expression
-                constructor: [(identifier) (member_expression)] @ctor
-                arguments: (arguments) @args) @new)
+        (new_expression
+            constructor: [(identifier) (member_expression)] @ctor
+            arguments: (arguments) @args) @new
         "#,
     )
     .expect("static query");
     let mut declarations = Vec::new();
-    let mut resources = HashMap::new();
+    let mut resources = imported
+        .iter()
+        .map(|(local, symbol)| {
+            (
+                local.clone(),
+                PulumiEndpoint::ImportedSymbol(symbol.clone()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&q_pulumi, root, source);
     while let Some(m) = matches.next() {
-        let (mut variable, mut constructor, mut site, mut args) = (None, None, None, None);
+        let (mut constructor, mut site, mut args) = (None, None, None);
         for capture in m.captures {
             match q_pulumi.capture_names()[capture.index as usize] {
-                "var" => variable = Some(cx.text(&capture.node).to_string()),
                 "ctor" => constructor = Some(cx.text(&capture.node).to_string()),
                 "new" => site = Some(capture.node),
                 "args" => args = Some(capture.node),
                 _ => {}
             }
         }
-        let (Some(variable), Some(constructor), Some(site), Some(args)) =
-            (variable, constructor, site, args)
-        else {
+        let (Some(constructor), Some(site), Some(args)) = (constructor, site, args) else {
             continue;
         };
+        let variable = site
+            .parent()
+            .filter(|parent| {
+                parent.kind() == "variable_declarator"
+                    && parent.child_by_field_name("value") == Some(site)
+            })
+            .and_then(|parent| parent.child_by_field_name("name"))
+            .filter(|name| name.kind() == "identifier")
+            .map(|name| cx.text(&name).to_string());
         let base = constructor.split('.').next().unwrap_or(&constructor);
         let Some(module_spec) = import_modules.get(base) else {
             continue;
         };
+        if module_spec == "@pulumi/pulumi" || module_spec.starts_with("@pulumi/pulumi/") {
+            continue; // core SDK assets/outputs are not provider resources
+        }
         // Named imports can be aliased (`Bucket as LogsBucket`). Preserve the
         // source spelling as evidence while normalizing with the exported
         // constructor name from the direct service package.
@@ -1010,7 +1083,11 @@ pub fn extract_source(
             continue;
         };
         let node_id = format!("res:{}@pulumi:{pulumi_type}:{logical_name}", id.repo);
-        resources.insert(variable.clone(), node_id.clone());
+        if let Some(variable) = &variable {
+            resources.insert(variable.clone(), PulumiEndpoint::Resource(node_id.clone()));
+            out.pulumi_bindings
+                .insert(sym_id(id.repo, path, variable), node_id.clone());
+        }
         declarations.push(PulumiDecl {
             variable,
             node_id,
@@ -1062,16 +1139,18 @@ pub fn extract_source(
         let inputs = arguments.get(1).copied();
         if let Some(inputs) = inputs {
             for target in resource_refs(&cx, inputs, &resources) {
-                out.edges.push(Edge {
-                    src: declaration.node_id.clone(),
-                    dst: target.clone(),
-                    label: "REFERENCES".into(),
-                    props: serde_json::json!({
+                let target_evidence = target.evidence_id().to_string();
+                push_pulumi_edge(
+                    &mut out,
+                    PulumiEndpoint::Resource(declaration.node_id.clone()),
+                    target,
+                    "REFERENCES",
+                    serde_json::json!({
                         "prov": cx.prov(&declaration.site, &format!(
-                            "REFERENCES {} -> {target}", declaration.node_id
+                            "REFERENCES {} -> {target_evidence}", declaration.node_id
                         )),
                     }),
-                });
+                );
             }
         }
         if let Some(options) = arguments.get(2).copied() {
@@ -1080,17 +1159,19 @@ pub fn extract_source(
                     continue;
                 }
                 for target in resource_refs(&cx, value, &resources) {
-                    out.edges.push(Edge {
-                        src: declaration.node_id.clone(),
-                        dst: target.clone(),
-                        label: "DEPENDS_ON".into(),
-                        props: serde_json::json!({
+                    let target_evidence = target.evidence_id().to_string();
+                    push_pulumi_edge(
+                        &mut out,
+                        PulumiEndpoint::Resource(declaration.node_id.clone()),
+                        target,
+                        "DEPENDS_ON",
+                        serde_json::json!({
                             "pulumi_option": option,
                             "prov": cx.prov(&declaration.site, &format!(
-                                "DEPENDS_ON {} -> {target}", declaration.node_id
+                                "DEPENDS_ON {} -> {target_evidence}", declaration.node_id
                             )),
                         }),
-                    });
+                    );
                 }
             }
         }
@@ -1098,7 +1179,9 @@ pub fn extract_source(
         for capability in iac::registry::capabilities_for(&declaration.terraform_type) {
             let endpoint_refs = |selector: iac::registry::EndpointSelector| match selector {
                 iac::registry::EndpointSelector::Resource => {
-                    [declaration.node_id.clone()].into_iter().collect()
+                    [PulumiEndpoint::Resource(declaration.node_id.clone())]
+                        .into_iter()
+                        .collect()
                 }
                 iac::registry::EndpointSelector::Path(path) => inputs
                     .into_iter()
@@ -1108,19 +1191,22 @@ pub fn extract_source(
             };
             for source in endpoint_refs(capability.source) {
                 for target in endpoint_refs(capability.target) {
-                    out.edges.push(Edge {
-                        src: source.clone(),
-                        dst: target.clone(),
-                        label: capability.kind.edge_label().into(),
-                        props: serde_json::json!({
+                    let source_evidence = source.evidence_id().to_string();
+                    let target_evidence = target.evidence_id().to_string();
+                    push_pulumi_edge(
+                        &mut out,
+                        source.clone(),
+                        target,
+                        capability.kind.edge_label(),
+                        serde_json::json!({
                             "via": declaration.node_id,
                             "registry": iac::registry::REGISTRY_VERSION,
                             "prov": cx.prov(&declaration.site, &format!(
-                                "{} {source} -> {target} via {}",
+                                "{} {source_evidence} -> {target_evidence} via {}",
                                 capability.kind.edge_label(), declaration.node_id
                             )),
                         }),
-                    });
+                    );
                 }
             }
         }
@@ -2170,6 +2256,8 @@ pub fn extract_dir_incremental(
         out.fetch_sites.extend(ex.fetch_sites);
         out.default_exports.extend(ex.default_exports);
         out.pending_calls.extend(ex.pending_calls);
+        out.pulumi_bindings.extend(ex.pulumi_bindings);
+        out.pending_pulumi_edges.extend(ex.pending_pulumi_edges);
     }
     let known_symbols: std::collections::HashSet<String> =
         out.nodes.iter().map(|node| node.id.clone()).collect();
@@ -2181,6 +2269,33 @@ pub fn extract_dir_incremental(
             out.edges.push(pending.gap_edge);
         }
     }
+    for pending in std::mem::take(&mut out.pending_pulumi_edges) {
+        let resolve = |endpoint: PulumiEndpoint| match endpoint {
+            PulumiEndpoint::Resource(id) => Some(id),
+            PulumiEndpoint::ImportedSymbol(symbol) => out.pulumi_bindings.get(&symbol).cloned(),
+        };
+        let (Some(src), Some(dst)) = (resolve(pending.src), resolve(pending.dst)) else {
+            continue;
+        };
+        let mut props = pending.props;
+        if let Ok(mut provenance) = serde_json::from_value::<Provenance>(props["prov"].clone()) {
+            let via = props["via"]
+                .as_str()
+                .map(|via| format!(" via {via}"))
+                .unwrap_or_default();
+            provenance.content_hash = core_prov::content_hash(
+                format!("{} {src} -> {dst}{via}", pending.label).as_bytes(),
+            );
+            props["prov"] = serde_json::to_value(provenance).expect("provenance serializes");
+        }
+        out.edges.push(Edge {
+            src,
+            dst,
+            label: pending.label,
+            props,
+        });
+    }
+    out.pulumi_bindings.clear();
     next_pages_screens(&mut out, id);
     out.close_over_endpoints();
     Ok((out, stats))
