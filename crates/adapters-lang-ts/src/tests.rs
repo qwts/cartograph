@@ -115,6 +115,139 @@ fn call_edges_are_symbol_to_symbol() {
 }
 
 #[test]
+fn typed_member_calls_resolve_local_and_imported_methods() {
+    // AC-0005: explicit TS receiver types and constructor types make member
+    // calls deterministic across method and file boundaries.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("service.ts"),
+        r#"
+export class UserService {
+  list() {}
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("controller.ts"),
+        r#"
+import { UserService } from './service';
+import { MissingService } from './missing';
+
+export class UserController {
+  constructor(private readonly users: UserService) {}
+  index() { this.users.list(); }
+}
+
+export function run(users: UserService) {
+  users.list();
+}
+
+export function inferred() {
+  const users = new UserService();
+  users.list();
+}
+
+export function unresolved(missing: MissingService) {
+  missing.run();
+}
+"#,
+    )
+    .unwrap();
+
+    let ex = extract_dir(dir.path(), &id()).unwrap();
+    let calls = edge_pairs(&ex, "CALLS");
+    let target = "sym:qwtm/example@src/service.ts#UserService.list";
+    assert!(calls.contains(&(
+        "sym:qwtm/example@src/controller.ts#UserController.index",
+        target
+    )));
+    assert!(calls.contains(&("sym:qwtm/example@src/controller.ts#run", target)));
+    assert!(calls.contains(&("sym:qwtm/example@src/controller.ts#inferred", target)));
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, dst)| *dst == "sym:qwtm/example@src/missing.ts#MissingService.run")
+    );
+    let target_node = ex.nodes.iter().find(|node| node.id == target).unwrap();
+    assert_eq!(target_node.props["kind"], "Method");
+}
+
+#[test]
+fn fastify_and_nest_endpoints_are_import_proven() {
+    // AC-0004: framework registry coverage includes Fastify factory routes and
+    // Nest controller/method decorators, without name-based guessing.
+    let fastify = extract_source(
+        br#"
+import Fastify from 'fastify';
+const app = Fastify();
+function listUsers() {}
+app.get('/users', listUsers);
+"#,
+        "src/fastify.ts",
+        &id(),
+    )
+    .unwrap();
+    assert!(
+        fastify
+            .nodes
+            .iter()
+            .any(|node| node.id == "ep:qwtm/example@GET:/users")
+    );
+
+    let nest = extract_source(
+        br#"
+import { Controller as Api, Get, Post } from '@nestjs/common';
+
+@Api('users')
+export class UsersController {
+  @Get()
+  list() {}
+
+  @Post(':id')
+  update() {}
+}
+"#,
+        "src/users.controller.ts",
+        &id(),
+    )
+    .unwrap();
+    let endpoints: Vec<_> = nest
+        .nodes
+        .iter()
+        .filter(|node| node.label == "Endpoint")
+        .map(|node| node.id.as_str())
+        .collect();
+    assert_eq!(
+        endpoints,
+        [
+            "ep:qwtm/example@GET:/users",
+            "ep:qwtm/example@POST:/users/:id"
+        ]
+    );
+    let handles = edge_pairs(&nest, "HANDLES");
+    assert!(handles.contains(&(
+        "ep:qwtm/example@GET:/users",
+        "sym:qwtm/example@src/users.controller.ts#UsersController.list"
+    )));
+
+    let lookalike = extract_source(
+        br#"
+function Controller(_: string) { return (_: unknown) => {}; }
+function Get() { return (_: unknown) => {}; }
+@Controller('fake')
+class FakeController { @Get() list() {} }
+"#,
+        "src/fake.ts",
+        &id(),
+    )
+    .unwrap();
+    assert!(lookalike.nodes.iter().all(|node| node.label != "Endpoint"));
+}
+
+#[test]
 fn imports_resolve_relative_files_and_modules() {
     let ex = extract_source(APP_TS.as_bytes(), "src/app.ts", &id()).unwrap();
     let imports = edge_pairs(&ex, "IMPORTS");

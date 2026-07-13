@@ -6,7 +6,7 @@
 pub mod client;
 pub mod events;
 
-/// HTTP framework registry (Express family first; Fastify/Nest at M1+).
+/// HTTP framework registry for factory-created routers (Express/Fastify).
 ///
 /// An endpoint registration is `receiver.method(route, handler)` where the
 /// receiver is a tracked framework object (e.g. a variable bound to
@@ -30,6 +30,55 @@ pub const EXPRESS: HttpFrameworkRegistry = HttpFrameworkRegistry {
     ],
 };
 
+/// Fastify registry. Its route-registration shape is the same deterministic
+/// `receiver.method(path, handler)` form as Express, but the receiver must be
+/// proven to come from the `fastify` factory.
+pub const FASTIFY: HttpFrameworkRegistry = HttpFrameworkRegistry {
+    module_name: "fastify",
+    factories: &["fastify"],
+    methods: &[
+        "get", "post", "put", "delete", "patch", "options", "head", "all",
+    ],
+};
+
+/// Factory-created HTTP framework registries consulted by language adapters.
+pub const HTTP_FACTORIES: &[&HttpFrameworkRegistry] = &[&EXPRESS, &FASTIFY];
+
+/// NestJS's decorator registry. These names are only authoritative when the
+/// decorator binding is import-proven from `@nestjs/common`.
+pub struct NestRegistry {
+    /// npm module that owns the decorators.
+    pub module_name: &'static str,
+    /// Class decorator that supplies the route prefix.
+    pub controller: &'static str,
+    methods: &'static [(&'static str, &'static str)],
+}
+
+/// NestJS controller and HTTP method decorators.
+pub const NEST: NestRegistry = NestRegistry {
+    module_name: "@nestjs/common",
+    controller: "Controller",
+    methods: &[
+        ("Get", "GET"),
+        ("Post", "POST"),
+        ("Put", "PUT"),
+        ("Delete", "DELETE"),
+        ("Patch", "PATCH"),
+        ("Options", "OPTIONS"),
+        ("Head", "HEAD"),
+        ("All", "ALL"),
+    ],
+};
+
+impl NestRegistry {
+    /// Map an import-proven Nest decorator name to its canonical HTTP verb.
+    pub fn http_method(&self, decorator: &str) -> Option<&'static str> {
+        self.methods
+            .iter()
+            .find_map(|(name, verb)| (*name == decorator).then_some(*verb))
+    }
+}
+
 impl HttpFrameworkRegistry {
     /// If `prop` is a route-registration method, returns its canonical
     /// uppercase HTTP verb (`all` maps to `ALL`).
@@ -39,10 +88,18 @@ impl HttpFrameworkRegistry {
             .then(|| prop.to_ascii_uppercase())
     }
 
-    /// True when `callee` (source text of a call's function part) creates a
-    /// routable object for this framework.
+    /// True when `callee` has a registered factory shape. The language adapter
+    /// must separately prove the base identifier is imported from
+    /// [`Self::module_name`], so default-import aliases remain deterministic.
     pub fn is_factory(&self, callee: &str) -> bool {
-        self.factories.contains(&callee)
+        match callee.split_once('.') {
+            None => self.factories.iter().any(|factory| !factory.contains('.')),
+            Some((_, member)) => self.factories.iter().any(|factory| {
+                factory
+                    .split_once('.')
+                    .is_some_and(|(_, registered)| registered == member)
+            }),
+        }
     }
 }
 
@@ -63,6 +120,17 @@ mod tests {
     fn express_factories() {
         assert!(EXPRESS.is_factory("express"));
         assert!(EXPRESS.is_factory("express.Router"));
-        assert!(!EXPRESS.is_factory("fetch"));
+        assert!(EXPRESS.is_factory("makeExpress"));
+        assert!(EXPRESS.is_factory("e.Router"));
+        assert!(!EXPRESS.is_factory("express.createApplication"));
+    }
+
+    #[test]
+    fn fastify_and_nest_registry_shapes() {
+        assert!(FASTIFY.is_factory("fastify"));
+        assert!(FASTIFY.is_factory("Fastify"));
+        assert!(!FASTIFY.is_factory("fastify.Router"));
+        assert_eq!(NEST.http_method("Get"), Some("GET"));
+        assert_eq!(NEST.http_method("SubscribeMessage"), None);
     }
 }

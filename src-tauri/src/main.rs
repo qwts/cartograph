@@ -1389,8 +1389,7 @@ const bus = new EventEmitter();
 app.post('/orders', (req, res) => { placeOrder(); });
 export function placeOrder() { bus.emit('order.placed'); }
 export function listen() { bus.on('order.placed', () => {}); }
-// A class-method producer: the TS pass emits no Symbol node for methods,
-// so the stitched edge source only exists via the post-stitch close-over.
+// A class-method producer: the TS pass emits a qualified, proven method symbol.
 export class Shipper {
   ship() { bus.emit('order.shipped'); }
 }
@@ -1473,14 +1472,15 @@ export function App() {
             ]
         );
         assert!(!mmd.contains("order.placed"));
-        // The class-method producer landed via a placeholder Symbol — the
-        // edge inserted without violating the store's foreign keys.
+        // The class-method producer is a real, provenance-bearing Symbol, not
+        // a close-over placeholder.
         let symbols = store.nodes_with_label("Symbol").unwrap();
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.id == "sym:local@app.ts#ship" && s.props["placeholder"] == true)
-        );
+        let ship = symbols
+            .iter()
+            .find(|symbol| symbol.id == "sym:local@app.ts#Shipper.ship")
+            .expect("qualified class method");
+        assert!(ship.props.get("placeholder").is_none());
+        assert_eq!(ship.props["prov"]["confidence_tier"], "Confirmed");
 
         // Client layer (US-0005): the route became a Screen, and the
         // component's fetch resolved Confirmed against the server endpoint.

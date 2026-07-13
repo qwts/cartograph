@@ -25,7 +25,7 @@
 ### US-0002 — Deterministic extraction of server-side facts (TS first)
 - **Actor:** Engine
 - **As a** engineer **I want** import/call graphs, endpoints, and data access extracted statically **so that** server facts are Confirmed without inference.
-- **Priority:** Must · **Status:** In-Progress
+- **Priority:** Must · **Status:** Done
 - **AC-0004** Given a TS repo, when ingested, then endpoints (method/path/handler) are extracted via the framework adapter and marked Confirmed.
 - **AC-0005** Given typed TS, when building call edges, then intra-procedural edges are complete and inter-procedural edges resolve where types permit.
 - **AC-0006** Given any extracted fact, when inspected, then it carries provenance (file/span/commit, tier, extractor_id).
