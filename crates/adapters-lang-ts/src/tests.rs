@@ -134,7 +134,7 @@ export class UserService {
         src.join("controller.ts"),
         r#"
 import { UserService } from './service';
-import { MissingService } from './missing';
+import { MissingService as MS } from './missing';
 
 export class UserController {
   constructor(private readonly users: UserService) {}
@@ -150,7 +150,7 @@ export function inferred() {
   users.list();
 }
 
-export function unresolved(missing: MissingService) {
+export function unresolved(missing: MS) {
   missing.run();
 }
 "#,
@@ -194,10 +194,10 @@ fn unresolved_relative_import_calls_emit_gaps_without_global_noise() {
     std::fs::write(
         dir.path().join("caller.ts"),
         r#"
-import { processOrder } from './missing';
+import { processOrder as po } from './missing';
 import { randomUUID } from 'node:crypto';
 export function run() {
-  processOrder();
+  po();
   randomUUID();
   console.log('done');
 }

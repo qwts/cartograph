@@ -1609,8 +1609,12 @@ pub fn extract_source(
         } else if let Some(dst) = imported.get(callee_name).cloned() {
             // A relative import gives us a deterministic candidate id, but
             // only the directory-wide pass can prove that symbol exists.
+            let semantic_name = imported_names
+                .get(callee_name)
+                .map(String::as_str)
+                .unwrap_or(callee_name);
             out.pending_calls
-                .push(pending_call(&cx, call, src_sym, dst, callee_name));
+                .push(pending_call(&cx, call, src_sym, dst, semantic_name));
         }
         // Unknown globals, builtins, callback parameters, and package calls
         // are not useful within-repo semantic candidates and remain omitted.
@@ -1669,12 +1673,16 @@ pub fn extract_source(
         let local_dst = methods
             .get(&(receiver_type.clone(), method.clone()))
             .cloned();
-        let imported_dst =
+        let imported_target =
             imported_types
                 .get(&receiver_type)
                 .map(|(target_file, exported_type)| {
-                    sym_id(id.repo, target_file, &format!("{exported_type}.{method}"))
+                    (
+                        sym_id(id.repo, target_file, &format!("{exported_type}.{method}")),
+                        exported_type.clone(),
+                    )
                 });
+        let imported_dst = imported_target.as_ref().map(|(dst, _)| dst.clone());
         let Some(dst) = local_dst.clone().or(imported_dst) else {
             continue;
         };
@@ -1693,12 +1701,16 @@ pub fn extract_source(
                 }),
             });
         } else {
+            let exported_type = imported_target
+                .as_ref()
+                .map(|(_, exported_type)| exported_type.as_str())
+                .unwrap_or(&receiver_type);
             out.pending_calls.push(pending_call(
                 &cx,
                 call,
                 src_sym,
                 dst,
-                &format!("{receiver_type}.{method}"),
+                &format!("{exported_type}.{method}"),
             ));
         }
     }
