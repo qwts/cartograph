@@ -65,3 +65,21 @@ export const ExactSpanPayload: Story = {
     await expect(args.onConsent).toHaveBeenCalledWith(preview);
   },
 };
+
+export const SemanticSpanPayload: Story = {
+  args: {
+    preview: {
+      ...preview,
+      tier: 'Semantic',
+      action_id: 'semantic:gap:orders',
+      redaction_count: 0,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText('T2 · InferredStrong')).toBeInTheDocument();
+    await expect(canvas.queryByText('T3 · InferredWeak')).not.toBeInTheDocument();
+    await expect(canvas.getByText('Semantic')).toBeInTheDocument();
+    await expect(canvas.getByText('semantic:gap:orders')).toBeInTheDocument();
+  },
+};

@@ -8,7 +8,7 @@
 
 use regex::Regex;
 use reqwest::Url;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -384,7 +384,7 @@ impl OllamaProvider {
         if !base_url.path().ends_with('/') {
             base_url.set_path(&format!("{}/", base_url.path()));
         }
-        let client = Client::builder().timeout(timeout).build()?;
+        let client = build_direct_loopback_client(Client::builder(), timeout)?;
         let embedding_model = embedding_model.into();
         let completion_model = completion_model.into();
         let provider_id = if embedding_model == completion_model {
@@ -410,6 +410,16 @@ impl OllamaProvider {
             Duration::from_secs(120),
         )
     }
+}
+
+/// Ollama is declared Local, so its transport must never inherit either
+/// environment/system proxies or a caller-added proxy. Otherwise loopback
+/// evidence could leave the device without passing cloud consent.
+fn build_direct_loopback_client(
+    builder: ClientBuilder,
+    timeout: Duration,
+) -> Result<Client, ProviderError> {
+    Ok(builder.no_proxy().timeout(timeout).build()?)
 }
 
 #[derive(Serialize)]
@@ -716,6 +726,54 @@ mod tests {
         assert!(provider.capabilities().embeddings);
         assert!(provider.capabilities().chat);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn ollama_client_disables_all_proxies() {
+        // AC-0023: a Local provider stays physically local even if a system
+        // or explicit reqwest proxy would otherwise capture loopback traffic.
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_address = target.local_addr().unwrap();
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = proxy.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            let mut request = vec![0_u8; 8192];
+            let size = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..size]).starts_with("POST /api/embed"));
+            let body = r#"{"embeddings":[[1.0,0.0]]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let client = build_direct_loopback_client(
+            Client::builder().proxy(
+                reqwest::Proxy::all(format!("http://{proxy_address}")).expect("valid fake proxy"),
+            ),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let provider = OllamaProvider {
+            base_url: Url::parse(&format!("http://{target_address}/")).unwrap(),
+            embedding_model: "test-model".into(),
+            completion_model: "test-model".into(),
+            provider_id: "ollama:test-model".into(),
+            client,
+        };
+        assert_eq!(provider.embed(&["orders".into()]).unwrap(), [[1.0, 0.0]]);
+        server.join().unwrap();
+
+        proxy.set_nonblocking(true).unwrap();
+        assert!(
+            proxy
+                .accept()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock),
+            "the fake proxy must receive no loopback connection"
+        );
     }
 
     #[test]
