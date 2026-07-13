@@ -60,10 +60,27 @@ events, client), then compiles official spec artifacts. Master spec:
    test code cites its AC in a comment. Manual procedures run at milestone
    boundaries, results recorded on the milestone's task issue.
 
+## Versioning and releases
+
+- `package.json` is the canonical application version. The root and UI npm
+  lockfiles, workspace `Cargo.toml`, local workspace package entries in
+  `Cargo.lock`, and `src-tauri/tauri.conf.json` are synchronized mirrors.
+  Never edit a mirror independently: run `npm run version:sync`, and verify
+  with `npm run version:check`.
+- User-visible behavior/features and breaking changes on the `0.x` line use a
+  minor Changeset; fixes use a patch Changeset. After `1.0.0`, breaking changes
+  use a major Changeset. Docs, tests, and internal tooling that do not change
+  the shipped application may omit one. Run `npm run changeset` to record the
+  release note; `CHANGELOG.md` is generated and must not be hand-edited.
+- Version application is automation-owned. Do not run `changeset version`,
+  edit version mirrors, or create release tags by hand. Until issue #91 lands,
+  no release cut is supported; that issue will make merging the reviewed
+  **Version packages** PR the release decision.
+
 ## Verification before "done"
 
 ```sh
-node scripts/check-traceability.mjs
+node scripts/check-traceability.mjs && npm run version:check && npm run test:version
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 npm --prefix ui run lint && npm --prefix ui run typecheck && npm --prefix ui run test && npm --prefix ui run build
 ```

@@ -37,6 +37,12 @@ jobs:
       - name: Traceability check
         run: node scripts/check-traceability.mjs
 
+      - name: Version synchronization check
+        run: npm run version:check
+
+      - name: Version tooling tests
+        run: npm run test:version
+
   # Rust core: format, lint-as-error, tests. The pinned toolchain comes from
   # rust-toolchain.toml (rustup auto-installs it on first cargo call), so CI
   # and local always agree — bump the pin deliberately.

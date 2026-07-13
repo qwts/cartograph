@@ -4,10 +4,16 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "changeset": "changeset",
+    "changeset:version": "changeset version && npm run version:sync",
     "tauri": "tauri",
-    "check:traceability": "node scripts/check-traceability.mjs"
+    "check:traceability": "node scripts/check-traceability.mjs",
+    "test:version": "node --test scripts/version.test.mjs",
+    "version:check": "node scripts/version.mjs check",
+    "version:sync": "node scripts/version.mjs sync"
   },
   "devDependencies": {
+    "@changesets/cli": "2.31.0",
     "@tauri-apps/cli": "^2.11.4"
   }
 }

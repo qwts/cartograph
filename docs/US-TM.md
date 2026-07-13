@@ -42,3 +42,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0012 | Explicit Markdown ADR directives and derived decision overlays |
 | ADR-0013 | Explicit security facts and deterministic finding projection |
 | ADR-0014 | Content-addressed delta extraction and graph reconciliation |
+| ADR-0015 | Single-source semantic versioning and Changesets release intent |
