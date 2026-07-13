@@ -143,7 +143,7 @@
 - **AC-0032** Given compiled artifacts, when viewed, then every assertion shows inline provenance.
 - **AC-0033** Given an inferred item, when I accept/reject/annotate, then the decision persists and survives re-ingest via content_hash.
 - **AC-0034** Given export, when run, then it honors R-INT-5 (`verified-only` vs `best-effort`) and includes Gap + Drift registers.
-- **AC-0035** Given the full set, when exported, then it produces user stories, US-TM, flow dossiers, resource topology as Markdown with fenced Mermaid plus provenance, a data model retaining READS/WRITES/MAPS_TO relations that terminate at DataEntity, ADRs, and Gap + Drift registers.
+- **AC-0035** Given the full set, when exported, then it produces user stories, US-TM, flow dossiers, resource topology as Markdown with fenced Mermaid plus provenance, a data model retaining READS/WRITES/MAPS_TO relations that terminate at DataEntity, ADRs, Gap + Drift registers, and mapped security findings.
 - **Security:** —
 - **Performance:** —
 - **Trace:** M9–M10 · `spec`, UI · — · T-0032..0035
@@ -172,9 +172,9 @@
 ### US-0015 — Security view of the spec
 - **Actor:** Engineer
 - **As a** engineer **I want** auth edges and IAM grants projected into a security view **so that** unauthenticated endpoints and over-broad policies surface as findings.
-- **Priority:** Should · **Status:** Draft
-- **AC-0041** Given endpoint auth facts, when projected, then unauthenticated endpoints are listed as findings mapped to US/AC.
-- **AC-0042** Given IAM GRANTS, when analyzed, then over-broad policies are flagged with the resource scope.
+- **Priority:** Should · **Status:** Done
+- **AC-0041** Given an endpoint with an explicit negative auth fact, when projected, then it is listed as a cited security finding mapped to US-0015/AC-0041; missing auth evidence alone never asserts unauthenticated status.
+- **AC-0042** Given an IAM `GRANTS` edge with a wildcard action or literal wildcard resource scope, when analyzed, then a confidence-preserving finding lists the exact actions and resource scope and maps to US-0015/AC-0042.
 - **Security:** This story *is* the security projection.
 - **Performance:** —
-- **Trace:** M9 · `iac`, `spec` · — · T-0041..0042
+- **Trace:** M9 · `iac`, `spec`, `ui` · — · T-0041..0042

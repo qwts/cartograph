@@ -63,6 +63,8 @@ pub struct SpecBundle {
     pub gap_count: usize,
     /// Explicit ADR/code conflicts in the Drift register.
     pub drift_count: usize,
+    /// Explicit auth/IAM findings in the security view.
+    pub security_count: usize,
 }
 
 fn fallback_provenance(identity: &str) -> Provenance {
@@ -721,6 +723,54 @@ fn drift_register(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertio
     (content, assertions, drift_nodes.len())
 }
 
+fn security_view(nodes: &[&Node]) -> (String, Vec<SpecAssertion>, usize) {
+    let findings = nodes
+        .iter()
+        .filter(|node| node.label == "Finding" && node.props["kind"].as_str() == Some("security"))
+        .collect::<Vec<_>>();
+    let assertions = findings
+        .iter()
+        .map(|finding| node_assertion(finding))
+        .collect::<Vec<_>>();
+    let mut content = String::from(
+        "# Security findings\n\n| Finding | Type | Subject | Resource scope | Actions | US / AC | Confidence |\n|---|---|---|---|---|---|---|\n",
+    );
+    for finding in &findings {
+        let scopes = finding.props["resource_scope"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let actions = finding.props["actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let finding_provenance = provenance(&finding.props, &finding.id);
+        writeln!(
+            content,
+            "| {} | `{}` | `{}` | {} | {} | {} / {} | {:?} |",
+            markdown_safe(&node_name(finding)),
+            markdown_safe(finding.props["category"].as_str().unwrap_or("security")),
+            markdown_safe(finding.props["subject_id"].as_str().unwrap_or("—")),
+            markdown_safe(if scopes.is_empty() { "—" } else { &scopes }),
+            markdown_safe(if actions.is_empty() { "—" } else { &actions }),
+            markdown_safe(finding.props["us_id"].as_str().unwrap_or("US-0015")),
+            markdown_safe(finding.props["ac_id"].as_str().unwrap_or("—")),
+            finding_provenance.confidence_tier,
+        )
+        .expect("write to string");
+    }
+    if findings.is_empty() {
+        content.push_str("| — | — | — | — | — | No explicit security findings | — |\n");
+    }
+    (content, assertions, findings.len())
+}
+
 /// Compile the complete official artifact set with one R-INT-5 policy.
 /// Rejected inferred content hashes are suppressed without upgrading any fact.
 pub fn compile_spec(
@@ -744,8 +794,10 @@ pub fn compile_spec(
         .collect::<Vec<_>>();
     let projected_flows = project_flows(flows, mode, rejected_hashes);
     let derived = crate::derive_adr_facts(&base_nodes, &base_edges, &projected_flows);
+    let security_findings = crate::security::derive_security_findings(&base_nodes, &base_edges);
     let mut projected_nodes = base_nodes;
     projected_nodes.extend(derived.nodes);
+    projected_nodes.extend(security_findings);
     let mut projected_edges = base_edges;
     projected_edges.extend(derived.edges);
     let nodes = filter_nodes(&projected_nodes, mode, rejected_hashes);
@@ -758,6 +810,7 @@ pub fn compile_spec(
     let (adrs, adr_assertions) = adr_set(&nodes, &edges);
     let (gaps, gap_assertions) = gap_register(&nodes, &edges, &flow_assertions);
     let (drifts, drift_assertions, drift_count) = drift_register(&nodes, &edges);
+    let (security, security_assertions, security_count) = security_view(&nodes);
 
     let gap_count = gap_assertions.len();
     let artifacts = vec![
@@ -825,6 +878,14 @@ pub fn compile_spec(
             drifts,
             drift_assertions,
         ),
+        artifact(
+            "security-view",
+            "security.md",
+            "Security findings",
+            "markdown",
+            security,
+            security_assertions,
+        ),
     ];
     let assertion_count = artifacts
         .iter()
@@ -836,6 +897,7 @@ pub fn compile_spec(
         assertion_count,
         gap_count,
         drift_count,
+        security_count,
     }
 }
 
@@ -1030,6 +1092,7 @@ mod tests {
                 "adrs.md",
                 "gap_register.md",
                 "drift_register.md",
+                "security.md",
             ]
         );
         for artifact in &bundle.artifacts {
@@ -1067,6 +1130,7 @@ mod tests {
         assert!(data_model.content.contains("WRITES"));
         assert_eq!(bundle.gap_count, 2);
         assert_eq!(bundle.drift_count, 1);
+        assert_eq!(bundle.security_count, 0);
     }
 
     #[test]
@@ -1095,6 +1159,7 @@ mod tests {
         assert!(!dossier.content.contains("— Verified"));
         assert_eq!(verified.gap_count, 3);
         assert_eq!(verified.drift_count, 1);
+        assert_eq!(verified.security_count, 0);
     }
 
     #[test]
@@ -1315,5 +1380,90 @@ mod tests {
                 .all(|assertion| !assertion.subject_id.starts_with("adr:recovered:"))
         );
         assert_eq!(bundle.drift_count, 0);
+    }
+
+    #[test]
+    fn security_view_maps_findings_and_honors_support_curation() {
+        // AC-0041/AC-0042 (T-0041/T-0042): explicit endpoint auth and IAM
+        // wildcard support become mapped findings without bypassing R-INT-5.
+        let endpoint = Node {
+            id: "ep:admin".into(),
+            label: "Endpoint".into(),
+            props: serde_json::json!({
+                "method": "GET",
+                "path": "/admin",
+                "authenticated": false,
+                "prov": prov(Tier::Deterministic, ConfidenceTier::Confirmed, "admin-endpoint"),
+            }),
+        };
+        let policy = node(
+            "res:admin-policy",
+            "Resource",
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+        );
+        let bucket = node(
+            "res:orders",
+            "Resource",
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+        );
+        let grant = Edge {
+            src: policy.id.clone(),
+            dst: bucket.id.clone(),
+            label: "GRANTS".into(),
+            props: serde_json::json!({
+                "actions": ["s3:Get*"],
+                "resource_scopes": ["arn:aws:s3:::orders/*"],
+                "prov": prov(Tier::Agentic, ConfidenceTier::InferredWeak, "wildcard-grant"),
+            }),
+        };
+        let grant_hash = provenance(&grant.props, "grant").content_hash;
+
+        let bundle = compile_spec(
+            &[endpoint.clone(), policy.clone(), bucket.clone()],
+            std::slice::from_ref(&grant),
+            &[],
+            ExportMode::BestEffort,
+            &BTreeSet::new(),
+        );
+        let security = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "security-view")
+            .unwrap();
+        assert_eq!(bundle.security_count, 2);
+        assert!(
+            security
+                .content
+                .contains("Unauthenticated endpoint: GET /admin")
+        );
+        assert!(security.content.contains("arn:aws:s3:::orders/*"));
+        assert!(security.content.contains("US-0015 / AC-0041"));
+        assert!(security.content.contains("US-0015 / AC-0042"));
+        let grant_finding = security
+            .assertions
+            .iter()
+            .find(|assertion| assertion.summary.contains("Over-broad IAM grant"))
+            .unwrap();
+        assert_eq!(
+            grant_finding.provenance.confidence_tier,
+            ConfidenceTier::InferredWeak
+        );
+
+        let curated = compile_spec(
+            &[endpoint, policy, bucket],
+            &[grant],
+            &[],
+            ExportMode::BestEffort,
+            &BTreeSet::from([grant_hash]),
+        );
+        let curated_security = curated
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "security-view")
+            .unwrap();
+        assert_eq!(curated.security_count, 1);
+        assert!(!curated_security.content.contains("s3:Get*"));
     }
 }

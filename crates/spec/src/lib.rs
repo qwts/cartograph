@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 mod adr;
+mod security;
 mod workbench;
 pub use adr::{AdrFacts, derive_adr_facts, extract_found_adrs};
 pub use workbench::{ExportMode, SpecArtifact, SpecAssertion, SpecBundle, compile_spec};

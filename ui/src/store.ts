@@ -125,6 +125,7 @@ export interface SpecBundle {
   assertion_count: number;
   gap_count: number;
   drift_count: number;
+  security_count: number;
 }
 
 export type AssertionDecision = 'accepted' | 'rejected' | 'annotated';

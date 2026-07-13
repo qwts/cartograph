@@ -205,6 +205,7 @@ The spec compiler **projects the graph → artifacts**. Artifact set:
 | ADR set | found + recovered | author ADR format |
 | Gap register | all `Gap` nodes | table (the explicit 5% the system could not confirm) |
 | Drift register | ADR/code conflicts | table |
+| Security findings | explicit endpoint auth facts + IAM `GRANTS` | table mapped to US/AC |
 
 **US/AC mapping rule:** one `Capability` → one or more US; each terminal/branch condition of its realizing flows → AC (Given/When/Then). Security and performance facts (auth edges, rate limits, IAM grants, timeouts) map onto US/AC per the author's "security/perf mapped to US/AC" standard.
 

@@ -102,6 +102,33 @@ const DRIFT: SpecAssertion = {
   },
 };
 
+const UNAUTHENTICATED: SpecAssertion = {
+  ...CONFIRMED,
+  id: 'node:finding:security:admin',
+  subject_id: 'finding:security:admin',
+  subject_kind: 'Finding',
+  summary: 'Finding: Unauthenticated endpoint: GET /admin',
+  provenance: {
+    ...CONFIRMED.provenance,
+    extractor_id: 't0.security-projection',
+    content_hash: 'f'.repeat(64),
+  },
+};
+
+const OVER_BROAD_GRANT: SpecAssertion = {
+  ...INFERRED,
+  id: 'node:finding:security:grant',
+  subject_id: 'finding:security:grant',
+  subject_kind: 'Finding',
+  summary: 'Finding: Over-broad IAM grant: admin policy → orders/*',
+  provenance: {
+    ...INFERRED.provenance,
+    confidence_tier: 'InferredWeak',
+    extractor_id: 't2.security-projection',
+    content_hash: '1'.repeat(64),
+  },
+};
+
 function artifact(
   id: string,
   fileName: string,
@@ -129,10 +156,20 @@ const BUNDLE: SpecBundle = {
     artifact('adrs', 'adrs.md', 'Architecture decisions', [INFERRED]),
     artifact('gap-register', 'gap_register.md', 'Gap register', [GAP]),
     artifact('drift-register', 'drift_register.md', 'Drift register'),
+    {
+      ...artifact(
+        'security-view',
+        'security.md',
+        'Security findings',
+        [UNAUTHENTICATED, OVER_BROAD_GRANT],
+      ),
+      content: '# Security findings\n\n| Finding | Type | Subject | Resource scope | Actions | US / AC | Confidence |\n|---|---|---|---|---|---|---|\n| Unauthenticated endpoint: GET /admin | unauthenticated_endpoint | ep:admin | GET /admin | — | US-0015 / AC-0041 | Confirmed |\n| Over-broad IAM grant | over_broad_grant | res:admin GRANTS res:orders | arn:aws:s3:::orders/* | s3:Get* | US-0015 / AC-0042 | InferredWeak |\n',
+    },
   ],
-  assertion_count: 8,
+  assertion_count: 9,
   gap_count: 1,
   drift_count: 0,
+  security_count: 2,
 };
 
 const meta = {
@@ -159,8 +196,8 @@ export const FullArtifactSetAndInlineProvenance: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const nav = canvas.getByRole('navigation', { name: 'Official spec artifacts' });
-    await expect(within(nav).getAllByRole('button')).toHaveLength(8);
-    await expect(canvas.getByText('8 artifacts')).toBeInTheDocument();
+    await expect(within(nav).getAllByRole('button')).toHaveLength(9);
+    await expect(canvas.getByText('9 artifacts')).toBeInTheDocument();
     await expect(canvas.getByText('Capability: Place orders')).toBeInTheDocument();
     await expect(canvas.getByText('ADR: asynchronous fulfillment')).toBeInTheDocument();
     await expect(canvas.getByText('t2.semantic')).toBeInTheDocument();
@@ -169,6 +206,23 @@ export const FullArtifactSetAndInlineProvenance: Story = {
     await userEvent.click(within(nav).getByRole('button', { name: /Gap register/ }));
     await expect(canvas.getByText('Gap: runtime-computed channel identity')).toBeInTheDocument();
     await expect(canvas.queryByText('None recorded — treated as unresolved.')).not.toBeInTheDocument();
+  },
+};
+
+export const SecurityFindings: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const nav = canvas.getByRole('navigation', { name: 'Official spec artifacts' });
+    await userEvent.click(within(nav).getByRole('button', { name: /Security findings/ }));
+    await expect(canvas.getByText('2 security findings')).toBeInTheDocument();
+    await expect(canvas.getByText('Finding: Unauthenticated endpoint: GET /admin')).toBeInTheDocument();
+    await expect(
+      canvas.getByText('Finding: Over-broad IAM grant: admin policy → orders/*'),
+    ).toBeInTheDocument();
+    const source = canvas.getByTestId('spec-artifact-source');
+    await expect(source).toHaveTextContent('US-0015 / AC-0041');
+    await expect(source).toHaveTextContent('US-0015 / AC-0042');
+    await expect(source).toHaveTextContent('arn:aws:s3:::orders/*');
   },
 };
 

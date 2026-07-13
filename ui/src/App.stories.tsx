@@ -99,6 +99,7 @@ const FAKE_SPEC: SpecBundle = {
     'adrs.md',
     'gap_register.md',
     'drift_register.md',
+    'security.md',
   ].map((fileName, index) => ({
     id: `artifact-${index}`,
     file_name: fileName,
@@ -116,6 +117,7 @@ const FAKE_SPEC: SpecBundle = {
   assertion_count: 2,
   gap_count: 0,
   drift_count: 0,
+  security_count: 0,
 };
 
 function installFakeCore() {
@@ -289,7 +291,7 @@ export const ConnectedToCore: Story = {
     await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
     await expect(canvas.getByText('42')).toBeInTheDocument();
     await expect(canvas.getByText('99')).toBeInTheDocument();
-    await waitFor(() => expect(canvas.getByText('8 artifacts')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('9 artifacts')).toBeInTheDocument());
 
     // Enqueue round-trip: command hits the fake core, list refreshes.
     await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
@@ -341,7 +343,7 @@ export const AtlasNodeToEvidence: Story = {
 export const WorkbenchCurationRoundTrip: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText('8 artifacts')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('9 artifacts')).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: /Architecture decisions/ }));
     await expect(canvas.getByText(FAKE_INFERRED.summary)).toBeInTheDocument();
     await userEvent.type(canvas.getByLabelText('Annotation'), 'Confirmed by system owner');

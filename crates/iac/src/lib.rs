@@ -53,6 +53,7 @@ pub struct Extraction {
 #[derive(Debug)]
 struct PolicyDocument {
     resource_refs: BTreeSet<String>,
+    resource_scopes: Vec<String>,
     actions: Vec<String>,
     evidence: EvidenceRef,
 }
@@ -97,6 +98,7 @@ impl Extraction {
                 // while attaching the actions/evidence we did establish.
                 let mut fallback = edge;
                 fallback.props["actions"] = serde_json::json!(document.actions);
+                fallback.props["resource_scopes"] = serde_json::json!(document.resource_scopes);
                 fallback.props["policy_document"] = serde_json::json!(fallback.dst);
                 fallback.props["prov"] = joined_policy_prov(
                     &fallback,
@@ -115,6 +117,7 @@ impl Extraction {
                     label: "GRANTS".into(),
                     props: serde_json::json!({
                         "actions": document.actions,
+                        "resource_scopes": document.resource_scopes,
                         "policy_document": edge.dst,
                         "registry": registry::REGISTRY_VERSION,
                         "prov": joined_policy_prov(&edge, document, &fact),
@@ -321,6 +324,56 @@ fn refs_for_path(body: &Body, path: &[&str]) -> BTreeSet<String> {
     refs
 }
 
+#[derive(Default)]
+struct StaticStringCollector {
+    values: BTreeSet<String>,
+}
+
+impl Visit for StaticStringCollector {
+    fn visit_string(&mut self, node: &hcl_edit::Decorated<String>) {
+        self.values.insert(node.value().clone());
+    }
+}
+
+fn static_strings_in_expr(expr: &Expression) -> BTreeSet<String> {
+    let mut collector = StaticStringCollector::default();
+    visit_expr(&mut collector, expr);
+    collector.values
+}
+
+/// Static string values selected by the same nested-block path rules used for
+/// references. Security projection needs literal IAM resource scopes such as
+/// `*`; keeping them on GRANTS avoids reconstructing policy text later.
+fn static_strings_for_path(body: &Body, path: &[&str]) -> BTreeSet<String> {
+    let Some((head, tail)) = path.split_first() else {
+        return BTreeSet::new();
+    };
+
+    if tail.is_empty() {
+        let mut values = BTreeSet::new();
+        for attr in body.attributes() {
+            if attr.key.as_str() == *head {
+                values.extend(static_strings_in_expr(&attr.value));
+            }
+        }
+        return values;
+    }
+
+    let mut values = BTreeSet::new();
+    for nested in body.blocks() {
+        if block_name_matches(nested.ident.as_str(), head) {
+            values.extend(static_strings_for_path(&nested.body, tail));
+        } else if dynamic_block_matches(nested, head) {
+            for content in nested.body.blocks() {
+                if content.ident.as_str() == "content" {
+                    values.extend(static_strings_for_path(&content.body, tail));
+                }
+            }
+        }
+    }
+    values
+}
+
 fn refs_for_selector(
     block: &Block,
     selector: registry::EndpointSelector,
@@ -334,6 +387,30 @@ fn refs_for_selector(
 
 /// IAM action strings (`"s3:GetObject"`) appearing literally in the raw text
 /// of a policy block — used as edge annotations on GRANTS, never invented.
+fn wildcard_action_declared(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    let mut cursor = 0;
+    while let Some(relative) = lower[cursor..].find("action") {
+        let value_start = cursor + relative + "action".len();
+        let tail = &lower[value_start..];
+        let value_end = ["effect", "resource", "condition", "principal", "sid"]
+            .into_iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .unwrap_or(tail.len());
+        if raw[value_start..value_start + value_end]
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .any(|quoted| quoted == "*")
+        {
+            return true;
+        }
+        cursor = value_start;
+    }
+    false
+}
+
 fn literal_actions(raw: &str) -> Vec<String> {
     let mut actions = BTreeSet::new();
     for quoted in raw.split('"').skip(1).step_by(2) {
@@ -349,6 +426,9 @@ fn literal_actions(raw: &str) -> Vec<String> {
         {
             actions.insert(quoted.to_string());
         }
+    }
+    if wildcard_action_declared(raw) {
+        actions.insert("*".into());
     }
     actions.into_iter().collect()
 }
@@ -443,6 +523,12 @@ fn extract_source_unresolved(
                         refs_for_path(&block.body, &["statement", "resources"]),
                         address_prefix,
                     ),
+                    resource_scopes: static_strings_for_path(
+                        &block.body,
+                        &["statement", "resources"],
+                    )
+                    .into_iter()
+                    .collect(),
                     actions: literal_actions(&source[span.clone()]),
                     evidence: evidence_ref(id, path, &span),
                 },

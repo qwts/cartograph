@@ -38,7 +38,7 @@ function decisionLabel(decision: AssertionDecision): string {
   }
 }
 
-/** Official spec artifacts, provenance, curation, and export controls (US-0012). */
+/** Official spec artifacts, provenance, curation, and security review (US-0012/US-0015). */
 export function SpecWorkbench({
   bundle,
   mode,
@@ -106,6 +106,7 @@ export function SpecWorkbench({
             <span>{bundle.assertion_count} visible assertions</span>
             <span className="tier-gap">{bundle.gap_count} gaps</span>
             <span>{bundle.drift_count} drift findings</span>
+            <span>{bundle.security_count} security findings</span>
             {busy && <span>Refreshing…</span>}
           </div>
 

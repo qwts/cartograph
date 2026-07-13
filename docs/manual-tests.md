@@ -203,9 +203,9 @@ PR — per-PR verification is CI's job.
 
 1. Run `npm --prefix ui run storybook` and open
    **Spec / SpecWorkbench / FullArtifactSetAndInlineProvenance**.
-2. Select each of the eight artifact entries. **Pass:** user stories, US-TM,
+2. Select each of the nine artifact entries. **Pass:** user stories, US-TM,
    flow dossiers, resource topology, data model, ADRs, Gap register, and Drift
-   register are always present; every recovered assertion shows its tier,
+   register plus Security findings are always present; every recovered assertion shows its tier,
    confidence, extractor, content hash, and every evidence span inline
    (AC-0032, AC-0035, R-INT-2).
 3. Open **Spec / SpecWorkbench / AcceptRejectAndAnnotate** and exercise all
@@ -243,6 +243,22 @@ PR — per-PR verification is CI's job.
    the offending fact. Reject the supporting inferred edge and export again.
    **Pass:** neither its recovered ADR nor its drift finding remains
    (AC-0037, AC-0038).
+
+## MT-M9-05 — Explicit endpoint auth and IAM security findings
+
+1. Ingest a fixture with three endpoint facts: one explicitly
+   `authenticated: false`, one explicitly protected, and one with no recovered
+   auth state. Include IAM `GRANTS` with both least-privilege actions and a
+   wildcard action or literal wildcard resource scope.
+2. Open Workbench **Security findings**. **Pass:** only the explicit negative
+   endpoint appears as unauthenticated; the protected and unknown-auth
+   endpoints do not. The row cites its evidence and maps to US-0015/AC-0041.
+3. **Pass:** the wildcard grant appears with its exact action and resource
+   scope, confidence, evidence, and US-0015/AC-0042 mapping. The bounded grant
+   does not appear.
+4. If the wildcard `GRANTS` support is inferred, reject it and export again.
+   **Pass:** its derived finding disappears; confirmed findings and facts are
+   unchanged (R-INT-1, R-INT-5).
 
 ## MT-SB-01 — Stories render on-brand
 

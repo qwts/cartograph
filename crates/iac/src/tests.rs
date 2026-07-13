@@ -310,6 +310,42 @@ fn iam_policy_grants_reference_target_resources_with_actions() {
 }
 
 #[test]
+fn iam_wildcard_actions_and_scopes_remain_visible() {
+    // AC-0042 (T-0042): deterministic extraction must retain the exact
+    // wildcard inputs that drive the security projection.
+    let source = r#"
+data "aws_iam_policy_document" "admin" {
+  statement {
+    actions   = ["*"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "admin" {
+  policy = data.aws_iam_policy_document.admin.json
+}
+"#;
+    let ex = extract_source(source, "admin.tf", &id()).unwrap();
+    let grant = ex.edges.iter().find(|edge| edge.label == "GRANTS").unwrap();
+    assert_eq!(grant.props["actions"], serde_json::json!(["*"]));
+    assert_eq!(grant.props["resource_scopes"], serde_json::json!(["*"]));
+    assert_eq!(
+        grant.dst,
+        "res:qwtm/infra@data.aws_iam_policy_document.admin"
+    );
+
+    let scope_only = source.replace("actions   = [\"*\"]", "actions   = [\"s3:GetObject\"]");
+    let scope_only = extract_source(&scope_only, "scope.tf", &id()).unwrap();
+    let grant = scope_only
+        .edges
+        .iter()
+        .find(|edge| edge.label == "GRANTS")
+        .unwrap();
+    assert_eq!(grant.props["actions"], serde_json::json!(["s3:GetObject"]));
+    assert_eq!(grant.props["resource_scopes"], serde_json::json!(["*"]));
+}
+
+#[test]
 fn iam_policy_grants_chase_same_extraction_policy_document() {
     // AC-0047: a defined policy document is an intermediate contract, not the
     // terminal resource granted by the IAM policy.

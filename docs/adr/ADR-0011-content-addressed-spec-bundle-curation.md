@@ -16,7 +16,7 @@ survives re-ingest.
 ## Decision
 - The `spec` crate compiles one typed, deterministic `SpecBundle`. It always
   contains user stories, US-TM, flow dossiers, resource topology, data model,
-  ADR set, Gap register, and Drift register in stable order.
+  ADR set, Gap register, Drift register, and security findings in stable order.
 - Every artifact carries structured `SpecAssertion` rows. Each row retains the
   complete producing `Provenance` (tier, confidence, all evidence spans,
   extractor id, and content hash), and portable artifact text includes the same

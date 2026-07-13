@@ -18,7 +18,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0012 | AC-0032..0035 | core-prov, spec, agents, app, flowtracer, ui | M9–M10 | — | ADR-0002, ADR-0011 | T-0032..0035 |
 | US-0013 | AC-0036..0038 | spec, app | M9 | F-* | ADR-0002, ADR-0012 | T-0036..0038 |
 | US-0014 | AC-0039..0040 | core-graph, core-prov | M10 | — | ADR-0006 | T-0039..0040 |
-| US-0015 | AC-0041..0042 | iac, spec | M9 | — | ADR-0003 | T-0041..0042 |
+| US-0015 | AC-0041..0042 | iac, spec, ui | M9 | — | ADR-0003, ADR-0013 | T-0041..0042 |
 
 ## Coverage assertions
 - Every Must-priority US is anchored to a milestone ≤ M10.
@@ -40,3 +40,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0010 | USearch + Ollama semantic staging with paired-eval gating |
 | ADR-0011 | Content-addressed full-spec bundle and curation log |
 | ADR-0012 | Explicit Markdown ADR directives and derived decision overlays |
+| ADR-0013 | Explicit security facts and deterministic finding projection |
