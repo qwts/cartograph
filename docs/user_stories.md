@@ -143,7 +143,7 @@
 - **AC-0032** Given compiled artifacts, when viewed, then every assertion shows inline provenance.
 - **AC-0033** Given an inferred item, when I accept/reject/annotate, then the decision persists and survives re-ingest via content_hash.
 - **AC-0034** Given export, when run, then it honors R-INT-5 (`verified-only` vs `best-effort`) and includes Gap + Drift registers.
-- **AC-0035** Given the full set, when exported, then it produces user_stories, US-TM, flow dossiers, data model, ADRs, registers.
+- **AC-0035** Given the full set, when exported, then it produces user stories, US-TM, flow dossiers, resource topology as Markdown with fenced Mermaid plus provenance, a data model retaining READS/WRITES/MAPS_TO relations that terminate at DataEntity, ADRs, and Gap + Drift registers.
 - **Security:** —
 - **Performance:** —
 - **Trace:** M9–M10 · `spec`, UI · — · T-0032..0035
