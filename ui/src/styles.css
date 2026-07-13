@@ -99,6 +99,157 @@ main {
   grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
 }
 
+/* Atlas is the primary M9 work surface: one wide, bounded Cytoscape viewport
+   with compact filters and an accessible entity index beside canvas input. */
+.atlas-card {
+  grid-column: 1 / -1;
+  padding: 0;
+  overflow: hidden;
+}
+
+.atlas-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem 0.75rem;
+}
+
+.atlas-heading h2 {
+  margin-bottom: 0.25rem;
+}
+
+.atlas-heading p {
+  font-size: 0.8rem;
+}
+
+.atlas-overlay-toggle,
+.atlas-toolbar button,
+.atlas-entity-index button {
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+  border-color: var(--border-subtle);
+}
+
+.atlas-overlay-toggle.active,
+.atlas-toolbar button.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface-container-high));
+}
+
+.atlas-toolbar {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0 1.25rem 0.75rem;
+  overflow-x: auto;
+}
+
+.atlas-toolbar button {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.atlas-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-height: 2.2rem;
+  padding: 0.5rem 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-container);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.atlas-legend span::before {
+  content: '';
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-right: 0.3rem;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.atlas-legend-confirmed {
+  color: var(--tier-confirmed);
+}
+
+.atlas-legend-inferredstrong {
+  color: var(--tier-inferred-strong);
+}
+
+.atlas-legend-inferredweak {
+  color: var(--tier-inferred-weak);
+}
+
+.atlas-legend-gap {
+  color: var(--tier-gap);
+}
+
+.atlas-legend strong {
+  margin-left: auto;
+  color: var(--on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}
+
+.atlas-surface {
+  position: relative;
+  min-height: 31rem;
+  background-color: #0e0e0e;
+  background-image:
+    linear-gradient(to right, rgb(65 71 83 / 22%) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(65 71 83 / 22%) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.atlas-cytoscape {
+  position: absolute;
+  inset: 0;
+}
+
+.atlas-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.atlas-entity-index {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.65rem 1.25rem 0.8rem;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 0.7rem;
+}
+
+.atlas-entity-index > span {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.atlas-entity-index > div {
+  display: flex;
+  gap: 0.35rem;
+  overflow-x: auto;
+  align-items: center;
+}
+
+.atlas-entity-index button {
+  flex: 0 0 auto;
+  padding: 0.25rem 0.5rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
 .card {
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
@@ -108,6 +259,35 @@ main {
      (an ingest path, a Mermaid line) would widen the track past the
      viewport and scroll the whole shell sideways. */
   min-width: 0;
+}
+
+@media (max-width: 700px) {
+  .atlas-heading {
+    flex-direction: column;
+  }
+
+  .atlas-overlay-toggle {
+    width: 100%;
+  }
+
+  .atlas-legend {
+    flex-wrap: wrap;
+    gap: 0.45rem 0.75rem;
+  }
+
+  .atlas-legend strong {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .atlas-surface {
+    min-height: 24rem;
+  }
+
+  .atlas-entity-index {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .card h2 {

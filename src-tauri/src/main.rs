@@ -7,7 +7,7 @@
 mod evidence;
 mod jobs;
 
-use core_graph::{GraphStore, Node, SqliteGraphStore};
+use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
 use jobs::{EvalResult, Job, JobStore};
 use llm::LlmProvider;
 use serde::Serialize;
@@ -757,6 +757,27 @@ fn list_nodes(label: String, state: State<'_, AppState>) -> Result<Vec<Node>, St
     graph.nodes_with_label(&label).map_err(|e| e.to_string())
 }
 
+/// Complete, deterministically ordered graph projection for the read-only
+/// Atlas surface. Provenance remains attached to every returned fact.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct AtlasSnapshot {
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+}
+
+fn build_atlas_snapshot(graph: &impl GraphStore) -> Result<AtlasSnapshot, String> {
+    Ok(AtlasSnapshot {
+        nodes: graph.all_nodes().map_err(|error| error.to_string())?,
+        edges: graph.all_edges().map_err(|error| error.to_string())?,
+    })
+}
+
+#[tauri::command]
+fn atlas_snapshot(state: State<'_, AppState>) -> Result<AtlasSnapshot, String> {
+    let graph = state.graph.lock().map_err(|error| error.to_string())?;
+    build_atlas_snapshot(&*graph)
+}
+
 #[derive(Serialize)]
 struct EvidenceSource {
     text: String,
@@ -810,6 +831,7 @@ fn main() {
             reapply_agent_decisions,
             ingest_path,
             list_nodes,
+            atlas_snapshot,
             read_evidence,
             export_topology,
             export_flows,

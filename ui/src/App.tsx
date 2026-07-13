@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { useAppStore } from './store';
 import { StatusBadge } from './components/StatusBadge';
 import { GraphStatsCard } from './components/GraphStatsCard';
@@ -9,6 +9,12 @@ import { EvidencePanel } from './components/EvidencePanel';
 import { TopologyCard } from './components/TopologyCard';
 import { FlowsCard } from './components/FlowsCard';
 
+const AtlasCanvas = lazy(() =>
+  import('./components/AtlasCanvas').then(({ AtlasCanvas: Component }) => ({
+    default: Component,
+  })),
+);
+
 export default function App() {
   const {
     backend,
@@ -16,6 +22,7 @@ export default function App() {
     stats,
     jobs,
     endpoints,
+    atlas,
     topology,
     flows,
     flowList,
@@ -68,6 +75,9 @@ export default function App() {
         </div>
         {/* Recovered spec: content-heavy cards get wide tracks. */}
         <div className="card-grid artifacts">
+          <Suspense fallback={<section className="atlas-card">Loading Atlas graph…</section>}>
+            <AtlasCanvas snapshot={atlas} onSelect={(node) => void select(node)} />
+          </Suspense>
           <EndpointsCard endpoints={endpoints} onSelect={(node) => void select(node)} />
           <TopologyCard mermaid={topology} />
           <FlowsCard flows={flowList} dossier={flows} />

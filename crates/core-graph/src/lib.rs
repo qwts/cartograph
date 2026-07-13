@@ -61,6 +61,10 @@ pub trait GraphStore {
     /// optionally restricted to one edge label. Excludes `start` itself
     /// unless it lies on a cycle.
     fn reachable_from(&self, start: &str, label: Option<&str>) -> Result<Vec<String>, GraphError>;
+    /// Every node, ordered by stable id (Atlas/read-only export surfaces).
+    fn all_nodes(&self) -> Result<Vec<Node>, GraphError>;
+    /// Every edge, ordered by (src, dst, label).
+    fn all_edges(&self) -> Result<Vec<Edge>, GraphError>;
     /// All nodes carrying `label`, ordered by id.
     fn nodes_with_label(&self, label: &str) -> Result<Vec<Node>, GraphError>;
     /// All edges whose label is one of `labels`, ordered by (src, dst, label).
@@ -203,6 +207,54 @@ impl GraphStore for SqliteGraphStore {
             .query_map(params![start, label], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
+    }
+
+    fn all_nodes(&self) -> Result<Vec<Node>, GraphError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, label, props FROM nodes ORDER BY id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut nodes = Vec::new();
+        for row in rows {
+            let (id, label, props) = row?;
+            nodes.push(Node {
+                id,
+                label,
+                props: serde_json::from_str(&props)?,
+            });
+        }
+        Ok(nodes)
+    }
+
+    fn all_edges(&self) -> Result<Vec<Edge>, GraphError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT src, dst, label, props FROM edges ORDER BY src, dst, label")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut edges = Vec::new();
+        for row in rows {
+            let (src, dst, label, props) = row?;
+            edges.push(Edge {
+                src,
+                dst,
+                label,
+                props: serde_json::from_str(&props)?,
+            });
+        }
+        Ok(edges)
     }
 
     fn nodes_with_label(&self, label: &str) -> Result<Vec<Node>, GraphError> {
@@ -414,6 +466,33 @@ mod tests {
         let eps = store.nodes_with_label("Endpoint").unwrap();
         let ids: Vec<_> = eps.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, vec!["ep:a", "ep:b"]);
+    }
+
+    #[test]
+    fn all_facts_are_ordered_for_atlas_snapshot() {
+        // AC-0026: the Atlas receives one deterministic whole-graph snapshot;
+        // filtering never depends on SQLite insertion order.
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        store.put_node(&node("z", "Channel")).unwrap();
+        store.put_node(&node("a", "Resource")).unwrap();
+        store.put_node(&node("m", "Gap")).unwrap();
+        store.put_edge(&edge("z", "m", "PUBLISHES")).unwrap();
+        store.put_edge(&edge("a", "z", "BACKS")).unwrap();
+
+        let node_ids: Vec<_> = store
+            .all_nodes()
+            .unwrap()
+            .into_iter()
+            .map(|node| node.id)
+            .collect();
+        assert_eq!(node_ids, ["a", "m", "z"]);
+        let edge_labels: Vec<_> = store
+            .all_edges()
+            .unwrap()
+            .into_iter()
+            .map(|edge| edge.label)
+            .collect();
+        assert_eq!(edge_labels, ["BACKS", "PUBLISHES"]);
     }
 
     #[test]

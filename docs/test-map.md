@@ -39,9 +39,9 @@ rows in the same PR (see AGENTS.md).
 | T-0023 | AC-0023 | rust | llm::local_only_policy_blocks_cloud_before_provider_invocation, llm::ollama_client_disables_all_proxies | default-deny per-tier firewall blocks before provider call; local Ollama clears system/explicit proxies so loopback cannot silently egress; plus manual:MT-M8-01 |
 | T-0024 | AC-0024 | rust | llm::cloud_consent_binds_exact_redacted_span_payload, llm::ollama_chat_uses_local_api_after_firewall_preparation | consent hash binds provider+tier+action+exact redacted payload; UI realization story:Privacy/EgressConsentDialog/ExactSpanPayload and story:Privacy/EgressConsentDialog/SemanticSpanPayload, plus manual:MT-M8-01 |
 | T-0025 | AC-0025 | rust | agents::accepted_and_rejected_decisions_persist_and_reapply_by_basis | SQLite/WAL decision log survives reopen and reapplies only to unchanged content basis, plus manual:MT-M8-01 |
-| T-0026 | AC-0026 | reserved | — | M9: Atlas layer filter |
-| T-0027 | AC-0027 | reserved | — | M9: confidence overlay |
-| T-0028 | AC-0028 | story | Atlas/EvidencePanel/WithSource, Atlas/EvidencePanel/WindowedLargeFile | evidence panel groundwork; full Atlas node-select at M9 (plus manual:MT-M1-01) |
+| T-0026 | AC-0026 | story | Atlas/AtlasCanvas/LayerFilters | O(N+E) five-layer projection over a deterministic whole-graph snapshot; plus rust:core-graph::all_facts_are_ordered_for_atlas_snapshot and manual:MT-M9-01 |
+| T-0027 | AC-0027 | story | Atlas/AtlasCanvas/ConfidenceOverlay | distinct Confirmed/InferredStrong/InferredWeak/Gap legend and toggle; Gap remains diamond+dashed on the Cytoscape canvas |
+| T-0028 | AC-0028 | story | Atlas/AtlasCanvas/NodeSelection, Shell/App/AtlasNodeToEvidence, Atlas/EvidencePanel/WithSource, Atlas/EvidencePanel/WindowedLargeFile | Atlas entity selection loads file/span/commit and a byte-accurate read-only source window; plus manual:MT-M1-01 |
 | T-0029 | AC-0029 | reserved | — | M9: Flow Inspector sequence |
 | T-0030 | AC-0030 | reserved | — | M9: Gap cards |
 | T-0031 | AC-0031 | reserved | — | M9: verified-only toggle |

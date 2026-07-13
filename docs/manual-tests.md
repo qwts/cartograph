@@ -163,6 +163,25 @@ PR — per-PR verification is CI's job.
    is explicit and no cloud provider is selected; Cartograph never pulls a
    model automatically (AC-0020, AC-0023..0025, R-INT-1, R-INT-3, M8 exit gate).
 
+## MT-M9-01 — Atlas filters, confidence integrity, and 10k-node interaction
+
+1. Run `npm --prefix ui run storybook` and open
+   **Atlas / AtlasCanvas / TenThousandNodeScale**. Pan and zoom the 10,000-node
+   Cytoscape canvas, then switch through Infrastructure, Cloud, Server, Events,
+   and Client.
+2. **Pass:** controls remain responsive and each filter reports only its own
+   node/edge projection; the app does not create 10,000 parallel DOM controls
+   (the accessible entity index stays bounded).
+3. Open **Atlas / AtlasCanvas / ConfidenceOverlay** and compare the legend to
+   the canvas. **Pass:** Confirmed is green, InferredStrong blue,
+   InferredWeak yellow, and Gap red with a dashed diamond; disabling the
+   overlay removes tier color without relabeling facts.
+4. Open **Shell / App / AtlasNodeToEvidence**, select the endpoint from the
+   Atlas entity index, and inspect the evidence drawer.
+5. **Pass:** file, byte span, commit, extractor, and tier are visible; the
+   matching source span is highlighted in a read-only view (AC-0026..0028,
+   R-INT-2, NG1).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.
