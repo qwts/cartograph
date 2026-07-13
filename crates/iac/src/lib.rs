@@ -16,7 +16,7 @@ pub mod registry;
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
 use hcl_edit::Span;
-use hcl_edit::expr::{Expression, Traversal, TraversalOperator};
+use hcl_edit::expr::{Expression, ObjectKey, ObjectValue, Traversal, TraversalOperator};
 use hcl_edit::structure::{Block, BlockLabel, Body};
 use hcl_edit::visit::{Visit, visit_expr};
 use std::collections::{BTreeMap, BTreeSet};
@@ -52,10 +52,15 @@ pub struct Extraction {
 
 #[derive(Debug)]
 struct PolicyDocument {
-    resource_refs: BTreeSet<String>,
-    resource_scopes: Vec<String>,
-    actions: Vec<String>,
+    statements: Vec<PolicyStatement>,
     evidence: EvidenceRef,
+}
+
+#[derive(Debug)]
+struct PolicyStatement {
+    resource_refs: BTreeSet<String>,
+    resource_scopes: BTreeSet<String>,
+    actions: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -92,13 +97,31 @@ impl Extraction {
                 continue;
             };
 
-            if document.resource_refs.is_empty() {
-                // The document exists but has no T0-resolvable resource refs
-                // (for example only var.*). Preserve the honest document hop,
-                // while attaching the actions/evidence we did establish.
-                let mut fallback = edge;
-                fallback.props["actions"] = serde_json::json!(document.actions);
-                fallback.props["resource_scopes"] = serde_json::json!(document.resource_scopes);
+            let mut targets = BTreeMap::<String, (BTreeSet<String>, BTreeSet<String>)>::new();
+            let mut unresolved_actions = BTreeSet::new();
+            let mut unresolved_scopes = BTreeSet::new();
+            let mut has_unresolved_statement = document.statements.is_empty();
+            for statement in &document.statements {
+                if statement.resource_refs.is_empty() {
+                    has_unresolved_statement = true;
+                    unresolved_actions.extend(statement.actions.iter().cloned());
+                    unresolved_scopes.extend(statement.resource_scopes.iter().cloned());
+                    continue;
+                }
+                for target in &statement.resource_refs {
+                    let (actions, scopes) = targets.entry(target.clone()).or_default();
+                    actions.extend(statement.actions.iter().cloned());
+                    scopes.extend(statement.resource_scopes.iter().cloned());
+                }
+            }
+
+            if has_unresolved_statement {
+                // A statement with no T0-resolvable resource ref (for example
+                // only `*` or var.*) stays as an honest document hop. Its
+                // annotations include only that unresolved statement set.
+                let mut fallback = edge.clone();
+                fallback.props["actions"] = serde_json::json!(unresolved_actions);
+                fallback.props["resource_scopes"] = serde_json::json!(unresolved_scopes);
                 fallback.props["policy_document"] = serde_json::json!(fallback.dst);
                 fallback.props["prov"] = joined_policy_prov(
                     &fallback,
@@ -106,18 +129,17 @@ impl Extraction {
                     &format!("GRANTS {} -> {}", fallback.src, fallback.dst),
                 );
                 resolved.push(fallback);
-                continue;
             }
 
-            for target in &document.resource_refs {
+            for (target, (actions, resource_scopes)) in targets {
                 let fact = format!("GRANTS {} -> {target} via {}", edge.src, edge.dst);
                 resolved.push(Edge {
                     src: edge.src.clone(),
-                    dst: resource_id_from_node(&edge.src, target),
+                    dst: resource_id_from_node(&edge.src, &target),
                     label: "GRANTS".into(),
                     props: serde_json::json!({
-                        "actions": document.actions,
-                        "resource_scopes": document.resource_scopes,
+                        "actions": actions,
+                        "resource_scopes": resource_scopes,
                         "policy_document": edge.dst,
                         "registry": registry::REGISTRY_VERSION,
                         "prov": joined_policy_prov(&edge, document, &fact),
@@ -385,52 +407,78 @@ fn refs_for_selector(
     }
 }
 
-/// IAM action strings (`"s3:GetObject"`) appearing literally in the raw text
-/// of a policy block — used as edge annotations on GRANTS, never invented.
-fn wildcard_action_declared(raw: &str) -> bool {
-    let lower = raw.to_ascii_lowercase();
-    let mut cursor = 0;
-    while let Some(relative) = lower[cursor..].find("action") {
-        let value_start = cursor + relative + "action".len();
-        let tail = &lower[value_start..];
-        let value_end = ["effect", "resource", "condition", "principal", "sid"]
-            .into_iter()
-            .filter_map(|marker| tail.find(marker))
-            .min()
-            .unwrap_or(tail.len());
-        if raw[value_start..value_start + value_end]
-            .split('"')
-            .skip(1)
-            .step_by(2)
-            .any(|quoted| quoted == "*")
-        {
-            return true;
-        }
-        cursor = value_start;
-    }
-    false
+fn action_key(key: &ObjectKey) -> bool {
+    let name = key.as_ident().map(ToString::to_string).or_else(|| {
+        key.as_expr()
+            .and_then(Expression::as_str)
+            .map(str::to_string)
+    });
+    name.is_some_and(|name| {
+        name.eq_ignore_ascii_case("action") || name.eq_ignore_ascii_case("actions")
+    })
 }
 
-fn literal_actions(raw: &str) -> Vec<String> {
-    let mut actions = BTreeSet::new();
-    for quoted in raw.split('"').skip(1).step_by(2) {
-        if let Some((svc, action)) = quoted.split_once(':')
-            && !svc.is_empty()
-            && svc
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-            && !action.is_empty()
-            && action
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '*')
-        {
-            actions.insert(quoted.to_string());
+#[derive(Default)]
+struct IamActionCollector {
+    values: BTreeSet<String>,
+}
+
+impl Visit for IamActionCollector {
+    fn visit_object_item(&mut self, key: &ObjectKey, value: &ObjectValue) {
+        if action_key(key) {
+            self.values.extend(static_strings_in_expr(value.expr()));
+        } else {
+            visit_expr(self, value.expr());
         }
     }
-    if wildcard_action_declared(raw) {
-        actions.insert("*".into());
+}
+
+/// Literal IAM actions from exact `Action`/`action`/`actions` object keys.
+/// `NotAction`/`not_actions` has different semantics and is intentionally
+/// excluded instead of substring-scanning raw policy text.
+fn literal_actions(expr: &Expression) -> BTreeSet<String> {
+    let mut collector = IamActionCollector::default();
+    visit_expr(&mut collector, expr);
+    collector.values
+}
+
+fn statement_actions(body: &Body) -> BTreeSet<String> {
+    let mut actions = BTreeSet::new();
+    for attr in body.attributes() {
+        if matches!(attr.key.as_str(), "action" | "actions") {
+            actions.extend(static_strings_in_expr(&attr.value));
+        }
     }
-    actions.into_iter().collect()
+    actions
+}
+
+fn policy_statements(body: &Body, address_prefix: Option<&str>) -> Vec<PolicyStatement> {
+    let mut statements = Vec::new();
+    for nested in body.blocks() {
+        let statement_body = if nested.ident.as_str() == "statement" {
+            Some(&nested.body)
+        } else if dynamic_block_matches(nested, "statement") {
+            nested
+                .body
+                .blocks()
+                .find(|content| content.ident.as_str() == "content")
+                .map(|content| &content.body)
+        } else {
+            None
+        };
+        let Some(statement_body) = statement_body else {
+            continue;
+        };
+        statements.push(PolicyStatement {
+            resource_refs: scoped_refs(
+                refs_for_path(statement_body, &["resources"]),
+                address_prefix,
+            ),
+            resource_scopes: static_strings_for_path(statement_body, &["resources"]),
+            actions: statement_actions(statement_body),
+        });
+    }
+    statements
 }
 
 /// Resource ids are repo-namespaced (US-0001 slice 2): the same Terraform
@@ -519,17 +567,7 @@ fn extract_source_unresolved(
             out.policy_documents.insert(
                 node_id.clone(),
                 PolicyDocument {
-                    resource_refs: scoped_refs(
-                        refs_for_path(&block.body, &["statement", "resources"]),
-                        address_prefix,
-                    ),
-                    resource_scopes: static_strings_for_path(
-                        &block.body,
-                        &["statement", "resources"],
-                    )
-                    .into_iter()
-                    .collect(),
-                    actions: literal_actions(&source[span.clone()]),
+                    statements: policy_statements(&block.body, address_prefix),
                     evidence: evidence_ref(id, path, &span),
                 },
             );
@@ -621,8 +659,12 @@ fn extract_source_unresolved(
 
         // IAM: policy attribute -> GRANTS(policy resource -> referenced resource).
         if POLICY_TYPES.contains(&labels[0].as_str()) {
-            let raw = &source[span.clone()];
-            let actions = literal_actions(raw);
+            let actions = block
+                .body
+                .attributes()
+                .find(|attr| attr.key.as_str() == "policy")
+                .map(|attr| literal_actions(&attr.value))
+                .unwrap_or_default();
             for target in scoped_refs(refs_for_attr(block, "policy"), address_prefix) {
                 out.edges.push(Edge {
                     src: node_id.clone(),

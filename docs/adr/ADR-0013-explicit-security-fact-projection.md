@@ -17,7 +17,9 @@ must remain visible on `GRANTS` edges for a projection to evaluate it.
   on the Endpoint (`authenticated: false` or an equivalent explicit auth
   state). Missing auth evidence produces no security assertion.
 - T0 IAM extraction retains literal wildcard actions and resource scopes on
-  `GRANTS`. A wildcard in either is an over-broad-grant finding in v1.
+  `GRANTS` per policy statement; actions are joined only across statements
+  governing the same resolved target, and `NotAction` is not represented as
+  `Action`. A wildcard in either is an over-broad-grant finding in v1.
 - The spec compiler derives disposable `Finding` nodes after R-INT-5 and
   content-hash curation have filtered supporting facts. Findings preserve the
   supporting confidence and evidence and map to US-0015 plus AC-0041/AC-0042.
