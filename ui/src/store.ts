@@ -61,6 +61,11 @@ export interface IngestSummary {
     ts: LayerSummary;
     tf: LayerSummary;
   };
+  delta?: {
+    recomputed_files: number;
+    reused_files: number;
+    deleted_files: number;
+  };
   /** Set for GitHub adds: the cloned repo listed with its SHA (AC-0001). */
   repo?: string;
   commit_sha?: string;

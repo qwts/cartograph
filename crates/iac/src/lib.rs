@@ -40,7 +40,7 @@ pub enum ExtractError {
 }
 
 /// Facts extracted from one file or one directory walk.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Extraction {
     /// Graph nodes (props carry provenance under `prov`).
     pub nodes: Vec<Node>,
@@ -50,20 +50,20 @@ pub struct Extraction {
     module_declarations: Vec<ModuleDeclaration>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PolicyDocument {
     statements: Vec<PolicyStatement>,
     evidence: EvidenceRef,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PolicyStatement {
     resource_refs: BTreeSet<String>,
     resource_scopes: BTreeSet<String>,
     actions: BTreeSet<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ModuleDeclaration {
     address: String,
     node_id: String,
@@ -71,6 +71,102 @@ struct ModuleDeclaration {
     declaring_path: String,
     evidence: EvidenceRef,
     ancestors: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedFile {
+    source_hash: String,
+    extraction: Extraction,
+}
+
+/// Reusable per-file/per-module-context T0 parse cache (AC-0040).
+#[derive(Debug, Default)]
+pub struct IncrementalCache {
+    files: BTreeMap<String, CachedFile>,
+}
+
+/// Terraform extraction contexts parsed or reused during one ingest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IncrementalStats {
+    /// New or byte-changed file contexts parsed in this run.
+    pub recomputed_files: u64,
+    /// Unchanged file contexts reused by content hash.
+    pub reused_files: u64,
+    /// Cached contexts no longer reachable from the ingest root/module DAG.
+    pub deleted_files: u64,
+}
+
+struct CacheRun<'a> {
+    cache: &'a mut IncrementalCache,
+    active: BTreeSet<String>,
+    stats: IncrementalStats,
+}
+
+fn retarget_props_commit(props: &mut serde_json::Value, commit: &str) {
+    let Ok(mut provenance) =
+        serde_json::from_value::<Provenance>(props.get("prov").cloned().unwrap_or_default())
+    else {
+        return;
+    };
+    for evidence in &mut provenance.evidence {
+        evidence.commit_sha = commit.to_string();
+    }
+    props["prov"] = serde_json::to_value(provenance).expect("provenance serializes");
+}
+
+fn retarget_commit(extraction: &mut Extraction, commit: &str) {
+    for node in &mut extraction.nodes {
+        retarget_props_commit(&mut node.props, commit);
+    }
+    for edge in &mut extraction.edges {
+        retarget_props_commit(&mut edge.props, commit);
+    }
+    for document in extraction.policy_documents.values_mut() {
+        document.evidence.commit_sha = commit.to_string();
+    }
+    for declaration in &mut extraction.module_declarations {
+        declaration.evidence.commit_sha = commit.to_string();
+    }
+}
+
+fn cached_file_key(path: &str, address_prefix: Option<&str>) -> String {
+    format!("{}@{path}", address_prefix.unwrap_or_default())
+}
+
+fn extract_file_incremental(
+    root: &Path,
+    path: &str,
+    id: &SourceId,
+    address_prefix: Option<&str>,
+    module_ancestors: &[PathBuf],
+    run: &mut CacheRun<'_>,
+) -> Result<Extraction, ExtractError> {
+    let source = std::fs::read_to_string(root.join(path))?;
+    let source_hash = core_prov::content_hash(source.as_bytes());
+    let key = cached_file_key(path, address_prefix);
+    run.active.insert(key.clone());
+    let extraction = if let Some(cached) = run
+        .cache
+        .files
+        .get(&key)
+        .filter(|cached| cached.source_hash == source_hash)
+    {
+        run.stats.reused_files += 1;
+        let mut extraction = cached.extraction.clone();
+        retarget_commit(&mut extraction, id.commit);
+        extraction
+    } else {
+        run.stats.recomputed_files += 1;
+        extract_source_unresolved(&source, path, id, address_prefix, module_ancestors)?
+    };
+    run.cache.files.insert(
+        key,
+        CachedFile {
+            source_hash,
+            extraction: extraction.clone(),
+        },
+    );
+    Ok(extraction)
 }
 
 impl Extraction {
@@ -693,20 +789,44 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
 /// Extract facts from every `.tf` file under `root` (skipping `.terraform`
 /// and hidden dirs), with edge endpoints closed over placeholders.
 pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractError> {
+    extract_dir_incremental(root, id, &mut IncrementalCache::default()).map(|(facts, _)| facts)
+}
+
+/// Extract Terraform while parsing only changed file/module contexts. Global
+/// module expansion and policy-document resolution rerun deterministically so
+/// dependents of a changed declaration are refreshed without stale edges.
+pub fn extract_dir_incremental(
+    root: &Path,
+    id: &SourceId,
+    cache: &mut IncrementalCache,
+) -> Result<(Extraction, IncrementalStats), ExtractError> {
     let root = std::fs::canonicalize(root)?;
     let mut files = Vec::new();
     collect_tf_files(&root, &root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
+    let old_keys = cache.files.keys().cloned().collect::<BTreeSet<_>>();
+    let mut run = CacheRun {
+        cache,
+        active: BTreeSet::new(),
+        stats: IncrementalStats::default(),
+    };
     let mut out = Extraction::default();
     for rel in &files {
-        let source = std::fs::read_to_string(root.join(rel))?;
-        let ex = extract_source_unresolved(&source, rel, id, None, &[])?;
-        out.absorb(ex);
+        out.absorb(extract_file_incremental(
+            &root,
+            rel,
+            id,
+            None,
+            &[],
+            &mut run,
+        )?);
     }
-    expand_local_modules(&root, id, &mut out)?;
+    expand_local_modules(&root, id, &mut out, &mut run)?;
     out.resolve_policy_document_grants();
     out.close_over_endpoints();
-    Ok(out)
+    run.stats.deleted_files = old_keys.difference(&run.active).count() as u64;
+    run.cache.files.retain(|key, _| run.active.contains(key));
+    Ok((out, run.stats))
 }
 
 /// Count physical Terraform source files using the same confined walk as
@@ -722,6 +842,7 @@ fn expand_local_modules(
     root: &Path,
     id: &SourceId,
     out: &mut Extraction,
+    run: &mut CacheRun<'_>,
 ) -> Result<(), ExtractError> {
     let mut pending = std::mem::take(&mut out.module_declarations);
     let mut expanded = BTreeSet::new();
@@ -759,13 +880,13 @@ fn expand_local_modules(
 
         let mut module_extraction = Extraction::default();
         for rel in collect_direct_tf_files(root, &source_dir)? {
-            let source = std::fs::read_to_string(root.join(&rel))?;
-            module_extraction.absorb(extract_source_unresolved(
-                &source,
+            module_extraction.absorb(extract_file_incremental(
+                root,
                 &rel,
                 id,
                 Some(&declaration.address),
                 &ancestors,
+                run,
             )?);
         }
 

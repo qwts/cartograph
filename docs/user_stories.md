@@ -162,12 +162,12 @@
 ### US-0014 — Determinism and re-ingest idempotency
 - **Actor:** Engine
 - **As a** engineer **I want** re-ingesting the same commit to yield an identical graph **so that** outputs are reproducible.
-- **Priority:** Must · **Status:** Draft
-- **AC-0039** Given the same commit, when re-ingested, then T0 graph content hashes are identical.
-- **AC-0040** Given a changed file, when re-ingested, then only affected facts are recomputed.
+- **Priority:** Must · **Status:** Done
+- **AC-0039** Given the same commit and inputs, when re-ingested, then the ordered T0 node/edge identity plus content-hash snapshot is identical and unchanged graph facts are not rewritten.
+- **AC-0040** Given a changed or deleted TS/TSX/Terraform file, when re-ingested in the same process, then only new or byte-changed per-file extraction contexts are reparsed, unchanged contexts are reused by source hash, deterministic repository-wide joins are refreshed, and stale facts are removed.
 - **Security:** —
 - **Performance:** Delta re-ingest scales with change size, not repo size.
-- **Trace:** M10 · `core-graph`, `core-prov` · — · T-0039..0040
+- **Trace:** M10 · `adapters-lang-ts`, `iac`, `core-graph`, `core-prov`, `app` · — · T-0039..0040
 
 ### US-0015 — Security view of the spec
 - **Actor:** Engineer

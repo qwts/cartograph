@@ -299,7 +299,10 @@ Stack: **React + TypeScript + Vite**. UI state: **Zustand**. Big graph canvas: *
 - **Auth:** GitHub App (installation token) preferred; PAT fallback; optional `gh` CLI shell-out for environments already authenticated.
 - **Clone/read:** `git2` (libgit2) shallow clone + sparse where possible. API via `octocrab` for metadata, PR/commit history (feeds T1 evidence + ADR timeline).
 - **Topology manifest:** `cartograph.system.toml` declares the repo set, layer hints, env/config locations, and known channel identities. Author-editable; T2 may *suggest* additions (always confirmed by user).
-- **Incremental:** v1 one-shot ingest; file-watch / commit-delta incremental is M-later. `content_hash` makes deltas cheap.
+- **Incremental:** M10 re-ingest caches TS/TSX and Terraform parses per source
+  content hash (and Terraform module address context), reuses unchanged parses,
+  reruns deterministic repository-wide joins, and reconciles stale graph facts.
+  Continuous file-watch scheduling remains post-v1.
 
 ---
 

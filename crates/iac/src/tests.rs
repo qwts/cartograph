@@ -615,6 +615,54 @@ fn dir_walk_is_deterministic_and_skips_dot_terraform() {
 }
 
 #[test]
+fn delta_reingest_reuses_unchanged_terraform_contexts() {
+    // AC-0040 (T-0040): unchanged Terraform parses are reused by byte hash.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("queue.tf"),
+        r#"resource "aws_sqs_queue" "orders" {}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("topic.tf"),
+        r#"resource "aws_sns_topic" "events" {}"#,
+    )
+    .unwrap();
+    let mut cache = IncrementalCache::default();
+    let (_, first) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    assert_eq!(first.recomputed_files, 2);
+
+    let (_, same) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    assert_eq!(same.recomputed_files, 0);
+    assert_eq!(same.reused_files, 2);
+
+    std::fs::write(
+        dir.path().join("topic.tf"),
+        r#"resource "aws_sns_topic" "alerts" {}"#,
+    )
+    .unwrap();
+    let (changed, delta) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    assert_eq!(delta.recomputed_files, 1);
+    assert_eq!(delta.reused_files, 1);
+    assert!(
+        changed
+            .nodes
+            .iter()
+            .any(|node| node.id.ends_with(".alerts"))
+    );
+    assert!(
+        !changed
+            .nodes
+            .iter()
+            .any(|node| node.id.ends_with(".events"))
+    );
+
+    std::fs::remove_file(dir.path().join("queue.tf")).unwrap();
+    let (_, deleted) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    assert_eq!(deleted.deleted_files, 1);
+}
+
+#[test]
 fn local_modules_expand_under_scoped_addresses_and_edges() {
     // AC-0048: mirrors examples/with-pipes -> source "../../". The root
     // module's resources and semantic edges are instantiated below the module
