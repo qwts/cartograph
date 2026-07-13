@@ -55,7 +55,7 @@
 ### US-0004 — Event graph with channel-identity stitching
 - **Actor:** Engine
 - **As a** engineer **I want** producers and consumers linked by channel identity **so that** flows cross service and repo boundaries.
-- **Priority:** Must · **Status:** Draft
+- **Priority:** Must · **Status:** Done
 - **AC-0010** Given a literal channel id on both sides, when matched, then a Confirmed PUBLISHES/SUBSCRIBES edge is created.
 - **AC-0011** Given a channel id from a present config/env file, when resolved, then the edge is Confirmed via the config resolver.
 - **AC-0012** Given a runtime-computed channel id, when unresolved at T0, then the hop escalates and, if still unresolved, emits a Gap with reason.
@@ -66,7 +66,7 @@
 ### US-0005 — Client-side interaction graph (React first)
 - **Actor:** Engine
 - **As a** engineer **I want** screens, components, and data-fetch call sites extracted **so that** flows are anchored at user actions.
-- **Priority:** Must · **Status:** Draft
+- **Priority:** Must · **Status:** Done
 - **AC-0013** Given a React/Next repo, when ingested, then Screen/Component nodes and FETCHES edges to endpoints are created.
 - **AC-0014** Given a data-fetch call site, when the endpoint is resolvable, then FETCHES is Confirmed; otherwise it escalates.
 - **Security:** —
@@ -76,7 +76,7 @@
 ### US-0006 — Deterministic end-to-end flow tracer
 - **Actor:** Engine
 - **As a** engineer **I want** cross-layer flows traced T0-first with explicit gaps **so that** flows are trustworthy.
-- **Priority:** Must · **Status:** Draft
+- **Priority:** Must · **Status:** Done
 - **AC-0015** Given a trigger, when traced, then each hop resolves at the lowest possible tier and records its tier.
 - **AC-0016** Given any unresolved hop, when no tier resolves it, then a Gap node truncates that branch (no silent completion).
 - **AC-0017** Given a completed trace, when scored, then flow_status ∈ {Verified, Partial, Inferred} per the scoring rule.
