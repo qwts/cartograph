@@ -94,7 +94,7 @@ const FAKE_SPEC: SpecBundle = {
     'user_stories.md',
     'US-TM.md',
     'flow_dossiers.md',
-    'topology.mmd',
+    'topology.md',
     'data_model.md',
     'adrs.md',
     'gap_register.md',

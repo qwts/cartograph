@@ -481,15 +481,15 @@ fn topology_artifact(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAsser
     });
     let mut assertions: Vec<SpecAssertion> = topology_nodes.iter().map(node_assertion).collect();
     assertions.extend(topology_edges.iter().map(edge_assertion));
-    (
-        topology_mermaid(&topology_nodes, &topology_edges),
-        assertions,
-    )
+    let diagram = topology_mermaid(&topology_nodes, &topology_edges);
+    let content = format!("# Resource topology\n\n```mermaid\n{diagram}```\n");
+    (content, assertions)
 }
 
 const DATA_EDGE_LABELS: &[&str] = &["READS", "WRITES", "MAPS_TO"];
 
 fn data_model(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) {
+    let by_id: BTreeMap<&str, &Node> = nodes.iter().map(|node| (node.id.as_str(), *node)).collect();
     let entities: Vec<&Node> = nodes
         .iter()
         .copied()
@@ -505,20 +505,41 @@ fn data_model(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) 
             provenance(&edge.props, &edge_identity(edge)).confidence_tier != ConfidenceTier::Gap
         })
         .filter(|edge| {
-            entity_ids.contains(edge.src.as_str()) && entity_ids.contains(edge.dst.as_str())
+            entity_ids.contains(edge.src.as_str()) || entity_ids.contains(edge.dst.as_str())
+        })
+        .filter(|edge| {
+            by_id.contains_key(edge.src.as_str()) && by_id.contains_key(edge.dst.as_str())
         })
         .collect();
+    let model_ids: BTreeSet<&str> = entity_ids
+        .iter()
+        .copied()
+        .chain(
+            mappings
+                .iter()
+                .flat_map(|edge| [edge.src.as_str(), edge.dst.as_str()]),
+        )
+        .collect();
+    let model_nodes: Vec<&Node> = model_ids
+        .iter()
+        .filter_map(|id| by_id.get(id).copied())
+        .collect();
     let mut aliases = BTreeMap::new();
-    for (index, entity) in entities.iter().enumerate() {
-        aliases.insert(entity.id.as_str(), format!("d{index}"));
+    for (index, node) in model_nodes.iter().enumerate() {
+        aliases.insert(node.id.as_str(), format!("d{index}"));
     }
     let mut content = String::from("# Recovered data model\n\n```mermaid\nflowchart LR\n");
-    for entity in &entities {
+    for node in &model_nodes {
+        let display = if node.label == "DataEntity" {
+            node_name(node)
+        } else {
+            format!("{}: {}", node.label, node_name(node))
+        };
         writeln!(
             content,
             "    {}[\"{}\"]",
-            aliases[entity.id.as_str()],
-            node_name(entity).replace('"', "'")
+            aliases[node.id.as_str()],
+            display.replace(['\r', '\n'], " ").replace('"', "'")
         )
         .expect("write to string");
     }
@@ -535,7 +556,22 @@ fn data_model(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) 
     if entities.is_empty() {
         content.push_str("\nNo DataEntity facts have been recovered yet.\n");
     }
-    let mut assertions: Vec<SpecAssertion> = entities.into_iter().map(node_assertion).collect();
+    if !mappings.is_empty() {
+        content.push_str(
+            "\n## Access and mapping relations\n\n| Source | Relation | Target |\n|---|---|---|\n",
+        );
+        for edge in &mappings {
+            writeln!(
+                content,
+                "| `{}` | {} | `{}` |",
+                markdown_safe(&edge.src),
+                edge.label,
+                markdown_safe(&edge.dst),
+            )
+            .expect("write to string");
+        }
+    }
+    let mut assertions: Vec<SpecAssertion> = model_nodes.into_iter().map(node_assertion).collect();
     assertions.extend(mappings.into_iter().map(edge_assertion));
     (content, assertions)
 }
@@ -714,9 +750,9 @@ pub fn compile_spec(
         ),
         artifact(
             "topology",
-            "topology.mmd",
+            "topology.md",
             "Resource topology",
-            "mermaid",
+            "markdown",
             topology,
             topology_assertions,
         ),
@@ -855,6 +891,18 @@ mod tests {
                 ConfidenceTier::Confirmed,
             ),
             node(
+                "domain:order",
+                "DomainEntity",
+                Tier::Semantic,
+                ConfidenceTier::InferredStrong,
+            ),
+            node(
+                "sym:save-order",
+                "Symbol",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            node(
                 "adr:queue",
                 "ADR",
                 Tier::Semantic,
@@ -881,9 +929,16 @@ mod tests {
         ];
         let edges = vec![
             edge(
-                "cap:orders",
+                "domain:order",
                 "data:orders",
                 "MAPS_TO",
+                Tier::Semantic,
+                ConfidenceTier::InferredStrong,
+            ),
+            edge(
+                "sym:save-order",
+                "data:orders",
+                "WRITES",
                 Tier::Deterministic,
                 ConfidenceTier::Confirmed,
             ),
@@ -933,7 +988,7 @@ mod tests {
                 "user_stories.md",
                 "US-TM.md",
                 "flow_dossiers.md",
-                "topology.mmd",
+                "topology.md",
                 "data_model.md",
                 "adrs.md",
                 "gap_register.md",
@@ -951,6 +1006,28 @@ mod tests {
                 assert!(!assertion.provenance.content_hash.is_empty());
             }
         }
+        let topology = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "topology")
+            .unwrap();
+        assert_eq!(topology.format, "markdown");
+        assert!(topology.content.contains("```mermaid\nflowchart LR"));
+        assert!(
+            topology
+                .content
+                .contains("Assertions and inline provenance")
+        );
+
+        let data_model = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "data-model")
+            .unwrap();
+        assert!(data_model.content.contains("domain:order"));
+        assert!(data_model.content.contains("sym:save-order"));
+        assert!(data_model.content.contains("MAPS_TO"));
+        assert!(data_model.content.contains("WRITES"));
         assert_eq!(bundle.gap_count, 2);
         assert_eq!(bundle.drift_count, 1);
     }

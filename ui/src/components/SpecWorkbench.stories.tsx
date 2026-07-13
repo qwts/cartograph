@@ -91,7 +91,7 @@ const BUNDLE: SpecBundle = {
     artifact('user-stories', 'user_stories.md', 'User stories', [CONFIRMED, INFERRED]),
     artifact('us-tm', 'US-TM.md', 'US traceability matrix'),
     artifact('flow-dossiers', 'flow_dossiers.md', 'Flow dossiers', [CONFIRMED]),
-    artifact('topology', 'topology.mmd', 'Resource topology', [CONFIRMED]),
+    artifact('topology', 'topology.md', 'Resource topology', [CONFIRMED]),
     artifact('data-model', 'data_model.md', 'Data model', [CONFIRMED]),
     artifact('adrs', 'adrs.md', 'Architecture decisions', [INFERRED]),
     artifact('gap-register', 'gap_register.md', 'Gap register', [GAP]),
