@@ -222,6 +222,22 @@ PR — per-PR verification is CI's job.
    same content hash; changing its source/evidence produces a new undecided
    assertion (AC-0033).
 
+## MT-M9-04 — Found/recovered ADRs and mapped drift
+
+1. In a fixture repo, add `docs/adr/ADR-0001.md` with `Status`, `Governs`, and
+   `Forbids` fields. Make `Governs` cite an existing graph id in backticks and
+   create a code edge whose label is listed by `Forbids`.
+2. Ingest the repo and open the Workbench **Architecture decisions** artifact.
+   **Pass:** the found ADR and DECIDES link are Confirmed with exact file/span
+   evidence; unrelated or nonexistent ids are not linked (AC-0036).
+3. Include a code producer and channel not governed by a found ADR. **Pass:**
+   the artifact includes a distinct **Recovered / Inferred** ADR with graph
+   evidence and curation controls; it is never displayed as Confirmed
+   (AC-0037, R-INT-2).
+4. Open **Drift register**. **Pass:** the found-ADR conflict names the ADR,
+   offending edge, any containing flow trigger, and confidence inherited from
+   the offending fact (AC-0038).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

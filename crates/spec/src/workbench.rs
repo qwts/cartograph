@@ -596,6 +596,9 @@ fn adr_set(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) {
     let mut content = String::from("# Found and recovered ADRs\n\n");
     for adr in &adrs {
         writeln!(content, "## {}\n", node_name(adr)).expect("write to string");
+        if let Some(origin) = adr.props["origin"].as_str() {
+            writeln!(content, "**Origin:** {origin}\n").expect("write to string");
+        }
         if let Some(status) = adr.props["status"].as_str() {
             writeln!(content, "**Status:** {status}\n").expect("write to string");
         }
@@ -673,10 +676,10 @@ fn is_drift(node: &Node) -> bool {
     node.label == "Drift" || node.props["kind"].as_str() == Some("drift")
 }
 
-fn drift_register(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) {
-    let mut assertions: Vec<SpecAssertion> = nodes
+fn drift_register(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>, usize) {
+    let drift_nodes: Vec<&&Node> = nodes.iter().filter(|node| is_drift(node)).collect();
+    let mut assertions: Vec<SpecAssertion> = drift_nodes
         .iter()
-        .filter(|node| is_drift(node))
         .map(|node| node_assertion(node))
         .collect();
     assertions.extend(
@@ -685,20 +688,37 @@ fn drift_register(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertio
             .filter(|edge| matches!(edge.label.as_str(), "CONFLICTS" | "DRIFTS_FROM"))
             .map(|edge| edge_assertion(edge)),
     );
-    let mut content = String::from("# Drift register\n\n| Subject | Conflict |\n|---|---|\n");
-    for assertion in &assertions {
+    let mut content = String::from(
+        "# Drift register\n\n| Finding | ADR | Offending edge | Flow triggers | Confidence |\n|---|---|---|---|---|\n",
+    );
+    for node in &drift_nodes {
+        let triggers = node.props["flow_triggers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let node_provenance = provenance(&node.props, &node.id);
         writeln!(
             content,
-            "| `{}` | {} |",
-            markdown_safe(&assertion.subject_id),
-            markdown_safe(&assertion.summary)
+            "| {} | `{}` | `{}` | {} | {:?} |",
+            markdown_safe(&node_name(node)),
+            markdown_safe(node.props["adr_id"].as_str().unwrap_or("—")),
+            markdown_safe(node.props["offending_edge"].as_str().unwrap_or("—")),
+            markdown_safe(if triggers.is_empty() {
+                "—"
+            } else {
+                &triggers
+            }),
+            node_provenance.confidence_tier,
         )
         .expect("write to string");
     }
-    if assertions.is_empty() {
+    if drift_nodes.is_empty() {
         content.push_str("| — | No ADR/code conflicts recovered |\n");
     }
-    (content, assertions)
+    (content, assertions, drift_nodes.len())
 }
 
 /// Compile the complete official artifact set with one R-INT-5 policy.
@@ -710,8 +730,13 @@ pub fn compile_spec(
     mode: ExportMode,
     rejected_hashes: &BTreeSet<String>,
 ) -> SpecBundle {
-    let nodes = filter_nodes(nodes, mode, rejected_hashes);
-    let edges = filter_edges(edges, mode, rejected_hashes);
+    let derived = crate::derive_adr_facts(nodes, edges, flows);
+    let mut projected_nodes = nodes.to_vec();
+    projected_nodes.extend(derived.nodes);
+    let mut projected_edges = edges.to_vec();
+    projected_edges.extend(derived.edges);
+    let nodes = filter_nodes(&projected_nodes, mode, rejected_hashes);
+    let edges = filter_edges(&projected_edges, mode, rejected_hashes);
     let (stories, story_assertions) = recovered_user_stories(&nodes);
     let (matrix, matrix_assertions) = traceability_matrix(&edges);
     let (dossiers, flow_assertions) = flow_artifact(flows, mode, rejected_hashes);
@@ -719,10 +744,9 @@ pub fn compile_spec(
     let (data, data_assertions) = data_model(&nodes, &edges);
     let (adrs, adr_assertions) = adr_set(&nodes, &edges);
     let (gaps, gap_assertions) = gap_register(&nodes, &edges, &flow_assertions);
-    let (drifts, drift_assertions) = drift_register(&nodes, &edges);
+    let (drifts, drift_assertions, drift_count) = drift_register(&nodes, &edges);
 
     let gap_count = gap_assertions.len();
-    let drift_count = drift_assertions.len();
     let artifacts = vec![
         artifact(
             "user-stories",
@@ -1084,5 +1108,113 @@ mod tests {
                 .content
                 .contains("inference rejected by Workbench curation")
         );
+    }
+
+    #[test]
+    fn compile_derives_inferred_adr_and_flow_mapped_drift() {
+        // AC-0037 / AC-0038 (T-0037, T-0038): compilation keeps recovered
+        // decisions inferred and maps explicit conflicts to edge and flow.
+        let nodes = vec![
+            node(
+                "chan:orders",
+                "Channel",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            node(
+                "sym:publish",
+                "Symbol",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            node(
+                "sym:handler",
+                "Symbol",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            node(
+                "sym:remote",
+                "Symbol",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            Node {
+                id: "adr:found:no-sync".into(),
+                label: "ADR".into(),
+                props: serde_json::json!({
+                    "title": "No synchronous calls",
+                    "status": "Accepted",
+                    "origin": "found",
+                    "forbids": ["CALLS"],
+                    "prov": prov(Tier::Deterministic, ConfidenceTier::Confirmed, "found-adr"),
+                }),
+            },
+        ];
+        let edges = vec![
+            edge(
+                "sym:publish",
+                "chan:orders",
+                "PUBLISHES",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            edge(
+                "adr:found:no-sync",
+                "sym:handler",
+                "DECIDES",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            edge(
+                "sym:handler",
+                "sym:remote",
+                "CALLS",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+        ];
+        let mut call = flow_hop(ConfidenceTier::Confirmed, "sym:remote");
+        call.src = "sym:handler".into();
+        call.src_name = "handler".into();
+        let flows = vec![Flow {
+            trigger: "ep:orders".into(),
+            trigger_kind: "Endpoint".into(),
+            trigger_name: "POST /orders".into(),
+            hops: vec![call],
+            status: FlowStatus::Verified,
+            score: 1.0,
+            depth_limited: false,
+        }];
+        let bundle = compile_spec(
+            &nodes,
+            &edges,
+            &flows,
+            ExportMode::BestEffort,
+            &BTreeSet::new(),
+        );
+        let adrs = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "adrs")
+            .unwrap();
+        let recovered = adrs
+            .assertions
+            .iter()
+            .find(|assertion| assertion.subject_id.starts_with("adr:recovered:"))
+            .unwrap();
+        assert_eq!(recovered.provenance.tier, Tier::Semantic);
+        assert_eq!(
+            recovered.provenance.confidence_tier,
+            ConfidenceTier::InferredStrong
+        );
+        let drift = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "drift-register")
+            .unwrap();
+        assert!(drift.content.contains("sym:handler CALLS sym:remote"));
+        assert!(drift.content.contains("ep:orders"));
+        assert_eq!(bundle.drift_count, 1);
     }
 }

@@ -3316,6 +3316,7 @@ dependencies = [
  "flowtracer",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

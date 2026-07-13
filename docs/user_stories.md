@@ -151,13 +151,13 @@
 ### US-0013 — ADR recovery and drift detection
 - **Actor:** Engine
 - **As a** engineer **I want** found and recovered ADRs linked to governed targets, with conflicts surfaced **so that** decisions and drift are visible.
-- **Priority:** Should · **Status:** Draft
-- **AC-0036** Given existing ADR/RFC files, when parsed, then they link to governed targets (Confirmed).
-- **AC-0037** Given the graph, when recovered ADRs are drafted, then they are marked recovered/inferred with evidence.
-- **AC-0038** Given an ADR-vs-code conflict, when detected, then it appears in the Drift register mapped to the offending flow/edge.
+- **Priority:** Should · **Status:** Done
+- **AC-0036** Given existing Markdown ADR/RFC files, when parsed, then explicit `Governs:` or exact backtick target ids link to existing graph targets as Confirmed facts.
+- **AC-0037** Given evidence-backed channel architecture, when recovered ADRs are drafted, then they are marked recovered/inferred, cite the producing graph evidence, and remain curatable.
+- **AC-0038** Given a found ADR with an explicit `Forbids:` edge constraint, when governed code conflicts, then a confidence-preserving finding appears in the Drift register mapped to the offending edge and any containing flow.
 - **Security:** —
 - **Performance:** —
-- **Trace:** M9 · `spec`, `agents` · — · T-0036..0038
+- **Trace:** M9 · `spec`, `app` · — · T-0036..0038
 
 ### US-0014 — Determinism and re-ingest idempotency
 - **Actor:** Engine

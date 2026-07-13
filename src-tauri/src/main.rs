@@ -268,6 +268,12 @@ fn extract_tree_with_summary(
             &trace_path.to_string_lossy(),
         );
     }
+    // Found ADR/RFC files are T0 facts. They are parsed after all code/infra
+    // layers so explicit `Governs:` ids can link to existing graph targets.
+    let adr_facts = spec::extract_found_adrs(root, repo, commit, &extraction.nodes)
+        .map_err(|error| error.to_string())?;
+    extraction.nodes.extend(adr_facts.nodes);
+    extraction.edges.extend(adr_facts.edges);
     extraction.close_over_endpoints();
     Ok((extraction, layers))
 }
@@ -1205,6 +1211,50 @@ resource "aws_sqs_queue" "orders" {
                 .iter()
                 .all(|node| { node.props["prov"]["confidence_tier"] != "InferredStrong" })
         );
+    }
+
+    #[test]
+    fn ingest_parses_found_adr_and_links_explicit_governed_target() {
+        // AC-0036 (T-0036): the production ingest path turns an existing
+        // Markdown ADR and explicit target id into Confirmed graph facts.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("orders.ts"),
+            "export function placeOrder() {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("docs/adr")).unwrap();
+        std::fs::write(
+            dir.path().join("docs/adr/ADR-0001-orders.md"),
+            "# Place orders in one service\n\n- **Status:** Accepted\n- **Governs:** `sym:local/shop@orders.ts#placeOrder`\n",
+        )
+        .unwrap();
+
+        let extraction = crate::extract_tree(
+            dir.path(),
+            "local/shop",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+        )
+        .unwrap();
+        let adr = extraction
+            .nodes
+            .iter()
+            .find(|node| node.label == "ADR")
+            .unwrap();
+        assert_eq!(adr.props["origin"], "found");
+        assert_eq!(adr.props["prov"]["confidence_tier"], "Confirmed");
+        let decides = extraction
+            .edges
+            .iter()
+            .find(|edge| edge.label == "DECIDES")
+            .unwrap();
+        assert_eq!(decides.src, adr.id);
+        assert_eq!(decides.dst, "sym:local/shop@orders.ts#placeOrder");
+        assert_eq!(decides.props["prov"]["confidence_tier"], "Confirmed");
     }
 
     #[test]

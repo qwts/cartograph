@@ -69,6 +69,39 @@ const GAP: SpecAssertion = {
   },
 };
 
+const FOUND_ADR: SpecAssertion = {
+  ...CONFIRMED,
+  id: 'node:adr:found:no-sync',
+  subject_id: 'adr:found:no-sync',
+  subject_kind: 'ADR',
+  summary: 'ADR: No synchronous order calls',
+  provenance: {
+    ...CONFIRMED.provenance,
+    evidence: [{
+      repo: 'acme/shop',
+      path: 'docs/adr/ADR-0007-no-sync.md',
+      byte_start: 0,
+      byte_end: 180,
+      commit_sha: 'abc123',
+    }],
+    extractor_id: 't0.adr-markdown',
+    content_hash: 'd'.repeat(64),
+  },
+};
+
+const DRIFT: SpecAssertion = {
+  ...CONFIRMED,
+  id: 'node:drift:no-sync',
+  subject_id: 'drift:no-sync',
+  subject_kind: 'Drift',
+  summary: 'Drift: No synchronous order calls forbids CALLS',
+  provenance: {
+    ...CONFIRMED.provenance,
+    extractor_id: 't0.adr-drift',
+    content_hash: 'e'.repeat(64),
+  },
+};
+
 function artifact(
   id: string,
   fileName: string,
@@ -197,6 +230,43 @@ export const WithPersistedDecision: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getAllByText('Annotated').length).toBeGreaterThan(0);
     await expect(canvas.getAllByText('Matched to the queue declaration').length).toBeGreaterThan(0);
+  },
+};
+
+export const FoundRecoveredAndDrift: Story = {
+  args: {
+    bundle: {
+      ...BUNDLE,
+      drift_count: 1,
+      artifacts: BUNDLE.artifacts.map((item) => {
+        if (item.id === 'adrs') {
+          return {
+            ...artifact('adrs', 'adrs.md', 'Architecture decisions', [FOUND_ADR, INFERRED]),
+            content: '# Found and recovered ADRs\n\n## No synchronous order calls\n\n**Origin:** found\n\n## Recovered: asynchronous fulfillment\n\n**Origin:** recovered\n**Status:** Recovered / Inferred\n',
+          };
+        }
+        if (item.id === 'drift-register') {
+          return {
+            ...artifact('drift-register', 'drift_register.md', 'Drift register', [DRIFT]),
+            content: '# Drift register\n\n| Finding | ADR | Offending edge | Flow triggers | Confidence |\n|---|---|---|---|---|\n| No synchronous order calls | adr:found:no-sync | sym:handler CALLS sym:remote | ep:orders | Confirmed |\n',
+          };
+        }
+        return item;
+      }),
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const nav = canvas.getByRole('navigation', { name: 'Official spec artifacts' });
+    await userEvent.click(within(nav).getByRole('button', { name: /Architecture decisions/ }));
+    await expect(canvas.getByText('ADR: No synchronous order calls')).toBeInTheDocument();
+    await expect(canvas.getByText('ADR: asynchronous fulfillment')).toBeInTheDocument();
+    await expect(canvas.getByText('t0.adr-markdown')).toBeInTheDocument();
+    await userEvent.click(within(nav).getByRole('button', { name: /Drift register/ }));
+    await expect(canvas.getByTestId('spec-artifact-source')).toHaveTextContent(
+      'sym:handler CALLS sym:remote',
+    );
+    await expect(canvas.getByTestId('spec-artifact-source')).toHaveTextContent('ep:orders');
   },
 };
 
