@@ -49,7 +49,8 @@ pub struct UnresolvedHop {
 /// Searchable graph target.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
-    /// Existing graph node id.
+    /// Existing graph node id, or stable id for a staged resource-backed
+    /// Channel that is materialized only in an approved overlay.
     pub node_id: String,
     /// Candidate family.
     pub kind: HopKind,
@@ -59,6 +60,9 @@ pub struct Candidate {
     pub text: String,
     /// Evidence already attached to the target node.
     pub evidence: Vec<EvidenceRef>,
+    /// A target node that does not yet exist in the confirmed graph. This is
+    /// used for IaC Resource candidates and never enters the stored graph.
+    pub materialized_node: Option<Node>,
 }
 
 /// Staged T2 link. It is not a graph fact until an eval gate approves it.
@@ -76,6 +80,8 @@ pub struct SemanticProposal {
     pub similarity: f32,
     /// Semantic/InferredStrong provenance with cited evidence.
     pub provenance: Provenance,
+    /// Optional inferred target node added only to the ephemeral overlay.
+    pub target_node: Option<Node>,
 }
 
 impl SemanticProposal {
@@ -283,19 +289,52 @@ pub fn graph_inputs(nodes: &[Node], edges: &[Edge]) -> (Vec<UnresolvedHop>, Vec<
 
     let mut candidates = Vec::new();
     for node in nodes {
-        let (kind, subtype, text) = match node.label.as_str() {
+        let (kind, subtype, text, materialized_node) = match node.label.as_str() {
             "Channel" => (
                 HopKind::Channel,
                 node.props["kind"].as_str().map(String::from),
-                node.props["identity"].as_str(),
+                node.props["identity"].as_str().map(String::from),
+                None,
             ),
             "Symbol" | "Component" => (
                 HopKind::Call,
                 None,
                 node.props["name"]
                     .as_str()
-                    .or_else(|| node.id.split('#').next_back()),
+                    .or_else(|| node.id.split('#').next_back())
+                    .map(String::from),
+                None,
             ),
+            "Resource" => {
+                let Some(channel_kind) =
+                    node.props["type"].as_str().and_then(resource_channel_kind)
+                else {
+                    continue;
+                };
+                let Some(logical_id) = node.props["logical_id"].as_str() else {
+                    continue;
+                };
+                let target_id = format!("chan:{channel_kind}:resource:{}", node.id);
+                (
+                    HopKind::Channel,
+                    Some(channel_kind.to_string()),
+                    Some(format!(
+                        "{} {}",
+                        logical_id.replace(['.', '_', '-'], " "),
+                        node.props["type"].as_str().unwrap_or_default()
+                    )),
+                    Some(Node {
+                        id: target_id,
+                        label: "Channel".into(),
+                        props: serde_json::json!({
+                            "kind": channel_kind,
+                            "identity": logical_id,
+                            "backing_resource": node.id,
+                            "staged": true,
+                        }),
+                    }),
+                )
+            }
             _ => continue,
         };
         let evidence = evidence_from(&node.props);
@@ -304,16 +343,28 @@ pub fn graph_inputs(nodes: &[Node], edges: &[Edge]) -> (Vec<UnresolvedHop>, Vec<
             && !evidence.is_empty()
         {
             candidates.push(Candidate {
-                node_id: node.id.clone(),
+                node_id: materialized_node
+                    .as_ref()
+                    .map(|target| target.id.clone())
+                    .unwrap_or_else(|| node.id.clone()),
                 kind,
                 subtype,
-                text: text.to_string(),
+                text,
                 evidence,
+                materialized_node,
             });
         }
     }
     candidates.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     (hops, candidates)
+}
+
+fn resource_channel_kind(resource_type: &str) -> Option<&'static str> {
+    match resource_type {
+        "aws_sqs_queue" => Some("sqs-queue"),
+        "aws_sns_topic" => Some("sns-topic"),
+        _ => None,
+    }
 }
 
 fn evidence_from(props: &serde_json::Value) -> Vec<EvidenceRef> {
@@ -387,10 +438,27 @@ pub fn propose(
                 let provenance = Provenance::new(
                     Tier::Semantic,
                     ConfidenceTier::InferredStrong,
-                    evidence,
+                    evidence.clone(),
                     EXTRACTOR_ID,
                     fact.as_bytes(),
                 )?;
+                let target_node = candidate
+                    .materialized_node
+                    .as_ref()
+                    .map(|template| {
+                        let mut node = template.clone();
+                        let node_provenance = Provenance::new(
+                            Tier::Semantic,
+                            ConfidenceTier::InferredStrong,
+                            evidence,
+                            EXTRACTOR_ID,
+                            format!("materialize {}", node.id).as_bytes(),
+                        )?;
+                        node.props["prov"] = serde_json::to_value(node_provenance)
+                            .expect("semantic provenance serializes");
+                        Ok::<Node, SemanticError>(node)
+                    })
+                    .transpose()?;
                 proposals.push(SemanticProposal {
                     gap_id: hop.gap_id.clone(),
                     source_id: hop.source_id.clone(),
@@ -398,6 +466,7 @@ pub fn propose(
                     edge_label: hop.edge_label.clone(),
                     similarity,
                     provenance,
+                    target_node,
                 });
             }
         }
@@ -576,11 +645,20 @@ pub fn overlay(
         .map(|proposal| (proposal.gap_id.as_str(), proposal))
         .collect();
     let resolved: HashSet<&str> = approved.keys().copied().collect();
-    let overlay_nodes = nodes
+    let mut overlay_nodes: Vec<Node> = nodes
         .iter()
         .filter(|node| !resolved.contains(node.id.as_str()))
         .cloned()
         .collect();
+    let existing_ids: HashSet<String> = overlay_nodes.iter().map(|node| node.id.clone()).collect();
+    overlay_nodes.extend(
+        approved
+            .values()
+            .filter_map(|proposal| proposal.target_node.clone())
+            .filter(|node| !existing_ids.contains(&node.id)),
+    );
+    overlay_nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    overlay_nodes.dedup_by(|a, b| a.id == b.id);
     let mut overlay_edges: Vec<Edge> = edges
         .iter()
         .filter(|edge| !resolved.contains(edge.dst.as_str()))
@@ -745,6 +823,63 @@ mod tests {
             ConfidenceTier::InferredStrong
         );
         assert_eq!(proposals[0].provenance.evidence.len(), 2);
+    }
+
+    #[test]
+    fn infra_resources_stage_channel_nodes_for_computed_gaps() {
+        // AC-0021: real T0 ingestion may have only a computed channel Gap and
+        // an IaC Resource. The resource is a semantic candidate, while the
+        // inferred Channel exists only in the approved best-effort overlay.
+        let (mut nodes, edges) = graph();
+        nodes.retain(|node| node.label != "Channel");
+        nodes.extend([
+            Node {
+                id: "res:shop@aws_sqs_queue.orders".into(),
+                label: "Resource".into(),
+                props: serde_json::json!({
+                    "type": "aws_sqs_queue",
+                    "logical_id": "aws_sqs_queue.orders",
+                    "prov": evidence("infra.tf")
+                }),
+            },
+            Node {
+                id: "res:shop@aws_sqs_queue.users".into(),
+                label: "Resource".into(),
+                props: serde_json::json!({
+                    "type": "aws_sqs_queue",
+                    "logical_id": "aws_sqs_queue.users",
+                    "prov": evidence("infra.tf")
+                }),
+            },
+        ]);
+        let (hops, candidates) = graph_inputs(&nodes, &edges);
+        let channel_candidates: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| candidate.kind == HopKind::Channel)
+            .collect();
+        assert_eq!(channel_candidates.len(), 2);
+        assert!(
+            channel_candidates
+                .iter()
+                .all(|candidate| candidate.materialized_node.is_some())
+        );
+        let proposals = propose(&KeywordProvider, &hops, &candidates, 2).unwrap();
+        let report = evaluate(&KeywordProvider, &eval_pairs(), 0.95).unwrap();
+        let approved = gated_proposals(&proposals, &report);
+        let preview = overlay(&nodes, &edges, &approved, &report);
+        assert_eq!(preview.gaps_filled, 1);
+        let channel = preview
+            .nodes
+            .iter()
+            .find(|node| node.label == "Channel")
+            .expect("approved resource target materializes an inferred channel");
+        assert_eq!(
+            channel.props["backing_resource"],
+            "res:shop@aws_sqs_queue.orders"
+        );
+        assert_eq!(channel.props["prov"]["tier"], "Semantic");
+        assert_eq!(channel.props["prov"]["confidence_tier"], "InferredStrong");
+        assert!(nodes.iter().all(|node| node.label != "Channel"));
     }
 
     #[test]

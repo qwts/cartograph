@@ -97,7 +97,7 @@
 - **Actor:** Engine
 - **As a** engineer **I want** semantic matching gated by paired evals **so that** inferred links meet a precision floor.
 - **Priority:** Should · **Status:** Done
-- **AC-0021** Given unresolved hops, when T2 runs, then proposals are marked InferredStrong with evidence.
+- **AC-0021** Given real ingested unresolved channel or call hops, when T2 runs, then IaC-backed channel resources and repository symbols are eligible targets and proposals are marked InferredStrong with evidence.
 - **AC-0022** Given a labeled eval set, when T2 is measured, then proposals below the precision floor are excluded from `best-effort` exports.
 - **Security:** Embeddings computed locally by default.
 - **Performance:** ANN index query sub-100ms typical.
