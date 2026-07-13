@@ -134,7 +134,7 @@ export class UserService {
         src.join("controller.ts"),
         r#"
 import { UserService } from './service';
-import { MissingService } from './missing';
+import { MissingService as MS } from './missing';
 
 export class UserController {
   constructor(private readonly users: UserService) {}
@@ -150,7 +150,7 @@ export function inferred() {
   users.list();
 }
 
-export function unresolved(missing: MissingService) {
+export function unresolved(missing: MS) {
   missing.run();
 }
 "#,
@@ -171,8 +171,54 @@ export function unresolved(missing: MissingService) {
             .iter()
             .any(|(_, dst)| *dst == "sym:qwtm/example@src/missing.ts#MissingService.run")
     );
+    let gap = ex
+        .nodes
+        .iter()
+        .find(|node| node.label == "Gap" && node.props["callee"] == "MissingService.run")
+        .expect("unresolved typed call remains an explicit semantic slot");
+    assert!(calls.contains(&(
+        "sym:qwtm/example@src/controller.ts#unresolved",
+        gap.id.as_str()
+    )));
+    assert_eq!(gap.props["prov"]["confidence_tier"], "Gap");
     let target_node = ex.nodes.iter().find(|node| node.id == target).unwrap();
     assert_eq!(target_node.props["kind"], "Method");
+}
+
+#[test]
+fn unresolved_relative_import_calls_emit_gaps_without_global_noise() {
+    // AC-0021: a call with a relative-import target that directory-wide T0
+    // cannot prove becomes a CALLS Gap. Package/global calls are not local
+    // semantic candidates and must not flood the graph with false slots.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("caller.ts"),
+        r#"
+import { processOrder as po } from './missing';
+import { randomUUID } from 'node:crypto';
+export function run() {
+  po();
+  randomUUID();
+  console.log('done');
+}
+"#,
+    )
+    .unwrap();
+    let ex = extract_dir(dir.path(), &id()).unwrap();
+    let gaps: Vec<_> = ex.nodes.iter().filter(|node| node.label == "Gap").collect();
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps[0].props["callee"], "processOrder");
+    let calls = edge_pairs(&ex, "CALLS");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, gaps[0].id);
+    assert_eq!(
+        ex.edges
+            .iter()
+            .find(|edge| edge.label == "CALLS")
+            .unwrap()
+            .props["prov"]["confidence_tier"],
+        "Gap"
+    );
 }
 
 #[test]

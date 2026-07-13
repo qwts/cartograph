@@ -684,6 +684,14 @@ async fn semantic_preview(
                     .map_err(|error| error.to_string())?,
             );
         }
+        // Computed channel gaps can be backed only by a T0 IaC Resource.
+        // Resources are semantic candidates, not flow nodes, and any Channel
+        // they imply is materialized only in the ephemeral approved overlay.
+        nodes.extend(
+            graph
+                .nodes_with_label("Resource")
+                .map_err(|error| error.to_string())?,
+        );
         let edges = graph
             .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
             .map_err(|error| error.to_string())?;
@@ -814,6 +822,42 @@ mod tests {
         }
     }
 
+    struct M7RealInputsProvider;
+
+    impl llm::LlmProvider for M7RealInputsProvider {
+        fn id(&self) -> &str {
+            "test-real-input-keywords"
+        }
+
+        fn locality(&self) -> Locality {
+            Locality::Local
+        }
+
+        fn capabilities(&self) -> ProviderCaps {
+            ProviderCaps {
+                embeddings: true,
+                chat: false,
+                tool_use: false,
+            }
+        }
+
+        fn embed(&self, batch: &[String]) -> Result<Vec<Embedding>, ProviderError> {
+            Ok(batch
+                .iter()
+                .map(|text| {
+                    let text = text.to_ascii_lowercase();
+                    vec![
+                        f32::from(text.contains("order")),
+                        f32::from(text.contains("process")),
+                        f32::from(text.contains("queue")),
+                        f32::from(text.contains("user")),
+                        0.01,
+                    ]
+                })
+                .collect())
+        }
+    }
+
     fn m7_prov(path: &str, confidence: &str) -> serde_json::Value {
         serde_json::json!({
             "tier": "Deterministic",
@@ -920,6 +964,122 @@ mod tests {
         assert_eq!(preview.flows[0].status, flowtracer::FlowStatus::Inferred);
         assert!(preview.dossier.contains("InferredStrong"));
         assert!(nodes.iter().any(|node| node.label == "Gap"));
+    }
+
+    #[test]
+    fn semantic_preview_uses_real_ingested_resource_and_call_gaps() {
+        // AC-0021 / #67: exercise the production extractors, not synthetic
+        // graph fixtures. Computed SQS identity + IaC and an unresolved
+        // relative-import call both reach the eval-gated T2 preview.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("publisher.ts"),
+            r#"
+import { SendMessageCommand } from '@aws-sdk/client-sqs';
+declare function lookupQueue(): string;
+const ordersQueueUrl = lookupQueue();
+export function publishOrder() {
+  return new SendMessageCommand({ QueueUrl: ordersQueueUrl, MessageBody: '{}' });
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("caller.ts"),
+            r#"
+import { processOrder } from './missing';
+export function run() { processOrder(); }
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("orders.ts"),
+            "export function processOrder() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("main.tf"),
+            r#"
+resource "aws_sqs_queue" "orders" {
+  name = "orders"
+}
+"#,
+        )
+        .unwrap();
+
+        let extraction = crate::extract_tree(
+            dir.path(),
+            "local/shop",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+        )
+        .unwrap();
+        let gaps: Vec<_> = extraction
+            .nodes
+            .iter()
+            .filter(|node| node.label == "Gap")
+            .collect();
+        assert_eq!(gaps.len(), 2, "real extraction gaps: {gaps:?}");
+        assert!(gaps.iter().any(|node| node.props["kind"] == "sqs-queue"));
+        assert!(
+            gaps.iter()
+                .any(|node| node.props["callee"] == "processOrder")
+        );
+
+        let eval_pairs = vec![
+            semantic::LabeledPair {
+                query: "order destination".into(),
+                candidate: "orders queue".into(),
+                is_match: true,
+            },
+            semantic::LabeledPair {
+                query: "order destination".into(),
+                candidate: "users queue".into(),
+                is_match: false,
+            },
+            semantic::LabeledPair {
+                query: "process order".into(),
+                candidate: "process order".into(),
+                is_match: true,
+            },
+            semantic::LabeledPair {
+                query: "process order".into(),
+                candidate: "publish order".into(),
+                is_match: false,
+            },
+        ];
+        let preview = crate::build_semantic_preview(
+            &M7RealInputsProvider,
+            &extraction.nodes,
+            &extraction.edges,
+            &eval_pairs,
+            0.95,
+        )
+        .unwrap();
+        assert_eq!(
+            preview.gaps_filled, 2,
+            "proposals: {:#?}",
+            preview.proposals
+        );
+        assert!(preview.approved.iter().any(|proposal| {
+            proposal.edge_label == "PUBLISHES"
+                && proposal.target_node.as_ref().is_some_and(|node| {
+                    node.props["backing_resource"] == "res:local/shop@aws_sqs_queue.orders"
+                })
+        }));
+        assert!(preview.approved.iter().any(|proposal| {
+            proposal.edge_label == "CALLS"
+                && proposal.target_id == "sym:local/shop@orders.ts#processOrder"
+        }));
+        assert!(
+            extraction
+                .nodes
+                .iter()
+                .all(|node| { node.props["prov"]["confidence_tier"] != "InferredStrong" })
+        );
     }
 
     #[test]

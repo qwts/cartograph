@@ -54,10 +54,17 @@ pub struct Extraction {
     /// Default-exported symbol per file (`path` → sym id) — Next.js pages
     /// resolve their screen component through this.
     pub default_exports: HashMap<String, String>,
-    /// Cross-file typed calls await directory-wide proof that the target
-    /// method exists; candidates never escape as graph facts on import names
-    /// alone.
-    pending_typed_calls: Vec<Edge>,
+    /// Relative-import and typed-member calls await directory-wide proof that
+    /// the target exists. Failed proof becomes an explicit CALLS Gap rather
+    /// than disappearing from the escalation ladder.
+    pending_calls: Vec<PendingCall>,
+}
+
+#[derive(Debug)]
+struct PendingCall {
+    resolved_edge: Edge,
+    gap_node: Node,
+    gap_edge: Edge,
 }
 
 impl Extraction {
@@ -114,9 +121,18 @@ struct FileCx<'a> {
 
 impl FileCx<'_> {
     fn prov(&self, node: &TsNode, fact: &str) -> serde_json::Value {
+        self.prov_with_confidence(node, ConfidenceTier::Confirmed, fact)
+    }
+
+    fn prov_with_confidence(
+        &self,
+        node: &TsNode,
+        confidence: ConfidenceTier,
+        fact: &str,
+    ) -> serde_json::Value {
         let p = Provenance::new(
             Tier::Deterministic,
-            ConfidenceTier::Confirmed,
+            confidence,
             vec![EvidenceRef {
                 repo: self.id.repo.into(),
                 path: self.path.into(),
@@ -133,6 +149,55 @@ impl FileCx<'_> {
 
     fn text(&self, node: &TsNode) -> &str {
         node.utf8_text(self.source).unwrap_or("")
+    }
+}
+
+fn pending_call(
+    cx: &FileCx<'_>,
+    call: TsNode<'_>,
+    src: String,
+    dst: String,
+    callee: &str,
+) -> PendingCall {
+    let gap_id = format!("gap:call:{}@{}@{}", cx.id.repo, cx.path, call.start_byte());
+    let reason = "unresolved call target after import/type resolution";
+    PendingCall {
+        resolved_edge: Edge {
+            src: src.clone(),
+            dst,
+            label: "CALLS".into(),
+            props: serde_json::json!({
+                "resolution": "directory-proven",
+                "prov": cx.prov(&call, &format!("CALLS {callee} at {}", call.start_byte())),
+            }),
+        },
+        gap_node: Node {
+            id: gap_id.clone(),
+            label: "Gap".into(),
+            props: serde_json::json!({
+                "callee": callee,
+                "reason": reason,
+                "attempted_tiers": ["T0"],
+                "prov": cx.prov_with_confidence(
+                    &call,
+                    ConfidenceTier::Gap,
+                    &format!("Gap {gap_id}"),
+                ),
+            }),
+        },
+        gap_edge: Edge {
+            src,
+            dst: gap_id.clone(),
+            label: "CALLS".into(),
+            props: serde_json::json!({
+                "attempted_resolution": "directory-import-or-type",
+                "prov": cx.prov_with_confidence(
+                    &call,
+                    ConfidenceTier::Gap,
+                    &format!("CALLS -> {gap_id}"),
+                ),
+            }),
+        },
     }
 }
 
@@ -1526,27 +1591,33 @@ pub fn extract_source(
             continue;
         };
         let callee_name = cx.text(&callee_node);
-        let Some(dst) = locals
-            .get(callee_name)
-            .cloned()
-            .or_else(|| imported.get(callee_name).cloned())
-        else {
-            continue; // unknown callee (global, builtin) — not resolvable at T0
-        };
         let Some(src_sym) = enclosing_symbol(&cx, call) else {
             continue; // top-level statement, not a symbol-to-symbol call
         };
-        if src_sym == dst {
-            continue; // direct recursion adds no path information at M1
+        if let Some(dst) = locals.get(callee_name).cloned() {
+            if src_sym == dst {
+                continue; // direct recursion adds no path information at M1
+            }
+            out.edges.push(Edge {
+                src: src_sym,
+                dst,
+                label: "CALLS".into(),
+                props: serde_json::json!({
+                    "prov": cx.prov(&call, &format!("CALLS {} at {}", callee_name, call.start_byte())),
+                }),
+            });
+        } else if let Some(dst) = imported.get(callee_name).cloned() {
+            // A relative import gives us a deterministic candidate id, but
+            // only the directory-wide pass can prove that symbol exists.
+            let semantic_name = imported_names
+                .get(callee_name)
+                .map(String::as_str)
+                .unwrap_or(callee_name);
+            out.pending_calls
+                .push(pending_call(&cx, call, src_sym, dst, semantic_name));
         }
-        out.edges.push(Edge {
-            src: src_sym,
-            dst,
-            label: "CALLS".into(),
-            props: serde_json::json!({
-                "prov": cx.prov(&call, &format!("CALLS {} at {}", callee_name, call.start_byte())),
-            }),
-        });
+        // Unknown globals, builtins, callback parameters, and package calls
+        // are not useful within-repo semantic candidates and remain omitted.
     }
 
     let q_member_calls = Query::new(
@@ -1602,32 +1673,45 @@ pub fn extract_source(
         let local_dst = methods
             .get(&(receiver_type.clone(), method.clone()))
             .cloned();
-        let imported_dst =
+        let imported_target =
             imported_types
                 .get(&receiver_type)
                 .map(|(target_file, exported_type)| {
-                    sym_id(id.repo, target_file, &format!("{exported_type}.{method}"))
+                    (
+                        sym_id(id.repo, target_file, &format!("{exported_type}.{method}")),
+                        exported_type.clone(),
+                    )
                 });
+        let imported_dst = imported_target.as_ref().map(|(dst, _)| dst.clone());
         let Some(dst) = local_dst.clone().or(imported_dst) else {
             continue;
         };
         if src_sym == dst {
             continue;
         }
-        let edge = Edge {
-            src: src_sym,
-            dst,
-            label: "CALLS".into(),
-            props: serde_json::json!({
-                "resolution": "typed-member",
-                "receiver_type": receiver_type,
-                "prov": cx.prov(&call, &format!("CALLS typed {method} at {}", call.start_byte())),
-            }),
-        };
         if local_dst.is_some() {
-            out.edges.push(edge);
+            out.edges.push(Edge {
+                src: src_sym,
+                dst,
+                label: "CALLS".into(),
+                props: serde_json::json!({
+                    "resolution": "typed-member",
+                    "receiver_type": receiver_type,
+                    "prov": cx.prov(&call, &format!("CALLS typed {method} at {}", call.start_byte())),
+                }),
+            });
         } else {
-            out.pending_typed_calls.push(edge);
+            let exported_type = imported_target
+                .as_ref()
+                .map(|(_, exported_type)| exported_type.as_str())
+                .unwrap_or(&receiver_type);
+            out.pending_calls.push(pending_call(
+                &cx,
+                call,
+                src_sym,
+                dst,
+                &format!("{exported_type}.{method}"),
+            ));
         }
     }
 
@@ -1650,16 +1734,18 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
         out.event_sites.extend(ex.event_sites);
         out.fetch_sites.extend(ex.fetch_sites);
         out.default_exports.extend(ex.default_exports);
-        out.pending_typed_calls.extend(ex.pending_typed_calls);
+        out.pending_calls.extend(ex.pending_calls);
     }
     let known_symbols: std::collections::HashSet<String> =
         out.nodes.iter().map(|node| node.id.clone()).collect();
-    let candidates = std::mem::take(&mut out.pending_typed_calls);
-    out.edges.extend(
-        candidates
-            .into_iter()
-            .filter(|edge| known_symbols.contains(&edge.dst)),
-    );
+    for pending in std::mem::take(&mut out.pending_calls) {
+        if known_symbols.contains(&pending.resolved_edge.dst) {
+            out.edges.push(pending.resolved_edge);
+        } else {
+            out.nodes.push(pending.gap_node);
+            out.edges.push(pending.gap_edge);
+        }
+    }
     next_pages_screens(&mut out, id);
     out.close_over_endpoints();
     Ok(out)

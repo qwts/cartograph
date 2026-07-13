@@ -124,6 +124,10 @@ PR — per-PR verification is CI's job.
    `ollama pull nomic-embed-text` (Cartograph never downloads it implicitly).
 2. Run
    `cargo test -p semantic real_ollama_resolves_eval_gated_gap -- --ignored --nocapture`.
+   Also run
+   `cargo test -p app semantic_preview_uses_real_ingested_resource_and_call_gaps`;
+   this fixture must recover its inputs through the production TypeScript,
+   event, and Terraform extractors rather than constructing graph nodes by hand.
 3. Inspect the printed report: provider is local Ollama, paired-eval precision
    meets the configured floor, ANN lookup is below 100ms, and one explicit
    channel Gap is replaced only in the returned best-effort overlay.
@@ -131,7 +135,9 @@ PR — per-PR verification is CI's job.
 5. **Pass:** the stopped provider fails explicitly with no graph change or
    network fallback; the passing preview edge is Semantic/InferredStrong with
    evidence from both Gap and target, while the stored confirmed graph retains
-   its original Gap (AC-0021, AC-0022, R-INT-1, M7 exit gate).
+   its original Gap. The real-ingest fixture fills both the IaC-backed channel
+   Gap and unresolved relative-import call Gap without adding gaps for globals
+   or package calls (AC-0021, AC-0022, R-INT-1, M7 exit gate).
 
 ## MT-SB-01 — Stories render on-brand
 
