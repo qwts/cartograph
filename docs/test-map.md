@@ -61,3 +61,4 @@ rows in the same PR (see AGENTS.md).
 | T-0045 | AC-0045 | rust | iac::capability_registry_triggers_lambda_at_edge_from_nested_cache_behaviors | default/ordered cache behavior traversal with distribution as source |
 | T-0046 | AC-0046 | rust | iac::capability_registry_triggers_aws_pipes | EventBridge Pipes source to target via TRIGGERS |
 | T-0047 | AC-0047 | rust | iac::iam_policy_grants_chase_same_extraction_policy_document, iac::iam_policy_document_chase_spans_files_in_directory, iac::missing_or_unresolved_policy_document_keeps_explicit_grant | same-source and cross-file joins; fail-closed fallback with document actions/evidence |
+| T-0048 | AC-0048 | rust | iac::local_modules_expand_under_scoped_addresses_and_edges, iac::nested_local_modules_stop_at_cycles_deterministically, iac::remote_outside_and_symlinked_modules_remain_leaf_nodes | EventBridge-style ../../ source; scoped internal facts; confinement and cycle guard |

@@ -21,7 +21,7 @@ use hcl_edit::structure::{Block, BlockLabel, Body};
 use hcl_edit::visit::{Visit, visit_expr};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Extraction errors.
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +47,7 @@ pub struct Extraction {
     /// Graph edges (props carry provenance under `prov`).
     pub edges: Vec<Edge>,
     policy_documents: BTreeMap<String, PolicyDocument>,
+    module_declarations: Vec<ModuleDeclaration>,
 }
 
 #[derive(Debug)]
@@ -56,7 +57,25 @@ struct PolicyDocument {
     evidence: EvidenceRef,
 }
 
+#[derive(Debug)]
+struct ModuleDeclaration {
+    address: String,
+    node_id: String,
+    source: String,
+    declaring_path: String,
+    evidence: EvidenceRef,
+    ancestors: Vec<PathBuf>,
+}
+
 impl Extraction {
+    fn absorb(&mut self, mut other: Extraction) {
+        self.nodes.append(&mut other.nodes);
+        self.edges.append(&mut other.edges);
+        self.policy_documents.extend(other.policy_documents);
+        self.module_declarations
+            .append(&mut other.module_declarations);
+    }
+
     fn resolve_policy_document_grants(&mut self) {
         let mut resolved = Vec::with_capacity(self.edges.len());
         for edge in std::mem::take(&mut self.edges) {
@@ -144,18 +163,22 @@ fn prov(id: &SourceId, path: &str, span: &Range<usize>, fact: &str) -> serde_jso
     let p = Provenance::new(
         Tier::Deterministic,
         ConfidenceTier::Confirmed,
-        vec![EvidenceRef {
-            repo: id.repo.into(),
-            path: path.into(),
-            byte_start: span.start as u64,
-            byte_end: span.end as u64,
-            commit_sha: id.commit.into(),
-        }],
+        vec![evidence_ref(id, path, span)],
         EXTRACTOR_ID,
         fact.as_bytes(),
     )
     .expect("Deterministic/Confirmed is always within ceiling");
     serde_json::to_value(p).expect("provenance serializes")
+}
+
+fn evidence_ref(id: &SourceId, path: &str, span: &Range<usize>) -> EvidenceRef {
+    EvidenceRef {
+        repo: id.repo.into(),
+        path: path.into(),
+        byte_start: span.start as u64,
+        byte_end: span.end as u64,
+        commit_sha: id.commit.into(),
+    }
 }
 
 fn label_text(label: &BlockLabel) -> String {
@@ -228,6 +251,14 @@ fn refs_for_attr(block: &Block, name: &str) -> BTreeSet<String> {
         }
     }
     BTreeSet::new()
+}
+
+fn string_attr<'a>(block: &'a Block, name: &str) -> Option<&'a str> {
+    block
+        .body
+        .attributes()
+        .find(|attr| attr.key.as_str() == name)
+        .and_then(|attr| attr.value.as_str())
 }
 
 fn block_name_matches(actual: &str, selector: &str) -> bool {
@@ -328,6 +359,19 @@ fn resource_id(repo: &str, address: &str) -> String {
     format!("res:{repo}@{address}")
 }
 
+fn scoped_address(prefix: Option<&str>, address: &str) -> String {
+    prefix.map_or_else(
+        || address.to_string(),
+        |prefix| format!("{prefix}.{address}"),
+    )
+}
+
+fn scoped_refs(refs: BTreeSet<String>, prefix: Option<&str>) -> BTreeSet<String> {
+    refs.into_iter()
+        .map(|address| scoped_address(prefix, &address))
+        .collect()
+}
+
 fn resource_id_from_node(source_node_id: &str, address: &str) -> String {
     let repo = source_node_id
         .strip_prefix("res:")
@@ -359,6 +403,8 @@ fn extract_source_unresolved(
     source: &str,
     path: &str,
     id: &SourceId,
+    address_prefix: Option<&str>,
+    module_ancestors: &[PathBuf],
 ) -> Result<Extraction, ExtractError> {
     let body: Body = source
         .parse()
@@ -375,12 +421,13 @@ fn extract_source_unresolved(
 
         // Address + node per block kind (outputs/vars/providers are not
         // resources; they join when locals/var resolution lands).
-        let address = match (kind, labels.as_slice()) {
+        let local_address = match (kind, labels.as_slice()) {
             ("resource", [rtype, name]) => format!("{rtype}.{name}"),
             ("data", [rtype, name]) => format!("data.{rtype}.{name}"),
             ("module", [name]) => format!("module.{name}"),
             _ => continue,
         };
+        let address = scoped_address(address_prefix, &local_address);
         let node_id = resource_id(id.repo, &address);
         let rtype = if kind == "module" {
             "module".to_string()
@@ -392,17 +439,26 @@ fn extract_source_unresolved(
             out.policy_documents.insert(
                 node_id.clone(),
                 PolicyDocument {
-                    resource_refs: refs_for_path(&block.body, &["statement", "resources"]),
+                    resource_refs: scoped_refs(
+                        refs_for_path(&block.body, &["statement", "resources"]),
+                        address_prefix,
+                    ),
                     actions: literal_actions(&source[span.clone()]),
-                    evidence: EvidenceRef {
-                        repo: id.repo.into(),
-                        path: path.into(),
-                        byte_start: span.start as u64,
-                        byte_end: span.end as u64,
-                        commit_sha: id.commit.into(),
-                    },
+                    evidence: evidence_ref(id, path, &span),
                 },
             );
+        }
+        if kind == "module"
+            && let Some(module_source) = string_attr(block, "source")
+        {
+            out.module_declarations.push(ModuleDeclaration {
+                address: address.clone(),
+                node_id: node_id.clone(),
+                source: module_source.to_string(),
+                declaring_path: path.to_string(),
+                evidence: evidence_ref(id, path, &span),
+                ancestors: module_ancestors.to_vec(),
+            });
         }
         out.nodes.push(Node {
             id: node_id.clone(),
@@ -417,7 +473,8 @@ fn extract_source_unresolved(
         });
 
         // depends_on -> DEPENDS_ON (explicit ordering intent).
-        for dep in refs_for_attr(block, "depends_on") {
+        let raw_deps = refs_for_attr(block, "depends_on");
+        for dep in scoped_refs(raw_deps.clone(), address_prefix) {
             out.edges.push(Edge {
                 src: node_id.clone(),
                 dst: resource_id(id.repo, &dep),
@@ -429,11 +486,11 @@ fn extract_source_unresolved(
         }
 
         // All other traversals -> REFERENCES (the interpolation DAG).
-        let deps: BTreeSet<String> = refs_for_attr(block, "depends_on");
-        for referenced in refs_in_body(&block.body) {
-            if referenced == address || deps.contains(&referenced) {
+        for raw_reference in refs_in_body(&block.body) {
+            if raw_reference == local_address || raw_deps.contains(&raw_reference) {
                 continue;
             }
+            let referenced = scoped_address(address_prefix, &raw_reference);
             out.edges.push(Edge {
                 src: node_id.clone(),
                 dst: resource_id(id.repo, &referenced),
@@ -450,8 +507,14 @@ fn extract_source_unresolved(
 
         // Capability Registry: mediating resource -> semantic edge.
         for cap in registry::capabilities_for(&labels[0]) {
-            let sources = refs_for_selector(block, cap.source, &address);
-            let targets = refs_for_selector(block, cap.target, &address);
+            let sources = scoped_refs(
+                refs_for_selector(block, cap.source, &local_address),
+                address_prefix,
+            );
+            let targets = scoped_refs(
+                refs_for_selector(block, cap.target, &local_address),
+                address_prefix,
+            );
             for s in &sources {
                 for t in &targets {
                     out.edges.push(Edge {
@@ -474,7 +537,7 @@ fn extract_source_unresolved(
         if POLICY_TYPES.contains(&labels[0].as_str()) {
             let raw = &source[span.clone()];
             let actions = literal_actions(raw);
-            for target in refs_for_attr(block, "policy") {
+            for target in scoped_refs(refs_for_attr(block, "policy"), address_prefix) {
                 out.edges.push(Edge {
                     src: node_id.clone(),
                     dst: resource_id(id.repo, &target),
@@ -494,7 +557,7 @@ fn extract_source_unresolved(
 
 /// Extract facts from one Terraform file.
 pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extraction, ExtractError> {
-    let mut out = extract_source_unresolved(source, path, id)?;
+    let mut out = extract_source_unresolved(source, path, id, None, &[])?;
     out.resolve_policy_document_grants();
     Ok(out)
 }
@@ -502,20 +565,175 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
 /// Extract facts from every `.tf` file under `root` (skipping `.terraform`
 /// and hidden dirs), with edge endpoints closed over placeholders.
 pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractError> {
+    let root = std::fs::canonicalize(root)?;
     let mut files = Vec::new();
-    collect_tf_files(root, root, &mut files)?;
+    collect_tf_files(&root, &root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let mut out = Extraction::default();
     for rel in &files {
         let source = std::fs::read_to_string(root.join(rel))?;
-        let ex = extract_source_unresolved(&source, rel, id)?;
-        out.nodes.extend(ex.nodes);
-        out.edges.extend(ex.edges);
-        out.policy_documents.extend(ex.policy_documents);
+        let ex = extract_source_unresolved(&source, rel, id, None, &[])?;
+        out.absorb(ex);
     }
+    expand_local_modules(&root, id, &mut out)?;
     out.resolve_policy_document_grants();
     out.close_over_endpoints();
     Ok(out)
+}
+
+fn expand_local_modules(
+    root: &Path,
+    id: &SourceId,
+    out: &mut Extraction,
+) -> Result<(), ExtractError> {
+    let mut pending = std::mem::take(&mut out.module_declarations);
+    let mut expanded = BTreeSet::new();
+
+    while !pending.is_empty() {
+        pending.sort_by(|a, b| {
+            (&a.address, &a.declaring_path, &a.source).cmp(&(
+                &b.address,
+                &b.declaring_path,
+                &b.source,
+            ))
+        });
+        let declaration = pending.remove(0);
+        let Some(source_dir) = resolve_local_module_source(root, &declaration) else {
+            continue;
+        };
+
+        let mut ancestors = declaration.ancestors.clone();
+        if ancestors.is_empty()
+            && let Some(parent) = root.join(&declaration.declaring_path).parent()
+            && let Ok(parent) = std::fs::canonicalize(parent)
+            && parent.starts_with(root)
+        {
+            ancestors.push(parent);
+        }
+        if ancestors.contains(&source_dir) {
+            // Recursive source cycle: the nested module remains an explicit
+            // leaf rather than reading the same directory indefinitely.
+            continue;
+        }
+        if !expanded.insert((declaration.node_id.clone(), source_dir.clone())) {
+            continue;
+        }
+        ancestors.push(source_dir.clone());
+
+        let mut module_extraction = Extraction::default();
+        for rel in collect_direct_tf_files(root, &source_dir)? {
+            let source = std::fs::read_to_string(root.join(&rel))?;
+            module_extraction.absorb(extract_source_unresolved(
+                &source,
+                &rel,
+                id,
+                Some(&declaration.address),
+                &ancestors,
+            )?);
+        }
+
+        let child_ids: BTreeSet<String> = module_extraction
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
+        for child_id in child_ids {
+            let fact = format!("REFERENCES {} -> {child_id}", declaration.address);
+            let provenance = Provenance::new(
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+                vec![declaration.evidence.clone()],
+                EXTRACTOR_ID,
+                fact.as_bytes(),
+            )
+            .expect("Deterministic/Confirmed is always within ceiling");
+            out.edges.push(Edge {
+                src: declaration.node_id.clone(),
+                dst: child_id,
+                label: "REFERENCES".into(),
+                props: serde_json::json!({
+                    "module_source": declaration.source,
+                    "relation": "MODULE_CONTAINS",
+                    "prov": provenance,
+                }),
+            });
+        }
+
+        pending.append(&mut module_extraction.module_declarations);
+        out.absorb(module_extraction);
+    }
+
+    Ok(())
+}
+
+fn resolve_local_module_source(root: &Path, declaration: &ModuleDeclaration) -> Option<PathBuf> {
+    let source = Path::new(&declaration.source);
+    let local_literal = source.is_absolute()
+        || declaration.source == "."
+        || declaration.source == ".."
+        || declaration.source.starts_with("./")
+        || declaration.source.starts_with("../")
+        || declaration.source.starts_with(".\\")
+        || declaration.source.starts_with("..\\");
+    if !local_literal {
+        return None;
+    }
+
+    let declaring_dir = root
+        .join(&declaration.declaring_path)
+        .parent()?
+        .to_path_buf();
+    let candidate = if source.is_absolute() {
+        source.to_path_buf()
+    } else {
+        declaring_dir.join(source)
+    };
+    let candidate = normalize_lexically(&candidate);
+    if !candidate.starts_with(root) {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(candidate).ok()?;
+    (canonical.starts_with(root) && canonical.is_dir()).then_some(canonical)
+}
+
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+fn collect_direct_tf_files(root: &Path, dir: &Path) -> std::io::Result<Vec<String>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".tf") {
+            files.push(
+                entry
+                    .path()
+                    .strip_prefix(root)
+                    .expect("confined module entry is under the ingest root")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn collect_tf_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
@@ -523,12 +741,16 @@ fn collect_tf_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             if name.starts_with('.') || name == "node_modules" {
                 continue;
             }
             collect_tf_files(root, &path, out)?;
-        } else if name.ends_with(".tf") {
+        } else if file_type.is_file() && name.ends_with(".tf") {
             let rel = path
                 .strip_prefix(root)
                 .expect("entry under root")

@@ -34,7 +34,7 @@
 ### US-0003 — IaC resource graph + cloud capability resolution (Terraform/AWS)
 - **Actor:** Engine
 - **As a** engineer **I want** a deterministic resource graph with cloud-capability edges **so that** infra/cloud topology is Confirmed.
-- **Priority:** Must · **Status:** In-Progress
+- **Priority:** Must · **Status:** Done
 - **AC-0007** Given Terraform HCL, when parsed, then a resource DAG is built from interpolation references.
 - **AC-0008** Given AWS resources, when resolved against the Capability Registry, then TRIGGERS/ROUTES/GRANTS edges are emitted deterministically.
 - **AC-0009** Given Terraform state/plan JSON, when available, then T1 enrichment supersedes ambiguous T0 refs (observed provenance).
@@ -43,9 +43,10 @@
 - **AC-0045** Given Lambda@Edge associations nested under default or ordered CloudFront cache behaviors, when resolved against the Capability Registry, then Confirmed TRIGGERS edges link the distribution to every referenced Lambda function.
 - **AC-0046** Given an EventBridge Pipe with direct resource references, when resolved against the Capability Registry, then a Confirmed TRIGGERS edge links its source to its target.
 - **AC-0047** Given an IAM policy that references an `aws_iam_policy_document` defined in the same extraction, when its statement resources are resolvable, then Confirmed GRANTS edges target those resources with actions and evidence from the document; an absent or unresolved document target remains explicit.
+- **AC-0048** Given a Terraform module with a literal local source confined to the ingest root, when extracted, then its resources and internal edges are instantiated under the `module.<name>.` address prefix recursively and deterministically; remote, escaping, symlink-escaping, or cyclic sources remain explicit leaf modules.
 - **Security:** IAM GRANTS feed the security view; secrets in state are redacted.
 - **Performance:** Registry lookups O(1) per resource type.
-- **Trace:** M2,M6 · `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0047
+- **Trace:** M2,M6 · `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0048
 
 ### US-0004 — Event graph with channel-identity stitching
 - **Actor:** Engine

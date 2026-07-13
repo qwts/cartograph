@@ -531,6 +531,189 @@ fn dir_walk_is_deterministic_and_skips_dot_terraform() {
 }
 
 #[test]
+fn local_modules_expand_under_scoped_addresses_and_edges() {
+    // AC-0048: mirrors examples/with-pipes -> source "../../". The root
+    // module's resources and semantic edges are instantiated below the module
+    // node rather than leaving it as an opaque leaf.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("main.tf"),
+        r#"
+resource "aws_sqs_queue" "orders" {}
+resource "aws_lambda_function" "fulfill" {}
+resource "aws_lambda_event_source_mapping" "orders" {
+  event_source_arn = aws_sqs_queue.orders.arn
+  function_name    = aws_lambda_function.fulfill.arn
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("iam.tf"),
+        r#"
+data "aws_iam_policy_document" "orders" {
+  statement {
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.orders.arn]
+  }
+}
+resource "aws_iam_policy" "orders" {
+  policy = data.aws_iam_policy_document.orders.json
+}
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("examples/with-pipes")).unwrap();
+    std::fs::write(
+        dir.path().join("examples/with-pipes/main.tf"),
+        r#"module "eventbridge" {
+  source = "../../"
+}"#,
+    )
+    .unwrap();
+
+    let ex = extract_dir(dir.path(), &id()).unwrap();
+    let ids: BTreeSet<_> = ex.nodes.iter().map(|node| node.id.as_str()).collect();
+    assert!(ids.contains("res:qwtm/infra@module.eventbridge"));
+    assert!(ids.contains("res:qwtm/infra@module.eventbridge.aws_sqs_queue.orders"));
+    assert!(ids.contains("res:qwtm/infra@module.eventbridge.aws_lambda_function.fulfill"));
+    assert!(ids.contains("res:qwtm/infra@module.eventbridge.aws_iam_policy.orders"));
+
+    let contains = ex
+        .edges
+        .iter()
+        .find(|edge| {
+            edge.src == "res:qwtm/infra@module.eventbridge"
+                && edge.dst == "res:qwtm/infra@module.eventbridge.aws_sqs_queue.orders"
+                && edge.label == "REFERENCES"
+                && edge.props["relation"] == "MODULE_CONTAINS"
+        })
+        .unwrap();
+    assert_eq!(contains.props["prov"]["tier"], "Deterministic");
+    assert_eq!(contains.props["prov"]["confidence_tier"], "Confirmed");
+    assert_eq!(
+        contains.props["prov"]["evidence"][0]["path"],
+        "examples/with-pipes/main.tf"
+    );
+    assert!(ex.edges.iter().any(|edge| {
+        edge.src == "res:qwtm/infra@module.eventbridge.aws_sqs_queue.orders"
+            && edge.dst == "res:qwtm/infra@module.eventbridge.aws_lambda_function.fulfill"
+            && edge.label == "TRIGGERS"
+    }));
+    assert!(ex.edges.iter().any(|edge| {
+        edge.src == "res:qwtm/infra@module.eventbridge.aws_iam_policy.orders"
+            && edge.dst == "res:qwtm/infra@module.eventbridge.aws_sqs_queue.orders"
+            && edge.label == "GRANTS"
+    }));
+}
+
+#[test]
+fn nested_local_modules_stop_at_cycles_deterministically() {
+    // AC-0048: nested local modules recurse, but outer -> inner -> outer is
+    // left as a leaf at the repeated directory instead of looping forever.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("entry")).unwrap();
+    std::fs::create_dir_all(dir.path().join("modules/outer")).unwrap();
+    std::fs::create_dir_all(dir.path().join("modules/inner")).unwrap();
+    std::fs::write(
+        dir.path().join("entry/main.tf"),
+        r#"module "outer" { source = "../modules/outer" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("modules/outer/main.tf"),
+        r#"
+resource "aws_s3_bucket" "outer" {}
+module "inner" { source = "../inner" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("modules/inner/main.tf"),
+        r#"
+resource "aws_sqs_queue" "inner" {}
+module "outer" { source = "../outer" }
+"#,
+    )
+    .unwrap();
+
+    let first = extract_dir(dir.path(), &id()).unwrap();
+    let second = extract_dir(dir.path(), &id()).unwrap();
+    let ids: BTreeSet<_> = first.nodes.iter().map(|node| node.id.as_str()).collect();
+    assert!(ids.contains("res:qwtm/infra@module.outer.aws_s3_bucket.outer"));
+    assert!(ids.contains("res:qwtm/infra@module.outer.module.inner.aws_sqs_queue.inner"));
+    assert!(ids.contains("res:qwtm/infra@module.outer.module.inner.module.outer"));
+    assert!(
+        !ids.iter()
+            .any(|id| { id.contains("module.outer.module.inner.module.outer.aws_s3_bucket") })
+    );
+    assert_eq!(
+        serde_json::to_string(&first.nodes).unwrap(),
+        serde_json::to_string(&second.nodes).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_string(&first.edges).unwrap(),
+        serde_json::to_string(&second.edges).unwrap()
+    );
+}
+
+#[test]
+fn remote_outside_and_symlinked_modules_remain_leaf_nodes() {
+    // AC-0048: non-local and out-of-root sources are never read.
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(
+        outside.path().join("secret.tf"),
+        r#"resource "aws_s3_bucket" "must_not_be_read" {}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("main.tf"),
+        format!(
+            r#"
+module "outside" {{ source = "{}" }}
+module "remote" {{ source = "terraform-aws-modules/eventbridge/aws" }}
+"#,
+            outside.path().display()
+        ),
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        std::fs::create_dir_all(root.path().join("modules")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("modules/escape")).unwrap();
+        std::fs::write(
+            root.path().join("symlink.tf"),
+            r#"module "symlink" { source = "./modules/escape" }"#,
+        )
+        .unwrap();
+    }
+
+    let ex = extract_dir(root.path(), &id()).unwrap();
+    assert!(
+        ex.nodes
+            .iter()
+            .any(|node| node.id == "res:qwtm/infra@module.outside")
+    );
+    assert!(
+        ex.nodes
+            .iter()
+            .any(|node| node.id == "res:qwtm/infra@module.remote")
+    );
+    assert!(
+        !ex.nodes
+            .iter()
+            .any(|node| node.id.contains("must_not_be_read"))
+    );
+    assert!(
+        !ex.edges.iter().any(|edge| {
+            edge.props.get("relation") == Some(&serde_json::json!("MODULE_CONTAINS"))
+        })
+    );
+}
+
+#[test]
 fn syntax_errors_name_the_file() {
     let err = extract_source("resource \"broken\" {", "bad.tf", &id()).unwrap_err();
     assert!(err.to_string().contains("bad.tf"));
