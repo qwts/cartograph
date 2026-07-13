@@ -41,6 +41,11 @@ pub struct ManifestRepo {
     /// enrichment (SPEC-00 §3.1, AC-0009); absent means T0 only.
     #[serde(default)]
     pub state_json: Option<String>,
+    /// Path to `pulumi stack export` or `pulumi preview --json` output,
+    /// relative to the manifest. It enriches import-proven Pulumi T0 facts
+    /// without creating resources from observation alone (AC-0052).
+    #[serde(default)]
+    pub pulumi_json: Option<String>,
     /// OTLP/JSON trace files in collector file-exporter JSON Lines format,
     /// relative to the manifest. Observed messaging identities may fill
     /// unresolved T0 channel slots at T1 (AC-0012, issue #54).

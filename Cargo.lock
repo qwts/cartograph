@@ -13,6 +13,7 @@ dependencies = [
  "adapters-fw",
  "core-graph",
  "core-prov",
+ "iac",
  "serde_json",
  "streaming-iterator",
  "tempfile",

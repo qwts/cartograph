@@ -81,6 +81,14 @@ Each layer has a **deterministic (T0) extractor** as its primary source. "Do not
 | Pulumi (TS/Py/Go) | Resolve resource constructor calls (`new aws.s3.Bucket(...)`) via the **language adapter** AST; capture parent/dependsOn | `pulumi preview --json` / `stack export` |
 **Output nodes:** `Resource{type, logical_id, provider, region?}`. **Edges:** `DEPENDS_ON`, `REFERENCES`.
 
+Pulumi recovery is import-proven: a constructor is IaC only when its base is
+bound to a `@pulumi/<provider>` package. The language adapter emits the raw
+resource/dependency facts and normalizes the provider constructor for the same
+versioned Capability Registry used by Terraform. Stack export deployments and
+preview resource events are T1 overlays keyed by Pulumi type + logical name;
+they enrich existing T0 resources only, retain separate observed provenance,
+and redact Pulumi secret wrappers before storage.
+
 ### 3.2 Cloud → Topology + Capability Resolution
 A hand-curated **Capability Registry** maps resource types to runtime semantics deterministically. Examples (AWS):
 - `aws_lambda_event_source_mapping` ⇒ `TRIGGERS(SQS|Kinesis|DynamoDB-stream → Lambda)` edge.
@@ -298,7 +306,7 @@ Stack: **React + TypeScript + Vite**. UI state: **Zustand**. Big graph canvas: *
 
 - **Auth:** GitHub App (installation token) preferred; PAT fallback; optional `gh` CLI shell-out for environments already authenticated.
 - **Clone/read:** `git2` (libgit2) shallow clone + sparse where possible. API via `octocrab` for metadata, PR/commit history (feeds T1 evidence + ADR timeline).
-- **Topology manifest:** `cartograph.system.toml` declares the repo set, layer hints, env/config locations, and known channel identities. Author-editable; T2 may *suggest* additions (always confirmed by user).
+- **Topology manifest:** `cartograph.system.toml` declares the repo set, layer hints, env/config locations, optional Terraform `state_json`, Pulumi `pulumi_json`, and OTLP `otel_jsonl` observation artifacts, and known channel identities. Artifact paths resolve relative to the manifest. Author-editable; T2 may *suggest* additions (always confirmed by user).
 - **Incremental:** M10 re-ingest caches TS/TSX and Terraform parses per source
   content hash (and Terraform module address context), reuses unchanged parses,
   reruns deterministic repository-wide joins, and reconciles stale graph facts.

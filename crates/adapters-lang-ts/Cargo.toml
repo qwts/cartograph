@@ -12,6 +12,7 @@ workspace = true
 core-graph = { workspace = true }
 core-prov = { workspace = true }
 adapters-fw = { workspace = true }
+iac = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tree-sitter = "0.26"

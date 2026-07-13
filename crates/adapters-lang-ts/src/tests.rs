@@ -861,3 +861,62 @@ export function Checkout() {
         Some("sym:qwtm/example@checkout.tsx#CouponLookup")
     );
 }
+
+#[test]
+fn pulumi_aws_constructors_emit_resources_dependencies_and_capabilities() {
+    // AC-0051/T-0051: Pulumi remains a T0 language-adapter parse, while AWS
+    // relationship semantics come from the same registry as Terraform.
+    let source = r#"
+import * as aws from '@pulumi/aws';
+import { Bucket as LogsBucket } from '@pulumi/aws/s3';
+
+const queue = new aws.sqs.Queue('orders', {});
+const logs = new LogsBucket('logs', {});
+const worker = new aws.lambda.Function('worker', {});
+const mapping = new aws.lambda.EventSourceMapping('orders-worker', {
+  eventSourceArn: queue.arn,
+  functionName: worker.arn,
+}, { parent: worker, dependsOn: [queue] });
+"#;
+    let ex = extract_source(source.as_bytes(), "infra.ts", &id()).unwrap();
+    let resources = ex
+        .nodes
+        .iter()
+        .filter(|node| node.label == "Resource")
+        .collect::<Vec<_>>();
+    assert_eq!(resources.len(), 4);
+    assert!(resources.iter().all(|node| {
+        node.props["source"] == "pulumi"
+            && node.props["prov"]["tier"] == "Deterministic"
+            && node.props["prov"]["confidence_tier"] == "Confirmed"
+    }));
+    let queue = "res:qwtm/example@pulumi:aws:sqs/queue:Queue:orders";
+    let logs = "res:qwtm/example@pulumi:aws:s3/bucket:Bucket:logs";
+    let worker = "res:qwtm/example@pulumi:aws:lambda/function:Function:worker";
+    let mapping =
+        "res:qwtm/example@pulumi:aws:lambda/eventSourceMapping:EventSourceMapping:orders-worker";
+    assert!(edge_pairs(&ex, "REFERENCES").contains(&(mapping, queue)));
+    assert!(edge_pairs(&ex, "REFERENCES").contains(&(mapping, worker)));
+    assert!(edge_pairs(&ex, "DEPENDS_ON").contains(&(mapping, queue)));
+    assert!(edge_pairs(&ex, "DEPENDS_ON").contains(&(mapping, worker)));
+    assert!(edge_pairs(&ex, "TRIGGERS").contains(&(queue, worker)));
+    assert!(resources.iter().any(|node| node.id == logs));
+    let trigger = ex
+        .edges
+        .iter()
+        .find(|edge| edge.label == "TRIGGERS")
+        .unwrap();
+    assert_eq!(trigger.props["via"], mapping);
+    assert_eq!(trigger.props["registry"], iac::registry::REGISTRY_VERSION);
+}
+
+#[test]
+fn pulumi_lookalikes_without_import_proof_are_ignored() {
+    // AC-0051/T-0051: constructor spelling is never enough to assert IaC.
+    let source = r#"
+const aws = makeTestDouble();
+const queue = new aws.sqs.Queue('orders', {});
+"#;
+    let ex = extract_source(source.as_bytes(), "lookalike.ts", &id()).unwrap();
+    assert!(ex.nodes.iter().all(|node| node.label != "Resource"));
+}

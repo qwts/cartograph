@@ -13,6 +13,10 @@
 //! observations leave the Gap intact with T1 recorded as attempted
 //! (AC-0012, R-INT-1, R-INT-4, issue #54).
 //!
+//! M6 slice 3: Pulumi stack exports and preview resource events enrich only
+//! import-proven Pulumi resources; secret wrappers are redacted before the
+//! observation reaches the graph (AC-0051, AC-0052, issue #53).
+//!
 //! R-INT-1 shape: T1 never rewrites a T0 fact. T0 props and `prov` stay
 //! untouched; observation lands beside them under `observed` with its own
 //! `observed_prov` (Tier::Dynamic, Confirmed — the tier's ceiling).
@@ -24,6 +28,9 @@ use std::ops::Range;
 
 /// Extractor id stamped on every observed fact.
 pub const EXTRACTOR_ID: &str = "t1.terraform-state";
+
+/// Extractor id for Pulumi stack-export/preview observations (AC-0052).
+pub const PULUMI_EXTRACTOR_ID: &str = "t1.pulumi-deployment";
 
 /// Extractor id for OTLP/JSON trace observations (issue #54).
 pub const OTEL_EXTRACTOR_ID: &str = "t1.otel-trace";
@@ -41,6 +48,17 @@ pub enum StateError {
     /// JSON, but not `terraform show -json` output.
     #[error("state shape: {0}")]
     Shape(String),
+}
+
+/// Pulumi stack-export or preview JSON errors.
+#[derive(Debug, thiserror::Error)]
+pub enum PulumiError {
+    /// Neither a JSON document nor JSON Lines could be decoded.
+    #[error("pulumi json: {0}")]
+    Json(#[from] serde_json::Error),
+    /// The document contained no supported deployment resources/events.
+    #[error("pulumi shape: expected deployment.resources, resources, or preview resource events")]
+    Shape,
 }
 
 /// OTLP/JSON Lines parsing errors.
@@ -214,6 +232,33 @@ pub struct ObservedState {
     pub modules: BTreeMap<String, usize>,
 }
 
+/// One Pulumi resource observed in stack export or preview output.
+#[derive(Debug, Clone)]
+pub struct ObservedPulumiResource {
+    /// Pulumi URN, including stack/project/type/logical name.
+    pub urn: String,
+    /// Provider type token such as `aws:sqs/queue:Queue`.
+    pub type_token: String,
+    /// Logical name (the final URN segment).
+    pub logical_name: String,
+    /// Provider inputs after secret-wrapper redaction.
+    pub inputs: serde_json::Value,
+    /// Provider outputs after secret-wrapper redaction.
+    pub outputs: serde_json::Value,
+    /// Optional parent URN.
+    pub parent: Option<String>,
+    /// Resource dependency URNs.
+    pub dependencies: Vec<String>,
+    evidence_span: Range<usize>,
+}
+
+/// Pulumi deployment observations normalized from export or preview shapes.
+#[derive(Debug, Default)]
+pub struct ObservedPulumiDeployment {
+    /// Resource observations in deterministic type/name order.
+    pub resources: Vec<ObservedPulumiResource>,
+}
+
 /// Parse `terraform show -json` output. Accepts both shapes: state
 /// (`values.root_module`) and plan (`planned_values.root_module`) — the
 /// module tree inside is identical (verified at M6 per SPEC-00 §15).
@@ -285,6 +330,165 @@ fn walk_module(module: &serde_json::Value, out: &mut ObservedState) {
     }
 }
 
+fn redact_pulumi_value(value: &serde_json::Value) -> serde_json::Value {
+    const SIGNATURE_KEY: &str = "4dabf18193072939515e22adb298388d";
+    const SECRET_SIGNATURE: &str = "1b47061264138c4ac30d75fd1eb44270";
+    match value {
+        serde_json::Value::Object(object)
+            if object
+                .get(SIGNATURE_KEY)
+                .and_then(serde_json::Value::as_str)
+                == Some(SECRET_SIGNATURE)
+                || object.contains_key("ciphertext")
+                || object.contains_key("secure") =>
+        {
+            serde_json::Value::String(REDACTED.into())
+        }
+        serde_json::Value::Object(object) => serde_json::Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), redact_pulumi_value(value)))
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(redact_pulumi_value).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
+fn pulumi_resource(
+    value: &serde_json::Value,
+    fallback: Option<&serde_json::Value>,
+    raw: &str,
+) -> Option<ObservedPulumiResource> {
+    let operation = value
+        .get("op")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| fallback?.get("op")?.as_str());
+    if value.get("delete").and_then(serde_json::Value::as_bool) == Some(true)
+        || operation.is_some_and(|operation| operation.starts_with("delete"))
+    {
+        return None;
+    }
+    let string = |field: &str| {
+        value
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| fallback?.get(field)?.as_str())
+    };
+    let urn = string("urn")?.to_string();
+    let type_token = string("type")?.to_string();
+    if type_token == "pulumi:pulumi:Stack" || type_token.starts_with("pulumi:providers:") {
+        return None;
+    }
+    let logical_name = urn.rsplit("::").next()?.to_string();
+    let inputs = value
+        .get("inputs")
+        .map(redact_pulumi_value)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let outputs = value
+        .get("outputs")
+        .map(redact_pulumi_value)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let parent = string("parent")
+        .filter(|parent| !parent.is_empty())
+        .map(str::to_string);
+    let dependencies = value
+        .get("dependencies")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let start = raw.find(&urn).unwrap_or(0);
+    let end = start.saturating_add(urn.len());
+    Some(ObservedPulumiResource {
+        urn,
+        type_token,
+        logical_name,
+        inputs,
+        outputs,
+        parent,
+        dependencies,
+        evidence_span: start..end,
+    })
+}
+
+fn collect_pulumi_resources(
+    value: &serde_json::Value,
+    raw: &str,
+    resources: &mut BTreeMap<String, ObservedPulumiResource>,
+) -> bool {
+    if let Some(values) = value.as_array() {
+        let mut supported = false;
+        for value in values {
+            supported = collect_pulumi_resources(value, raw, resources) || supported;
+        }
+        return supported;
+    }
+    let mut supported = false;
+    let deployment = value.get("deployment").unwrap_or(value);
+    if let Some(values) = deployment
+        .get("resources")
+        .and_then(serde_json::Value::as_array)
+    {
+        supported = true;
+        for resource in values {
+            if let Some(resource) = pulumi_resource(resource, None, raw) {
+                resources.insert(resource.urn.clone(), resource);
+            }
+        }
+    }
+    for event_name in ["resourcePreEvent", "resOutputsEvent"] {
+        let Some(metadata) = value
+            .get(event_name)
+            .and_then(|event| event.get("metadata"))
+        else {
+            continue;
+        };
+        supported = true;
+        let state = metadata.get("new").unwrap_or(metadata);
+        if let Some(resource) = pulumi_resource(state, Some(metadata), raw) {
+            resources.insert(resource.urn.clone(), resource);
+        }
+    }
+    supported
+}
+
+/// Parse Pulumi stack-export deployments and preview JSON (document, array,
+/// or streaming JSON Lines) into one deterministic observation set.
+pub fn parse_pulumi_json(raw: &str) -> Result<ObservedPulumiDeployment, PulumiError> {
+    let documents = match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(document) => vec![document],
+        Err(document_error) => {
+            let mut documents = Vec::new();
+            for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+                match serde_json::from_str(line) {
+                    Ok(document) => documents.push(document),
+                    Err(_) => return Err(PulumiError::Json(document_error)),
+                }
+            }
+            if documents.is_empty() {
+                return Err(PulumiError::Json(document_error));
+            }
+            documents
+        }
+    };
+    let mut resources = BTreeMap::new();
+    let mut supported = false;
+    for document in &documents {
+        supported = collect_pulumi_resources(document, raw, &mut resources) || supported;
+    }
+    if !supported {
+        return Err(PulumiError::Shape);
+    }
+    Ok(ObservedPulumiDeployment {
+        resources: resources.into_values().collect(),
+    })
+}
+
 /// Counts from an enrichment pass (surfaced in job summaries and tests).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Enrichment {
@@ -310,6 +514,24 @@ fn observed_prov(state_path: &str, span: &Range<usize>, fact: &str) -> serde_jso
     )
     .expect("Dynamic/Confirmed is exactly the ceiling");
     serde_json::to_value(p).expect("provenance serializes")
+}
+
+fn pulumi_prov(path: &str, span: &Range<usize>, fact: &str) -> serde_json::Value {
+    let provenance = Provenance::new(
+        Tier::Dynamic,
+        ConfidenceTier::Confirmed,
+        vec![EvidenceRef {
+            repo: String::new(),
+            path: path.into(),
+            byte_start: span.start as u64,
+            byte_end: span.end as u64,
+            commit_sha: String::new(),
+        }],
+        PULUMI_EXTRACTOR_ID,
+        fact.as_bytes(),
+    )
+    .expect("Dynamic/Confirmed is exactly the ceiling");
+    serde_json::to_value(provenance).expect("provenance serializes")
 }
 
 /// Byte span of the address's first appearance in the raw document — real
@@ -384,6 +606,78 @@ pub fn enrich_resources(
     out
 }
 
+/// Counts from Pulumi deployment enrichment.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PulumiEnrichment {
+    /// Existing T0 Pulumi resources that gained observed deployment state.
+    pub resources_enriched: usize,
+    /// T0 resources left untouched because type + logical name was ambiguous.
+    pub ambiguous_matches: usize,
+}
+
+/// Overlay Pulumi stack/preview observations on matching T0 constructor facts.
+/// Observations never create resources: an absent or ambiguous T0 match stays
+/// absent/unenriched so T1 cannot masquerade as deterministic extraction.
+pub fn enrich_pulumi_resources(
+    nodes: &mut [Node],
+    deployment: &ObservedPulumiDeployment,
+    path: &str,
+) -> PulumiEnrichment {
+    let mut observed = BTreeMap::<(String, String), Vec<&ObservedPulumiResource>>::new();
+    for resource in &deployment.resources {
+        observed
+            .entry((resource.type_token.clone(), resource.logical_name.clone()))
+            .or_default()
+            .push(resource);
+    }
+    let mut enrichment = PulumiEnrichment::default();
+    for node in nodes {
+        if node.label != "Resource" || node.props["source"].as_str() != Some("pulumi") {
+            continue;
+        }
+        let (Some(type_token), Some(logical_name)) = (
+            node.props["pulumi_type"].as_str(),
+            node.props["logical_id"].as_str(),
+        ) else {
+            continue;
+        };
+        let Some(matches) = observed.get(&(type_token.to_string(), logical_name.to_string()))
+        else {
+            continue;
+        };
+        if matches.len() != 1 {
+            enrichment.ambiguous_matches += 1;
+            continue;
+        }
+        let resource = matches[0];
+        let props = node
+            .props
+            .as_object_mut()
+            .expect("resource props are an object");
+        props.insert(
+            "observed".into(),
+            serde_json::json!({
+                "urn": resource.urn,
+                "type": resource.type_token,
+                "inputs": resource.inputs,
+                "outputs": resource.outputs,
+                "parent": resource.parent,
+                "dependencies": resource.dependencies,
+            }),
+        );
+        props.insert(
+            "observed_prov".into(),
+            pulumi_prov(
+                path,
+                &resource.evidence_span,
+                &format!("Observed Pulumi {}", resource.urn),
+            ),
+        );
+        enrichment.resources_enriched += 1;
+    }
+    enrichment
+}
+
 /// Resource types whose observed attribute names a code-layer channel:
 /// (terraform type, channel kind, identity attribute). Kinds match the
 /// event SDK registry (`adapters-fw::events`) exactly — that equality is
@@ -412,7 +706,16 @@ pub fn backing_candidates(nodes: &[Node]) -> Vec<Edge> {
         let Some(identity) = node
             .props
             .get("observed")
-            .and_then(|o| o.get(*attr))
+            .and_then(|observed| {
+                observed
+                    .get(*attr)
+                    .or_else(|| {
+                        observed
+                            .get("outputs")
+                            .and_then(|outputs| outputs.get(*attr))
+                    })
+                    .or_else(|| observed.get("inputs").and_then(|inputs| inputs.get(*attr)))
+            })
             .and_then(|v| v.as_str())
         else {
             continue;
@@ -431,11 +734,12 @@ pub fn backing_candidates(nodes: &[Node]) -> Vec<Edge> {
         };
         let chan_id = format!("chan:{kind}:{identity}");
         let fact = format!("BACKS {} -> {chan_id}", node.id);
+        let extractor_id = prov.extractor_id.clone();
         let edge_prov = Provenance::new(
             Tier::Dynamic,
             ConfidenceTier::Confirmed,
             prov.evidence,
-            EXTRACTOR_ID,
+            extractor_id,
             fact.as_bytes(),
         )
         .expect("Dynamic/Confirmed is exactly the ceiling");
@@ -791,6 +1095,20 @@ mod tests {
         }
     }
 
+    fn pulumi_t0_resource(logical_name: &str) -> Node {
+        Node {
+            id: format!("res:shop@pulumi:aws:sqs/queue:Queue:{logical_name}"),
+            label: "Resource".into(),
+            props: serde_json::json!({
+                "type": "aws_sqs_queue",
+                "logical_id": logical_name,
+                "source": "pulumi",
+                "pulumi_type": "aws:sqs/queue:Queue",
+                "prov": {"tier": "Deterministic"},
+            }),
+        }
+    }
+
     #[test]
     fn state_and_plan_shapes_both_parse() {
         let state = parse_state(STATE).unwrap();
@@ -819,6 +1137,78 @@ mod tests {
         assert!(queue.redacted.contains("master_key"));
         let serialized = serde_json::to_string(&queue.values).unwrap();
         assert!(!serialized.contains("hunter2"));
+    }
+
+    #[test]
+    fn pulumi_stack_export_and_preview_enrich_only_matching_resources() {
+        // AC-0052/T-0052: both official observation shapes overlay existing
+        // T0 facts only; the export's unmatched resource is not fabricated.
+        let export = r#"{
+          "version": 3,
+          "deployment": {"resources": [
+            {"urn":"urn:pulumi:dev::shop::pulumi:pulumi:Stack::shop-dev","type":"pulumi:pulumi:Stack","inputs":{},"outputs":{}},
+            {"urn":"urn:pulumi:dev::shop::aws:sqs/queue:Queue::orders","type":"aws:sqs/queue:Queue","inputs":{"name":"orders"},"outputs":{"url":"https://sqs.example/orders"},"dependencies":[]},
+            {"urn":"urn:pulumi:dev::shop::aws:s3/bucket:Bucket::unmatched","type":"aws:s3/bucket:Bucket","inputs":{},"outputs":{}}
+          ]}
+        }"#;
+        let deployment = parse_pulumi_json(export).unwrap();
+        assert_eq!(deployment.resources.len(), 2);
+        let empty = parse_pulumi_json(r#"{"deployment":{"resources":[]}}"#).unwrap();
+        assert!(empty.resources.is_empty());
+        let mut nodes = vec![pulumi_t0_resource("orders")];
+        let report = enrich_pulumi_resources(&mut nodes, &deployment, "stack.json");
+        assert_eq!(report.resources_enriched, 1);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(
+            nodes[0].props["observed"]["outputs"]["url"],
+            "https://sqs.example/orders"
+        );
+        assert_eq!(
+            nodes[0].props["observed_prov"]["extractor_id"],
+            PULUMI_EXTRACTOR_ID
+        );
+        assert_eq!(
+            nodes[0].props["observed_prov"]["evidence"][0]["path"],
+            "stack.json"
+        );
+        let backing = backing_candidates(&nodes);
+        assert_eq!(backing.len(), 1);
+        assert_eq!(
+            backing[0].props["prov"]["extractor_id"],
+            PULUMI_EXTRACTOR_ID
+        );
+
+        let preview = r#"[
+          {"type":"resourcePreEvent","resourcePreEvent":{"metadata":{"urn":"urn:pulumi:dev::shop::aws:sqs/queue:Queue::orders","type":"aws:sqs/queue:Queue","op":"update","new":{"urn":"urn:pulumi:dev::shop::aws:sqs/queue:Queue::orders","type":"aws:sqs/queue:Queue","inputs":{"visibilityTimeoutSeconds":30},"outputs":{},"parent":""}}}},
+          {"type":"resourcePreEvent","resourcePreEvent":{"metadata":{"urn":"urn:pulumi:dev::shop::aws:s3/bucket:Bucket::deleted","type":"aws:s3/bucket:Bucket","op":"delete","old":{"urn":"urn:pulumi:dev::shop::aws:s3/bucket:Bucket::deleted","type":"aws:s3/bucket:Bucket"}}}}
+        ]"#;
+        let deployment = parse_pulumi_json(preview).unwrap();
+        assert_eq!(deployment.resources.len(), 1);
+        let mut nodes = vec![pulumi_t0_resource("orders")];
+        assert_eq!(
+            enrich_pulumi_resources(&mut nodes, &deployment, "preview.json").resources_enriched,
+            1
+        );
+        assert_eq!(
+            nodes[0].props["observed"]["inputs"]["visibilityTimeoutSeconds"],
+            30
+        );
+    }
+
+    #[test]
+    fn pulumi_secret_wrappers_are_redacted() {
+        // AC-0052/T-0052: encrypted or plaintext-bearing secret wrappers are
+        // replaced as a unit before any observed properties reach the graph.
+        let raw = r#"{"deployment":{"resources":[{
+          "urn":"urn:pulumi:dev::shop::aws:sqs/queue:Queue::orders",
+          "type":"aws:sqs/queue:Queue",
+          "inputs":{"password":{"4dabf18193072939515e22adb298388d":"1b47061264138c4ac30d75fd1eb44270","ciphertext":"do-not-store"}},
+          "outputs":{}
+        }]}}"#;
+        let deployment = parse_pulumi_json(raw).unwrap();
+        assert_eq!(deployment.resources[0].inputs["password"], REDACTED);
+        let serialized = serde_json::to_string(&deployment.resources[0].inputs).unwrap();
+        assert!(!serialized.contains("do-not-store"));
     }
 
     #[test]

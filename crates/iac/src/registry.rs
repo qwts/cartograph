@@ -125,3 +125,92 @@ pub fn capabilities_for(resource_type: &str) -> impl Iterator<Item = &'static Ca
         .iter()
         .filter(move |c| c.resource_type == resource_type)
 }
+
+fn snake_case(name: &str) -> String {
+    let chars = name.chars().collect::<Vec<_>>();
+    let mut out = String::new();
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if ch.is_ascii_uppercase() {
+            let previous = index.checked_sub(1).and_then(|i| chars.get(i)).copied();
+            let next = chars.get(index + 1).copied();
+            if index > 0
+                && (previous.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    || next.is_some_and(|c| c.is_ascii_lowercase()))
+            {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn pulumi_parts(module_spec: &str, constructor: &str) -> Option<(String, Vec<String>, String)> {
+    let package = module_spec.strip_prefix("@pulumi/")?;
+    let mut package_parts = package.split('/');
+    let provider = package_parts.next()?;
+    if provider.is_empty() {
+        return None;
+    }
+    let direct_modules = package_parts.map(str::to_string).collect::<Vec<_>>();
+    let mut constructor_parts = constructor.split('.');
+    let local_binding = constructor_parts.next()?;
+    let mut tail = constructor_parts.map(str::to_string).collect::<Vec<_>>();
+    let class = tail.pop().or_else(|| {
+        // A direct service package may be imported as the constructor itself:
+        // `import { Bucket } from "@pulumi/aws/s3"; new Bucket(...)`.
+        (!direct_modules.is_empty()).then(|| local_binding.to_string())
+    })?;
+    let modules = if direct_modules.is_empty() {
+        tail
+    } else {
+        direct_modules.into_iter().chain(tail).collect::<Vec<_>>()
+    };
+    if modules.is_empty() || class.is_empty() {
+        return None;
+    }
+    Some((provider.to_string(), modules, class))
+}
+
+/// Canonical Pulumi provider token for an import-proven constructor.
+pub fn pulumi_token_for_constructor(module_spec: &str, constructor: &str) -> Option<String> {
+    let (provider, modules, class) = pulumi_parts(module_spec, constructor)?;
+    let resource_module = format!(
+        "{}/{}",
+        modules.join("/"),
+        class
+            .chars()
+            .next()
+            .map(|first| format!(
+                "{}{}",
+                first.to_ascii_lowercase(),
+                &class[first.len_utf8()..]
+            ))
+            .unwrap_or_default()
+    );
+    Some(format!("{provider}:{resource_module}:{class}"))
+}
+
+/// Normalize an import-proven Pulumi provider constructor to the Terraform
+/// resource-type spelling used by the shared Capability Registry.
+///
+/// `@pulumi/aws` + `aws.lambda.EventSourceMapping` becomes
+/// `aws_lambda_event_source_mapping`; direct service imports such as
+/// `@pulumi/aws/s3` + `s3.Bucket` are supported as well. The small API Gateway
+/// alias is an explicit deterministic provider naming difference, not an
+/// inferred match.
+pub fn terraform_type_for_pulumi(module_spec: &str, constructor: &str) -> Option<String> {
+    let (provider, modules, class) = pulumi_parts(module_spec, constructor)?;
+    let service = modules
+        .into_iter()
+        .map(|module| snake_case(&module))
+        .collect::<Vec<_>>()
+        .join("_");
+    let mut resource_type = format!("{provider}_{service}_{}", snake_case(&class));
+    if let Some(rest) = resource_type.strip_prefix("aws_apigateway_") {
+        resource_type = format!("aws_api_gateway_{rest}");
+    }
+    Some(resource_type)
+}

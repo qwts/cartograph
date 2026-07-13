@@ -663,6 +663,34 @@ fn delta_reingest_reuses_unchanged_terraform_contexts() {
 }
 
 #[test]
+fn pulumi_constructor_names_share_terraform_registry_types() {
+    // AC-0051/T-0051: provider naming differences are explicit deterministic
+    // normalization before both IaC sources consult one registry.
+    assert_eq!(
+        registry::terraform_type_for_pulumi("@pulumi/aws", "aws.lambda.EventSourceMapping")
+            .as_deref(),
+        Some("aws_lambda_event_source_mapping")
+    );
+    assert_eq!(
+        registry::pulumi_token_for_constructor("@pulumi/aws", "aws.lambda.EventSourceMapping")
+            .as_deref(),
+        Some("aws:lambda/eventSourceMapping:EventSourceMapping")
+    );
+    assert_eq!(
+        registry::terraform_type_for_pulumi("@pulumi/aws", "aws.apigateway.Integration").as_deref(),
+        Some("aws_api_gateway_integration")
+    );
+    assert_eq!(
+        registry::terraform_type_for_pulumi("@pulumi/aws/s3", "s3.Bucket").as_deref(),
+        Some("aws_s3_bucket")
+    );
+    assert_eq!(
+        registry::terraform_type_for_pulumi("@pulumi/aws/s3", "Bucket").as_deref(),
+        Some("aws_s3_bucket")
+    );
+}
+
+#[test]
 fn local_modules_expand_under_scoped_addresses_and_edges() {
     // AC-0048: mirrors examples/with-pipes -> source "../../". The root
     // module's resources and semantic edges are instantiated below the module

@@ -117,6 +117,29 @@ fn retarget_commit(extraction: &mut Extraction, commit: &str) {
 }
 
 impl Extraction {
+    /// Retain only import-proven Pulumi IaC facts (and their source files).
+    /// Used when manifest layer hints request infra/cloud without application
+    /// server/event/client extraction.
+    pub fn retain_only_pulumi(&mut self) {
+        let mut keep = self
+            .nodes
+            .iter()
+            .filter(|node| node.props["source"].as_str() == Some("pulumi"))
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        for edge in &self.edges {
+            if edge.label == "DEFINED_IN" && keep.contains(&edge.src) {
+                keep.insert(edge.dst.clone());
+            }
+        }
+        self.nodes.retain(|node| keep.contains(&node.id));
+        self.edges
+            .retain(|edge| keep.contains(&edge.src) && keep.contains(&edge.dst));
+        self.event_sites.clear();
+        self.fetch_sites.clear();
+        self.pending_calls.clear();
+    }
+
     /// Ensure every edge endpoint exists as a node; unresolved targets become
     /// placeholder nodes so referential integrity holds in the store.
     /// Placeholders are labeled by their id scheme (`file:`, `sym:`, `mod:`).
@@ -532,6 +555,127 @@ fn classify_identity(
     }
 }
 
+fn literal_string(cx: &FileCx<'_>, node: TsNode<'_>) -> Option<String> {
+    match node.kind() {
+        "string" => {
+            let mut walk = node.walk();
+            Some(
+                node.children(&mut walk)
+                    .find(|child| child.kind() == "string_fragment")
+                    .map(|fragment| cx.text(&fragment).to_string())
+                    .unwrap_or_default(),
+            )
+        }
+        "template_string" => {
+            let mut walk = node.walk();
+            (!node
+                .children(&mut walk)
+                .any(|child| child.kind() == "template_substitution"))
+            .then(|| cx.text(&node).trim_matches('`').to_string())
+        }
+        _ => None,
+    }
+}
+
+fn object_entries<'tree>(cx: &FileCx<'_>, node: TsNode<'tree>) -> Vec<(String, TsNode<'tree>)> {
+    let mut walk = node.walk();
+    node.named_children(&mut walk)
+        .filter_map(|entry| {
+            if matches!(
+                entry.kind(),
+                "shorthand_property_identifier" | "shorthand_property_identifier_pattern"
+            ) {
+                return Some((cx.text(&entry).to_string(), entry));
+            }
+            if entry.kind() != "pair" {
+                return None;
+            }
+            let key = entry.child_by_field_name("key")?;
+            let value = entry.child_by_field_name("value")?;
+            let key = literal_string(cx, key).unwrap_or_else(|| cx.text(&key).to_string());
+            Some((key, value))
+        })
+        .collect()
+}
+
+fn property_key(name: &str) -> String {
+    let mut key = name
+        .trim_start_matches('*')
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    if key.ends_with('s') {
+        key.pop();
+    }
+    key
+}
+
+fn selector_values<'tree>(
+    cx: &FileCx<'_>,
+    nodes: Vec<TsNode<'tree>>,
+    path: &[&str],
+) -> Vec<TsNode<'tree>> {
+    let Some((segment, rest)) = path.split_first() else {
+        return nodes;
+    };
+    let expected = property_key(segment);
+    let wildcard = segment.starts_with('*');
+    let mut selected = Vec::new();
+    for node in nodes {
+        if node.kind() == "array" {
+            let mut walk = node.walk();
+            selected.extend(selector_values(
+                cx,
+                node.named_children(&mut walk).collect(),
+                path,
+            ));
+            continue;
+        }
+        for (key, value) in object_entries(cx, node) {
+            let actual = property_key(&key);
+            let matches = if wildcard {
+                actual.ends_with(&expected)
+            } else {
+                actual == expected
+            };
+            if matches {
+                selected.push(value);
+            }
+        }
+    }
+    selector_values(cx, selected, rest)
+}
+
+fn resource_refs(
+    cx: &FileCx<'_>,
+    node: TsNode<'_>,
+    resources: &HashMap<String, String>,
+) -> BTreeSet<String> {
+    let mut refs = BTreeSet::new();
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if matches!(
+            current.kind(),
+            "identifier"
+                | "shorthand_property_identifier"
+                | "shorthand_property_identifier_pattern"
+        ) {
+            let is_pair_key = current
+                .parent()
+                .filter(|parent| parent.kind() == "pair")
+                .and_then(|parent| parent.child_by_field_name("key"))
+                == Some(current);
+            if !is_pair_key && let Some(id) = resources.get(cx.text(&current)) {
+                refs.insert(id.clone());
+            }
+        }
+        let mut walk = current.walk();
+        stack.extend(current.named_children(&mut walk));
+    }
+    refs
+}
+
 /// Locate the channel identity inside a call's arguments per the registry
 /// entry and classify it. A missing argument/key is `Computed` — the site
 /// is real but its identity is not statically visible (escalates, AC-0012).
@@ -774,7 +918,209 @@ pub fn extract_source(
                             }
                         }
                     }
+                    "namespace_import" => {
+                        let local = child.child_by_field_name("name").or_else(|| {
+                            child
+                                .named_child_count()
+                                .checked_sub(1)
+                                .and_then(|index| u32::try_from(index).ok())
+                                .and_then(|index| child.named_child(index))
+                        });
+                        if let Some(local) = local {
+                            import_modules.insert(cx.text(&local).to_string(), spec.clone());
+                        }
+                    }
                     _ => {}
+                }
+            }
+        }
+    }
+
+    // --- Pulumi resources: import-proven provider constructors (AC-0051) ---
+    struct PulumiDecl<'tree> {
+        variable: String,
+        node_id: String,
+        terraform_type: String,
+        pulumi_type: String,
+        logical_name: String,
+        constructor: String,
+        site: TsNode<'tree>,
+        args: TsNode<'tree>,
+    }
+
+    let q_pulumi = Query::new(
+        &language,
+        r#"
+        (variable_declarator
+            name: (identifier) @var
+            value: (new_expression
+                constructor: [(identifier) (member_expression)] @ctor
+                arguments: (arguments) @args) @new)
+        "#,
+    )
+    .expect("static query");
+    let mut declarations = Vec::new();
+    let mut resources = HashMap::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&q_pulumi, root, source);
+    while let Some(m) = matches.next() {
+        let (mut variable, mut constructor, mut site, mut args) = (None, None, None, None);
+        for capture in m.captures {
+            match q_pulumi.capture_names()[capture.index as usize] {
+                "var" => variable = Some(cx.text(&capture.node).to_string()),
+                "ctor" => constructor = Some(cx.text(&capture.node).to_string()),
+                "new" => site = Some(capture.node),
+                "args" => args = Some(capture.node),
+                _ => {}
+            }
+        }
+        let (Some(variable), Some(constructor), Some(site), Some(args)) =
+            (variable, constructor, site, args)
+        else {
+            continue;
+        };
+        let base = constructor.split('.').next().unwrap_or(&constructor);
+        let Some(module_spec) = import_modules.get(base) else {
+            continue;
+        };
+        // Named imports can be aliased (`Bucket as LogsBucket`). Preserve the
+        // source spelling as evidence while normalizing with the exported
+        // constructor name from the direct service package.
+        let normalized_constructor = imported_names
+            .get(base)
+            .filter(|_| !constructor.contains('.'))
+            .map(|exported| format!("{base}.{exported}"))
+            .unwrap_or_else(|| constructor.clone());
+        let Some(terraform_type) =
+            iac::registry::terraform_type_for_pulumi(module_spec, &normalized_constructor)
+        else {
+            continue;
+        };
+        let Some(pulumi_type) =
+            iac::registry::pulumi_token_for_constructor(module_spec, &normalized_constructor)
+        else {
+            continue;
+        };
+        let mut walk = args.walk();
+        let Some(logical_name) = args
+            .named_children(&mut walk)
+            .next()
+            .and_then(|argument| literal_string(&cx, argument))
+        else {
+            continue;
+        };
+        let node_id = format!("res:{}@pulumi:{pulumi_type}:{logical_name}", id.repo);
+        resources.insert(variable.clone(), node_id.clone());
+        declarations.push(PulumiDecl {
+            variable,
+            node_id,
+            terraform_type,
+            pulumi_type,
+            logical_name,
+            constructor,
+            site,
+            args,
+        });
+    }
+
+    for declaration in declarations {
+        let provider = declaration
+            .pulumi_type
+            .split(':')
+            .next()
+            .unwrap_or_default();
+        out.nodes.push(Node {
+            id: declaration.node_id.clone(),
+            label: "Resource".into(),
+            props: serde_json::json!({
+                "type": declaration.terraform_type,
+                "logical_id": declaration.logical_name,
+                "provider": provider,
+                "kind": "resource",
+                "source": "pulumi",
+                "pulumi_type": declaration.pulumi_type,
+                "pulumi_variable": declaration.variable,
+                "constructor": declaration.constructor,
+                "prov": cx.prov(&declaration.site, &format!("Resource {}", declaration.node_id)),
+            }),
+        });
+        out.edges.push(Edge {
+            src: declaration.node_id.clone(),
+            dst: file_id(id.repo, path),
+            label: "DEFINED_IN".into(),
+            props: serde_json::json!({
+                "prov": cx.prov(&declaration.site, &format!(
+                    "DEFINED_IN {}", declaration.node_id
+                )),
+            }),
+        });
+        let mut walk = declaration.args.walk();
+        let arguments = declaration
+            .args
+            .named_children(&mut walk)
+            .collect::<Vec<_>>();
+        let inputs = arguments.get(1).copied();
+        if let Some(inputs) = inputs {
+            for target in resource_refs(&cx, inputs, &resources) {
+                out.edges.push(Edge {
+                    src: declaration.node_id.clone(),
+                    dst: target.clone(),
+                    label: "REFERENCES".into(),
+                    props: serde_json::json!({
+                        "prov": cx.prov(&declaration.site, &format!(
+                            "REFERENCES {} -> {target}", declaration.node_id
+                        )),
+                    }),
+                });
+            }
+        }
+        if let Some(options) = arguments.get(2).copied() {
+            for (option, value) in object_entries(&cx, options) {
+                if !matches!(option.as_str(), "parent" | "dependsOn") {
+                    continue;
+                }
+                for target in resource_refs(&cx, value, &resources) {
+                    out.edges.push(Edge {
+                        src: declaration.node_id.clone(),
+                        dst: target.clone(),
+                        label: "DEPENDS_ON".into(),
+                        props: serde_json::json!({
+                            "pulumi_option": option,
+                            "prov": cx.prov(&declaration.site, &format!(
+                                "DEPENDS_ON {} -> {target}", declaration.node_id
+                            )),
+                        }),
+                    });
+                }
+            }
+        }
+
+        for capability in iac::registry::capabilities_for(&declaration.terraform_type) {
+            let endpoint_refs = |selector: iac::registry::EndpointSelector| match selector {
+                iac::registry::EndpointSelector::Resource => {
+                    [declaration.node_id.clone()].into_iter().collect()
+                }
+                iac::registry::EndpointSelector::Path(path) => inputs
+                    .into_iter()
+                    .flat_map(|input| selector_values(&cx, vec![input], path))
+                    .flat_map(|value| resource_refs(&cx, value, &resources))
+                    .collect::<BTreeSet<_>>(),
+            };
+            for source in endpoint_refs(capability.source) {
+                for target in endpoint_refs(capability.target) {
+                    out.edges.push(Edge {
+                        src: source.clone(),
+                        dst: target.clone(),
+                        label: capability.kind.edge_label().into(),
+                        props: serde_json::json!({
+                            "via": declaration.node_id,
+                            "registry": iac::registry::REGISTRY_VERSION,
+                            "prov": cx.prov(&declaration.site, &format!(
+                                "{} {source} -> {target} via {}",
+                                capability.kind.edge_label(), declaration.node_id
+                            )),
+                        }),
+                    });
                 }
             }
         }

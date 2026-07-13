@@ -33,7 +33,7 @@
 - **Performance:** Incremental tree-sitter parse; re-parse only changed files by `content_hash`.
 - **Trace:** M1 · `adapters-lang-ts`, `adapters-fw`, `core-prov` · — · T-0004..0006
 
-### US-0003 — IaC resource graph + cloud capability resolution (Terraform/AWS)
+### US-0003 — IaC resource graph + cloud capability resolution (Terraform/Pulumi/AWS)
 - **Actor:** Engine
 - **As a** engineer **I want** a deterministic resource graph with cloud-capability edges **so that** infra/cloud topology is Confirmed.
 - **Priority:** Must · **Status:** Done
@@ -46,9 +46,11 @@
 - **AC-0046** Given an EventBridge Pipe with direct resource references, when resolved against the Capability Registry, then a Confirmed TRIGGERS edge links its source to its target.
 - **AC-0047** Given an IAM policy that references an `aws_iam_policy_document` defined in the same extraction, when its statement resources are resolvable, then Confirmed GRANTS edges target those resources with actions and evidence from the document; an absent or unresolved document target remains explicit.
 - **AC-0048** Given a Terraform module with a literal local source confined to the ingest root, when extracted, then its resources and internal edges are instantiated under the `module.<name>.` address prefix recursively and deterministically; remote, escaping, symlink-escaping, or cyclic sources remain explicit leaf modules.
+- **AC-0051** Given TypeScript that import-proves an AWS Pulumi constructor, when a resource with a literal logical name is parsed, then a Confirmed T0 Resource plus REFERENCES/DEPENDS_ON (including `parent`/`dependsOn`) and applicable shared Capability Registry edges are emitted; lookalike constructors without a Pulumi import produce no IaC facts.
+- **AC-0052** Given a Pulumi stack export or preview JSON artifact declared as `pulumi_json`, when it is ingested, then matching T0 Pulumi resources gain separate Dynamic/Confirmed observed inputs, outputs, URN, and evidence while Pulumi secret wrappers are redacted and unmatched observations never fabricate T0 resources.
 - **Security:** IAM GRANTS feed the security view; secrets in state are redacted.
 - **Performance:** Registry lookups O(1) per resource type.
-- **Trace:** M2,M6 · `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0048
+- **Trace:** M2,M6 · `adapters-lang-ts`, `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0048,T-0051..0052
 
 ### US-0004 — Event graph with channel-identity stitching
 - **Actor:** Engine

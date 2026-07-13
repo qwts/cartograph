@@ -6,7 +6,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 |----|----------|----------|-----------|------|-----|-------|
 | US-0001 | AC-0001..0003, AC-0049..0050 | ingest, core-graph, app, ui | M0–M3 | — | ADR-0001, ADR-0005 | T-0001..0003, T-0049..0050 |
 | US-0002 | AC-0004..0006 | adapters-lang-ts, adapters-fw, core-prov | M1 | — | ADR-0003, ADR-0006 | T-0004..0006 |
-| US-0003 | AC-0007..0009, AC-0043..0048 | iac, dynamic, spec, app | M2, M6 | — | ADR-0003 | T-0007..0009, T-0043..0048 |
+| US-0003 | AC-0007..0009, AC-0043..0048, AC-0051..0052 | adapters-lang-ts, iac, dynamic, spec, app | M2, M6 | — | ADR-0003 | T-0007..0009, T-0043..0048, T-0051..0052 |
 | US-0004 | AC-0010..0012 | events, dynamic, flowtracer, app | M3, M5–M6 | F-* | ADR-0002 | T-0010..0012 |
 | US-0005 | AC-0013..0014 | adapters-lang-ts(tsx), adapters-fw | M4 | F-* | ADR-0003 | T-0013..0014 |
 | US-0006 | AC-0015..0017 | flowtracer | M3–M5 | F-* | ADR-0002 | T-0015..0017 |

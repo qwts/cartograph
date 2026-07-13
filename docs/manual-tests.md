@@ -118,6 +118,24 @@ PR — per-PR verification is CI's job.
    same-kind observations leave the Gap explicit with T0 and T1 recorded in
    `attempted_tiers` (AC-0012, R-INT-1, R-INT-4, M6 exit gate).
 
+## MT-M6-03 — Pulumi program and observed deployment form a T0→T1 ladder
+
+1. In a TypeScript Pulumi AWS repo, run `pulumi stack export --file stack.json`
+   without `--show-secrets`; add `pulumi_json = "stack.json"` to that repo's
+   `[[repos]]` entry in `cartograph.system.toml`, then ingest the manifest.
+2. Inspect an import-proven resource created with `new aws.*`: its T0 `prov`
+   is Deterministic and points to the constructor, while REFERENCES,
+   `dependsOn`, `parent`, and Capability Registry edges remain T0.
+3. Inspect the same resource's `observed` and `observed_prov`: the observed
+   URN/inputs/outputs come from the stack artifact with Dynamic/Confirmed
+   evidence, without replacing the T0 fact.
+4. Repeat with `pulumi preview --json` output. Include an encrypted Pulumi
+   secret wrapper in the fixture or stack and verify Cartograph displays
+   `[redacted]`, never ciphertext or plaintext.
+5. **Pass:** only observations matching an existing T0 Pulumi type + logical
+   name enrich the graph; an unmatched exported resource does not create a
+   new T0 Resource (AC-0051, AC-0052, R-INT-1).
+
 ## MT-M7-01 — Local semantic resolution clears its precision gate (T2)
 
 1. Start Ollama locally and make the configured embedding model available:

@@ -219,6 +219,7 @@ impl DeltaSummary {
 /// channel stitching, client fetch resolution — closed over so the
 /// FK-enforcing store never sees a dangling endpoint.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn extract_tree_with_summary(
     root: &std::path::Path,
     repo: &str,
@@ -226,6 +227,7 @@ fn extract_tree_with_summary(
     layers: &[String],
     manifest_env: &std::collections::BTreeMap<String, String>,
     state_json: Option<&std::path::Path>,
+    pulumi_json: Option<&std::path::Path>,
     otel_jsonl: &[std::path::PathBuf],
 ) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown), String> {
     let mut cache = RepoExtractionCache::default();
@@ -236,6 +238,7 @@ fn extract_tree_with_summary(
         layers,
         manifest_env,
         state_json,
+        pulumi_json,
         otel_jsonl,
         &mut cache,
     )
@@ -250,18 +253,22 @@ fn extract_tree_incremental(
     layers: &[String],
     manifest_env: &std::collections::BTreeMap<String, String>,
     state_json: Option<&std::path::Path>,
+    pulumi_json: Option<&std::path::Path>,
     otel_jsonl: &[std::path::PathBuf],
     cache: &mut RepoExtractionCache,
 ) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown, DeltaSummary), String> {
     // Layer hints gate extractors (AC-0002): empty means everything; the
-    // TS pass covers server/events/client, the HCL pass infra/cloud.
+    // The TS pass covers server/events/client plus Pulumi infra/cloud; the HCL
+    // pass covers Terraform infra/cloud.
     let wants =
         |names: &[&str]| layers.is_empty() || names.iter().any(|n| layers.iter().any(|l| l == n));
+    let wants_application = wants(&["server", "events", "client"]);
+    let wants_infra = wants(&["infra", "cloud"]);
     let ts_id = adapters_lang_ts::SourceId { repo, commit };
     let mut layers = LayerBreakdown::default();
     let mut delta = DeltaSummary::default();
-    let mut extraction = if wants(&["server", "events", "client"]) {
-        let (extraction, stats) =
+    let mut extraction = if wants_application || wants_infra {
+        let (mut extraction, stats) =
             adapters_lang_ts::extract_dir_incremental(root, &ts_id, &mut cache.ts)
                 .map_err(|e| e.to_string())?;
         delta.add(
@@ -269,6 +276,9 @@ fn extract_tree_incremental(
             stats.reused_files,
             stats.deleted_files,
         );
+        if !wants_application {
+            extraction.retain_only_pulumi();
+        }
         extraction
     } else {
         adapters_lang_ts::Extraction::default()
@@ -282,7 +292,7 @@ fn extract_tree_incremental(
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
     };
-    if wants(&["infra", "cloud"]) {
+    if wants_infra {
         let tf_id = iac::SourceId { repo, commit };
         let (tf, stats) =
             iac::extract_dir_incremental(root, &tf_id, &mut cache.tf).map_err(|e| e.to_string())?;
@@ -309,6 +319,16 @@ fn extract_tree_incremental(
                 &observed,
                 &state_path.to_string_lossy(),
                 &raw,
+            );
+        }
+        if let Some(pulumi_path) = pulumi_json {
+            let raw = std::fs::read_to_string(pulumi_path)
+                .map_err(|error| format!("pulumi_json {}: {error}", pulumi_path.display()))?;
+            let deployment = dynamic::parse_pulumi_json(&raw).map_err(|error| error.to_string())?;
+            dynamic::enrich_pulumi_resources(
+                &mut extraction.nodes,
+                &deployment,
+                &pulumi_path.to_string_lossy(),
             );
         }
     }
@@ -355,6 +375,7 @@ fn extract_tree_incremental(
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn extract_tree(
     root: &std::path::Path,
     repo: &str,
@@ -362,6 +383,7 @@ fn extract_tree(
     layers: &[String],
     manifest_env: &std::collections::BTreeMap<String, String>,
     state_json: Option<&std::path::Path>,
+    pulumi_json: Option<&std::path::Path>,
     otel_jsonl: &[std::path::PathBuf],
 ) -> Result<adapters_lang_ts::Extraction, String> {
     extract_tree_with_summary(
@@ -371,6 +393,7 @@ fn extract_tree(
         layers,
         manifest_env,
         state_json,
+        pulumi_json,
         otel_jsonl,
     )
     .map(|(extraction, _)| extraction)
@@ -563,9 +586,12 @@ fn stitch_backings(graph: &mut SqliteGraphStore) -> Result<u64, String> {
         .edges_with_labels(&["BACKS"])
         .map_err(|error| error.to_string())?
     {
-        let is_state_backing =
-            edge.props["prov"]["extractor_id"].as_str() == Some(dynamic::EXTRACTOR_ID);
-        if is_state_backing && !candidates.contains_key(&edge_key(&edge)) {
+        let extractor_id = edge.props["prov"]["extractor_id"].as_str();
+        let is_observed_backing = matches!(
+            extractor_id,
+            Some(dynamic::EXTRACTOR_ID | dynamic::PULUMI_EXTRACTOR_ID)
+        );
+        if is_observed_backing && !candidates.contains_key(&edge_key(&edge)) {
             graph
                 .delete_edge(&edge.src, &edge.dst, &edge.label)
                 .map_err(|error| error.to_string())?;
@@ -686,6 +712,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
             &[],
             &std::collections::BTreeMap::new(),
             None,
+            None,
             &[],
             cache,
         )
@@ -771,6 +798,7 @@ fn add_repo(
             &cloned.commit_sha,
             &[],
             &std::collections::BTreeMap::new(),
+            None,
             None,
             &[],
             cache,
@@ -898,6 +926,7 @@ fn add_system(
         // state_json travels with the manifest, so it resolves against the
         // manifest dir — same rule as local repo paths.
         let state_path = entry.state_json.as_ref().map(|p| base.join(p));
+        let pulumi_path = entry.pulumi_json.as_ref().map(|p| base.join(p));
         let trace_paths: Vec<std::path::PathBuf> =
             entry.otel_jsonl.iter().map(|p| base.join(p)).collect();
         let (extraction, repo_layers, repo_delta) = {
@@ -913,6 +942,7 @@ fn add_system(
                 &entry.layers,
                 &manifest.env,
                 state_path.as_deref(),
+                pulumi_path.as_deref(),
                 &trace_paths,
                 cache,
             )
@@ -1468,6 +1498,7 @@ resource "aws_sqs_queue" "orders" {
             &[],
             &std::collections::BTreeMap::new(),
             None,
+            None,
             &[],
         )
         .unwrap();
@@ -1560,6 +1591,7 @@ resource "aws_sqs_queue" "orders" {
             &[],
             &std::collections::BTreeMap::new(),
             None,
+            None,
             &[],
         )
         .unwrap();
@@ -1605,6 +1637,7 @@ resource "aws_sqs_queue" "orders" {
             &[],
             &std::collections::BTreeMap::new(),
             None,
+            None,
             &[],
         )
         .unwrap();
@@ -1624,6 +1657,7 @@ resource "aws_sqs_queue" "orders" {
             "workdir",
             &[],
             &std::collections::BTreeMap::new(),
+            None,
             None,
             &[],
         )
@@ -1686,6 +1720,7 @@ resource "aws_sqs_queue" "orders" {
             &[],
             &std::collections::BTreeMap::new(),
             None,
+            None,
             &[],
         )
         .unwrap();
@@ -1704,6 +1739,7 @@ resource "aws_sqs_queue" "orders" {
             "workdir",
             &[],
             &std::collections::BTreeMap::new(),
+            None,
             None,
             &[],
         )
@@ -1772,6 +1808,110 @@ resource "aws_sqs_queue" "orders" {
     }
 
     #[test]
+    fn system_manifest_enriches_pulumi_resources() {
+        // AC-0051/T-0051 and AC-0052/T-0052: an infra-only repo still runs
+        // Pulumi-via-TS extraction, filters unrelated app facts, and overlays
+        // the manifest-relative observed deployment without inventing nodes.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("infra");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            repo.join("index.ts"),
+            r#"
+import * as aws from '@pulumi/aws';
+export function applicationLookalike() { return 'not infra'; }
+export const orders = new aws.sqs.Queue('orders', {});
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("stack.json"),
+            r#"{"deployment":{"resources":[
+              {"urn":"urn:pulumi:dev::shop::aws:sqs/queue:Queue::orders","type":"aws:sqs/queue:Queue","inputs":{},"outputs":{"url":"https://sqs.example/orders"}},
+              {"urn":"urn:pulumi:dev::shop::aws:s3/bucket:Bucket::unmatched","type":"aws:s3/bucket:Bucket","inputs":{},"outputs":{}}
+            ]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(ingest::manifest::MANIFEST_NAME),
+            "[[repos]]\nurl = \"infra\"\nlayers = [\"infra\"]\npulumi_json = \"stack.json\"\n",
+        )
+        .unwrap();
+        let manifest = ingest::manifest::SystemManifest::load(dir.path()).unwrap();
+        let entry = &manifest.repos[0];
+        let pulumi_path = entry.pulumi_json.as_ref().map(|path| dir.path().join(path));
+        let extraction = crate::extract_tree(
+            &repo,
+            "local/infra",
+            "workdir",
+            &entry.layers,
+            &manifest.env,
+            None,
+            pulumi_path.as_deref(),
+            &[],
+        )
+        .unwrap();
+        assert!(extraction.nodes.iter().all(|node| node.label != "Symbol"));
+        let resources = extraction
+            .nodes
+            .iter()
+            .filter(|node| node.label == "Resource")
+            .collect::<Vec<_>>();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].props["logical_id"], "orders");
+        assert_eq!(
+            resources[0].props["observed"]["outputs"]["url"],
+            "https://sqs.example/orders"
+        );
+        assert_eq!(
+            resources[0].props["observed_prov"]["extractor_id"],
+            dynamic::PULUMI_EXTRACTOR_ID
+        );
+
+        // Pulumi observation can drive the same cross-layer join as Terraform
+        // state, retaining its own extractor provenance. Removing the
+        // observation on re-ingest must reconcile that derived edge.
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        crate::load_into_graph(&mut store, &extraction, "local/infra", &repo, "workdir").unwrap();
+        store
+            .put_node(&Node {
+                id: "chan:sqs-queue:https://sqs.example/orders".into(),
+                label: "Channel".into(),
+                props: serde_json::json!({}),
+            })
+            .unwrap();
+        assert_eq!(crate::stitch_backings(&mut store).unwrap(), 1);
+        let backing = store.edges_with_labels(&["BACKS"]).unwrap();
+        assert_eq!(backing.len(), 1);
+        assert_eq!(
+            backing[0].props["prov"]["extractor_id"],
+            dynamic::PULUMI_EXTRACTOR_ID
+        );
+
+        let without_observation = crate::extract_tree(
+            &repo,
+            "local/infra",
+            "workdir",
+            &entry.layers,
+            &manifest.env,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        crate::load_into_graph(
+            &mut store,
+            &without_observation,
+            "local/infra",
+            &repo,
+            "workdir",
+        )
+        .unwrap();
+        assert_eq!(crate::stitch_backings(&mut store).unwrap(), 0);
+        assert!(store.edges_with_labels(&["BACKS"]).unwrap().is_empty());
+    }
+
+    #[test]
     fn cloned_repo_ingests_with_real_identity() {
         // US-0001 (AC-0001): clone -> extract -> every fact carries
         // owner-ish identity + commit SHA instead of local@workdir.
@@ -1825,6 +1965,7 @@ resource "aws_sqs_queue" "orders" {
             &cloned.commit_sha,
             &[],
             &std::collections::BTreeMap::new(),
+            None,
             None,
             &[],
         )
@@ -1895,6 +2036,7 @@ export function beat() { bus.emit('heartbeat'); }
                 &[],
                 &std::collections::BTreeMap::new(),
                 None,
+                None,
                 &[],
             )
             .unwrap();
@@ -1948,6 +2090,7 @@ export function beat() { bus.emit('heartbeat'); }
             &[],
             &std::collections::BTreeMap::new(),
             None,
+            None,
             &[],
             &mut cache,
         )
@@ -1962,6 +2105,7 @@ export function beat() { bus.emit('heartbeat'); }
             "workdir",
             &[],
             &std::collections::BTreeMap::new(),
+            None,
             None,
             &[],
             &mut cache,
@@ -1988,6 +2132,7 @@ export function beat() { bus.emit('heartbeat'); }
             "workdir",
             &[],
             &std::collections::BTreeMap::new(),
+            None,
             None,
             &[],
             &mut cache,
@@ -2016,6 +2161,7 @@ export function beat() { bus.emit('heartbeat'); }
             "workdir",
             &[],
             &std::collections::BTreeMap::new(),
+            None,
             None,
             &[],
             &mut cache,
@@ -2112,6 +2258,7 @@ ORDERS_QUEUE = "https://sqs.example/orders"
                 &entry.layers,
                 &manifest.env,
                 None,
+                None,
                 &[],
             )
             .unwrap();
@@ -2197,6 +2344,7 @@ layers = ["events", "server"]
                 "workdir",
                 &entry.layers,
                 &manifest.env,
+                None,
                 None,
                 &[],
             )
@@ -2295,6 +2443,7 @@ otel_jsonl = ["shop.otlp.jsonl"]
             "workdir",
             &entry.layers,
             &manifest.env,
+            None,
             None,
             &trace_paths,
         )
@@ -2413,6 +2562,7 @@ state_json = "shop.state.json"
                 &entry.layers,
                 &manifest.env,
                 state_path.as_deref(),
+                None,
                 &[],
             )
             .unwrap();
@@ -2462,6 +2612,7 @@ state_json = "shop.state.json"
             "workdir",
             &[],
             &std::collections::BTreeMap::new(),
+            None,
             None,
             &[],
         )
