@@ -1,4 +1,5 @@
 import type { Preview } from '@storybook/react-vite'
+import '@xyflow/react/dist/style.css'
 import '../src/styles.css' // design tokens (docs/design/DESIGN.md) for every story
 
 const preview: Preview = {

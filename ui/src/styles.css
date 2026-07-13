@@ -503,35 +503,276 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.flow-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-bottom: 0.75rem;
+/* M9 Flow Inspector: React Flow is the visual sequence, while the bounded
+   semantic list below it keeps every hop and Gap keyboard/screen-reader visible. */
+.flow-inspector-card {
+  grid-column: 1 / -1;
+  padding: 0;
+  overflow: hidden;
 }
 
-.flow-row {
+.flow-inspector-heading {
   display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  padding: 0.45rem 0.6rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+}
+
+.flow-inspector-heading h2 {
+  margin-bottom: 0.25rem;
+}
+
+.flow-inspector-heading p {
+  max-width: 48rem;
+  font-size: 0.8rem;
+}
+
+.flow-mode-toggle {
+  display: flex;
+  padding: 0.2rem;
   border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-container);
+}
+
+.flow-mode-toggle button {
+  padding: 0.35rem 0.65rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--on-surface-variant);
+  font-size: 0.72rem;
+}
+
+.flow-mode-toggle button.active {
+  border-color: var(--outline-variant);
+  background: var(--surface-container-high);
+  color: var(--primary);
+}
+
+.flow-inspector-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-container);
+  font-size: 0.75rem;
+}
+
+.flow-inspector-toolbar label {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.flow-inspector-toolbar select {
+  min-width: min(25rem, 42vw);
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--outline-variant);
   border-radius: 6px;
   background: var(--surface-container-high);
+  color: var(--on-surface);
+  font: 0.75rem ui-monospace, monospace;
 }
 
-.flow-trigger {
-  flex: 1;
-  font-family: ui-monospace, monospace;
-  min-width: 0;
-  overflow-wrap: anywhere;
+.flow-inspector-toolbar [role='status'] {
+  margin-left: auto;
 }
 
 .flow-score {
-  font-variant-numeric: tabular-nums;
-  color: var(--on-surface-variant);
   flex-shrink: 0;
+  color: var(--on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-inspector-canvas {
+  height: 31rem;
+  background: #0e0e0e;
+}
+
+.flow-inspector-canvas .react-flow__node {
+  width: 290px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--outline-variant);
+  border-radius: 8px;
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 24%);
+  text-align: left;
+}
+
+.flow-inspector-canvas .react-flow__node.unresolved {
+  border: 2px dashed var(--tier-gap);
+}
+
+.flow-inspector-canvas .react-flow__handle {
+  width: 7px;
+  height: 7px;
+  border-color: var(--surface);
+  background: var(--outline-variant);
+}
+
+.flow-inspector-canvas .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--outline-variant);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.flow-inspector-canvas .react-flow__controls-button {
+  border-color: var(--border-subtle);
+  background: var(--surface-container-high);
+  fill: var(--on-surface);
+}
+
+.flow-node-content {
+  display: flex;
+  min-height: 7.25rem;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.85rem;
+  font-size: 0.72rem;
+}
+
+.flow-node-content.trigger {
+  justify-content: center;
+  border-top: 3px solid var(--primary);
+}
+
+.flow-node-content.unresolved {
+  border-top: 3px solid var(--tier-gap);
+}
+
+.flow-node-content > strong {
+  font: 600 0.78rem ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+
+.flow-node-head,
+.flow-sequence-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.flow-node-head > span:first-child {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.flow-gap-details {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+}
+
+.flow-gap-details > div {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--tier-gap) 30%, var(--border-subtle));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--tier-gap) 7%, transparent);
+}
+
+.flow-gap-details dt {
+  color: var(--tier-gap);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.flow-gap-details dd {
+  margin-top: 0.15rem;
+  color: var(--on-surface-variant);
+  overflow-wrap: anywhere;
+}
+
+.flow-sequence {
+  display: grid;
+  gap: 0.5rem;
+  max-height: 22rem;
+  margin: 0;
+  padding: 0.8rem 1.25rem;
+  overflow-y: auto;
+  list-style: none;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.flow-sequence li {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--surface-container-high);
+  font: 0.72rem ui-monospace, monospace;
+}
+
+.flow-sequence li.unresolved {
+  border: 2px dashed var(--tier-gap);
+}
+
+.flow-sequence li > span {
+  color: var(--on-surface-variant);
+  overflow-wrap: anywhere;
+}
+
+.flow-dossier-details {
+  padding: 0.75rem 1.25rem 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.flow-dossier-details summary {
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.flow-dossier-details .flows-dossier {
+  margin-top: 0.65rem;
+}
+
+.flow-copy-action {
+  padding: 0.75rem 1.25rem 1rem;
+}
+
+.flow-inspector-empty {
+  padding: 0 1.25rem 1.25rem;
+}
+
+@media (max-width: 760px) {
+  .flow-inspector-heading,
+  .flow-inspector-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .flow-mode-toggle button {
+    flex: 1;
+  }
+
+  .flow-inspector-toolbar select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .flow-inspector-toolbar [role='status'] {
+    margin-left: 0;
+  }
+
+  .flow-inspector-canvas {
+    height: 26rem;
+  }
 }
 
 .evidence-area {

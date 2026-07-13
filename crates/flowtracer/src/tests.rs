@@ -130,7 +130,10 @@ fn gap_truncates_the_branch() {
         node(
             "gap:chan:app.ts@100",
             "Gap",
-            serde_json::json!({"reason": "runtime-computed channel identity"}),
+            serde_json::json!({
+                "reason": "runtime-computed channel identity",
+                "attempted_tiers": ["T0", "T1", "T2"]
+            }),
         ),
         // A consumer that would be reachable if the gap were guessed at.
         node(
@@ -174,6 +177,11 @@ fn gap_truncates_the_branch() {
     let gap_hop = flow.hops.iter().find(|h| h.confidence == "Gap").unwrap();
     assert_eq!(gap_hop.dst, "gap:chan:app.ts@100");
     assert!(gap_hop.dst_name.starts_with("GAP: runtime-computed"));
+    assert_eq!(
+        gap_hop.gap_reason.as_deref(),
+        Some("runtime-computed channel identity")
+    );
+    assert_eq!(gap_hop.attempted_tiers, ["T0", "T1", "T2"]);
     // …and nothing was walked past it.
     assert!(flow.hops.iter().all(|h| h.dst != "sym:app.ts#onX"));
 }

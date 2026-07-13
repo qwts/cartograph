@@ -1,68 +1,114 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, within } from 'storybook/test';
-import type { Flow } from '../store';
-import { FlowsCard } from './FlowsCard';
+import { expect, userEvent, within } from 'storybook/test';
+import type { Flow, FlowHop, Tier } from '../store';
+import { FlowsCard, flowElements, projectedDossier } from './FlowsCard';
 
-const FLOWS: Flow[] = [
-  {
-    trigger: 'ep:POST:/orders',
-    trigger_kind: 'Endpoint',
-    trigger_name: 'POST /orders',
-    hops: [{}],
-    status: 'Verified',
-    score: 1.0,
-    depth_limited: false,
-  },
-  {
-    trigger: 'ep:POST:/notify',
-    trigger_kind: 'Endpoint',
-    trigger_name: 'POST /notify',
-    hops: [{}, {}],
-    status: 'Partial',
-    score: 0.5,
-    depth_limited: false,
-  },
-];
+function hop(
+  label: string,
+  src: string,
+  dst: string,
+  srcName: string,
+  dstName: string,
+  confidence: Tier,
+  options: Partial<FlowHop> = {},
+): FlowHop {
+  const tier =
+    confidence === 'Confirmed'
+      ? 'Deterministic'
+      : confidence === 'InferredStrong'
+        ? 'Semantic'
+        : confidence === 'InferredWeak'
+          ? 'Agentic'
+          : 'Deterministic';
+  return {
+    label,
+    src,
+    dst,
+    src_name: srcName,
+    dst_name: dstName,
+    tier,
+    confidence,
+    evidence: 'src/app.ts bytes 10..42',
+    gap_reason: null,
+    attempted_tiers: [],
+    ...options,
+  };
+}
 
-const SAMPLE = `# Flow dossier
+const VERIFIED: Flow = {
+  trigger: 'ep:POST:/orders',
+  trigger_kind: 'Endpoint',
+  trigger_name: 'POST /orders',
+  hops: [
+    hop('HANDLES', 'ep:POST:/orders', 'sym:orders#create', 'POST /orders', 'createOrder', 'Confirmed'),
+    hop('CALLS', 'sym:orders#create', 'sym:orders#persist', 'createOrder', 'persistOrder', 'Confirmed'),
+  ],
+  status: 'Verified',
+  score: 1.0,
+  depth_limited: false,
+};
 
-## POST /orders — Verified (score 1.00)
+const PARTIAL: Flow = {
+  trigger: 'ep:POST:/notify',
+  trigger_kind: 'Endpoint',
+  trigger_name: 'POST /notify',
+  hops: [
+    hop('HANDLES', 'ep:POST:/notify', 'sym:notify#send', 'POST /notify', 'sendNotification', 'Confirmed'),
+    hop('CALLS', 'sym:notify#send', 'sym:notify#guess', 'sendNotification', 'guessedTarget', 'InferredWeak'),
+    hop(
+      'PUBLISHES',
+      'sym:notify#send',
+      'gap:channel:notify',
+      'sendNotification',
+      'GAP: runtime-computed channel identity',
+      'Gap',
+      {
+        evidence: 'src/notify.ts bytes 90..128',
+        gap_reason: 'runtime-computed channel identity',
+        attempted_tiers: ['T0', 'T1', 'T2', 'T3'],
+      },
+    ),
+  ],
+  status: 'Partial',
+  score: 0.43,
+  depth_limited: false,
+};
 
-Trigger: Endpoint \`ep:POST:/orders\`
-
-\`\`\`mermaid
-sequenceDiagram
-    participant p0 as POST /orders
-    participant p1 as placeOrder
-    p0->>p1: HANDLES [Confirmed]
-\`\`\`
-
-| # | Hop | Tier | Confidence | Evidence |
-|---|-----|------|------------|----------|
-| 1 | HANDLES \`ep:POST:/orders\` → \`sym:app.ts#placeOrder\` | Deterministic | Confirmed | app.ts bytes 120..180 |
-
-## POST /notify — Partial (score 0.50)
-
-Trigger: Endpoint \`ep:POST:/notify\`
-
-\`\`\`mermaid
-sequenceDiagram
-    participant p0 as POST /notify
-    participant p1 as notify
-    participant p2 as GAP: runtime-computed channel identity
-    p0->>p1: HANDLES [Confirmed]
-    p1--xp2: PUBLISHES [Gap]
-\`\`\`
-
-| # | Hop | Tier | Confidence | Evidence |
-|---|-----|------|------------|----------|
-| 1 | HANDLES \`ep:POST:/notify\` → \`sym:app.ts#notify\` | Deterministic | Confirmed | app.ts bytes 200..260 |
-| 2 | PUBLISHES \`sym:app.ts#notify\` → \`gap:chan:app.ts@210\` | Deterministic | Gap | app.ts bytes 210..240 |
-`;
+const FLOWS = [VERIFIED, PARTIAL];
+const SAMPLE = projectedDossier(FLOWS, 'best-effort');
+const BRANCHED: Flow = {
+  trigger: 'ep:POST:/branch',
+  trigger_kind: 'Endpoint',
+  trigger_name: 'POST /branch',
+  hops: [
+    hop('HANDLES', 'ep:POST:/branch', 'sym:branch#handle', 'POST /branch', 'branchHandler', 'Confirmed'),
+    hop('CALLS', 'sym:branch#handle', 'sym:branch#helper', 'branchHandler', 'helper', 'Confirmed'),
+    hop('PUBLISHES', 'sym:branch#handle', 'channel:orders', 'branchHandler', 'orders.created', 'Confirmed'),
+  ],
+  status: 'Verified',
+  score: 1,
+  depth_limited: false,
+};
+const UNKNOWN_CONFIDENCE: Flow = {
+  ...VERIFIED,
+  trigger: 'ep:GET:/unknown',
+  trigger_name: 'GET /unknown',
+  hops: [
+    {
+      ...VERIFIED.hops[0],
+      src: 'ep:GET:/unknown',
+      src_name: 'GET /unknown',
+      confidence: 'Unrecognized',
+    },
+  ],
+  status: 'Partial',
+  score: 0,
+};
 
 const meta = {
-  title: 'Atlas/FlowsCard',
+  title: 'Atlas/FlowInspector',
   component: FlowsCard,
+  args: { flows: FLOWS, dossier: SAMPLE },
 } satisfies Meta<typeof FlowsCard>;
 
 export default meta;
@@ -71,32 +117,83 @@ type Story = StoryObj<typeof meta>;
 export const Empty: Story = {
   args: { flows: [], dossier: '# Flow dossier\n' },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(canvas.getByText(/no flows traced yet/i)).toBeInTheDocument();
+    await expect(within(canvasElement).getByText(/no flows traced yet/i)).toBeInTheDocument();
   },
 };
 
-export const NoBackend: Story = {
-  args: { flows: [], dossier: null },
-};
-
-export const Populated: Story = {
+export const SequenceAndTriggerSelection: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // Status and score are structured UI, not just dossier text (R-INT-2):
-    // one row per flow, chip colored by status, numeric score visible.
-    const verified = canvas.getByText('Verified');
-    await expect(verified).toHaveClass('tier-confirmed');
-    const partial = canvas.getByText('Partial');
-    await expect(partial).toHaveClass('tier-gap');
-    await expect(canvas.getByText('1.00')).toBeInTheDocument();
-    await expect(canvas.getByText('0.50')).toBeInTheDocument();
-
-    const pre = canvas.getByTestId('flows-dossier');
-    await expect(pre.textContent).toContain('POST /orders — Verified (score 1.00)');
-    // A Gap is visibly a Gap, truncating its flow (R-INT-4).
-    await expect(pre.textContent).toContain('p1--xp2: PUBLISHES [Gap]');
-    await expect(canvas.getByRole('button', { name: /copy dossier/i })).toBeEnabled();
+    await expect(canvas.getByRole('status')).toHaveTextContent('2 of 2 hops shown');
+    await expect(canvas.getByText('Verified')).toHaveClass('tier-confirmed');
+    await expect(canvas.getByText('score 1.00')).toBeInTheDocument();
+    await expect(canvas.getByLabelText('Flow sequence')).toHaveTextContent('createOrder');
+    await userEvent.selectOptions(canvas.getByLabelText('Trigger source'), PARTIAL.trigger);
+    await expect(canvas.getByRole('status')).toHaveTextContent('3 of 3 hops shown');
+    await expect(canvas.getByText('Partial')).toHaveClass('tier-gap');
+    await expect(canvas.getByText('score 0.43')).toBeInTheDocument();
+    await expect(canvas.getByLabelText('Flow sequence')).toHaveTextContent('sendNotification');
+    await expect(canvas.getByTestId('flow-inspector-canvas')).toBeInTheDocument();
   },
-  args: { flows: FLOWS, dossier: SAMPLE },
+};
+
+export const ExplicitGap: Story = {
+  args: { flows: [PARTIAL], dossier: projectedDossier([PARTIAL], 'best-effort') },
+  play: async ({ canvasElement }) => {
+    const sequence = within(canvasElement).getByLabelText('Flow sequence');
+    const gap = within(sequence).getByText(/Unresolved hop/).closest('li');
+    await expect(gap).toHaveClass('unresolved');
+    await expect(gap).toHaveTextContent('runtime-computed channel identity');
+    await expect(gap).toHaveTextContent('T0 → T1 → T2 → T3');
+    await expect(gap).toHaveTextContent('T0 · Gap');
+  },
+};
+
+export const BranchedTraceUsesRecordedEndpoints: Story = {
+  args: { flows: [BRANCHED], dossier: projectedDossier([BRANCHED], 'best-effort') },
+  play: async ({ canvasElement }) => {
+    const graph = flowElements(BRANCHED);
+    const handler = graph.nodes.find(
+      (node) => node.data.kind === 'entity' && node.data.entityId === 'sym:branch#handle',
+    );
+    const channel = graph.nodes.find(
+      (node) => node.data.kind === 'entity' && node.data.entityId === 'channel:orders',
+    );
+    const publishes = graph.edges.find((edge) => edge.label?.toString().startsWith('PUBLISHES'));
+    await expect(publishes).toMatchObject({ source: handler?.id, target: channel?.id });
+
+    const dossier = projectedDossier([BRANCHED], 'best-effort');
+    await expect(dossier).toContain('p1->>p2: CALLS [Confirmed]');
+    await expect(dossier).toContain('p1->>p3: PUBLISHES [Confirmed]');
+    await expect(dossier).not.toContain('p2->>p3: PUBLISHES [Confirmed]');
+    await expect(within(canvasElement).getByLabelText('Flow sequence')).toHaveTextContent(
+      'branchHandler → orders.created',
+    );
+  },
+};
+
+export const VerifiedOnlyProjection: Story = {
+  args: { flows: [PARTIAL], dossier: projectedDossier([PARTIAL], 'best-effort') },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByLabelText('Flow sequence')).toHaveTextContent('guessedTarget');
+    await userEvent.click(canvas.getByRole('button', { name: 'verified-only' }));
+    await expect(canvas.getByRole('status')).toHaveTextContent('2 of 3 hops shown');
+    await expect(canvas.getByLabelText('Flow sequence')).not.toHaveTextContent('guessedTarget');
+    await expect(canvas.getByLabelText('Flow sequence')).toHaveTextContent('runtime-computed channel identity');
+    await userEvent.click(canvas.getByText(/Mermaid \+ provenance dossier/));
+    const dossier = canvas.getByTestId('flows-dossier');
+    await expect(dossier).not.toHaveTextContent('guessedTarget');
+    await expect(dossier).toHaveTextContent('PUBLISHES [Gap]');
+  },
+};
+
+export const UnknownConfidenceFailsClosed: Story = {
+  args: { flows: [UNKNOWN_CONFIDENCE], dossier: null },
+  play: async ({ canvasElement }) => {
+    const sequence = within(canvasElement).getByLabelText('Flow sequence');
+    await expect(sequence).toHaveTextContent('T0 · Gap');
+    await expect(sequence).toHaveTextContent('confidence metadata missing or unrecognized');
+    await expect(sequence.querySelector('li')).toHaveClass('unresolved');
+  },
 };
