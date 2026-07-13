@@ -7,10 +7,14 @@ import { IngestCard } from './components/IngestCard';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
 import { TopologyCard } from './components/TopologyCard';
-import { FlowsCard } from './components/FlowsCard';
 
 const AtlasCanvas = lazy(() =>
   import('./components/AtlasCanvas').then(({ AtlasCanvas: Component }) => ({
+    default: Component,
+  })),
+);
+const FlowsCard = lazy(() =>
+  import('./components/FlowsCard').then(({ FlowsCard: Component }) => ({
     default: Component,
   })),
 );
@@ -80,7 +84,9 @@ export default function App() {
           </Suspense>
           <EndpointsCard endpoints={endpoints} onSelect={(node) => void select(node)} />
           <TopologyCard mermaid={topology} />
-          <FlowsCard flows={flowList} dossier={flows} />
+          <Suspense fallback={<section className="card flow-inspector-card">Loading Flow Inspector…</section>}>
+            <FlowsCard flows={flowList} dossier={flows} />
+          </Suspense>
         </div>
       </main>
       {selected && (

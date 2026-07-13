@@ -92,7 +92,20 @@ function installFakeCore() {
             trigger: 'ep:GET:/users',
             trigger_kind: 'Endpoint',
             trigger_name: 'GET /users',
-            hops: [{}],
+            hops: [
+              {
+                label: 'HANDLES',
+                src: 'ep:GET:/users',
+                dst: 'sym:app.ts#listUsers',
+                src_name: 'GET /users',
+                dst_name: 'listUsers',
+                tier: 'Deterministic',
+                confidence: 'Confirmed',
+                evidence: 'src/app.ts bytes 92..120',
+                gap_reason: null,
+                attempted_tiers: [],
+              },
+            ],
             status: 'Verified',
             score: 1.0,
             depth_limited: false,
@@ -223,14 +236,19 @@ export const EvidenceJumpToSource: Story = {
 export const AtlasNodeToEvidence: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('1 nodes · 0 edges'));
+    await waitFor(() =>
+      expect(within(canvas.getByLabelText('Confidence legend')).getByRole('status')).toHaveTextContent(
+        '1 nodes · 0 edges',
+      ),
+    );
     await userEvent.click(canvas.getByRole('button', { name: /^GET \/users$/ }));
     await waitFor(() => {
       const mark = canvasElement.querySelector('.evidence-source mark');
       expect(mark?.textContent).toBe(SPAN_TEXT);
     });
-    await expect(canvas.getByText(/src\/app\.ts/)).toBeInTheDocument();
-    await expect(canvas.getByText(/workdir/)).toBeInTheDocument();
+    const evidence = within(canvasElement.querySelector('.evidence-panel') as HTMLElement);
+    await expect(evidence.getByText(/src\/app\.ts/)).toBeInTheDocument();
+    await expect(evidence.getByText(/workdir/)).toBeInTheDocument();
   },
 };
 

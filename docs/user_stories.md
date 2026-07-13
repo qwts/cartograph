@@ -128,7 +128,7 @@
 ### US-0011 — Flow Inspector with explicit gaps
 - **Actor:** Engineer
 - **As a** engineer **I want** to view a traced flow as a sequence with per-hop tier badges and explicit gap cards **so that** I trust the flow.
-- **Priority:** Must · **Status:** Draft
+- **Priority:** Must · **Status:** Done
 - **AC-0029** Given a trigger, when I open Flow Inspector, then the flow renders as a sequence (React Flow + Mermaid) with tier badges.
 - **AC-0030** Given a Gap hop, when shown, then it appears as an "unresolved" card with reason and attempted escalation.
 - **AC-0031** Given the export toggle, when set to `verified-only`, then InferredWeak hops are excluded.

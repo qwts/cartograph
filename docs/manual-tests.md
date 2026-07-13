@@ -182,6 +182,23 @@ PR — per-PR verification is CI's job.
    matching source span is highlighted in a read-only view (AC-0026..0028,
    R-INT-2, NG1).
 
+## MT-M9-02 — Flow Inspector sequence, explicit Gap, and export projection
+
+1. Run `npm --prefix ui run storybook` and open
+   **Atlas / FlowInspector / SequenceAndTriggerSelection**. Select each trigger,
+   then pan, zoom, and fit the React Flow viewport.
+2. **Pass:** the visual and accessible sequences follow the traced hop order;
+   every hop carries a distinct tier/confidence badge, and the selected source
+   flow's status and score remain visible (AC-0029, R-INT-2).
+3. Open **Atlas / FlowInspector / ExplicitGap**. **Pass:** the unresolved hop is
+   a dashed red card that shows the graph-provided reason and attempted tier
+   sequence; no downstream hop is invented after the Gap (AC-0030, R-INT-4).
+4. Open **Atlas / FlowInspector / VerifiedOnlyProjection**, switch from
+   `best-effort` to `verified-only`, and expand the Mermaid + provenance dossier.
+5. **Pass:** the InferredWeak hop disappears from both the visible sequence and
+   copyable dossier, while Confirmed and explicit Gap hops remain annotated
+   (AC-0031, R-INT-5).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

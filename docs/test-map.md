@@ -30,7 +30,7 @@ rows in the same PR (see AGENTS.md).
 | T-0014 | AC-0014 | rust | events::resolvable_fetch_urls_confirm_against_endpoints, events::unresolvable_fetches_emit_gaps_with_reasons, adapters-lang-ts::fetch_and_axios_sites_are_detected_and_classified, adapters-lang-ts::shadowed_fetch_is_not_a_fetch_site, adapters-lang-ts::nested_method_key_does_not_set_the_http_method | exact + :param template match; Gap on computed/no-match/ambiguous |
 | T-0015 | AC-0015 | rust | flowtracer::hops_record_tier_across_the_full_chain, flowtracer::orphan_channel_is_a_trigger_published_channel_is_not, flowtracer::screen_anchored_flow_walks_the_full_chain, flowtracer::unfetched_endpoints_remain_triggers, flowtracer::endpoint_fetched_only_by_an_unrendered_component_keeps_its_flow, adapters-lang-ts::fetch_in_nested_component_anchors_at_the_nearest_component | Screen anchor at M4 (T1–T3 rungs join M6–M8), plus manual:MT-M4-01 |
 | T-0016 | AC-0016 | rust | flowtracer::gap_truncates_the_branch, flowtracer::depth_bound_marks_the_flow_partial_not_verified, flowtracer::unresolved_fetch_truncates_the_screen_flow, spec::flow_dossier_renders_sequence_and_provenance_table | truncation in trace + visibly broken in the artifact |
-| T-0017 | AC-0017 | rust | flowtracer::flow_status_follows_the_scoring_rule | Verified/Partial/Inferred per §5.3; status+score chips in UI, plus story:Atlas/FlowsCard/Populated and manual:MT-M3-01 |
+| T-0017 | AC-0017 | rust | flowtracer::flow_status_follows_the_scoring_rule | Verified/Partial/Inferred per §5.3; status+score chips in UI, plus story:Atlas/FlowInspector/SequenceAndTriggerSelection and manual:MT-M3-01 |
 | T-0018 | AC-0018 | rust | core-prov::provenance_serde_round_trips, core-prov::content_hash_is_deterministic_and_content_sensitive, core-prov::confidence_ceilings_match_spec | provenance shape + hashing |
 | T-0019 | AC-0019 | rust | core-prov::r_int_1_t2_t3_never_touch_confirmed, core-prov::provenance_rejects_confidence_above_ceiling | R-INT-1 as executable code |
 | T-0020 | AC-0020 | rust | agents::broker_returns_propose_only_inferred_weak_with_citations, agents::broker_rejects_confirmed_slots_before_model_invocation, agents::broker_rejects_uncited_or_invented_targets | data-only closed-candidate proposal API; Agentic/InferredWeak ceiling; both-side citations; no graph-store dependency |
@@ -42,9 +42,9 @@ rows in the same PR (see AGENTS.md).
 | T-0026 | AC-0026 | story | Atlas/AtlasCanvas/LayerFilters | O(N+E) five-layer projection over a deterministic whole-graph snapshot; plus rust:core-graph::all_facts_are_ordered_for_atlas_snapshot and manual:MT-M9-01 |
 | T-0027 | AC-0027 | story | Atlas/AtlasCanvas/ConfidenceOverlay | distinct Confirmed/InferredStrong/InferredWeak/Gap legend and toggle; Gap remains diamond+dashed on the Cytoscape canvas |
 | T-0028 | AC-0028 | story | Atlas/AtlasCanvas/NodeSelection, Shell/App/AtlasNodeToEvidence, Atlas/EvidencePanel/WithSource, Atlas/EvidencePanel/WindowedLargeFile | Atlas entity selection loads file/span/commit and a byte-accurate read-only source window; plus manual:MT-M1-01 |
-| T-0029 | AC-0029 | reserved | — | M9: Flow Inspector sequence |
-| T-0030 | AC-0030 | reserved | — | M9: Gap cards |
-| T-0031 | AC-0031 | reserved | — | M9: verified-only toggle |
+| T-0029 | AC-0029 | story | Atlas/FlowInspector/SequenceAndTriggerSelection | trigger selection renders the deterministic hop order in React Flow and an accessible sequence with per-hop tier badges; Mermaid remains in the copyable dossier, plus manual:MT-M9-02 |
+| T-0030 | AC-0030 | story | Atlas/FlowInspector/ExplicitGap | unresolved card keeps the graph Gap reason and attempted tiers visible; plus rust:flowtracer::gap_truncates_the_branch and manual:MT-M9-02 |
+| T-0031 | AC-0031 | story | Atlas/FlowInspector/VerifiedOnlyProjection | verified-only excludes InferredWeak hops from both sequence and projected dossier while preserving explicit Gaps; plus manual:MT-M9-02 |
 | T-0032 | AC-0032 | reserved | — | M9: inline provenance in Workbench |
 | T-0033 | AC-0033 | reserved | — | M9: curation persistence |
 | T-0034 | AC-0034 | reserved | — | M10: export honors R-INT-5 |

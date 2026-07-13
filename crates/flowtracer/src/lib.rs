@@ -84,6 +84,11 @@ pub struct Hop {
     pub confidence: String,
     /// First evidence ref as `path bytes start..end`, if present.
     pub evidence: Option<String>,
+    /// Gap reason copied from the destination Gap node, when this hop is
+    /// unresolved. Kept structured so UI/export surfaces never parse a label.
+    pub gap_reason: Option<String>,
+    /// Escalation tiers already attempted before the explicit Gap was emitted.
+    pub attempted_tiers: Vec<String>,
 }
 
 /// One traced flow: a trigger and every hop reachable from it.
@@ -163,6 +168,20 @@ fn edge_prov(edge: &Edge) -> (String, String, Option<String>) {
         )
     });
     (tier, confidence, evidence)
+}
+
+fn gap_context(node: Option<&&Node>) -> (Option<String>, Vec<String>) {
+    let Some(node) = node.filter(|node| node.label == "Gap") else {
+        return (None, Vec::new());
+    };
+    let reason = node.props["reason"].as_str().map(String::from);
+    let attempted_tiers = node.props["attempted_tiers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tier| tier.as_str().map(String::from))
+        .collect();
+    (reason, attempted_tiers)
 }
 
 /// Trace every flow in the graph slice. Deterministic: triggers in sorted
@@ -281,6 +300,7 @@ fn trace_one(
         if let Some(outs) = out_edges.get(id.as_str()) {
             for edge in outs {
                 let (tier, confidence, evidence) = edge_prov(edge);
+                let (gap_reason, attempted_tiers) = gap_context(by_id.get(edge.dst.as_str()));
                 next.push((
                     Hop {
                         label: edge.label.clone(),
@@ -291,6 +311,8 @@ fn trace_one(
                         tier,
                         confidence,
                         evidence,
+                        gap_reason,
+                        attempted_tiers,
                     },
                     edge.dst.clone(),
                 ));
@@ -299,6 +321,7 @@ fn trace_one(
         if let Some(subs) = chan_consumers.get(id.as_str()) {
             for edge in subs {
                 let (tier, confidence, evidence) = edge_prov(edge);
+                let (gap_reason, attempted_tiers) = gap_context(by_id.get(edge.src.as_str()));
                 // Traversal direction: channel → consumer.
                 next.push((
                     Hop {
@@ -310,6 +333,8 @@ fn trace_one(
                         tier,
                         confidence,
                         evidence,
+                        gap_reason,
+                        attempted_tiers,
                     },
                     edge.src.clone(),
                 ));

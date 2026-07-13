@@ -296,6 +296,8 @@ mod tests {
             tier: "Deterministic".into(),
             confidence: confidence.into(),
             evidence: Some("src/app.ts bytes 1..9".into()),
+            gap_reason: None,
+            attempted_tiers: Vec::new(),
         }
     }
 

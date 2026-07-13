@@ -74,12 +74,26 @@ export interface LayerSummary {
   edges: number;
 }
 
+/** One provenance-bearing resolved hop returned by `flowtracer::Flow`. */
+export interface FlowHop {
+  label: string;
+  src: string;
+  dst: string;
+  src_name: string;
+  dst_name: string;
+  tier: string;
+  confidence: string;
+  evidence: string | null;
+  gap_reason: string | null;
+  attempted_tiers: string[];
+}
+
 /** One traced flow as returned by `list_flows` (flowtracer::Flow). */
 export interface Flow {
   trigger: string;
   trigger_kind: string;
   trigger_name: string;
-  hops: unknown[];
+  hops: FlowHop[];
   status: 'Verified' | 'Partial' | 'Inferred';
   score: number;
   depth_limited: boolean;
