@@ -80,6 +80,8 @@ function installFakeCore() {
         if (label === 'Repo') return [FAKE_REPO];
         return [];
       }
+      case 'atlas_snapshot':
+        return { nodes: [FAKE_ENDPOINT], edges: [] };
       case 'read_evidence':
         return { text: FAKE_SOURCE, window_start: 0, truncated: false };
       case 'export_flows':
@@ -165,6 +167,7 @@ const meta = {
       stats: null,
       jobs: [],
       endpoints: [],
+      atlas: { nodes: [], edges: [] },
       topology: null,
       flows: null,
       flowList: [],
@@ -214,6 +217,20 @@ export const EvidenceJumpToSource: Story = {
     await waitFor(() =>
       expect(canvasElement.querySelector('.evidence-panel')).not.toBeInTheDocument(),
     );
+  },
+};
+
+export const AtlasNodeToEvidence: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('1 nodes · 0 edges'));
+    await userEvent.click(canvas.getByRole('button', { name: /^GET \/users$/ }));
+    await waitFor(() => {
+      const mark = canvasElement.querySelector('.evidence-source mark');
+      expect(mark?.textContent).toBe(SPAN_TEXT);
+    });
+    await expect(canvas.getByText(/src\/app\.ts/)).toBeInTheDocument();
+    await expect(canvas.getByText(/workdir/)).toBeInTheDocument();
   },
 };
 

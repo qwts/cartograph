@@ -40,6 +40,18 @@ export interface GraphNode {
   props: { prov?: Provenance; [key: string]: unknown };
 }
 
+export interface GraphEdge {
+  src: string;
+  dst: string;
+  label: string;
+  props: { prov?: Provenance; [key: string]: unknown };
+}
+
+export interface AtlasSnapshot {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface IngestSummary {
   job_id: number;
   files: number;
@@ -90,6 +102,8 @@ export interface AppStore {
   stats: GraphStats | null;
   jobs: Job[];
   endpoints: GraphNode[];
+  /** Complete deterministic graph projection for the read-only Atlas. */
+  atlas: AtlasSnapshot;
   /** Topology map artifact (Mermaid text); null with no backend. */
   topology: string | null;
   /** Flow-dossier artifact (Markdown); null with no backend. */
@@ -130,6 +144,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   stats: null,
   jobs: [],
   endpoints: [],
+  atlas: { nodes: [], edges: [] },
   topology: null,
   flows: null,
   flowList: [],
@@ -149,16 +164,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
         stats: null,
         jobs: [],
         endpoints: [],
+        atlas: { nodes: [], edges: [] },
         topology: null,
         flows: null,
         flowList: [],
       });
       return;
     }
-    const [stats, jobs, endpoints, topology, flows, flowList] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
+      invokeOr<AtlasSnapshot>('atlas_snapshot', { nodes: [], edges: [] }),
       invokeOr<string | null>('export_topology', null),
       invokeOr<string | null>('export_flows', null),
       invokeOr<Flow[]>('list_flows', []),
@@ -169,6 +186,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       stats,
       jobs,
       endpoints,
+      atlas,
       topology,
       flows,
       flowList,

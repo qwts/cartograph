@@ -117,13 +117,13 @@
 ### US-0010 — Atlas graph canvas with confidence overlay
 - **Actor:** Engineer
 - **As a** engineer **I want** to explore the unified graph with layer filters and tier coloring **so that** I can see what is confirmed vs inferred vs gapped.
-- **Priority:** Must · **Status:** Draft
+- **Priority:** Must · **Status:** Done
 - **AC-0026** Given the graph, when I filter by layer, then only that layer's nodes/edges render.
 - **AC-0027** Given the confidence overlay, when active, then nodes/edges are colored by tier and Gaps are flagged.
 - **AC-0028** Given a node, when selected, then the evidence panel shows file/span/commit with read-only jump-to-source.
 - **Security:** Source view is read-only (NG1).
 - **Performance:** Canvas remains interactive at 10k+ nodes (Cytoscape.js).
-- **Trace:** M9 · `app`, UI · — · T-0026..0028
+- **Trace:** M9 · `core-graph`, `app`, `ui` · — · T-0026..0028
 
 ### US-0011 — Flow Inspector with explicit gaps
 - **Actor:** Engineer
