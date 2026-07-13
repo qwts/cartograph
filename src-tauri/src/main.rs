@@ -358,6 +358,14 @@ struct AddSystemSummary {
     edges: u64,
 }
 
+fn manifest_dir(path: &std::path::Path) -> &std::path::Path {
+    if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(std::path::Path::new("."))
+    }
+}
+
 /// Ingest a whole system from `cartograph.system.toml` (US-0001 AC-0002):
 /// clone/read every declared repo, apply its layer hints and the
 /// manifest's known channel identities at ingest.
@@ -387,7 +395,7 @@ fn add_system(
         std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
     let manifest = ingest::manifest::SystemManifest::load(&manifest_path)
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let base = manifest_path.parent().unwrap_or(std::path::Path::new("."));
+    let base = manifest_dir(&manifest_path);
     let repos_dir = app
         .path()
         .app_data_dir()
@@ -579,6 +587,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use core_graph::{GraphStore, SqliteGraphStore};
+
+    #[test]
+    fn state_json_resolves_from_manifest_directory_for_both_input_forms() {
+        // AC-0009: observed state is relative to the topology manifest,
+        // whether add_system receives that manifest file or its directory.
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_file = dir.path().join(ingest::manifest::MANIFEST_NAME);
+        std::fs::write(&manifest_file, "[[repos]]\nurl = \"acme/shop\"\n").unwrap();
+
+        assert_eq!(crate::manifest_dir(dir.path()), dir.path());
+        assert_eq!(crate::manifest_dir(&manifest_file), dir.path());
+        assert_eq!(
+            crate::manifest_dir(dir.path()).join("state.json"),
+            dir.path().join("state.json")
+        );
+        assert_eq!(
+            crate::manifest_dir(&manifest_file).join("state.json"),
+            dir.path().join("state.json")
+        );
+    }
 
     #[test]
     fn cloned_repo_ingests_with_real_identity() {
