@@ -266,6 +266,7 @@ fn extract_tree_incremental(
     let wants =
         |names: &[&str]| layers.is_empty() || names.iter().any(|n| layers.iter().any(|l| l == n));
     let wants_application = wants(&["server", "events", "client"]);
+    let wants_server = wants(&["server"]);
     let wants_infra = wants(&["infra", "cloud"]);
     let ts_id = adapters_lang_ts::SourceId { repo, commit };
     let mut layers = LayerBreakdown::default();
@@ -295,7 +296,7 @@ fn extract_tree_incremental(
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
     };
-    if wants_application {
+    if wants_server {
         let python_id = adapters_lang_python::SourceId { repo, commit };
         let (python, stats) =
             adapters_lang_python::extract_dir_incremental(root, &python_id, &mut cache.python)
@@ -1815,6 +1816,25 @@ resource "aws_sqs_queue" "orders" {
                 && edge.src == endpoint.id
                 && edge.dst == "sym:local/python-app@api.py#orders"
         }));
+
+        let (client_only, client_summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/python-app",
+            "workdir",
+            &["client".into()],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(client_summary.python, crate::LayerSummary::default());
+        assert!(
+            client_only
+                .nodes
+                .iter()
+                .all(|node| node.props["language"] != "python")
+        );
     }
 
     #[test]

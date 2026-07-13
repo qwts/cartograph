@@ -295,12 +295,18 @@ fn parse_imports(
 }
 
 fn literal_string(cx: &FileCx<'_>, node: TsNode<'_>) -> Option<String> {
-    matches!(node.kind(), "string" | "concatenated_string").then(|| {
-        let text = cx.text(&node).trim();
-        text.trim_start_matches(['r', 'u', 'b', 'f', 'R', 'U', 'B', 'F'])
-            .trim_matches(['\'', '"'])
-            .to_string()
-    })
+    if node.kind() != "string" {
+        return None;
+    }
+    let text = cx.text(&node).trim();
+    let quote_at = text.find(['\'', '"'])?;
+    if text[..quote_at]
+        .chars()
+        .any(|prefix| matches!(prefix, 'f' | 'F'))
+    {
+        return None;
+    }
+    Some(text[quote_at..].trim_matches(['\'', '"']).to_string())
 }
 
 fn call_name(cx: &FileCx<'_>, call: TsNode<'_>) -> Option<String> {
@@ -766,7 +772,7 @@ fn collect_python_files(
             if name.starts_with('.')
                 || matches!(
                     name.as_ref(),
-                    "__pycache__" | "venv" | "site-packages" | "dist" | "build"
+                    "__pycache__" | "venv" | "site-packages" | "node_modules" | "dist" | "build"
                 )
             {
                 continue;

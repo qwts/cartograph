@@ -40,6 +40,11 @@ def health():
 @fake.get("/not-an-endpoint")
 def lookalike():
     return None
+
+prefix = "/v1"
+@api.get(f"{prefix}/computed")
+def computed_route():
+    return None
 "#;
     let extraction = extract_source(source, "app.py", &id()).unwrap();
     let mut endpoints = extraction
@@ -67,6 +72,11 @@ def lookalike():
         !endpoints
             .iter()
             .any(|(_, path, _)| path == "/not-an-endpoint")
+    );
+    assert!(
+        !endpoints
+            .iter()
+            .any(|(_, path, _)| path.ends_with("/computed"))
     );
     assert!(edge_pairs(&extraction, "HANDLES").contains(&(
         "ep:local/python-service@GET:/orders",
@@ -145,6 +155,12 @@ fn incremental_reingest_is_deterministic() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.py"), "def a():\n    return 1\n").unwrap();
     std::fs::write(dir.path().join("b.py"), "def b():\n    return 2\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("node_modules/vendor")).unwrap();
+    std::fs::write(
+        dir.path().join("node_modules/vendor/third_party.py"),
+        "def vendored():\n    return 0\n",
+    )
+    .unwrap();
     let mut cache = IncrementalCache::default();
     let (first, first_stats) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
     assert_eq!(first_stats.recomputed_files, 2);
