@@ -42,9 +42,10 @@
 - **AC-0044** Given a Lambda permission with direct resource references, when resolved against the Capability Registry, then a Confirmed TRIGGERS edge links its source ARN to the Lambda function.
 - **AC-0045** Given Lambda@Edge associations nested under default or ordered CloudFront cache behaviors, when resolved against the Capability Registry, then Confirmed TRIGGERS edges link the distribution to every referenced Lambda function.
 - **AC-0046** Given an EventBridge Pipe with direct resource references, when resolved against the Capability Registry, then a Confirmed TRIGGERS edge links its source to its target.
+- **AC-0047** Given an IAM policy that references an `aws_iam_policy_document` defined in the same extraction, when its statement resources are resolvable, then Confirmed GRANTS edges target those resources with actions and evidence from the document; an absent or unresolved document target remains explicit.
 - **Security:** IAM GRANTS feed the security view; secrets in state are redacted.
 - **Performance:** Registry lookups O(1) per resource type.
-- **Trace:** M2,M6 · `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0046
+- **Trace:** M2,M6 · `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0047
 
 ### US-0004 — Event graph with channel-identity stitching
 - **Actor:** Engine

@@ -19,7 +19,7 @@ use hcl_edit::Span;
 use hcl_edit::expr::{Expression, Traversal, TraversalOperator};
 use hcl_edit::structure::{Block, BlockLabel, Body};
 use hcl_edit::visit::{Visit, visit_expr};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::Path;
 
@@ -46,9 +46,66 @@ pub struct Extraction {
     pub nodes: Vec<Node>,
     /// Graph edges (props carry provenance under `prov`).
     pub edges: Vec<Edge>,
+    policy_documents: BTreeMap<String, PolicyDocument>,
+}
+
+#[derive(Debug)]
+struct PolicyDocument {
+    resource_refs: BTreeSet<String>,
+    actions: Vec<String>,
+    evidence: EvidenceRef,
 }
 
 impl Extraction {
+    fn resolve_policy_document_grants(&mut self) {
+        let mut resolved = Vec::with_capacity(self.edges.len());
+        for edge in std::mem::take(&mut self.edges) {
+            if edge.label != "GRANTS" {
+                resolved.push(edge);
+                continue;
+            }
+
+            let Some(document) = self.policy_documents.get(&edge.dst) else {
+                // Missing document stays explicit; close_over_endpoints turns
+                // it into a placeholder rather than silently dropping it.
+                resolved.push(edge);
+                continue;
+            };
+
+            if document.resource_refs.is_empty() {
+                // The document exists but has no T0-resolvable resource refs
+                // (for example only var.*). Preserve the honest document hop,
+                // while attaching the actions/evidence we did establish.
+                let mut fallback = edge;
+                fallback.props["actions"] = serde_json::json!(document.actions);
+                fallback.props["policy_document"] = serde_json::json!(fallback.dst);
+                fallback.props["prov"] = joined_policy_prov(
+                    &fallback,
+                    document,
+                    &format!("GRANTS {} -> {}", fallback.src, fallback.dst),
+                );
+                resolved.push(fallback);
+                continue;
+            }
+
+            for target in &document.resource_refs {
+                let fact = format!("GRANTS {} -> {target} via {}", edge.src, edge.dst);
+                resolved.push(Edge {
+                    src: edge.src.clone(),
+                    dst: resource_id_from_node(&edge.src, target),
+                    label: "GRANTS".into(),
+                    props: serde_json::json!({
+                        "actions": document.actions,
+                        "policy_document": edge.dst,
+                        "registry": registry::REGISTRY_VERSION,
+                        "prov": joined_policy_prov(&edge, document, &fact),
+                    }),
+                });
+            }
+        }
+        self.edges = resolved;
+    }
+
     /// Ensure every edge endpoint exists as a node; unresolved targets become
     /// flagged placeholder `Resource` nodes (explicit, never silently dropped).
     pub fn close_over_endpoints(&mut self) {
@@ -179,6 +236,15 @@ fn block_name_matches(actual: &str, selector: &str) -> bool {
         .map_or(actual == selector, |suffix| actual.ends_with(suffix))
 }
 
+fn dynamic_block_matches(block: &Block, selector: &str) -> bool {
+    block.ident.as_str() == "dynamic"
+        && block
+            .labels
+            .first()
+            .map(label_text)
+            .is_some_and(|name| block_name_matches(&name, selector))
+}
+
 /// References selected by a path through nested blocks to a final attribute
 /// (or final nested block). A leading `*` on a block segment means suffix
 /// matching; registry paths use that only for Terraform's parallel
@@ -198,6 +264,12 @@ fn refs_for_path(body: &Body, path: &[&str]) -> BTreeSet<String> {
         for nested in body.blocks() {
             if block_name_matches(nested.ident.as_str(), head) {
                 refs.extend(refs_in_body(&nested.body));
+            } else if dynamic_block_matches(nested, head) {
+                for content in nested.body.blocks() {
+                    if content.ident.as_str() == "content" {
+                        refs.extend(refs_in_body(&content.body));
+                    }
+                }
             }
         }
         return refs;
@@ -207,6 +279,12 @@ fn refs_for_path(body: &Body, path: &[&str]) -> BTreeSet<String> {
     for nested in body.blocks() {
         if block_name_matches(nested.ident.as_str(), head) {
             refs.extend(refs_for_path(&nested.body, tail));
+        } else if dynamic_block_matches(nested, head) {
+            for content in nested.body.blocks() {
+                if content.ident.as_str() == "content" {
+                    refs.extend(refs_for_path(&content.body, tail));
+                }
+            }
         }
     }
     refs
@@ -250,8 +328,38 @@ fn resource_id(repo: &str, address: &str) -> String {
     format!("res:{repo}@{address}")
 }
 
-/// Extract facts from one Terraform file.
-pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extraction, ExtractError> {
+fn resource_id_from_node(source_node_id: &str, address: &str) -> String {
+    let repo = source_node_id
+        .strip_prefix("res:")
+        .and_then(|rest| rest.split_once('@'))
+        .map(|(repo, _)| repo)
+        .expect("IaC resource node id has a repository namespace");
+    resource_id(repo, address)
+}
+
+fn joined_policy_prov(edge: &Edge, document: &PolicyDocument, fact: &str) -> serde_json::Value {
+    let source_prov: Provenance = serde_json::from_value(edge.props["prov"].clone())
+        .expect("IaC GRANTS edge carries valid provenance");
+    let mut evidence = source_prov.evidence;
+    if !evidence.contains(&document.evidence) {
+        evidence.push(document.evidence.clone());
+    }
+    let provenance = Provenance::new(
+        Tier::Deterministic,
+        ConfidenceTier::Confirmed,
+        evidence,
+        EXTRACTOR_ID,
+        fact.as_bytes(),
+    )
+    .expect("Deterministic/Confirmed is always within ceiling");
+    serde_json::to_value(provenance).expect("provenance serializes")
+}
+
+fn extract_source_unresolved(
+    source: &str,
+    path: &str,
+    id: &SourceId,
+) -> Result<Extraction, ExtractError> {
     let body: Body = source
         .parse()
         .map_err(|e: hcl_edit::parser::Error| ExtractError::Parse {
@@ -280,6 +388,22 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
             labels[0].clone()
         };
         let provider = rtype.split('_').next().unwrap_or("").to_string();
+        if kind == "data" && labels[0] == "aws_iam_policy_document" {
+            out.policy_documents.insert(
+                node_id.clone(),
+                PolicyDocument {
+                    resource_refs: refs_for_path(&block.body, &["statement", "resources"]),
+                    actions: literal_actions(&source[span.clone()]),
+                    evidence: EvidenceRef {
+                        repo: id.repo.into(),
+                        path: path.into(),
+                        byte_start: span.start as u64,
+                        byte_end: span.end as u64,
+                        commit_sha: id.commit.into(),
+                    },
+                },
+            );
+        }
         out.nodes.push(Node {
             id: node_id.clone(),
             label: "Resource".into(),
@@ -368,6 +492,13 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
     Ok(out)
 }
 
+/// Extract facts from one Terraform file.
+pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extraction, ExtractError> {
+    let mut out = extract_source_unresolved(source, path, id)?;
+    out.resolve_policy_document_grants();
+    Ok(out)
+}
+
 /// Extract facts from every `.tf` file under `root` (skipping `.terraform`
 /// and hidden dirs), with edge endpoints closed over placeholders.
 pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractError> {
@@ -377,10 +508,12 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
     let mut out = Extraction::default();
     for rel in &files {
         let source = std::fs::read_to_string(root.join(rel))?;
-        let ex = extract_source(&source, rel, id)?;
+        let ex = extract_source_unresolved(&source, rel, id)?;
         out.nodes.extend(ex.nodes);
         out.edges.extend(ex.edges);
+        out.policy_documents.extend(ex.policy_documents);
     }
+    out.resolve_policy_document_grants();
     out.close_over_endpoints();
     Ok(out)
 }

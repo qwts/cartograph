@@ -60,3 +60,4 @@ rows in the same PR (see AGENTS.md).
 | T-0044 | AC-0044 | rust | iac::capability_registry_triggers_through_lambda_permissions | source ARN to Lambda function via TRIGGERS |
 | T-0045 | AC-0045 | rust | iac::capability_registry_triggers_lambda_at_edge_from_nested_cache_behaviors | default/ordered cache behavior traversal with distribution as source |
 | T-0046 | AC-0046 | rust | iac::capability_registry_triggers_aws_pipes | EventBridge Pipes source to target via TRIGGERS |
+| T-0047 | AC-0047 | rust | iac::iam_policy_grants_chase_same_extraction_policy_document, iac::iam_policy_document_chase_spans_files_in_directory, iac::missing_or_unresolved_policy_document_keeps_explicit_grant | same-source and cross-file joins; fail-closed fallback with document actions/evidence |
