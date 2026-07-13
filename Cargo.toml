@@ -26,6 +26,7 @@ core-graph = { path = "crates/core-graph" }
 core-prov = { path = "crates/core-prov" }
 adapters-fw = { path = "crates/adapters-fw" }
 adapters-lang-ts = { path = "crates/adapters-lang-ts" }
+adapters-lang-python = { path = "crates/adapters-lang-python" }
 dynamic = { path = "crates/dynamic" }
 events = { path = "crates/events" }
 flowtracer = { path = "crates/flowtracer" }

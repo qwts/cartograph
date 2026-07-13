@@ -66,6 +66,13 @@ export function IngestCard({ busy, summary, error, canIngest, onIngest }: Ingest
               </dd>
             </div>
             <div>
+              <dt>Python</dt>
+              <dd data-testid="python-layer-summary">
+                {summary.layers.python.files} files · {summary.layers.python.nodes} nodes ·{' '}
+                {summary.layers.python.edges} edges
+              </dd>
+            </div>
+            <div>
               <dt>Terraform</dt>
               <dd data-testid="tf-layer-summary">
                 {summary.layers.tf.files} files · {summary.layers.tf.nodes} nodes ·{' '}

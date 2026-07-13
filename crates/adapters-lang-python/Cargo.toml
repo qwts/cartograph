@@ -1,0 +1,21 @@
+[package]
+name = "adapters-lang-python"
+description = "Python language adapter: tree-sitter T0 extraction (SPEC-00 §3.3, M10)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+core-graph = { workspace = true }
+core-prov = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tree-sitter = "0.26"
+tree-sitter-python = "0.25"
+streaming-iterator = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

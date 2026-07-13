@@ -293,6 +293,21 @@ PR — per-PR verification is CI's job.
 4. Delete one changed source and re-ingest. **Pass:** its cache context and
    graph facts disappear; no stale node/edge remains (AC-0040).
 
+## MT-M10-02 — Python server recovery and language summary
+
+1. Ingest a Python repo containing both an import-proven FastAPI route and an
+   import-proven Flask route, with one handler calling a function imported
+   from another local Python module.
+2. **Pass:** the ingest summary reports Python file/node/edge counts separately
+   from TypeScript and Terraform; zero-count languages remain visible.
+3. Inspect both endpoints and their handlers. **Pass:** methods, literal paths,
+   HANDLES, local/imported CALLS, tier, extractor, file, exact byte span, and
+   commit are present and Confirmed.
+4. Add a lookalike object exposing `.get`/`.route` without a FastAPI/Flask
+   import. **Pass:** it creates no Endpoint. Re-ingest unchanged, then change
+   one Python file. **Pass:** unchanged Python contexts are reused and only the
+   changed file is recomputed (AC-0053, ADR-0003, M10 language breadth).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

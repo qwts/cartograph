@@ -22,16 +22,17 @@
 - **Performance:** Shallow/sparse clone; 1 GB repo clones within bounded progress feedback.
 - **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050
 
-### US-0002 — Deterministic extraction of server-side facts (TS first)
+### US-0002 — Deterministic extraction of server-side facts (TS/Python first)
 - **Actor:** Engine
 - **As a** engineer **I want** import/call graphs, endpoints, and data access extracted statically **so that** server facts are Confirmed without inference.
-- **Priority:** Must · **Status:** Done
+- **Priority:** Must · **Status:** In-Progress
 - **AC-0004** Given a TS repo, when ingested, then endpoints (method/path/handler) are extracted via the framework adapter and marked Confirmed.
 - **AC-0005** Given typed TS, when building call edges, then intra-procedural edges are complete and inter-procedural edges resolve where types permit.
 - **AC-0006** Given any extracted fact, when inspected, then it carries provenance (file/span/commit, tier, extractor_id).
+- **AC-0053** Given Python that import-proves FastAPI or Flask, when the repo is ingested, then Confirmed T0 File/Symbol/IMPORTS/CALLS facts plus literal Endpoint/HANDLES registrations are recovered with exact evidence, directory-proven imported calls are joined deterministically, lookalike framework calls are ignored, and the ingest summary reports Python separately.
 - **Security:** No code leaves device at T0.
 - **Performance:** Incremental tree-sitter parse; re-parse only changed files by `content_hash`.
-- **Trace:** M1 · `adapters-lang-ts`, `adapters-fw`, `core-prov` · — · T-0004..0006
+- **Trace:** M1,M10 · `adapters-lang-ts`, `adapters-lang-python`, `adapters-fw`, `core-prov`, `app`, `ui` · — · T-0004..0006,T-0053
 
 ### US-0003 — IaC resource graph + cloud capability resolution (Terraform/Pulumi/AWS)
 - **Actor:** Engine

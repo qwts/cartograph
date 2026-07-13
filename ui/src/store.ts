@@ -59,6 +59,7 @@ export interface IngestSummary {
   edges: number;
   layers: {
     ts: LayerSummary;
+    python: LayerSummary;
     tf: LayerSummary;
   };
   delta?: {

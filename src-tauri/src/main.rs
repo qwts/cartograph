@@ -27,6 +27,7 @@ struct AppState {
 #[derive(Default)]
 struct RepoExtractionCache {
     ts: adapters_lang_ts::IncrementalCache,
+    python: adapters_lang_python::IncrementalCache,
     tf: iac::IncrementalCache,
 }
 
@@ -59,17 +60,19 @@ impl LayerSummary {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 struct LayerBreakdown {
     ts: LayerSummary,
+    python: LayerSummary,
     tf: LayerSummary,
 }
 
 impl LayerBreakdown {
     fn add(&mut self, other: Self) {
         self.ts.add(other.ts);
+        self.python.add(other.python);
         self.tf.add(other.tf);
     }
 
     fn files(self) -> u64 {
-        self.ts.files + self.tf.files
+        self.ts.files + self.python.files + self.tf.files
     }
 }
 
@@ -215,7 +218,7 @@ impl DeltaSummary {
     }
 }
 
-/// The four-layer T0 pipeline over one tree: TypeScript, Terraform,
+/// The cross-layer T0 pipeline over one tree: TypeScript, Python, Terraform,
 /// channel stitching, client fetch resolution — closed over so the
 /// FK-enforcing store never sees a dangling endpoint.
 #[cfg(test)]
@@ -292,6 +295,28 @@ fn extract_tree_incremental(
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
     };
+    if wants_application {
+        let python_id = adapters_lang_python::SourceId { repo, commit };
+        let (python, stats) =
+            adapters_lang_python::extract_dir_incremental(root, &python_id, &mut cache.python)
+                .map_err(|error| error.to_string())?;
+        delta.add(
+            stats.recomputed_files,
+            stats.reused_files,
+            stats.deleted_files,
+        );
+        layers.python = LayerSummary {
+            files: python
+                .nodes
+                .iter()
+                .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
+                .count() as u64,
+            nodes: python.nodes.len() as u64,
+            edges: python.edges.len() as u64,
+        };
+        extraction.nodes.extend(python.nodes);
+        extraction.edges.extend(python.edges);
+    }
     if wants_infra {
         let tf_id = iac::SourceId { repo, commit };
         let (tf, stats) =
@@ -1748,6 +1773,48 @@ resource "aws_sqs_queue" "orders" {
         assert_eq!(summary.tf.files, 1);
         assert!(summary.tf.nodes > 0);
         assert_eq!(summary.files(), 2);
+    }
+
+    #[test]
+    fn python_server_ingest_reports_layer_and_endpoints() {
+        // AC-0053/T-0053: the app runs the import-proven Python pass for the
+        // server layer and reports it independently from TypeScript.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("api.py"),
+            "from fastapi import FastAPI\n\napp = FastAPI()\n\n@app.get('/orders')\ndef orders():\n    return []\n",
+        )
+        .unwrap();
+
+        let (extraction, summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/python-app",
+            "workdir",
+            &["server".into()],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(summary.python.files, 1);
+        assert!(summary.python.nodes > 0);
+        assert_eq!(summary.ts, crate::LayerSummary::default());
+        assert_eq!(summary.tf, crate::LayerSummary::default());
+        let endpoint = extraction
+            .nodes
+            .iter()
+            .find(|node| node.id == "ep:local/python-app@GET:/orders")
+            .expect("FastAPI endpoint");
+        assert_eq!(endpoint.props["language"], "python");
+        assert_eq!(endpoint.props["framework"], "fastapi");
+        assert_eq!(endpoint.props["prov"]["extractor_id"], "t0.adapter-python");
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.label == "HANDLES"
+                && edge.src == endpoint.id
+                && edge.dst == "sym:local/python-app@api.py#orders"
+        }));
     }
 
     #[test]

@@ -13,6 +13,7 @@ type Story = StoryObj<typeof meta>;
 
 const EMPTY_LAYERS = {
   ts: { files: 0, nodes: 0, edges: 0 },
+  python: { files: 0, nodes: 0, edges: 0 },
   tf: { files: 0, nodes: 0, edges: 0 },
 };
 
@@ -42,6 +43,7 @@ export const WithSummary: Story = {
       edges: 141,
       layers: {
         ts: { files: 8, nodes: 50, edges: 90 },
+        python: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 4, nodes: 34, edges: 51 },
       },
     },
@@ -58,6 +60,7 @@ export const DeltaReingest: Story = {
       edges: 141,
       layers: {
         ts: { files: 8, nodes: 50, edges: 90 },
+        python: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 4, nodes: 34, edges: 51 },
       },
       delta: { recomputed_files: 1, reused_files: 11, deleted_files: 0 },
@@ -81,6 +84,7 @@ export const PulumiWithoutTerraform: Story = {
       edges: 22,
       layers: {
         ts: { files: 7, nodes: 31, edges: 22 },
+        python: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 0, nodes: 0, edges: 0 },
       },
     },
@@ -92,6 +96,33 @@ export const PulumiWithoutTerraform: Story = {
     );
     await expect(canvas.getByTestId('tf-layer-summary').textContent).toBe(
       '0 files · 0 nodes · 0 edges',
+    );
+  },
+};
+
+// AC-0053: Python and TypeScript are reported separately, so successful
+// Python recovery cannot be mistaken for TypeScript coverage.
+export const PythonAndTypeScript: Story = {
+  args: {
+    summary: {
+      job_id: 8,
+      files: 5,
+      nodes: 44,
+      edges: 39,
+      layers: {
+        ts: { files: 3, nodes: 24, edges: 20 },
+        python: { files: 2, nodes: 20, edges: 19 },
+        tf: { files: 0, nodes: 0, edges: 0 },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId('python-layer-summary').textContent).toBe(
+      '2 files · 20 nodes · 19 edges',
+    );
+    await expect(canvas.getByTestId('ts-layer-summary').textContent).toBe(
+      '3 files · 24 nodes · 20 edges',
     );
   },
 };
