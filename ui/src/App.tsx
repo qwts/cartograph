@@ -7,6 +7,7 @@ import { IngestCard } from './components/IngestCard';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
 import { TopologyCard } from './components/TopologyCard';
+import type { SpecArtifact, SpecBundle } from './store';
 
 const AtlasCanvas = lazy(() =>
   import('./components/AtlasCanvas').then(({ AtlasCanvas: Component }) => ({
@@ -18,6 +19,30 @@ const FlowsCard = lazy(() =>
     default: Component,
   })),
 );
+const SpecWorkbench = lazy(() =>
+  import('./components/SpecWorkbench').then(({ SpecWorkbench: Component }) => ({
+    default: Component,
+  })),
+);
+
+function exportSpecBundle(bundle: SpecBundle) {
+  const files = Object.fromEntries(
+    bundle.artifacts.map((artifact) => [artifact.file_name, artifact.content]),
+  );
+  const blob = new Blob([JSON.stringify({ ...bundle, files }, null, 2)], {
+    type: 'application/json',
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `cartograph-spec-${bundle.mode}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function copySpecArtifact(artifact: SpecArtifact) {
+  void navigator.clipboard?.writeText(artifact.content);
+}
 
 export default function App() {
   const {
@@ -30,6 +55,11 @@ export default function App() {
     topology,
     flows,
     flowList,
+    specBundle,
+    specMode,
+    curation,
+    specBusy,
+    specError,
     ingestBusy,
     ingestSummary,
     ingestError,
@@ -40,6 +70,8 @@ export default function App() {
     enqueueJob,
     ingest,
     clearGraph,
+    setSpecMode,
+    curateAssertion,
     select,
     clearSelection,
   } = useAppStore();
@@ -86,6 +118,20 @@ export default function App() {
           <TopologyCard mermaid={topology} />
           <Suspense fallback={<section className="card flow-inspector-card">Loading Flow Inspector…</section>}>
             <FlowsCard flows={flowList} dossier={flows} />
+          </Suspense>
+          <Suspense fallback={<section className="card spec-workbench-card">Loading Spec Workbench…</section>}>
+            <SpecWorkbench
+              bundle={specBundle}
+              mode={specMode}
+              decisions={curation}
+              busy={specBusy}
+              error={specError}
+              canCurate={backend === 'up'}
+              onModeChange={(mode) => void setSpecMode(mode)}
+              onCurate={(assertion, decision, note) => void curateAssertion(assertion, decision, note)}
+              onCopyArtifact={copySpecArtifact}
+              onExportBundle={exportSpecBundle}
+            />
           </Suspense>
         </div>
       </main>

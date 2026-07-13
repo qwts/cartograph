@@ -84,6 +84,7 @@ export interface FlowHop {
   tier: string;
   confidence: string;
   evidence: string | null;
+  provenance: Provenance;
   gap_reason: string | null;
   attempted_tiers: string[];
 }
@@ -97,6 +98,48 @@ export interface Flow {
   status: 'Verified' | 'Partial' | 'Inferred';
   score: number;
   depth_limited: boolean;
+}
+
+export type SpecExportMode = 'verified-only' | 'best-effort';
+
+export interface SpecAssertion {
+  id: string;
+  subject_id: string;
+  subject_kind: string;
+  summary: string;
+  provenance: Provenance;
+}
+
+export interface SpecArtifact {
+  id: string;
+  file_name: string;
+  title: string;
+  format: 'markdown' | 'mermaid';
+  content: string;
+  assertions: SpecAssertion[];
+}
+
+export interface SpecBundle {
+  mode: SpecExportMode;
+  artifacts: SpecArtifact[];
+  assertion_count: number;
+  gap_count: number;
+  drift_count: number;
+}
+
+export type AssertionDecision = 'accepted' | 'rejected' | 'annotated';
+
+export interface CuratableAssertion {
+  subject_id: string;
+  summary: string;
+  provenance: Provenance;
+}
+
+export interface AssertionDecisionRecord {
+  assertion: CuratableAssertion;
+  decision: AssertionDecision;
+  note: string | null;
+  updated_at: string;
 }
 
 export interface EvidenceSource {
@@ -124,6 +167,12 @@ export interface AppStore {
   flows: string | null;
   /** Traced flows as data (status/score per R-INT-2). */
   flowList: Flow[];
+  /** Full official artifact set under the active R-INT-5 mode. */
+  specBundle: SpecBundle | null;
+  specMode: SpecExportMode;
+  curation: AssertionDecisionRecord[];
+  specBusy: boolean;
+  specError: string | null;
   ingestBusy: boolean;
   ingestSummary: IngestSummary | null;
   ingestError: string | null;
@@ -135,6 +184,12 @@ export interface AppStore {
   enqueueJob: (kind: string) => Promise<void>;
   ingest: (path: string) => Promise<void>;
   clearGraph: () => Promise<void>;
+  setSpecMode: (mode: SpecExportMode) => Promise<void>;
+  curateAssertion: (
+    assertion: SpecAssertion,
+    decision: AssertionDecision,
+    note?: string,
+  ) => Promise<void>;
   select: (node: GraphNode) => Promise<void>;
   clearSelection: () => void;
 }
@@ -162,6 +217,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   topology: null,
   flows: null,
   flowList: [],
+  specBundle: null,
+  specMode: 'best-effort',
+  curation: [],
+  specBusy: false,
+  specError: null,
   ingestBusy: false,
   ingestSummary: null,
   ingestError: null,
@@ -182,10 +242,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         topology: null,
         flows: null,
         flowList: [],
+        specBundle: null,
+        curation: [],
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -193,6 +255,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<string | null>('export_topology', null),
       invokeOr<string | null>('export_flows', null),
       invokeOr<Flow[]>('list_flows', []),
+      invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
+      invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
     ]);
     set({
       backend: 'up',
@@ -204,6 +268,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       topology,
       flows,
       flowList,
+      specBundle,
+      curation,
     });
   },
 
@@ -249,6 +315,46 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } finally {
       set({ clearBusy: false });
       await get().refresh();
+    }
+  },
+
+  setSpecMode: async (mode: SpecExportMode) => {
+    set({ specMode: mode, specBusy: true, specError: null });
+    try {
+      const specBundle = await invokeOr<SpecBundle | null>('export_spec', null, { mode });
+      set({ specBundle });
+    } catch (error) {
+      set({ specError: String(error) });
+    } finally {
+      set({ specBusy: false });
+    }
+  },
+
+  curateAssertion: async (
+    assertion: SpecAssertion,
+    decision: AssertionDecision,
+    note?: string,
+  ) => {
+    set({ specBusy: true, specError: null });
+    try {
+      await invokeOr<AssertionDecisionRecord | null>('record_assertion_decision', null, {
+        assertion: {
+          subject_id: assertion.subject_id,
+          summary: assertion.summary,
+          provenance: assertion.provenance,
+        },
+        decision,
+        note: note?.trim() || null,
+      });
+      const [specBundle, curation] = await Promise.all([
+        invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
+        invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
+      ]);
+      set({ specBundle, curation });
+    } catch (error) {
+      set({ specError: String(error) });
+    } finally {
+      set({ specBusy: false });
     }
   },
 

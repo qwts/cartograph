@@ -2,13 +2,16 @@
 //!
 //! M2 brought the first artifact (resource/topology map); M3 adds flow
 //! dossiers (Markdown + Mermaid sequence + provenance table per flow).
-//! Both are portable, renderable anywhere, diffable in a PR. The full
-//! artifact set (US/AC, registers) arrives at M9.
+//! Both are portable, renderable anywhere, diffable in a PR. M9 adds the full
+//! artifact set (US/AC, data model, ADRs, and registers).
 
 use core_graph::{Edge, Node};
 use flowtracer::Flow;
 use std::collections::BTreeMap;
 use std::fmt::Write;
+
+mod workbench;
+pub use workbench::{ExportMode, SpecArtifact, SpecAssertion, SpecBundle, compile_spec};
 
 /// Edge labels that appear on the topology map — callers use this to query
 /// exactly the edges the artifact renders.
@@ -196,19 +199,40 @@ pub fn flow_dossier(flows: &[Flow]) -> String {
         out.push_str("```\n");
 
         // Provenance table (R-INT-2: tier + confidence on every hop).
-        out.push_str("\n| # | Hop | Tier | Confidence | Evidence |\n");
-        out.push_str("|---|-----|------|------------|----------|\n");
+        out.push_str("\n| # | Hop | Tier | Confidence | Evidence | Extractor | Content hash |\n");
+        out.push_str("|---|-----|------|------------|----------|-----------|--------------|\n");
         for (i, hop) in flow.hops.iter().enumerate() {
+            let evidence = if hop.provenance.evidence.is_empty() {
+                "—".into()
+            } else {
+                hop.provenance
+                    .evidence
+                    .iter()
+                    .map(|evidence| {
+                        format!(
+                            "{}:{} bytes {}..{} @ {}",
+                            evidence.repo,
+                            evidence.path,
+                            evidence.byte_start,
+                            evidence.byte_end,
+                            evidence.commit_sha
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
             writeln!(
                 out,
-                "| {} | {} `{}` → `{}` | {} | {} | {} |",
+                "| {} | {} `{}` → `{}` | {} | {} | {} | `{}` | `{}` |",
                 i + 1,
                 hop.label,
                 hop.src,
                 hop.dst,
                 hop.tier,
                 hop.confidence,
-                hop.evidence.as_deref().unwrap_or("—"),
+                evidence,
+                hop.provenance.extractor_id,
+                hop.provenance.content_hash,
             )
             .expect("write to string");
         }
@@ -296,6 +320,25 @@ mod tests {
             tier: "Deterministic".into(),
             confidence: confidence.into(),
             evidence: Some("src/app.ts bytes 1..9".into()),
+            provenance: core_prov::Provenance::new(
+                core_prov::Tier::Deterministic,
+                match confidence {
+                    "Confirmed" => core_prov::ConfidenceTier::Confirmed,
+                    "InferredStrong" => core_prov::ConfidenceTier::InferredStrong,
+                    "InferredWeak" => core_prov::ConfidenceTier::InferredWeak,
+                    _ => core_prov::ConfidenceTier::Gap,
+                },
+                vec![core_prov::EvidenceRef {
+                    repo: "local/test".into(),
+                    path: "src/app.ts".into(),
+                    byte_start: 1,
+                    byte_end: 9,
+                    commit_sha: "abc123".into(),
+                }],
+                "spec.test",
+                format!("{src}:{label}:{dst}").as_bytes(),
+            )
+            .unwrap(),
             gap_reason: None,
             attempted_tiers: Vec::new(),
         }
@@ -323,7 +366,7 @@ mod tests {
         assert!(dossier.contains("p0->>p1: HANDLES [Confirmed]"));
         assert!(dossier.contains("p1--xp2: PUBLISHES [Gap]"));
         // Provenance table carries tier + confidence + evidence (R-INT-2).
-        assert!(dossier.contains("| 1 | HANDLES `ep:GET:/users` → `sym:app.ts#list` | Deterministic | Confirmed | src/app.ts bytes 1..9 |"));
+        assert!(dossier.contains("| 1 | HANDLES `ep:GET:/users` → `sym:app.ts#list` | Deterministic | Confirmed | local/test:src/app.ts bytes 1..9 @ abc123 | `spec.test` |"));
         // Deterministic (US-0014).
         assert_eq!(dossier, flow_dossier(&flows));
     }

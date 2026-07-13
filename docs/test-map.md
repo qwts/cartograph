@@ -45,10 +45,10 @@ rows in the same PR (see AGENTS.md).
 | T-0029 | AC-0029 | story | Atlas/FlowInspector/SequenceAndTriggerSelection | trigger selection renders the deterministic hop order in React Flow and an accessible sequence with per-hop tier badges; branch edges use recorded src/dst ids, plus story:Atlas/FlowInspector/BranchedTraceUsesRecordedEndpoints and manual:MT-M9-02 |
 | T-0030 | AC-0030 | story | Atlas/FlowInspector/ExplicitGap | unresolved card keeps the graph Gap reason and attempted tiers visible; plus rust:flowtracer::gap_truncates_the_branch and manual:MT-M9-02 |
 | T-0031 | AC-0031 | story | Atlas/FlowInspector/VerifiedOnlyProjection | verified-only excludes InferredWeak hops from both sequence and projected dossier while preserving explicit Gaps; plus manual:MT-M9-02 |
-| T-0032 | AC-0032 | reserved | — | M9: inline provenance in Workbench |
-| T-0033 | AC-0033 | reserved | — | M9: curation persistence |
-| T-0034 | AC-0034 | reserved | — | M10: export honors R-INT-5 |
-| T-0035 | AC-0035 | reserved | — | M9–M10: full artifact set |
+| T-0032 | AC-0032 | story | Spec/SpecWorkbench/FullArtifactSetAndInlineProvenance | every viewed assertion exposes tier, extractor, content hash, and all evidence spans; invalid confidence ceilings fail closed via rust:core_prov::deserialized_provenance_can_be_revalidated; plus rust:spec::full_bundle_has_every_official_artifact_with_inline_provenance and manual:MT-M9-03 |
+| T-0033 | AC-0033 | rust | agents::inferred_assertion_curation_persists_by_content_hash, agents::assertion_curation_rejects_confirmed_and_empty_annotations | cited T2/T3 assertions accept/reject/annotate on the durable spine and reapply only to the exact hash; plus story:Spec/SpecWorkbench/AcceptRejectAndAnnotate and manual:MT-M9-03 |
+| T-0034 | AC-0034 | rust | spec::verified_only_excludes_weak_but_preserves_gap_and_drift_registers, spec::rejected_inference_is_suppressed_without_upgrading_other_facts | one bundle-wide R-INT-5 projection preserves Gap and Drift registers; plus story:Spec/SpecWorkbench/VerifiedOnlyExport and manual:MT-M9-03 |
+| T-0035 | AC-0035 | rust | spec::full_bundle_has_every_official_artifact_with_inline_provenance | stable bundle contains user stories, US-TM, flows, topology, data model, ADRs, Gap register, and Drift register; plus manual:MT-M9-03 |
 | T-0036 | AC-0036 | reserved | — | M9: found-ADR linking |
 | T-0037 | AC-0037 | reserved | — | M9: recovered ADRs marked inferred |
 | T-0038 | AC-0038 | reserved | — | M9: drift register |
