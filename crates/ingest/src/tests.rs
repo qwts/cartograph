@@ -135,6 +135,7 @@ layers = ["server", "client"]
 [[repos]]
 url = "./infra"
 layers = ["infra"]
+otel_jsonl = ["traces/infra.jsonl"]
 
 [env]
 ORDERS_QUEUE = "https://sqs.example/orders"
@@ -147,6 +148,7 @@ ORDERS_QUEUE = "https://sqs.example/orders"
     assert_eq!(m.repos[0].url, "acme/shop");
     assert_eq!(m.repos[0].layers, ["server", "client"]);
     assert_eq!(m.repos[1].layers, ["infra"]);
+    assert_eq!(m.repos[1].otel_jsonl, ["traces/infra.jsonl"]);
     assert_eq!(
         m.env.get("ORDERS_QUEUE").map(String::as_str),
         Some("https://sqs.example/orders")
