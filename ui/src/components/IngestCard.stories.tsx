@@ -48,6 +48,29 @@ export const WithSummary: Story = {
   },
 };
 
+// AC-0039/AC-0040: unchanged parses are visibly reused on re-ingest.
+export const DeltaReingest: Story = {
+  args: {
+    summary: {
+      job_id: 7,
+      files: 12,
+      nodes: 84,
+      edges: 141,
+      layers: {
+        ts: { files: 8, nodes: 50, edges: 90 },
+        tf: { files: 4, nodes: 34, edges: 51 },
+      },
+      delta: { recomputed_files: 1, reused_files: 11, deleted_files: 0 },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId('delta-summary').textContent).toBe(
+      'Delta: 1 recomputed · 11 reused · 0 removed',
+    );
+  },
+};
+
 // AC-0049: a Pulumi/TS ingest makes its lack of Terraform facts explicit.
 export const PulumiWithoutTerraform: Story = {
   args: {

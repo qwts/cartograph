@@ -377,6 +377,37 @@ fn dir_walk_skips_noise_and_is_deterministic() {
 }
 
 #[test]
+fn delta_reingest_reuses_unchanged_files_and_recomputes_only_changes() {
+    // AC-0040 (T-0040): source parsing is content-addressed per physical file.
+    let dir = fixture_dir();
+    let mut cache = IncrementalCache::default();
+    let (_, first) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    assert_eq!(first.recomputed_files, 2);
+    assert_eq!(first.reused_files, 0);
+
+    let (same, second) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    assert_eq!(second.recomputed_files, 0);
+    assert_eq!(second.reused_files, 2);
+
+    std::fs::write(
+        dir.path().join("src/users.ts"),
+        "export function listUsers() { return []; }\n",
+    )
+    .unwrap();
+    let (changed, third) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    assert_eq!(third.recomputed_files, 1);
+    assert_eq!(third.reused_files, 1);
+    assert_ne!(
+        serde_json::to_string(&same.nodes).unwrap(),
+        serde_json::to_string(&changed.nodes).unwrap()
+    );
+
+    std::fs::remove_file(dir.path().join("src/users.ts")).unwrap();
+    let (_, fourth) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    assert_eq!(fourth.deleted_files, 1);
+}
+
+#[test]
 fn close_over_creates_placeholders_for_unresolved_targets() {
     let src = "import { helper } from './missing';\nexport function run() { helper(); }";
     let mut ex = extract_source(src.as_bytes(), "src/run.ts", &id()).unwrap();

@@ -53,6 +53,8 @@ pub trait GraphStore {
     fn put_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
     /// Delete outgoing edges from `src` carrying `label`.
     fn delete_edges_from_with_label(&mut self, src: &str, label: &str) -> Result<(), GraphError>;
+    /// Delete one edge by its stable `(src, dst, label)` key.
+    fn delete_edge(&mut self, src: &str, dst: &str, label: &str) -> Result<(), GraphError>;
     /// Delete a node and all of its incident edges.
     fn delete_node(&mut self, id: &str) -> Result<(), GraphError>;
     /// Fetch a node by id.
@@ -159,6 +161,14 @@ impl GraphStore for SqliteGraphStore {
         self.conn.execute(
             "DELETE FROM edges WHERE src = ?1 AND label = ?2",
             params![src, label],
+        )?;
+        Ok(())
+    }
+
+    fn delete_edge(&mut self, src: &str, dst: &str, label: &str) -> Result<(), GraphError> {
+        self.conn.execute(
+            "DELETE FROM edges WHERE src = ?1 AND dst = ?2 AND label = ?3",
+            params![src, dst, label],
         )?;
         Ok(())
     }
@@ -456,6 +466,9 @@ mod tests {
         assert_eq!(edges.len(), 2);
         assert!(edges.iter().any(|edge| edge.label == "REFERENCES"));
         assert!(edges.iter().any(|edge| edge.src == "adr:b"));
+
+        store.delete_edge("adr:b", "target", "DECIDES").unwrap();
+        assert_eq!(store.all_edges().unwrap().len(), 1);
 
         store.delete_node("target").unwrap();
         assert!(store.get_node("target").unwrap().is_none());

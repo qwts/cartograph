@@ -260,6 +260,21 @@ PR — per-PR verification is CI's job.
    **Pass:** its derived finding disappears; confirmed findings and facts are
    unchanged (R-INT-1, R-INT-5).
 
+## MT-M10-01 — Deterministic delta re-ingest
+
+1. Ingest a local fixture containing at least two TS/TSX files and two
+   Terraform files. Record the returned delta counts and the Atlas snapshot.
+   **Pass:** every source context is initially reported recomputed.
+2. Re-ingest without changing any input. **Pass:** recomputed is zero, source
+   contexts are reported reused, the ordered T0 fact identity/content-hash set
+   is identical, and graph reconciliation reports no changed facts (AC-0039).
+3. Change one TS/TSX file and one Terraform file, then re-ingest. **Pass:** only
+   those byte-changed extraction contexts are reparsed; unchanged contexts are
+   reused, while cross-file calls, module/policy joins, and stitched facts
+   reflect the new full repository state (AC-0040).
+4. Delete one changed source and re-ingest. **Pass:** its cache context and
+   graph facts disappear; no stale node/edge remains (AC-0040).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

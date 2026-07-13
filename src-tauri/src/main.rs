@@ -21,6 +21,18 @@ struct AppState {
     graph: Mutex<SqliteGraphStore>,
     jobs: Mutex<JobStore>,
     decisions: Mutex<agents::DecisionLog>,
+    extraction_caches: Mutex<ExtractionCaches>,
+}
+
+#[derive(Default)]
+struct RepoExtractionCache {
+    ts: adapters_lang_ts::IncrementalCache,
+    tf: iac::IncrementalCache,
+}
+
+#[derive(Default)]
+struct ExtractionCaches {
+    repos: std::collections::BTreeMap<String, RepoExtractionCache>,
 }
 
 #[derive(Serialize)]
@@ -92,7 +104,14 @@ fn clear_graph_store(graph: &mut SqliteGraphStore) -> Result<GraphStats, String>
 #[tauri::command]
 fn clear_graph(state: State<'_, AppState>) -> Result<GraphStats, String> {
     let mut graph = state.graph.lock().map_err(|e| e.to_string())?;
-    clear_graph_store(&mut graph)
+    let stats = clear_graph_store(&mut graph)?;
+    state
+        .extraction_caches
+        .lock()
+        .map_err(|e| e.to_string())?
+        .repos
+        .clear();
+    Ok(stats)
 }
 
 #[tauri::command]
@@ -178,11 +197,28 @@ struct IngestSummary {
     nodes: u64,
     edges: u64,
     layers: LayerBreakdown,
+    delta: DeltaSummary,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+struct DeltaSummary {
+    recomputed_files: u64,
+    reused_files: u64,
+    deleted_files: u64,
+}
+
+impl DeltaSummary {
+    fn add(&mut self, recomputed_files: u64, reused_files: u64, deleted_files: u64) {
+        self.recomputed_files += recomputed_files;
+        self.reused_files += reused_files;
+        self.deleted_files += deleted_files;
+    }
 }
 
 /// The four-layer T0 pipeline over one tree: TypeScript, Terraform,
 /// channel stitching, client fetch resolution — closed over so the
 /// FK-enforcing store never sees a dangling endpoint.
+#[cfg(test)]
 fn extract_tree_with_summary(
     root: &std::path::Path,
     repo: &str,
@@ -192,14 +228,48 @@ fn extract_tree_with_summary(
     state_json: Option<&std::path::Path>,
     otel_jsonl: &[std::path::PathBuf],
 ) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown), String> {
+    let mut cache = RepoExtractionCache::default();
+    extract_tree_incremental(
+        root,
+        repo,
+        commit,
+        layers,
+        manifest_env,
+        state_json,
+        otel_jsonl,
+        &mut cache,
+    )
+    .map(|(extraction, layers, _)| (extraction, layers))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_tree_incremental(
+    root: &std::path::Path,
+    repo: &str,
+    commit: &str,
+    layers: &[String],
+    manifest_env: &std::collections::BTreeMap<String, String>,
+    state_json: Option<&std::path::Path>,
+    otel_jsonl: &[std::path::PathBuf],
+    cache: &mut RepoExtractionCache,
+) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown, DeltaSummary), String> {
     // Layer hints gate extractors (AC-0002): empty means everything; the
     // TS pass covers server/events/client, the HCL pass infra/cloud.
     let wants =
         |names: &[&str]| layers.is_empty() || names.iter().any(|n| layers.iter().any(|l| l == n));
     let ts_id = adapters_lang_ts::SourceId { repo, commit };
     let mut layers = LayerBreakdown::default();
+    let mut delta = DeltaSummary::default();
     let mut extraction = if wants(&["server", "events", "client"]) {
-        adapters_lang_ts::extract_dir(root, &ts_id).map_err(|e| e.to_string())?
+        let (extraction, stats) =
+            adapters_lang_ts::extract_dir_incremental(root, &ts_id, &mut cache.ts)
+                .map_err(|e| e.to_string())?;
+        delta.add(
+            stats.recomputed_files,
+            stats.reused_files,
+            stats.deleted_files,
+        );
+        extraction
     } else {
         adapters_lang_ts::Extraction::default()
     };
@@ -214,7 +284,13 @@ fn extract_tree_with_summary(
     };
     if wants(&["infra", "cloud"]) {
         let tf_id = iac::SourceId { repo, commit };
-        let tf = iac::extract_dir(root, &tf_id).map_err(|e| e.to_string())?;
+        let (tf, stats) =
+            iac::extract_dir_incremental(root, &tf_id, &mut cache.tf).map_err(|e| e.to_string())?;
+        delta.add(
+            stats.recomputed_files,
+            stats.reused_files,
+            stats.deleted_files,
+        );
         layers.tf = LayerSummary {
             files: iac::terraform_file_count(root).map_err(|e| e.to_string())?,
             nodes: tf.nodes.len() as u64,
@@ -275,7 +351,7 @@ fn extract_tree_with_summary(
     extraction.nodes.extend(adr_facts.nodes);
     extraction.edges.extend(adr_facts.edges);
     extraction.close_over_endpoints();
-    Ok((extraction, layers))
+    Ok((extraction, layers, delta))
 }
 
 #[cfg(test)]
@@ -302,13 +378,49 @@ fn extract_tree(
 
 /// Load an extraction plus its `Repo` node (`repo:{identity}`, carrying the
 /// tree root and commit so evidence reads resolve per repo).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ReconcileStats {
+    inserted_or_updated: u64,
+    unchanged: u64,
+    deleted: u64,
+}
+
+fn fact_owned_by_repo(props: &serde_json::Value, repo: &str) -> bool {
+    serde_json::from_value::<core_prov::Provenance>(props.get("prov").cloned().unwrap_or_default())
+        .ok()
+        .is_some_and(|provenance| {
+            !provenance.evidence.is_empty()
+                && provenance
+                    .evidence
+                    .iter()
+                    .all(|evidence| evidence.repo == repo)
+        })
+}
+
+fn id_explicitly_owned_by_repo(id: &str, repo: &str) -> bool {
+    id == format!("repo:{repo}")
+        || id.starts_with(&format!("file:{repo}@"))
+        || id.starts_with(&format!("sym:{repo}@"))
+        || id.starts_with(&format!("ep:{repo}@"))
+        || id.starts_with(&format!("res:{repo}@"))
+        || id.starts_with(&format!("screen:{repo}@"))
+        || id.starts_with(&format!("adr:{repo}@"))
+        || id.starts_with(&format!("gap:call:{repo}@"))
+        || id.starts_with(&format!("gap:chan:{repo}@"))
+        || id.starts_with(&format!("gap:fetch:{repo}@"))
+}
+
+fn edge_key(edge: &Edge) -> (String, String, String) {
+    (edge.src.clone(), edge.dst.clone(), edge.label.clone())
+}
+
 fn load_into_graph(
     graph: &mut SqliteGraphStore,
     extraction: &adapters_lang_ts::Extraction,
     repo: &str,
     root: &std::path::Path,
     commit: &str,
-) -> Result<(), String> {
+) -> Result<ReconcileStats, String> {
     let repo_prov = core_prov::Provenance::new(
         core_prov::Tier::Deterministic,
         core_prov::ConfidenceTier::Confirmed,
@@ -317,24 +429,114 @@ fn load_into_graph(
         root.to_string_lossy().as_bytes(),
     )
     .expect("within ceiling");
-    graph
-        .put_node(&Node {
-            id: format!("repo:{repo}"),
-            label: "Repo".into(),
-            props: serde_json::json!({
-                "root": root.to_string_lossy(),
-                "commit": commit,
-                "prov": serde_json::to_value(repo_prov).expect("serializes"),
-            }),
-        })
-        .map_err(|e| e.to_string())?;
-    for node in &extraction.nodes {
-        graph.put_node(node).map_err(|e| e.to_string())?;
+    let repo_node = Node {
+        id: format!("repo:{repo}"),
+        label: "Repo".into(),
+        props: serde_json::json!({
+            "root": root.to_string_lossy(),
+            "commit": commit,
+            "prov": serde_json::to_value(repo_prov).expect("serializes"),
+        }),
+    };
+    let mut current_nodes = extraction
+        .nodes
+        .iter()
+        .cloned()
+        .map(|node| (node.id.clone(), node))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    current_nodes.insert(repo_node.id.clone(), repo_node);
+    let current_edges = extraction
+        .edges
+        .iter()
+        .cloned()
+        .map(|edge| (edge_key(&edge), edge))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let existing_nodes = graph
+        .all_nodes()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let existing_edges = graph
+        .all_edges()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|edge| (edge_key(&edge), edge))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut stats = ReconcileStats::default();
+    let mut remaining_edge_keys = std::collections::BTreeSet::new();
+    for (key, edge) in &existing_edges {
+        if fact_owned_by_repo(&edge.props, repo) && !current_edges.contains_key(key) {
+            graph
+                .delete_edge(&edge.src, &edge.dst, &edge.label)
+                .map_err(|error| error.to_string())?;
+            stats.deleted += 1;
+        } else {
+            remaining_edge_keys.insert(key.clone());
+        }
     }
-    for edge in &extraction.edges {
-        graph.put_edge(edge).map_err(|e| e.to_string())?;
+    remaining_edge_keys.extend(current_edges.keys().cloned());
+    for (id, node) in &existing_nodes {
+        if current_nodes.contains_key(id) {
+            continue;
+        }
+        let has_remaining_incident = remaining_edge_keys
+            .iter()
+            .any(|(src, dst, _)| src == id || dst == id);
+        let owned = fact_owned_by_repo(&node.props, repo) || id_explicitly_owned_by_repo(id, repo);
+        let orphan_placeholder =
+            node.props["placeholder"].as_bool() == Some(true) && !has_remaining_incident;
+        if (owned && (id_explicitly_owned_by_repo(id, repo) || !has_remaining_incident))
+            || orphan_placeholder
+        {
+            graph.delete_node(id).map_err(|error| error.to_string())?;
+            stats.deleted += 1;
+        }
     }
-    Ok(())
+    for node in current_nodes.values() {
+        if existing_nodes.get(&node.id) == Some(node) {
+            stats.unchanged += 1;
+        } else {
+            graph.put_node(node).map_err(|e| e.to_string())?;
+            stats.inserted_or_updated += 1;
+        }
+    }
+    for (key, edge) in &current_edges {
+        if existing_edges.get(key) == Some(edge) {
+            stats.unchanged += 1;
+        } else {
+            graph.put_edge(edge).map_err(|e| e.to_string())?;
+            stats.inserted_or_updated += 1;
+        }
+    }
+    Ok(stats)
+}
+
+#[cfg(test)]
+fn deterministic_graph_hashes(graph: &impl GraphStore) -> Result<Vec<String>, String> {
+    fn hash(props: &serde_json::Value) -> Option<&str> {
+        (props["prov"]["tier"].as_str() == Some("Deterministic"))
+            .then(|| props["prov"]["content_hash"].as_str())
+            .flatten()
+    }
+    let mut hashes = graph
+        .all_nodes()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter_map(|node| hash(&node.props).map(|hash| format!("node:{}:{hash}", node.id)))
+        .chain(
+            graph
+                .all_edges()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter_map(|edge| {
+                    hash(&edge.props)
+                        .map(|hash| format!("edge:{}:{}:{}:{hash}", edge.src, edge.dst, edge.label))
+                }),
+        )
+        .collect::<Vec<_>>();
+    hashes.sort();
+    Ok(hashes)
 }
 
 /// Join observed infra to the event layer: insert a `BACKS` edge wherever
@@ -456,16 +658,24 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
             .map(|n| n.to_string_lossy())
             .unwrap_or_default()
     );
-    let (extraction, layers) = extract_tree_with_summary(
-        &root,
-        &repo,
-        "workdir",
-        &[],
-        &std::collections::BTreeMap::new(),
-        None,
-        &[],
-    )
-    .map_err(|e| fail(e, &state, job_id))?;
+    let (extraction, layers, delta) = {
+        let mut caches = state
+            .extraction_caches
+            .lock()
+            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        let cache = caches.repos.entry(repo.clone()).or_default();
+        extract_tree_incremental(
+            &root,
+            &repo,
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+            cache,
+        )
+        .map_err(|e| fail(e, &state, job_id))?
+    };
     {
         let mut graph = state
             .graph
@@ -484,6 +694,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
         layers,
+        delta,
     })
 }
 
@@ -496,6 +707,7 @@ struct AddRepoSummary {
     nodes: u64,
     edges: u64,
     layers: LayerBreakdown,
+    delta: DeltaSummary,
 }
 
 /// Clone a GitHub repo (read-only, shallow) and ingest it with its real
@@ -532,16 +744,24 @@ fn add_repo(
     let token = ingest::discover_token();
     let cloned = ingest::clone_repo(&url, &repos_dir, token.as_deref())
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let (extraction, layers) = extract_tree_with_summary(
-        &cloned.path,
-        &cloned.repo,
-        &cloned.commit_sha,
-        &[],
-        &std::collections::BTreeMap::new(),
-        None,
-        &[],
-    )
-    .map_err(|e| fail(e, &state, job_id))?;
+    let (extraction, layers, delta) = {
+        let mut caches = state
+            .extraction_caches
+            .lock()
+            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        let cache = caches.repos.entry(cloned.repo.clone()).or_default();
+        extract_tree_incremental(
+            &cloned.path,
+            &cloned.repo,
+            &cloned.commit_sha,
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+            cache,
+        )
+        .map_err(|e| fail(e, &state, job_id))?
+    };
     {
         let mut graph = state
             .graph
@@ -568,6 +788,7 @@ fn add_repo(
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
         layers,
+        delta,
     })
 }
 
@@ -592,6 +813,7 @@ struct AddSystemSummary {
     nodes: u64,
     edges: u64,
     layers: LayerBreakdown,
+    delta: DeltaSummary,
 }
 
 fn manifest_dir(path: &std::path::Path) -> &std::path::Path {
@@ -642,6 +864,7 @@ fn add_system(
     let mut repos = Vec::new();
     let (mut files, mut nodes, mut edges) = (0u64, 0u64, 0u64);
     let mut layers = LayerBreakdown::default();
+    let mut delta = DeltaSummary::default();
     for entry in &manifest.repos {
         let is_remote = manifest_entry_is_remote(&entry.url, base);
         let (root, repo, commit) = if is_remote {
@@ -662,20 +885,33 @@ fn add_system(
         let state_path = entry.state_json.as_ref().map(|p| base.join(p));
         let trace_paths: Vec<std::path::PathBuf> =
             entry.otel_jsonl.iter().map(|p| base.join(p)).collect();
-        let (extraction, repo_layers) = extract_tree_with_summary(
-            &root,
-            &repo,
-            &commit,
-            &entry.layers,
-            &manifest.env,
-            state_path.as_deref(),
-            &trace_paths,
-        )
-        .map_err(|e| fail(e, &state, job_id))?;
+        let (extraction, repo_layers, repo_delta) = {
+            let mut caches = state
+                .extraction_caches
+                .lock()
+                .map_err(|e| fail(e.to_string(), &state, job_id))?;
+            let cache = caches.repos.entry(repo.clone()).or_default();
+            extract_tree_incremental(
+                &root,
+                &repo,
+                &commit,
+                &entry.layers,
+                &manifest.env,
+                state_path.as_deref(),
+                &trace_paths,
+                cache,
+            )
+            .map_err(|e| fail(e, &state, job_id))?
+        };
         files += repo_layers.files();
         nodes += extraction.nodes.len() as u64;
         edges += extraction.edges.len() as u64;
         layers.add(repo_layers);
+        delta.add(
+            repo_delta.recomputed_files,
+            repo_delta.reused_files,
+            repo_delta.deleted_files,
+        );
         {
             let mut graph = state
                 .graph
@@ -706,6 +942,7 @@ fn add_system(
         nodes,
         edges,
         layers,
+        delta,
     })
 }
 
@@ -952,6 +1189,7 @@ fn main() {
                 graph: Mutex::new(graph),
                 jobs: Mutex::new(jobs),
                 decisions: Mutex::new(decisions),
+                extraction_caches: Mutex::new(ExtractionCaches::default()),
             });
             Ok(())
         })
@@ -1666,6 +1904,116 @@ export function beat() { bus.emit('heartbeat'); }
         let chans = store.nodes_with_label("Channel").unwrap();
         assert_eq!(chans.len(), 1);
         assert_eq!(chans[0].id, "chan:inproc-event:heartbeat");
+    }
+
+    #[test]
+    fn reingest_hashes_are_identical_and_delta_removes_stale_facts() {
+        // AC-0039/T-0039 and AC-0040/T-0040: an unchanged tree reuses every
+        // parse and yields the same ordered T0 hash set; one changed/deleted
+        // file is the only parse work and its old facts cannot remain.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.ts"),
+            "import { helper } from './helper';\nexport function run() { helper(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("helper.ts"),
+            "export function helper() {}\n",
+        )
+        .unwrap();
+        let repo = "local/delta";
+        let mut cache = crate::RepoExtractionCache::default();
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+
+        let (first, _, initial_delta) = crate::extract_tree_incremental(
+            dir.path(),
+            repo,
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(initial_delta.recomputed_files, 2);
+        crate::load_into_graph(&mut store, &first, repo, dir.path(), "workdir").unwrap();
+        let initial_hashes = crate::deterministic_graph_hashes(&store).unwrap();
+
+        let (same, _, same_delta) = crate::extract_tree_incremental(
+            dir.path(),
+            repo,
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(same_delta.recomputed_files, 0);
+        assert_eq!(same_delta.reused_files, 2);
+        let reconcile =
+            crate::load_into_graph(&mut store, &same, repo, dir.path(), "workdir").unwrap();
+        assert_eq!(reconcile.inserted_or_updated, 0);
+        assert_eq!(
+            crate::deterministic_graph_hashes(&store).unwrap(),
+            initial_hashes
+        );
+
+        std::fs::write(
+            dir.path().join("helper.ts"),
+            "export function replacement() {}\n",
+        )
+        .unwrap();
+        let (changed, _, changed_delta) = crate::extract_tree_incremental(
+            dir.path(),
+            repo,
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(changed_delta.recomputed_files, 1);
+        assert_eq!(changed_delta.reused_files, 1);
+        crate::load_into_graph(&mut store, &changed, repo, dir.path(), "workdir").unwrap();
+        assert!(
+            store
+                .get_node("sym:local/delta@helper.ts#helper")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_node("sym:local/delta@helper.ts#replacement")
+                .unwrap()
+                .is_some()
+        );
+
+        std::fs::remove_file(dir.path().join("helper.ts")).unwrap();
+        let (deleted, _, deleted_delta) = crate::extract_tree_incremental(
+            dir.path(),
+            repo,
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(deleted_delta.deleted_files, 1);
+        crate::load_into_graph(&mut store, &deleted, repo, dir.path(), "workdir").unwrap();
+        assert!(
+            store
+                .get_node("sym:local/delta@helper.ts#replacement")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

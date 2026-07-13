@@ -19,7 +19,7 @@ use adapters_fw::events::{
 use adapters_fw::{HTTP_FACTORIES, NEST};
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node as TsNode, Parser, Query, QueryCursor};
@@ -39,7 +39,7 @@ pub enum ExtractError {
 }
 
 /// Facts extracted from one file or one directory walk.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Extraction {
     /// Graph nodes (props carry provenance under `prov`).
     pub nodes: Vec<Node>,
@@ -60,11 +60,60 @@ pub struct Extraction {
     pending_calls: Vec<PendingCall>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PendingCall {
     resolved_edge: Edge,
     gap_node: Node,
     gap_edge: Edge,
+}
+
+#[derive(Debug, Clone)]
+struct CachedFile {
+    source_hash: String,
+    extraction: Extraction,
+}
+
+/// Reusable per-file T0 parse cache for delta re-ingest (AC-0040).
+#[derive(Debug, Default)]
+pub struct IncrementalCache {
+    files: BTreeMap<String, CachedFile>,
+}
+
+/// Physical source-file work performed by one incremental extraction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IncrementalStats {
+    /// Files parsed because their bytes were new or changed.
+    pub recomputed_files: u64,
+    /// Unchanged files reused from the content-addressed cache.
+    pub reused_files: u64,
+    /// Cached files removed because the source disappeared.
+    pub deleted_files: u64,
+}
+
+fn retarget_props_commit(props: &mut serde_json::Value, commit: &str) {
+    let Ok(mut provenance) =
+        serde_json::from_value::<Provenance>(props.get("prov").cloned().unwrap_or_default())
+    else {
+        return;
+    };
+    for evidence in &mut provenance.evidence {
+        evidence.commit_sha = commit.to_string();
+    }
+    props["prov"] = serde_json::to_value(provenance).expect("provenance serializes");
+}
+
+fn retarget_commit(extraction: &mut Extraction, commit: &str) {
+    for node in &mut extraction.nodes {
+        retarget_props_commit(&mut node.props, commit);
+    }
+    for edge in &mut extraction.edges {
+        retarget_props_commit(&mut edge.props, commit);
+    }
+    for pending in &mut extraction.pending_calls {
+        retarget_props_commit(&mut pending.resolved_edge.props, commit);
+        retarget_props_commit(&mut pending.gap_node.props, commit);
+        retarget_props_commit(&mut pending.gap_edge.props, commit);
+    }
 }
 
 impl Extraction {
@@ -1722,13 +1771,53 @@ pub fn extract_source(
 /// `node_modules`, `dist`, hidden dirs, and `.d.ts` declarations), with edge
 /// endpoints closed over placeholders.
 pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractError> {
+    extract_dir_incremental(root, id, &mut IncrementalCache::default()).map(|(facts, _)| facts)
+}
+
+/// Extract a directory while reusing unchanged file parses by source hash.
+/// Directory-wide call proof and Next.js projection still run every time so
+/// a changed file can affect its explicit import dependents without stale
+/// facts surviving.
+pub fn extract_dir_incremental(
+    root: &Path,
+    id: &SourceId,
+    cache: &mut IncrementalCache,
+) -> Result<(Extraction, IncrementalStats), ExtractError> {
     let mut files = Vec::new();
     collect_ts_files(root, root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let mut out = Extraction::default();
+    let mut stats = IncrementalStats::default();
+    let active = files.iter().cloned().collect::<BTreeSet<_>>();
+    stats.deleted_files = cache
+        .files
+        .keys()
+        .filter(|path| !active.contains(*path))
+        .count() as u64;
+    cache.files.retain(|path, _| active.contains(path));
     for rel in &files {
         let source = std::fs::read(root.join(rel))?;
-        let ex = extract_source(&source, rel, id)?;
+        let source_hash = core_prov::content_hash(&source);
+        let ex = if let Some(cached) = cache
+            .files
+            .get(rel)
+            .filter(|cached| cached.source_hash == source_hash)
+        {
+            stats.reused_files += 1;
+            let mut extraction = cached.extraction.clone();
+            retarget_commit(&mut extraction, id.commit);
+            extraction
+        } else {
+            stats.recomputed_files += 1;
+            extract_source(&source, rel, id)?
+        };
+        cache.files.insert(
+            rel.clone(),
+            CachedFile {
+                source_hash,
+                extraction: ex.clone(),
+            },
+        );
         out.nodes.extend(ex.nodes);
         out.edges.extend(ex.edges);
         out.event_sites.extend(ex.event_sites);
@@ -1748,7 +1837,7 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
     }
     next_pages_screens(&mut out, id);
     out.close_over_endpoints();
-    Ok(out)
+    Ok((out, stats))
 }
 
 /// Next.js pages-router convention (SPEC-00 §3.5): a `.tsx` file under a

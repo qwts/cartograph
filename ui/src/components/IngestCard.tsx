@@ -73,6 +73,12 @@ export function IngestCard({ busy, summary, error, canIngest, onIngest }: Ingest
               </dd>
             </div>
           </dl>
+          {summary.delta && (
+            <p className="muted" data-testid="delta-summary">
+              Delta: {summary.delta.recomputed_files} recomputed · {summary.delta.reused_files}{' '}
+              reused · {summary.delta.deleted_files} removed
+            </p>
+          )}
         </div>
       )}
       {!summary && !error && (
