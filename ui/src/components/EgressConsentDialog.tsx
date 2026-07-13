@@ -40,6 +40,11 @@ export function EgressConsentDialog({
   onCancel,
   onConsent,
 }: EgressConsentDialogProps) {
+  const tierBadge =
+    preview.tier === 'Agentic'
+      ? { label: 'T3 · InferredWeak', className: 'tier-inferredweak' }
+      : { label: 'T2 · InferredStrong', className: 'tier-inferredstrong' };
+
   return (
     <div className="egress-backdrop" role="presentation">
       <section
@@ -54,7 +59,7 @@ export function EgressConsentDialog({
             <p className="egress-kicker">Cloud egress · one action only</p>
             <h2 id="egress-title">Review exact model payload</h2>
           </div>
-          <span className="tier-badge tier-inferredweak">T3 · InferredWeak</span>
+          <span className={`tier-badge ${tierBadge.className}`}>{tierBadge.label}</span>
         </header>
 
         <p id="egress-description" className="muted">
