@@ -316,12 +316,15 @@ PR — per-PR verification is CI's job.
    from TypeScript, Python, and Terraform; zero-count languages remain visible.
 3. Inspect the endpoints and their handlers. **Pass:** methods, literal paths,
    HANDLES, local/imported CALLS, tier, extractor, file, exact byte span, and
-   commit are present and Confirmed.
+   commit are present and Confirmed. A route whose handler is a computed or
+   external expression remains present with an explicit HANDLES Gap.
 4. Add a lookalike router without a matching import and a computed route.
    **Pass:** neither creates an Endpoint. Mark the repo client-only and ingest;
    **pass:** no Go facts are produced. Re-ingest unchanged, then change one Go
    file. **Pass:** unchanged Go contexts are reused and only the changed file is
-   recomputed (AC-0054, ADR-0003, M10 language breadth).
+   recomputed. Add a `//go:build ignore` file and a GOOS-suffixed file without
+   declaring a build target. **Pass:** neither contributes Confirmed facts
+   (AC-0054, ADR-0003, M10 language breadth).
 
 ## MT-SB-01 — Stories render on-brand
 

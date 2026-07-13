@@ -97,9 +97,18 @@ impl FileCx<'_> {
     }
 
     fn prov(&self, node: &TsNode<'_>, fact: &str) -> serde_json::Value {
+        self.prov_with_confidence(node, ConfidenceTier::Confirmed, fact)
+    }
+
+    fn prov_with_confidence(
+        &self,
+        node: &TsNode<'_>,
+        confidence: ConfidenceTier,
+        fact: &str,
+    ) -> serde_json::Value {
         let provenance = Provenance::new(
             Tier::Deterministic,
-            ConfidenceTier::Confirmed,
+            confidence,
             vec![EvidenceRef {
                 repo: self.id.repo.into(),
                 path: self.path.into(),
@@ -295,6 +304,9 @@ enum HandlerTarget {
         package_dir: String,
         exported: String,
     },
+    Gap {
+        expression: String,
+    },
 }
 
 fn framework_factory(callee: &str, bindings: &HashMap<String, ImportBinding>) -> Option<Framework> {
@@ -369,11 +381,18 @@ fn endpoint_registration(
     let handler_name = arguments.get(1).map(|argument| cx.text(argument))?;
     let handler = if let Some(handler) = locals.get(handler_name) {
         HandlerTarget::Resolved(handler.clone())
-    } else {
-        let (base, exported) = handler_name.split_once('.')?;
+    } else if let Some((base, exported)) = handler_name.split_once('.')
+        && let Some(package_dir) = bindings
+            .get(base)
+            .and_then(|binding| binding.package_dir.clone())
+    {
         HandlerTarget::Package {
-            package_dir: bindings.get(base)?.package_dir.clone()?,
+            package_dir,
             exported: exported.to_string(),
+        }
+    } else {
+        HandlerTarget::Gap {
+            expression: handler_name.to_string(),
         }
     };
     if bindings.get(base).map(|binding| binding.path.as_str()) == Some("net/http")
@@ -550,6 +569,37 @@ fn extract_source_with_module(
                     package_dir,
                     exported,
                 }),
+                HandlerTarget::Gap { expression } => {
+                    let gap_id =
+                        format!("gap:go-handler:{}@{}@{}", id.repo, path, call.start_byte());
+                    endpoint_node.props["handler_sym"] = gap_id.clone().into();
+                    let gap = Node {
+                        id: gap_id.clone(),
+                        label: "Gap".into(),
+                        props: serde_json::json!({
+                            "handler_expression": expression,
+                            "reason": "unresolved Go route handler expression",
+                            "attempted_tiers": ["T0"],
+                            "prov": cx.prov_with_confidence(
+                                &call,
+                                ConfidenceTier::Gap,
+                                &format!("Gap {gap_id}"),
+                            ),
+                        }),
+                    };
+                    handles.dst = gap_id;
+                    handles.props = serde_json::json!({
+                        "attempted_resolution": "go-handler-expression",
+                        "prov": cx.prov_with_confidence(
+                            &call,
+                            ConfidenceTier::Gap,
+                            &format!("HANDLES {} -> {}", endpoint, handles.dst),
+                        ),
+                    });
+                    out.nodes.push(endpoint_node);
+                    out.nodes.push(gap);
+                    out.edges.push(handles);
+                }
             }
         }
 
@@ -621,12 +671,56 @@ fn collect_go_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()
             collect_go_files(root, &path, out)?;
         } else if path.extension().and_then(|extension| extension.to_str()) == Some("go")
             && !name.ends_with("_test.go")
+            && !has_platform_suffix(&name)
+            && !has_explicit_build_constraint(&std::fs::read(&path)?)
         {
             let relative = path.strip_prefix(root).expect("walk stays beneath root");
             out.push(relative.to_string_lossy().replace('\\', "/"));
         }
     }
     Ok(())
+}
+
+fn has_explicit_build_constraint(source: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(source);
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("//go:build") || line.starts_with("// +build") {
+            return true;
+        }
+        if line.starts_with("package ") || (!line.is_empty() && !line.starts_with("//")) {
+            break;
+        }
+    }
+    false
+}
+
+fn has_platform_suffix(name: &str) -> bool {
+    const GOOS: &[&str] = &[
+        "aix",
+        "android",
+        "darwin",
+        "dragonfly",
+        "freebsd",
+        "illumos",
+        "ios",
+        "js",
+        "linux",
+        "netbsd",
+        "openbsd",
+        "plan9",
+        "solaris",
+        "wasip1",
+        "windows",
+    ];
+    const GOARCH: &[&str] = &[
+        "386", "amd64", "arm", "arm64", "loong64", "mips", "mips64", "mips64le", "mipsle", "ppc64",
+        "ppc64le", "riscv64", "s390x", "wasm",
+    ];
+    let stem = name.strip_suffix(".go").unwrap_or(name);
+    let mut parts = stem.rsplit('_');
+    let last = parts.next().unwrap_or("");
+    GOOS.contains(&last) || GOARCH.contains(&last)
 }
 
 fn module_path(root: &Path) -> Result<Option<String>, ExtractError> {

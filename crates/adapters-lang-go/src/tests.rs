@@ -45,6 +45,7 @@ func routes() {
     lookalike.Get("/ignored", ignored)
     dynamic := "/dynamic"
     router.Get(dynamic, ignored)
+    api.GET("/wrapped", middleware.Wrap(create))
 }
 "#;
     let extraction = extract_source(source, "main.go", &id()).unwrap();
@@ -66,6 +67,7 @@ func routes() {
         vec![
             ("GET".into(), "/health".into(), "net/http".into()),
             ("GET".into(), "/orders".into(), "chi".into()),
+            ("GET".into(), "/wrapped".into(), "gin".into()),
             ("POST".into(), "/orders".into(), "gin".into()),
         ]
     );
@@ -73,6 +75,13 @@ func routes() {
         "ep:local/go-service@GET:/health",
         "sym:local/go-service@main.go#health"
     )));
+    let wrapped = extraction
+        .edges
+        .iter()
+        .find(|edge| edge.src == "ep:local/go-service@GET:/wrapped" && edge.label == "HANDLES")
+        .expect("unresolved handler stays explicit");
+    assert!(wrapped.dst.starts_with("gap:go-handler:"));
+    assert_eq!(wrapped.props["prov"]["confidence_tier"], "Gap");
 }
 
 #[test]
@@ -171,10 +180,27 @@ fn incremental_reingest_is_deterministic_and_skips_noise() {
         "package noise\nfunc Noise() {}\n",
     )
     .unwrap();
+    std::fs::write(
+        dir.path().join("ignored.go"),
+        "//go:build ignore\n\npackage app\nfunc Ignored() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("platform_windows.go"),
+        "package app\nfunc PlatformOnly() {}\n",
+    )
+    .unwrap();
     let mut cache = IncrementalCache::default();
     let (first, first_stats) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
     assert_eq!(first_stats.recomputed_files, 2);
     assert!(!first.nodes.iter().any(|node| node.id.contains("Noise")));
+    assert!(!first.nodes.iter().any(|node| node.id.contains("Ignored")));
+    assert!(
+        !first
+            .nodes
+            .iter()
+            .any(|node| node.id.contains("PlatformOnly"))
+    );
     let (same, same_stats) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
     assert_eq!(same_stats.recomputed_files, 0);
     assert_eq!(same_stats.reused_files, 2);
