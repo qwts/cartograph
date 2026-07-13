@@ -462,6 +462,63 @@ pub struct DecisionRecord {
     pub updated_at: String,
 }
 
+/// Any inferred compiler assertion that a human may curate in the Workbench.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CuratableAssertion {
+    /// Stable graph/export subject id.
+    pub subject_id: String,
+    /// Human-readable assertion summary.
+    pub summary: String,
+    /// T2/T3 provenance; its content hash is the durable re-ingest key.
+    pub provenance: Provenance,
+}
+
+/// Human disposition for one inferred assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertionDecision {
+    /// Keep the inference in exports at its original confidence tier.
+    Accepted,
+    /// Suppress the inference from exports while the content hash matches.
+    Rejected,
+    /// Preserve the inference and attach a human note.
+    Annotated,
+}
+
+impl AssertionDecision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Annotated => "annotated",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, AgentError> {
+        match value {
+            "accepted" => Ok(Self::Accepted),
+            "rejected" => Ok(Self::Rejected),
+            "annotated" => Ok(Self::Annotated),
+            other => Err(AgentError::Storage(format!(
+                "invalid persisted assertion decision {other}"
+            ))),
+        }
+    }
+}
+
+/// Durable Workbench decision keyed by the assertion content hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssertionDecisionRecord {
+    /// Exact inferred assertion that was reviewed.
+    pub assertion: CuratableAssertion,
+    /// Accept, reject, or annotate without upgrading confidence.
+    pub decision: AssertionDecision,
+    /// Optional human note; required for `Annotated`.
+    pub note: Option<String>,
+    /// SQLite UTC update timestamp.
+    pub updated_at: String,
+}
+
 /// SQLite/WAL decision log on the durable state spine.
 pub struct DecisionLog {
     conn: Connection,
@@ -484,7 +541,16 @@ impl DecisionLog {
                  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
              ) STRICT;
              CREATE INDEX IF NOT EXISTS idx_agent_decisions_basis
-                 ON agent_decisions(basis_hash);",
+                 ON agent_decisions(basis_hash);
+             CREATE TABLE IF NOT EXISTS assertion_decisions (
+                 content_hash  TEXT PRIMARY KEY,
+                 assertion_json TEXT NOT NULL,
+                 decision      TEXT NOT NULL CHECK (
+                     decision IN ('accepted', 'rejected', 'annotated')
+                 ),
+                 note          TEXT,
+                 updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+             ) STRICT;",
         )
         .map_err(storage)?;
         Ok(Self { conn })
@@ -569,6 +635,95 @@ impl DecisionLog {
         rows.map(|row| row.map_err(storage).and_then(parse_decision_row))
             .collect()
     }
+
+    /// Insert or replace curation for any cited T2/T3 assertion.
+    pub fn record_assertion(
+        &mut self,
+        assertion: &CuratableAssertion,
+        decision: AssertionDecision,
+        note: Option<&str>,
+    ) -> Result<AssertionDecisionRecord, AgentError> {
+        validate_curatable_assertion(assertion)?;
+        let normalized_note = note.map(str::trim).filter(|note| !note.is_empty());
+        if decision == AssertionDecision::Annotated && normalized_note.is_none() {
+            return Err(AgentError::InvalidTask(
+                "annotated decisions require a non-empty note".into(),
+            ));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO assertion_decisions (
+                     content_hash, assertion_json, decision, note
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(content_hash) DO UPDATE SET
+                     assertion_json = excluded.assertion_json,
+                     decision = excluded.decision,
+                     note = excluded.note,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+                params![
+                    assertion.provenance.content_hash,
+                    serde_json::to_string(assertion)?,
+                    decision.as_str(),
+                    normalized_note,
+                ],
+            )
+            .map_err(storage)?;
+        self.get_assertion(&assertion.provenance.content_hash)?
+            .ok_or_else(|| {
+                AgentError::Storage("assertion decision disappeared after successful write".into())
+            })
+    }
+
+    /// Fetch curation by the exact assertion content hash after re-ingest.
+    pub fn get_assertion(
+        &self,
+        content_hash: &str,
+    ) -> Result<Option<AssertionDecisionRecord>, AgentError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT assertion_json, decision, note, updated_at
+                 FROM assertion_decisions WHERE content_hash = ?1",
+                params![content_hash],
+                read_decision_row,
+            )
+            .optional()
+            .map_err(storage)?;
+        row.map(parse_assertion_decision_row).transpose()
+    }
+
+    /// List all Workbench curation decisions, newest first.
+    pub fn list_assertions(&self) -> Result<Vec<AssertionDecisionRecord>, AgentError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT assertion_json, decision, note, updated_at
+                 FROM assertion_decisions ORDER BY updated_at DESC, content_hash",
+            )
+            .map_err(storage)?;
+        let rows = stmt.query_map([], read_decision_row).map_err(storage)?;
+        rows.map(|row| row.map_err(storage).and_then(parse_assertion_decision_row))
+            .collect()
+    }
+}
+
+fn validate_curatable_assertion(assertion: &CuratableAssertion) -> Result<(), AgentError> {
+    if assertion.subject_id.trim().is_empty()
+        || assertion.summary.trim().is_empty()
+        || assertion.provenance.validate().is_err()
+        || assertion.provenance.content_hash.trim().is_empty()
+        || assertion.provenance.evidence.is_empty()
+        || !matches!(
+            assertion.provenance.confidence_tier,
+            ConfidenceTier::InferredStrong | ConfidenceTier::InferredWeak
+        )
+        || !matches!(assertion.provenance.tier, Tier::Semantic | Tier::Agentic)
+    {
+        return Err(AgentError::Integrity(
+            "Workbench curation accepts only cited T2/T3 inferred assertions".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_staged_proposal(proposal: &AgentProposal) -> Result<(), AgentError> {
@@ -608,6 +763,19 @@ fn parse_decision_row(row: StoredDecision) -> Result<DecisionRecord, AgentError>
     Ok(DecisionRecord {
         proposal,
         decision: ProposalDecision::parse(&row.1)?,
+        note: row.2,
+        updated_at: row.3,
+    })
+}
+
+fn parse_assertion_decision_row(
+    row: StoredDecision,
+) -> Result<AssertionDecisionRecord, AgentError> {
+    let assertion = serde_json::from_str(&row.0)?;
+    validate_curatable_assertion(&assertion)?;
+    Ok(AssertionDecisionRecord {
+        assertion,
+        decision: AssertionDecision::parse(&row.1)?,
         note: row.2,
         updated_at: row.3,
     })
@@ -838,6 +1006,110 @@ mod tests {
         assert!(matches!(
             log.record(&tampered, ProposalDecision::Accepted, None),
             Err(AgentError::Integrity(_))
+        ));
+    }
+
+    #[test]
+    fn inferred_assertion_curation_persists_by_content_hash() {
+        // AC-0033 (T-0033): accept/reject/annotate survives reopen and
+        // re-applies only to the exact content-addressed inferred assertion.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let inferred = CuratableAssertion {
+            subject_id: "edge:sym:a CALLS sym:b".into(),
+            summary: "CALLS: a → b".into(),
+            provenance: Provenance::new(
+                Tier::Semantic,
+                ConfidenceTier::InferredStrong,
+                vec![EvidenceRef {
+                    repo: "local/shop".into(),
+                    path: "src/app.ts".into(),
+                    byte_start: 10,
+                    byte_end: 20,
+                    commit_sha: "abc123".into(),
+                }],
+                "t2.semantic",
+                b"sym:a CALLS sym:b",
+            )
+            .unwrap(),
+        };
+        {
+            let mut log = DecisionLog::open(&path).unwrap();
+            let record = log
+                .record_assertion(
+                    &inferred,
+                    AssertionDecision::Annotated,
+                    Some("verified naming convention"),
+                )
+                .unwrap();
+            assert_eq!(record.decision, AssertionDecision::Annotated);
+        }
+        let log = DecisionLog::open(&path).unwrap();
+        let reapplied = log
+            .get_assertion(&inferred.provenance.content_hash)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reapplied.assertion, inferred);
+        assert_eq!(
+            reapplied.note.as_deref(),
+            Some("verified naming convention")
+        );
+        assert_eq!(log.list_assertions().unwrap().len(), 1);
+
+        let mut changed = reapplied.assertion;
+        changed.provenance = Provenance::new(
+            Tier::Semantic,
+            ConfidenceTier::InferredStrong,
+            changed.provenance.evidence.clone(),
+            "t2.semantic",
+            b"sym:a CALLS sym:c",
+        )
+        .unwrap();
+        assert!(
+            log.get_assertion(&changed.provenance.content_hash)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn assertion_curation_rejects_confirmed_and_empty_annotations() {
+        let mut log = DecisionLog::open(":memory:").unwrap();
+        let confirmed = CuratableAssertion {
+            subject_id: "edge:a CALLS b".into(),
+            summary: "CALLS: a → b".into(),
+            provenance: Provenance::new(
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+                vec![EvidenceRef {
+                    repo: "local/shop".into(),
+                    path: "src/app.ts".into(),
+                    byte_start: 1,
+                    byte_end: 2,
+                    commit_sha: "abc123".into(),
+                }],
+                "t0.test",
+                b"confirmed",
+            )
+            .unwrap(),
+        };
+        assert!(matches!(
+            log.record_assertion(&confirmed, AssertionDecision::Rejected, None),
+            Err(AgentError::Integrity(_))
+        ));
+
+        let mut inferred = confirmed;
+        inferred.provenance = Provenance::new(
+            Tier::Agentic,
+            ConfidenceTier::InferredWeak,
+            inferred.provenance.evidence.clone(),
+            AGENT_EXTRACTOR_ID,
+            b"inferred",
+        )
+        .unwrap();
+        assert!(matches!(
+            log.record_assertion(&inferred, AssertionDecision::Annotated, Some("  ")),
+            Err(AgentError::InvalidTask(_))
         ));
     }
 

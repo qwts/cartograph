@@ -146,6 +146,31 @@ fn reapply_agent_decisions(
         .map_err(|error| error.to_string())
 }
 
+/// Persist accept/reject/annotate for one cited T2/T3 Workbench assertion.
+#[tauri::command]
+fn record_assertion_decision(
+    assertion: agents::CuratableAssertion,
+    decision: agents::AssertionDecision,
+    note: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<agents::AssertionDecisionRecord, String> {
+    let mut decisions = state.decisions.lock().map_err(|error| error.to_string())?;
+    decisions
+        .record_assertion(&assertion, decision, note.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+/// All content-addressed Workbench decisions, newest first.
+#[tauri::command]
+fn list_assertion_decisions(
+    state: State<'_, AppState>,
+) -> Result<Vec<agents::AssertionDecisionRecord>, String> {
+    let decisions = state.decisions.lock().map_err(|error| error.to_string())?;
+    decisions
+        .list_assertions()
+        .map_err(|error| error.to_string())
+}
+
 #[derive(Serialize)]
 struct IngestSummary {
     job_id: i64,
@@ -750,6 +775,41 @@ async fn semantic_preview(
     Ok(preview)
 }
 
+fn build_spec_bundle(
+    graph: &impl GraphStore,
+    decisions: &agents::DecisionLog,
+    mode: spec::ExportMode,
+) -> Result<spec::SpecBundle, String> {
+    let nodes = graph.all_nodes().map_err(|error| error.to_string())?;
+    let edges = graph.all_edges().map_err(|error| error.to_string())?;
+    let flows = flowtracer::trace(&nodes, &edges);
+    let rejected_hashes = decisions
+        .list_assertions()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|record| record.decision == agents::AssertionDecision::Rejected)
+        .map(|record| record.assertion.provenance.content_hash)
+        .collect();
+    Ok(spec::compile_spec(
+        &nodes,
+        &edges,
+        &flows,
+        mode,
+        &rejected_hashes,
+    ))
+}
+
+/// Compile the full official spec set under one R-INT-5 export policy.
+#[tauri::command]
+fn export_spec(
+    mode: spec::ExportMode,
+    state: State<'_, AppState>,
+) -> Result<spec::SpecBundle, String> {
+    let graph = state.graph.lock().map_err(|error| error.to_string())?;
+    let decisions = state.decisions.lock().map_err(|error| error.to_string())?;
+    build_spec_bundle(&*graph, &decisions, mode)
+}
+
 /// Nodes carrying `label` (e.g. `Endpoint`, `Repo`), ordered by id.
 #[tauri::command]
 fn list_nodes(label: String, state: State<'_, AppState>) -> Result<Vec<Node>, String> {
@@ -829,6 +889,8 @@ fn main() {
             record_agent_decision,
             list_agent_decisions,
             reapply_agent_decisions,
+            record_assertion_decision,
+            list_assertion_decisions,
             ingest_path,
             list_nodes,
             atlas_snapshot,
@@ -836,6 +898,7 @@ fn main() {
             export_topology,
             export_flows,
             list_flows,
+            export_spec,
             semantic_preview,
             add_repo,
             add_system

@@ -14,6 +14,7 @@
 //! ladder at M6–M8.
 
 use core_graph::{Edge, Node};
+use core_prov::{ConfidenceTier, Provenance, Tier};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 
@@ -84,6 +85,8 @@ pub struct Hop {
     pub confidence: String,
     /// First evidence ref as `path bytes start..end`, if present.
     pub evidence: Option<String>,
+    /// Complete edge provenance for inline Workbench/export rendering.
+    pub provenance: Provenance,
     /// Gap reason copied from the destination Gap node, when this hop is
     /// unresolved. Kept structured so UI/export surfaces never parse a label.
     pub gap_reason: Option<String>,
@@ -152,22 +155,29 @@ fn hop_weight(confidence: &str) -> f64 {
     }
 }
 
-fn edge_prov(edge: &Edge) -> (String, String, Option<String>) {
-    let prov = &edge.props["prov"];
-    let tier = prov["tier"].as_str().unwrap_or("Unknown").to_string();
-    let confidence = prov["confidence_tier"]
-        .as_str()
-        .unwrap_or("Unknown")
-        .to_string();
-    let evidence = prov["evidence"][0].as_object().map(|ev| {
-        format!(
-            "{} bytes {}..{}",
-            ev.get("path").and_then(|v| v.as_str()).unwrap_or("?"),
-            ev.get("byte_start").and_then(|v| v.as_u64()).unwrap_or(0),
-            ev.get("byte_end").and_then(|v| v.as_u64()).unwrap_or(0),
-        )
-    });
-    (tier, confidence, evidence)
+fn edge_prov(edge: &Edge) -> (String, String, Option<String>, Provenance) {
+    let provenance = serde_json::from_value::<Provenance>(edge.props["prov"].clone())
+        .ok()
+        .filter(|provenance| provenance.validate().is_ok())
+        .unwrap_or_else(|| {
+            let canonical = serde_json::to_vec(&(&edge.src, &edge.label, &edge.dst))
+                .expect("edge identity serializes");
+            Provenance::new(
+                Tier::Deterministic,
+                ConfidenceTier::Gap,
+                vec![],
+                "flowtracer.invalid-provenance",
+                &canonical,
+            )
+            .expect("Gap is within the deterministic confidence ceiling")
+        });
+    let tier = format!("{:?}", provenance.tier);
+    let confidence = format!("{:?}", provenance.confidence_tier);
+    let evidence = provenance
+        .evidence
+        .first()
+        .map(|ev| format!("{} bytes {}..{}", ev.path, ev.byte_start, ev.byte_end,));
+    (tier, confidence, evidence, provenance)
 }
 
 fn gap_context(node: Option<&&Node>) -> (Option<String>, Vec<String>) {
@@ -299,7 +309,7 @@ fn trace_one(
         let mut next: Vec<(Hop, String)> = Vec::new();
         if let Some(outs) = out_edges.get(id.as_str()) {
             for edge in outs {
-                let (tier, confidence, evidence) = edge_prov(edge);
+                let (tier, confidence, evidence, provenance) = edge_prov(edge);
                 let (gap_reason, attempted_tiers) = gap_context(by_id.get(edge.dst.as_str()));
                 next.push((
                     Hop {
@@ -311,6 +321,7 @@ fn trace_one(
                         tier,
                         confidence,
                         evidence,
+                        provenance,
                         gap_reason,
                         attempted_tiers,
                     },
@@ -320,7 +331,7 @@ fn trace_one(
         }
         if let Some(subs) = chan_consumers.get(id.as_str()) {
             for edge in subs {
-                let (tier, confidence, evidence) = edge_prov(edge);
+                let (tier, confidence, evidence, provenance) = edge_prov(edge);
                 let (gap_reason, attempted_tiers) = gap_context(by_id.get(edge.src.as_str()));
                 // Traversal direction: channel → consumer.
                 next.push((
@@ -333,6 +344,7 @@ fn trace_one(
                         tier,
                         confidence,
                         evidence,
+                        provenance,
                         gap_reason,
                         attempted_tiers,
                     },

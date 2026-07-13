@@ -1034,6 +1034,7 @@ name = "flowtracer"
 version = "0.0.1"
 dependencies = [
  "core-graph",
+ "core-prov",
  "serde",
  "serde_json",
 ]
@@ -3311,7 +3312,9 @@ version = "0.0.1"
 dependencies = [
  "blake3",
  "core-graph",
+ "core-prov",
  "flowtracer",
+ "serde",
  "serde_json",
 ]
 

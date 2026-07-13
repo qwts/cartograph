@@ -113,6 +113,20 @@ impl Provenance {
             content_hash: content_hash(fact_bytes),
         })
     }
+
+    /// Re-validate provenance loaded from an external graph or IPC payload.
+    ///
+    /// Serde reconstructs the wire shape but cannot call [`Provenance::new`],
+    /// so consumers use this before trusting the encoded confidence tier.
+    pub fn validate(&self) -> Result<(), IntegrityError> {
+        if confidence_above_ceiling(self.tier, self.confidence_tier) {
+            return Err(IntegrityError::AboveCeiling {
+                tier: self.tier,
+                confidence_tier: self.confidence_tier,
+            });
+        }
+        Ok(())
+    }
 }
 
 fn confidence_above_ceiling(tier: Tier, confidence: ConfidenceTier) -> bool {
@@ -236,5 +250,21 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Provenance = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn deserialized_provenance_can_be_revalidated() {
+        let forged: Provenance = serde_json::from_value(serde_json::json!({
+            "tier": "Agentic",
+            "confidence_tier": "Confirmed",
+            "evidence": [],
+            "extractor_id": "untrusted.payload",
+            "content_hash": "not-trusted",
+        }))
+        .unwrap();
+        assert!(matches!(
+            forged.validate(),
+            Err(IntegrityError::AboveCeiling { .. })
+        ));
     }
 }

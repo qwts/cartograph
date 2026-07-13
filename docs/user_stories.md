@@ -139,7 +139,7 @@
 ### US-0012 — Spec Workbench, curation, and export
 - **Actor:** Engineer
 - **As a** engineer **I want** to review compiled artifacts, accept/reject inferred items, and export **so that** I get an official, trustworthy spec.
-- **Priority:** Must · **Status:** Draft
+- **Priority:** Must · **Status:** Done
 - **AC-0032** Given compiled artifacts, when viewed, then every assertion shows inline provenance.
 - **AC-0033** Given an inferred item, when I accept/reject/annotate, then the decision persists and survives re-ingest via content_hash.
 - **AC-0034** Given export, when run, then it honors R-INT-5 (`verified-only` vs `best-effort`) and includes Gap + Drift registers.

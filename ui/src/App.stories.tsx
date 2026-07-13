@@ -2,7 +2,13 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import App from './App';
-import { useAppStore } from './store';
+import {
+  useAppStore,
+  type AssertionDecisionRecord,
+  type Provenance,
+  type SpecAssertion,
+  type SpecBundle,
+} from './store';
 
 /**
  * Full-app story against a fake Rust core: `mockIPC` installs a fake
@@ -30,27 +36,29 @@ const SPAN_TEXT = "app.get('/users', listUsers)";
 const SPAN_START = byteLen(FAKE_SOURCE.slice(0, FAKE_SOURCE.indexOf(SPAN_TEXT)));
 const SPAN_END = SPAN_START + byteLen(SPAN_TEXT);
 
+const FAKE_PROVENANCE: Provenance = {
+  tier: 'Deterministic',
+  confidence_tier: 'Confirmed',
+  evidence: [
+    {
+      repo: 'local',
+      path: 'src/app.ts',
+      byte_start: SPAN_START,
+      byte_end: SPAN_END,
+      commit_sha: 'workdir',
+    },
+  ],
+  extractor_id: 't0.adapter-ts',
+  content_hash: 'a'.repeat(64),
+};
+
 const FAKE_ENDPOINT = {
   id: 'ep:GET:/users',
   label: 'Endpoint',
   props: {
     method: 'GET',
     path: '/users',
-    prov: {
-      tier: 'Deterministic',
-      confidence_tier: 'Confirmed',
-      evidence: [
-        {
-          repo: 'local',
-          path: 'src/app.ts',
-          byte_start: SPAN_START,
-          byte_end: SPAN_END,
-          commit_sha: 'workdir',
-        },
-      ],
-      extractor_id: 't0.adapter-ts',
-      content_hash: 'a'.repeat(64),
-    },
+    prov: FAKE_PROVENANCE,
   },
 };
 
@@ -60,8 +68,59 @@ const FAKE_REPO = {
   props: { root: '/fake/repo' },
 };
 
+const FAKE_INFERRED: SpecAssertion = {
+  id: 'node:adr:async-orders',
+  subject_id: 'adr:async-orders',
+  subject_kind: 'ADR',
+  summary: 'ADR: asynchronous order fulfillment',
+  provenance: {
+    tier: 'Semantic',
+    confidence_tier: 'InferredStrong',
+    evidence: [{
+      repo: 'local',
+      path: 'src/orders.ts',
+      byte_start: 20,
+      byte_end: 64,
+      commit_sha: 'workdir',
+    }],
+    extractor_id: 't2.semantic',
+    content_hash: 'b'.repeat(64),
+  },
+};
+
+const FAKE_SPEC: SpecBundle = {
+  mode: 'best-effort',
+  artifacts: [
+    'user_stories.md',
+    'US-TM.md',
+    'flow_dossiers.md',
+    'topology.mmd',
+    'data_model.md',
+    'adrs.md',
+    'gap_register.md',
+    'drift_register.md',
+  ].map((fileName, index) => ({
+    id: `artifact-${index}`,
+    file_name: fileName,
+    title: index === 0 ? 'User stories' : index === 5 ? 'Architecture decisions' : fileName,
+    format: fileName.endsWith('.mmd') ? 'mermaid' : 'markdown',
+    content: `# ${fileName}\n\n## Assertions and inline provenance\n`,
+    assertions: index === 0 ? [{
+        id: 'node:ep:GET:/users',
+        subject_id: FAKE_ENDPOINT.id,
+        subject_kind: 'Endpoint',
+        summary: 'Endpoint: GET /users',
+        provenance: FAKE_PROVENANCE,
+      }] : index === 5 ? [FAKE_INFERRED] : [],
+  })),
+  assertion_count: 2,
+  gap_count: 0,
+  drift_count: 0,
+};
+
 function installFakeCore() {
   let jobs: MockJob[] = [];
+  let curation: AssertionDecisionRecord[] = [];
   let graphStats = { nodes: 42, edges: 99 };
   mockIPC((cmd, args) => {
     switch (cmd) {
@@ -102,6 +161,7 @@ function installFakeCore() {
                 tier: 'Deterministic',
                 confidence: 'Confirmed',
                 evidence: 'src/app.ts bytes 92..120',
+                provenance: FAKE_PROVENANCE,
                 gap_reason: null,
                 attempted_tiers: [],
               },
@@ -113,6 +173,25 @@ function installFakeCore() {
         ];
       case 'export_topology':
         return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
+      case 'export_spec':
+        return { ...FAKE_SPEC, mode: (args as { mode: SpecBundle['mode'] }).mode };
+      case 'list_assertion_decisions':
+        return curation;
+      case 'record_assertion_decision': {
+        const input = args as {
+          assertion: AssertionDecisionRecord['assertion'];
+          decision: AssertionDecisionRecord['decision'];
+          note: string | null;
+        };
+        const record: AssertionDecisionRecord = {
+          assertion: input.assertion,
+          decision: input.decision,
+          note: input.note,
+          updated_at: '2026-07-13T18:00:00Z',
+        };
+        curation = [record];
+        return record;
+      }
       case 'ingest_path':
         return {
           job_id: 1,
@@ -184,6 +263,11 @@ const meta = {
       topology: null,
       flows: null,
       flowList: [],
+      specBundle: null,
+      specMode: 'best-effort',
+      curation: [],
+      specBusy: false,
+      specError: null,
       ingestBusy: false,
       ingestSummary: null,
       ingestError: null,
@@ -205,6 +289,7 @@ export const ConnectedToCore: Story = {
     await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
     await expect(canvas.getByText('42')).toBeInTheDocument();
     await expect(canvas.getByText('99')).toBeInTheDocument();
+    await waitFor(() => expect(canvas.getByText('8 artifacts')).toBeInTheDocument());
 
     // Enqueue round-trip: command hits the fake core, list refreshes.
     await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
@@ -223,7 +308,8 @@ export const EvidenceJumpToSource: Story = {
       const mark = canvasElement.querySelector('.evidence-source mark');
       expect(mark?.textContent).toBe(SPAN_TEXT);
     });
-    await expect(canvas.getByText(/t0\.adapter-ts/)).toBeInTheDocument();
+    const evidence = within(canvasElement.querySelector('.evidence-panel') as HTMLElement);
+    await expect(evidence.getByText(/t0\.adapter-ts/)).toBeInTheDocument();
 
     // Close returns to the dashboard.
     await userEvent.click(canvas.getByRole('button', { name: /close/i }));
@@ -249,6 +335,20 @@ export const AtlasNodeToEvidence: Story = {
     const evidence = within(canvasElement.querySelector('.evidence-panel') as HTMLElement);
     await expect(evidence.getByText(/src\/app\.ts/)).toBeInTheDocument();
     await expect(evidence.getByText(/workdir/)).toBeInTheDocument();
+  },
+};
+
+export const WorkbenchCurationRoundTrip: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('8 artifacts')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: /Architecture decisions/ }));
+    await expect(canvas.getByText(FAKE_INFERRED.summary)).toBeInTheDocument();
+    await userEvent.type(canvas.getByLabelText('Annotation'), 'Confirmed by system owner');
+    await userEvent.click(canvas.getByRole('button', { name: 'Annotate' }));
+    await waitFor(() => expect(canvas.getAllByText('Annotated').length).toBeGreaterThan(0));
+    await expect(canvas.getAllByText('Confirmed by system owner').length).toBeGreaterThan(0);
+    await expect(canvas.getAllByText('Inferred (strong)').length).toBeGreaterThan(0);
   },
 };
 

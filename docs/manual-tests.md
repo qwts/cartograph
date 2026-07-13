@@ -199,6 +199,29 @@ PR — per-PR verification is CI's job.
    copyable dossier, while Confirmed and explicit Gap hops remain annotated
    (AC-0031, R-INT-5).
 
+## MT-M9-03 — Spec Workbench provenance, curation, and full export
+
+1. Run `npm --prefix ui run storybook` and open
+   **Spec / SpecWorkbench / FullArtifactSetAndInlineProvenance**.
+2. Select each of the eight artifact entries. **Pass:** user stories, US-TM,
+   flow dossiers, resource topology, data model, ADRs, Gap register, and Drift
+   register are always present; every recovered assertion shows its tier,
+   confidence, extractor, content hash, and every evidence span inline
+   (AC-0032, AC-0035, R-INT-2).
+3. Open **Spec / SpecWorkbench / AcceptRejectAndAnnotate** and exercise all
+   three curation controls on the inferred assertion. **Pass:** only inferred
+   content exposes the controls, annotation requires a note, and the resulting
+   decision appears in the durable curation log without changing the tier
+   badge (AC-0033, R-INT-1).
+4. Open **Spec / SpecWorkbench / VerifiedOnlyExport**, switch between both
+   modes, and use **Export bundle**. **Pass:** `verified-only` excludes weak
+   inference, `best-effort` clearly tags it, and both exported projections
+   contain the Gap and Drift registers (AC-0034, R-INT-5).
+5. In a connected desktop build, record a decision, re-ingest the unchanged
+   source, and reopen the Workbench. **Pass:** the decision reappears for the
+   same content hash; changing its source/evidence produces a new undecided
+   assertion (AC-0033).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

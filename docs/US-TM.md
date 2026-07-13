@@ -15,7 +15,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0009 | AC-0023..0025 | agents, llm, app, ui | M8 | — | ADR-0004 | T-0023..0025 |
 | US-0010 | AC-0026..0028 | core-graph, app, ui | M9 | — | ADR-0001 | T-0026..0028 |
 | US-0011 | AC-0029..0031 | app, flowtracer, ui | M9 | F-* | ADR-0002 | T-0029..0031 |
-| US-0012 | AC-0032..0035 | spec, ui | M9–M10 | — | ADR-0002 | T-0032..0035 |
+| US-0012 | AC-0032..0035 | core-prov, spec, agents, app, flowtracer, ui | M9–M10 | — | ADR-0002, ADR-0011 | T-0032..0035 |
 | US-0013 | AC-0036..0038 | spec, agents | M9 | — | ADR-0002 | T-0036..0038 |
 | US-0014 | AC-0039..0040 | core-graph, core-prov | M10 | — | ADR-0006 | T-0039..0040 |
 | US-0015 | AC-0041..0042 | iac, spec | M9 | — | ADR-0003 | T-0041..0042 |
@@ -38,3 +38,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0008 | SQLite recursive-CTE as primary graph store (Kuzu archived upstream) |
 | ADR-0009 | v1 GitHub auth ladder: env token → gh CLI; GitHub App deferred |
 | ADR-0010 | USearch + Ollama semantic staging with paired-eval gating |
+| ADR-0011 | Content-addressed full-spec bundle and curation log |
