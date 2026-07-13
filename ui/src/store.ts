@@ -45,11 +45,21 @@ export interface IngestSummary {
   files: number;
   nodes: number;
   edges: number;
+  layers: {
+    ts: LayerSummary;
+    tf: LayerSummary;
+  };
   /** Set for GitHub adds: the cloned repo listed with its SHA (AC-0001). */
   repo?: string;
   commit_sha?: string;
   /** Set for system-manifest adds: `identity@sha12` per repo (AC-0002). */
   repos?: string[];
+}
+
+export interface LayerSummary {
+  files: number;
+  nodes: number;
+  edges: number;
 }
 
 /** One traced flow as returned by `list_flows` (flowtracer::Flow). */
@@ -89,11 +99,14 @@ export interface AppStore {
   ingestBusy: boolean;
   ingestSummary: IngestSummary | null;
   ingestError: string | null;
+  clearBusy: boolean;
+  clearError: string | null;
   /** Node selected for evidence view, with its source window state. */
   selected: { node: GraphNode; source: SourceState } | null;
   refresh: () => Promise<void>;
   enqueueJob: (kind: string) => Promise<void>;
   ingest: (path: string) => Promise<void>;
+  clearGraph: () => Promise<void>;
   select: (node: GraphNode) => Promise<void>;
   clearSelection: () => void;
 }
@@ -123,6 +136,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   ingestBusy: false,
   ingestSummary: null,
   ingestError: null,
+  clearBusy: false,
+  clearError: null,
   selected: null,
 
   refresh: async () => {
@@ -186,6 +201,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ ingestError: String(e) });
     } finally {
       set({ ingestBusy: false });
+      await get().refresh();
+    }
+  },
+
+  clearGraph: async () => {
+    set({ clearBusy: true, clearError: null });
+    try {
+      const stats = await invokeOr<GraphStats | null>('clear_graph', null);
+      if (stats !== null) {
+        set({ stats, ingestSummary: null, selected: null });
+      }
+    } catch (e) {
+      set({ clearError: String(e) });
+    } finally {
+      set({ clearBusy: false });
       await get().refresh();
     }
   },

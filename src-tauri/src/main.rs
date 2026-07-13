@@ -27,6 +27,38 @@ struct GraphStats {
     edges: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+struct LayerSummary {
+    files: u64,
+    nodes: u64,
+    edges: u64,
+}
+
+impl LayerSummary {
+    fn add(&mut self, other: Self) {
+        self.files += other.files;
+        self.nodes += other.nodes;
+        self.edges += other.edges;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+struct LayerBreakdown {
+    ts: LayerSummary,
+    tf: LayerSummary,
+}
+
+impl LayerBreakdown {
+    fn add(&mut self, other: Self) {
+        self.ts.add(other.ts);
+        self.tf.add(other.tf);
+    }
+
+    fn files(self) -> u64 {
+        self.ts.files + self.tf.files
+    }
+}
+
 #[derive(Serialize)]
 struct PingReply {
     app: &'static str,
@@ -50,6 +82,17 @@ fn graph_stats(state: State<'_, AppState>) -> Result<GraphStats, String> {
     })
 }
 
+fn clear_graph_store(graph: &mut SqliteGraphStore) -> Result<GraphStats, String> {
+    graph.clear().map_err(|e| e.to_string())?;
+    Ok(GraphStats { nodes: 0, edges: 0 })
+}
+
+#[tauri::command]
+fn clear_graph(state: State<'_, AppState>) -> Result<GraphStats, String> {
+    let mut graph = state.graph.lock().map_err(|e| e.to_string())?;
+    clear_graph_store(&mut graph)
+}
+
 #[tauri::command]
 fn enqueue_job(kind: String, state: State<'_, AppState>) -> Result<Job, String> {
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
@@ -68,12 +111,13 @@ struct IngestSummary {
     files: u64,
     nodes: u64,
     edges: u64,
+    layers: LayerBreakdown,
 }
 
 /// The four-layer T0 pipeline over one tree: TypeScript, Terraform,
 /// channel stitching, client fetch resolution — closed over so the
 /// FK-enforcing store never sees a dangling endpoint.
-fn extract_tree(
+fn extract_tree_with_summary(
     root: &std::path::Path,
     repo: &str,
     commit: &str,
@@ -81,20 +125,35 @@ fn extract_tree(
     manifest_env: &std::collections::BTreeMap<String, String>,
     state_json: Option<&std::path::Path>,
     otel_jsonl: &[std::path::PathBuf],
-) -> Result<adapters_lang_ts::Extraction, String> {
+) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown), String> {
     // Layer hints gate extractors (AC-0002): empty means everything; the
     // TS pass covers server/events/client, the HCL pass infra/cloud.
     let wants =
         |names: &[&str]| layers.is_empty() || names.iter().any(|n| layers.iter().any(|l| l == n));
     let ts_id = adapters_lang_ts::SourceId { repo, commit };
+    let mut layers = LayerBreakdown::default();
     let mut extraction = if wants(&["server", "events", "client"]) {
         adapters_lang_ts::extract_dir(root, &ts_id).map_err(|e| e.to_string())?
     } else {
         adapters_lang_ts::Extraction::default()
     };
+    layers.ts = LayerSummary {
+        files: extraction
+            .nodes
+            .iter()
+            .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
+            .count() as u64,
+        nodes: extraction.nodes.len() as u64,
+        edges: extraction.edges.len() as u64,
+    };
     if wants(&["infra", "cloud"]) {
         let tf_id = iac::SourceId { repo, commit };
         let tf = iac::extract_dir(root, &tf_id).map_err(|e| e.to_string())?;
+        layers.tf = LayerSummary {
+            files: iac::terraform_file_count(root).map_err(|e| e.to_string())?,
+            nodes: tf.nodes.len() as u64,
+            edges: tf.edges.len() as u64,
+        };
         extraction.nodes.extend(tf.nodes);
         extraction.edges.extend(tf.edges);
         // T1: observed state supersedes ambiguous T0 refs (AC-0009).
@@ -115,6 +174,8 @@ fn extract_tree(
     cfg.apply_manifest(manifest_env, ingest::manifest::MANIFEST_NAME);
     let ev_id = events::SourceId { repo, commit };
     let stitched = events::stitch(&extraction.event_sites, &cfg, &ev_id);
+    layers.ts.nodes += stitched.nodes.len() as u64;
+    layers.ts.edges += stitched.edges.len() as u64;
     extraction.nodes.extend(stitched.nodes);
     extraction.edges.extend(stitched.edges);
     let endpoint_ids: Vec<String> = extraction
@@ -124,6 +185,8 @@ fn extract_tree(
         .map(|n| n.id.clone())
         .collect();
     let fetched = events::stitch_fetches(&extraction.fetch_sites, &endpoint_ids, &cfg, &ev_id);
+    layers.ts.nodes += fetched.nodes.len() as u64;
+    layers.ts.edges += fetched.edges.len() as u64;
     extraction.nodes.extend(fetched.nodes);
     extraction.edges.extend(fetched.edges);
     // T1: observed messaging identities fill only explicit channel Gaps;
@@ -140,7 +203,29 @@ fn extract_tree(
         );
     }
     extraction.close_over_endpoints();
-    Ok(extraction)
+    Ok((extraction, layers))
+}
+
+#[cfg(test)]
+fn extract_tree(
+    root: &std::path::Path,
+    repo: &str,
+    commit: &str,
+    layers: &[String],
+    manifest_env: &std::collections::BTreeMap<String, String>,
+    state_json: Option<&std::path::Path>,
+    otel_jsonl: &[std::path::PathBuf],
+) -> Result<adapters_lang_ts::Extraction, String> {
+    extract_tree_with_summary(
+        root,
+        repo,
+        commit,
+        layers,
+        manifest_env,
+        state_json,
+        otel_jsonl,
+    )
+    .map(|(extraction, _)| extraction)
 }
 
 /// Load an extraction plus its `Repo` node (`repo:{identity}`, carrying the
@@ -232,7 +317,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
             .map(|n| n.to_string_lossy())
             .unwrap_or_default()
     );
-    let extraction = extract_tree(
+    let (extraction, layers) = extract_tree_with_summary(
         &root,
         &repo,
         "workdir",
@@ -242,11 +327,6 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         &[],
     )
     .map_err(|e| fail(e, &state, job_id))?;
-    let files = extraction
-        .nodes
-        .iter()
-        .filter(|n| n.label == "File" && n.props.get("placeholder").is_none())
-        .count() as u64;
     {
         let mut graph = state
             .graph
@@ -260,9 +340,10 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
     Ok(IngestSummary {
         job_id,
-        files,
+        files: layers.files(),
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
+        layers,
     })
 }
 
@@ -274,6 +355,7 @@ struct AddRepoSummary {
     files: u64,
     nodes: u64,
     edges: u64,
+    layers: LayerBreakdown,
 }
 
 /// Clone a GitHub repo (read-only, shallow) and ingest it with its real
@@ -310,7 +392,7 @@ fn add_repo(
     let token = ingest::discover_token();
     let cloned = ingest::clone_repo(&url, &repos_dir, token.as_deref())
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let extraction = extract_tree(
+    let (extraction, layers) = extract_tree_with_summary(
         &cloned.path,
         &cloned.repo,
         &cloned.commit_sha,
@@ -320,11 +402,6 @@ fn add_repo(
         &[],
     )
     .map_err(|e| fail(e, &state, job_id))?;
-    let files = extraction
-        .nodes
-        .iter()
-        .filter(|n| n.label == "File" && n.props.get("placeholder").is_none())
-        .count() as u64;
     {
         let mut graph = state
             .graph
@@ -346,9 +423,10 @@ fn add_repo(
         job_id,
         repo: cloned.repo,
         commit_sha: cloned.commit_sha,
-        files,
+        files: layers.files(),
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
+        layers,
     })
 }
 
@@ -372,6 +450,7 @@ struct AddSystemSummary {
     files: u64,
     nodes: u64,
     edges: u64,
+    layers: LayerBreakdown,
 }
 
 fn manifest_dir(path: &std::path::Path) -> &std::path::Path {
@@ -421,6 +500,7 @@ fn add_system(
 
     let mut repos = Vec::new();
     let (mut files, mut nodes, mut edges) = (0u64, 0u64, 0u64);
+    let mut layers = LayerBreakdown::default();
     for entry in &manifest.repos {
         let is_remote = manifest_entry_is_remote(&entry.url, base);
         let (root, repo, commit) = if is_remote {
@@ -441,7 +521,7 @@ fn add_system(
         let state_path = entry.state_json.as_ref().map(|p| base.join(p));
         let trace_paths: Vec<std::path::PathBuf> =
             entry.otel_jsonl.iter().map(|p| base.join(p)).collect();
-        let extraction = extract_tree(
+        let (extraction, repo_layers) = extract_tree_with_summary(
             &root,
             &repo,
             &commit,
@@ -451,13 +531,10 @@ fn add_system(
             &trace_paths,
         )
         .map_err(|e| fail(e, &state, job_id))?;
-        files += extraction
-            .nodes
-            .iter()
-            .filter(|n| n.label == "File" && n.props.get("placeholder").is_none())
-            .count() as u64;
+        files += repo_layers.files();
         nodes += extraction.nodes.len() as u64;
         edges += extraction.edges.len() as u64;
+        layers.add(repo_layers);
         {
             let mut graph = state
                 .graph
@@ -486,6 +563,7 @@ fn add_system(
         files,
         nodes,
         edges,
+        layers,
     })
 }
 
@@ -588,6 +666,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ping,
             graph_stats,
+            clear_graph,
             enqueue_job,
             list_jobs,
             ingest_path,
@@ -605,7 +684,89 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use core_graph::{GraphStore, SqliteGraphStore};
+    use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
+
+    #[test]
+    fn layer_summary_reports_ts_and_tf_files_and_facts() {
+        // AC-0049: zero counts are explicit, so a Pulumi/TS tree cannot look
+        // like successful Terraform recovery.
+        let ts_only = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ts_only.path().join("infra.ts"),
+            "export const bucket = 'pulumi-shaped';\n",
+        )
+        .unwrap();
+        let (_, summary) = crate::extract_tree_with_summary(
+            ts_only.path(),
+            "local/pulumi",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(summary.ts.files, 1);
+        assert!(summary.ts.nodes > 0);
+        assert_eq!(summary.tf, crate::LayerSummary::default());
+
+        std::fs::write(
+            ts_only.path().join("main.tf"),
+            "resource \"aws_s3_bucket\" \"uploads\" {}\n",
+        )
+        .unwrap();
+        let (_, summary) = crate::extract_tree_with_summary(
+            ts_only.path(),
+            "local/mixed",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(summary.ts.files, 1);
+        assert_eq!(summary.tf.files, 1);
+        assert!(summary.tf.nodes > 0);
+        assert_eq!(summary.files(), 2);
+    }
+
+    #[test]
+    fn clear_graph_preserves_job_spine() {
+        // AC-0050: only disposable graph facts are cleared; durable jobs live
+        // in their separate state-spine database and remain untouched.
+        let dir = tempfile::tempdir().unwrap();
+        let mut graph = SqliteGraphStore::open(dir.path().join("graph.db")).unwrap();
+        graph
+            .put_node(&Node {
+                id: "a".into(),
+                label: "Resource".into(),
+                props: serde_json::json!({}),
+            })
+            .unwrap();
+        graph
+            .put_node(&Node {
+                id: "b".into(),
+                label: "Resource".into(),
+                props: serde_json::json!({}),
+            })
+            .unwrap();
+        graph
+            .put_edge(&Edge {
+                src: "a".into(),
+                dst: "b".into(),
+                label: "REFERENCES".into(),
+                props: serde_json::json!({}),
+            })
+            .unwrap();
+        let mut jobs = crate::jobs::JobStore::open(dir.path().join("state.db")).unwrap();
+        let job = jobs.enqueue("ingest:fixture").unwrap();
+
+        let stats = crate::clear_graph_store(&mut graph).unwrap();
+        assert_eq!(stats.nodes, 0);
+        assert_eq!(stats.edges, 0);
+        assert_eq!(jobs.list().unwrap()[0].id, job.id);
+    }
 
     #[test]
     fn state_json_resolves_from_manifest_directory_for_both_input_forms() {

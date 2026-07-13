@@ -62,3 +62,5 @@ rows in the same PR (see AGENTS.md).
 | T-0046 | AC-0046 | rust | iac::capability_registry_triggers_aws_pipes | EventBridge Pipes source to target via TRIGGERS |
 | T-0047 | AC-0047 | rust | iac::iam_policy_grants_chase_same_extraction_policy_document, iac::iam_policy_document_chase_spans_files_in_directory, iac::missing_or_unresolved_policy_document_keeps_explicit_grant | same-source and cross-file joins; fail-closed fallback with document actions/evidence |
 | T-0048 | AC-0048 | rust | iac::local_modules_expand_under_scoped_addresses_and_edges, iac::nested_local_modules_stop_at_cycles_deterministically, iac::remote_outside_and_symlinked_modules_remain_leaf_nodes | EventBridge-style ../../ source; scoped internal facts; confinement and cycle guard |
+| T-0049 | AC-0049 | rust | app::layer_summary_reports_ts_and_tf_files_and_facts | explicit TS/TF file and fact counts, plus story:Shell/IngestCard/PulumiWithoutTerraform |
+| T-0050 | AC-0050 | rust | core-graph::clear_removes_graph_facts_and_persists_empty, app::clear_graph_preserves_job_spine | confirmed destructive action with durable jobs, plus story:Shell/App/ClearGraphPreservesJobs |

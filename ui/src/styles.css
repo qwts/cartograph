@@ -178,6 +178,35 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.clear-graph-button {
+  margin-top: 0.8rem;
+}
+
+.clear-confirmation {
+  margin-top: 0.8rem;
+  padding: 0.65rem;
+  border: 1px solid var(--tier-gap);
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.clear-confirmation-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.secondary-button {
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+}
+
+.danger-button {
+  border-color: var(--tier-gap);
+  background: var(--tier-gap);
+  color: var(--surface);
+}
+
 /* Confidence tiers (R-INT-2): confirmed / inferred / gap never look alike. */
 .tier-badge {
   font-size: 0.7rem;
@@ -220,6 +249,36 @@ button:disabled {
   border: 1px solid var(--outline-variant);
   background: var(--surface-container-high);
   color: var(--on-surface);
+}
+
+.ingest-summary {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.layer-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.layer-summary > div {
+  padding: 0.5rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface-container-high);
+}
+
+.layer-summary dt {
+  color: var(--primary);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.layer-summary dd {
+  margin-top: 0.2rem;
+  color: var(--on-surface-variant);
+  font-size: 0.75rem;
 }
 
 .error-text {

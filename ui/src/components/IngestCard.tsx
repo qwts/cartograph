@@ -39,23 +39,41 @@ export function IngestCard({ busy, summary, error, canIngest, onIngest }: Ingest
       </form>
       {error && <p className="error-text">{error}</p>}
       {summary && !busy && (
-        <p className="muted">
-          {summary.repos && summary.repos.length > 0 && (
-            <>
-              <code data-testid="system-repos">{summary.repos.join(', ')}</code> —{' '}
-            </>
-          )}
-          {summary.repo && summary.commit_sha && (
-            <>
-              <code data-testid="cloned-repo">
-                {summary.repo} @ {summary.commit_sha.slice(0, 12)}
-              </code>{' '}
-              —{' '}
-            </>
-          )}
-          Job #{summary.job_id}: {summary.files} files → {summary.nodes} nodes,{' '}
-          {summary.edges} edges.
-        </p>
+        <div className="ingest-summary">
+          <p className="muted">
+            {summary.repos && summary.repos.length > 0 && (
+              <>
+                <code data-testid="system-repos">{summary.repos.join(', ')}</code> —{' '}
+              </>
+            )}
+            {summary.repo && summary.commit_sha && (
+              <>
+                <code data-testid="cloned-repo">
+                  {summary.repo} @ {summary.commit_sha.slice(0, 12)}
+                </code>{' '}
+                —{' '}
+              </>
+            )}
+            Job #{summary.job_id}: {summary.files} files → {summary.nodes} nodes,{' '}
+            {summary.edges} edges.
+          </p>
+          <dl className="layer-summary" aria-label="Ingest breakdown by source layer">
+            <div>
+              <dt>TypeScript</dt>
+              <dd data-testid="ts-layer-summary">
+                {summary.layers.ts.files} files · {summary.layers.ts.nodes} nodes ·{' '}
+                {summary.layers.ts.edges} edges
+              </dd>
+            </div>
+            <div>
+              <dt>Terraform</dt>
+              <dd data-testid="tf-layer-summary">
+                {summary.layers.tf.files} files · {summary.layers.tf.nodes} nodes ·{' '}
+                {summary.layers.tf.edges} edges
+              </dd>
+            </div>
+          </dl>
+        </div>
       )}
       {!summary && !error && (
         <p className="muted">T0 extraction only — every fact Confirmed with evidence, or absent.</p>

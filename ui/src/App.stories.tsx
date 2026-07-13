@@ -62,12 +62,16 @@ const FAKE_REPO = {
 
 function installFakeCore() {
   let jobs: MockJob[] = [];
+  let graphStats = { nodes: 42, edges: 99 };
   mockIPC((cmd, args) => {
     switch (cmd) {
       case 'ping':
         return { app: 'cartograph', version: '0.0.1' };
       case 'graph_stats':
-        return { nodes: 42, edges: 99 };
+        return graphStats;
+      case 'clear_graph':
+        graphStats = { nodes: 0, edges: 0 };
+        return graphStats;
       case 'list_jobs':
         return jobs;
       case 'list_nodes': {
@@ -95,7 +99,16 @@ function installFakeCore() {
       case 'export_topology':
         return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
       case 'ingest_path':
-        return { job_id: 1, files: 2, nodes: 12, edges: 18 };
+        return {
+          job_id: 1,
+          files: 2,
+          nodes: 12,
+          edges: 18,
+          layers: {
+            ts: { files: 1, nodes: 8, edges: 12 },
+            tf: { files: 1, nodes: 4, edges: 6 },
+          },
+        };
       case 'add_system':
         return {
           job_id: 3,
@@ -103,6 +116,10 @@ function installFakeCore() {
           files: 5,
           nodes: 40,
           edges: 60,
+          layers: {
+            ts: { files: 3, nodes: 25, edges: 38 },
+            tf: { files: 2, nodes: 15, edges: 22 },
+          },
         };
       case 'add_repo':
         return {
@@ -112,6 +129,10 @@ function installFakeCore() {
           files: 3,
           nodes: 20,
           edges: 30,
+          layers: {
+            ts: { files: 3, nodes: 20, edges: 30 },
+            tf: { files: 0, nodes: 0, edges: 0 },
+          },
         };
       case 'enqueue_job': {
         const job: MockJob = {
@@ -150,6 +171,8 @@ const meta = {
       ingestBusy: false,
       ingestSummary: null,
       ingestError: null,
+      clearBusy: false,
+      clearError: null,
       selected: null,
     });
     return () => clearMocks();
@@ -191,5 +214,20 @@ export const EvidenceJumpToSource: Story = {
     await waitFor(() =>
       expect(canvasElement.querySelector('.evidence-panel')).not.toBeInTheDocument(),
     );
+  },
+};
+
+export const ClearGraphPreservesJobs: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTestId('graph-node-count')).toHaveTextContent('42'));
+    await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
+    await waitFor(() => expect(canvas.getByText('#1 noop')).toBeInTheDocument());
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear graph' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'Confirm clear' }));
+    await waitFor(() => expect(canvas.getByTestId('graph-node-count')).toHaveTextContent('0'));
+    await expect(canvas.getByTestId('graph-edge-count')).toHaveTextContent('0');
+    await expect(canvas.getByText('#1 noop')).toBeInTheDocument();
   },
 };

@@ -519,6 +519,7 @@ fn dir_walk_is_deterministic_and_skips_dot_terraform() {
     .unwrap();
     let a = extract_dir(dir.path(), &id()).unwrap();
     let b = extract_dir(dir.path(), &id()).unwrap();
+    assert_eq!(terraform_file_count(dir.path()).unwrap(), 1);
     assert!(!a.nodes.iter().any(|n| n.id.contains("cached")));
     assert_eq!(
         serde_json::to_string(&a.nodes).unwrap(),

@@ -12,13 +12,15 @@
 ### US-0001 — Add a repo set and define system topology
 - **Actor:** Engineer
 - **As a** engineer **I want** to add 1..N GitHub repos and declare which repos form one system **so that** the engine treats them as a single analyzable whole.
-- **Priority:** Must · **Status:** Ready
+- **Priority:** Must · **Status:** Done
 - **AC-0001** Given valid GitHub App/PAT auth, when I add a repo URL, then it is cloned read-only and listed with commit SHA.
 - **AC-0002** Given a multi-repo set, when I edit `cartograph.system.toml`, then declared layer hints and channel identities are applied at ingest.
 - **AC-0003** Given an unauthorized repo, when I add it, then I get a clear auth-failure with remediation and no partial clone.
+- **AC-0049** Given any completed ingest, when its summary is shown, then TypeScript and Terraform each report source-file, node, and edge counts including explicit zeros.
+- **AC-0050** Given a non-empty graph, when I request a clear and confirm the warning, then all graph facts are removed while durable job history remains intact.
 - **Security:** Tokens stored in OS keychain; never logged; least-privilege App scopes.
 - **Performance:** Shallow/sparse clone; 1 GB repo clones within bounded progress feedback.
-- **Trace:** M0–M1 · `ingest` · — · T-0001..0003
+- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050
 
 ### US-0002 — Deterministic extraction of server-side facts (TS first)
 - **Actor:** Engine

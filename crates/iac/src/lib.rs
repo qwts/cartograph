@@ -581,6 +581,15 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
     Ok(out)
 }
 
+/// Count physical Terraform source files using the same confined walk as
+/// extraction. Module instantiations do not inflate this count.
+pub fn terraform_file_count(root: &Path) -> Result<u64, ExtractError> {
+    let root = std::fs::canonicalize(root)?;
+    let mut files = Vec::new();
+    collect_tf_files(&root, &root, &mut files)?;
+    Ok(files.len() as u64)
+}
+
 fn expand_local_modules(
     root: &Path,
     id: &SourceId,

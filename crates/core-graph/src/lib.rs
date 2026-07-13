@@ -65,6 +65,8 @@ pub trait GraphStore {
     fn nodes_with_label(&self, label: &str) -> Result<Vec<Node>, GraphError>;
     /// All edges whose label is one of `labels`, ordered by (src, dst, label).
     fn edges_with_labels(&self, labels: &[&str]) -> Result<Vec<Edge>, GraphError>;
+    /// Delete every graph fact while preserving the store itself.
+    fn clear(&mut self) -> Result<(), GraphError>;
 }
 
 /// Version of the graph's fact schema — the node/edge *id scheme*, not the
@@ -255,6 +257,14 @@ impl GraphStore for SqliteGraphStore {
         }
         Ok(edges)
     }
+
+    fn clear(&mut self) -> Result<(), GraphError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM edges", [])?;
+        tx.execute("DELETE FROM nodes", [])?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +363,26 @@ mod tests {
         }
         assert_eq!(store.node_count().unwrap(), 2);
         assert_eq!(store.edge_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn clear_removes_graph_facts_and_persists_empty() {
+        // AC-0050: graph facts are disposable and can be cleared without
+        // replacing/corrupting the graph database.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        {
+            let mut store = SqliteGraphStore::open(&path).unwrap();
+            store.put_node(&node("a", "Resource")).unwrap();
+            store.put_node(&node("b", "Resource")).unwrap();
+            store.put_edge(&edge("a", "b", "REFERENCES")).unwrap();
+            store.clear().unwrap();
+            assert_eq!(store.node_count().unwrap(), 0);
+            assert_eq!(store.edge_count().unwrap(), 0);
+        }
+        let store = SqliteGraphStore::open(&path).unwrap();
+        assert_eq!(store.node_count().unwrap(), 0);
+        assert_eq!(store.edge_count().unwrap(), 0);
     }
 
     #[test]

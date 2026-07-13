@@ -22,10 +22,13 @@ export default function App() {
     ingestBusy,
     ingestSummary,
     ingestError,
+    clearBusy,
+    clearError,
     selected,
     refresh,
     enqueueJob,
     ingest,
+    clearGraph,
     select,
     clearSelection,
   } = useAppStore();
@@ -50,7 +53,13 @@ export default function App() {
             canIngest={backend === 'up'}
             onIngest={(path) => void ingest(path)}
           />
-          <GraphStatsCard stats={stats} />
+          <GraphStatsCard
+            stats={stats}
+            canClear={backend === 'up' && !ingestBusy && (stats?.nodes ?? 0) > 0}
+            clearing={clearBusy}
+            error={clearError}
+            onClear={() => void clearGraph()}
+          />
           <JobsCard
             jobs={jobs}
             canEnqueue={backend === 'up'}
