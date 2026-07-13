@@ -100,6 +100,24 @@ PR — per-PR verification is CI's job.
    subscribes; values `terraform show` marks sensitive read `[redacted]`
    everywhere in the UI (M6: observed-fact provenance; AC-0009).
 
+## MT-M6-02 — OTLP trace fills a runtime channel Gap (T1)
+
+1. In a repo whose event SDK call computes its queue/topic identity at
+   runtime, capture an OTLP trace with `messaging.system`,
+   `messaging.destination.name`, and `code.file.path` span attributes.
+   Export it with the collector file exporter as OTLP/JSON Lines.
+2. Add `otel_jsonl = ["trace.jsonl"]` to that repo's `[[repos]]` entry in
+   `cartograph.system.toml` and ingest the manifest.
+3. Inspect the previously unresolved PUBLISHES/SUBSCRIBES hop: its Gap is
+   replaced by a Channel whose edge resolver is `t1.otel-trace`; provenance
+   is Dynamic/Confirmed and points to the observed span id in `trace.jsonl`.
+4. Include `http.request.method` plus `http.route` on an HTTP server span.
+   The matching Endpoint keeps its Deterministic `prov` and gains separate
+   Dynamic `observed`/`observed_prov` facts.
+5. **Pass:** a uniquely source-matched identity resolves the Gap; ambiguous
+   same-kind observations leave the Gap explicit with T0 and T1 recorded in
+   `attempted_tiers` (AC-0012, R-INT-1, R-INT-4, M6 exit gate).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

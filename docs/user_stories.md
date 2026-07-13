@@ -40,7 +40,7 @@
 - **AC-0009** Given Terraform state/plan JSON, when available, then T1 enrichment supersedes ambiguous T0 refs (observed provenance).
 - **Security:** IAM GRANTS feed the security view; secrets in state are redacted.
 - **Performance:** Registry lookups O(1) per resource type.
-- **Trace:** M2 · `iac` · — · T-0007..0009
+- **Trace:** M2,M6 · `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009
 
 ### US-0004 — Event graph with channel-identity stitching
 - **Actor:** Engine
@@ -51,7 +51,7 @@
 - **AC-0012** Given a runtime-computed channel id, when unresolved at T0, then the hop escalates and, if still unresolved, emits a Gap with reason.
 - **Security:** —
 - **Performance:** Channel index keyed by identity for O(1) match.
-- **Trace:** M3,M5 · `events`, `flowtracer` · — · T-0010..0012
+- **Trace:** M3,M5,M6 · `events`, `dynamic`, `flowtracer`, `app` · — · T-0010..0012
 
 ### US-0005 — Client-side interaction graph (React first)
 - **Actor:** Engine

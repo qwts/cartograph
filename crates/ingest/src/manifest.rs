@@ -41,6 +41,11 @@ pub struct ManifestRepo {
     /// enrichment (SPEC-00 §3.1, AC-0009); absent means T0 only.
     #[serde(default)]
     pub state_json: Option<String>,
+    /// OTLP/JSON trace files in collector file-exporter JSON Lines format,
+    /// relative to the manifest. Observed messaging identities may fill
+    /// unresolved T0 channel slots at T1 (AC-0012, issue #54).
+    #[serde(default)]
+    pub otel_jsonl: Vec<String>,
 }
 
 /// The parsed manifest.

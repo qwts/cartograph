@@ -80,6 +80,7 @@ fn extract_tree(
     layers: &[String],
     manifest_env: &std::collections::BTreeMap<String, String>,
     state_json: Option<&std::path::Path>,
+    otel_jsonl: &[std::path::PathBuf],
 ) -> Result<adapters_lang_ts::Extraction, String> {
     // Layer hints gate extractors (AC-0002): empty means everything; the
     // TS pass covers server/events/client, the HCL pass infra/cloud.
@@ -125,6 +126,19 @@ fn extract_tree(
     let fetched = events::stitch_fetches(&extraction.fetch_sites, &endpoint_ids, &cfg, &ev_id);
     extraction.nodes.extend(fetched.nodes);
     extraction.edges.extend(fetched.edges);
+    // T1: observed messaging identities fill only explicit channel Gaps;
+    // observed HTTP attributes enrich T0 endpoints beside their provenance.
+    for trace_path in otel_jsonl {
+        let raw = std::fs::read_to_string(trace_path)
+            .map_err(|e| format!("otel_jsonl {}: {e}", trace_path.display()))?;
+        let trace = dynamic::parse_otlp_jsonl(&raw).map_err(|e| e.to_string())?;
+        dynamic::apply_trace(
+            &mut extraction.nodes,
+            &mut extraction.edges,
+            &trace,
+            &trace_path.to_string_lossy(),
+        );
+    }
     extraction.close_over_endpoints();
     Ok(extraction)
 }
@@ -225,6 +239,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         &[],
         &std::collections::BTreeMap::new(),
         None,
+        &[],
     )
     .map_err(|e| fail(e, &state, job_id))?;
     let files = extraction
@@ -302,6 +317,7 @@ fn add_repo(
         &[],
         &std::collections::BTreeMap::new(),
         None,
+        &[],
     )
     .map_err(|e| fail(e, &state, job_id))?;
     let files = extraction
@@ -423,6 +439,8 @@ fn add_system(
         // state_json travels with the manifest, so it resolves against the
         // manifest dir — same rule as local repo paths.
         let state_path = entry.state_json.as_ref().map(|p| base.join(p));
+        let trace_paths: Vec<std::path::PathBuf> =
+            entry.otel_jsonl.iter().map(|p| base.join(p)).collect();
         let extraction = extract_tree(
             &root,
             &repo,
@@ -430,6 +448,7 @@ fn add_system(
             &entry.layers,
             &manifest.env,
             state_path.as_deref(),
+            &trace_paths,
         )
         .map_err(|e| fail(e, &state, job_id))?;
         files += extraction
@@ -663,6 +682,7 @@ mod tests {
             &[],
             &std::collections::BTreeMap::new(),
             None,
+            &[],
         )
         .unwrap();
         let ep = extraction
@@ -731,6 +751,7 @@ export function beat() { bus.emit('heartbeat'); }
                 &[],
                 &std::collections::BTreeMap::new(),
                 None,
+                &[],
             )
             .unwrap();
             crate::load_into_graph(&mut store, &ex, repo, dir, &sha).unwrap();
@@ -830,9 +851,16 @@ ORDERS_QUEUE = "https://sqs.example/orders"
             let root = std::fs::canonicalize(dir.path().join(&entry.url)).unwrap();
             let name = root.file_name().unwrap().to_string_lossy().into_owned();
             let repo = format!("local/{name}");
-            let ex =
-                crate::extract_tree(&root, &repo, "workdir", &entry.layers, &manifest.env, None)
-                    .unwrap();
+            let ex = crate::extract_tree(
+                &root,
+                &repo,
+                "workdir",
+                &entry.layers,
+                &manifest.env,
+                None,
+                &[],
+            )
+            .unwrap();
             crate::load_into_graph(&mut store, &ex, &repo, &root, "workdir").unwrap();
         }
 
@@ -909,9 +937,16 @@ layers = ["events", "server"]
             let root = std::fs::canonicalize(dir.path().join(&entry.url)).unwrap();
             let name = root.file_name().unwrap().to_string_lossy().into_owned();
             let repo = format!("local/{name}");
-            let ex =
-                crate::extract_tree(&root, &repo, "workdir", &entry.layers, &manifest.env, None)
-                    .unwrap();
+            let ex = crate::extract_tree(
+                &root,
+                &repo,
+                "workdir",
+                &entry.layers,
+                &manifest.env,
+                None,
+                &[],
+            )
+            .unwrap();
             crate::load_into_graph(&mut store, &ex, &repo, &root, "workdir").unwrap();
         }
 
@@ -950,6 +985,96 @@ layers = ["events", "server"]
         // No gaps anywhere: both sides carry the same literal identity
         // (AC-0010); the config-resolved path is AC-0011's manifest test.
         assert!(store.nodes_with_label("Gap").unwrap().is_empty());
+    }
+
+    #[test]
+    fn otel_trace_resolves_runtime_channel_gap_with_observed_provenance() {
+        // M6 exit gate (issue #54, AC-0012, T-0012): T0 emits a Gap for a
+        // runtime channel identity; OTLP/JSONL fills that exact source slot
+        // at T1 and enriches the matching HTTP endpoint without touching T0.
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("shop");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(
+            repo_dir.join("app.ts"),
+            r#"
+import express from 'express';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+const app = express();
+const sqs = new SQSClient({});
+function runtimeQueue() { return process.argv[2]; }
+app.post('/orders', (_req, _res) => queueOrder());
+export function queueOrder() {
+  return sqs.send(new SendMessageCommand({ QueueUrl: runtimeQueue(), MessageBody: '{}' }));
+}
+"#,
+        )
+        .unwrap();
+        let trace_path = dir.path().join("shop.otlp.jsonl");
+        std::fs::write(
+            &trace_path,
+            r#"{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"trace-shop","spanId":"span-send","name":"send order","attributes":[{"key":"messaging.system","value":{"stringValue":"aws_sqs"}},{"key":"messaging.destination.name","value":{"stringValue":"https://sqs.example/runtime-orders"}},{"key":"code.file.path","value":{"stringValue":"/checkout/app.ts"}}]},{"traceId":"trace-shop","spanId":"span-http","name":"POST /orders","attributes":[{"key":"http.request.method","value":{"stringValue":"POST"}},{"key":"http.route","value":{"stringValue":"/orders"}}]}]}]}]}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("cartograph.system.toml"),
+            r#"
+[[repos]]
+url = "shop"
+layers = ["server", "events"]
+otel_jsonl = ["shop.otlp.jsonl"]
+"#,
+        )
+        .unwrap();
+
+        let manifest = ingest::manifest::SystemManifest::load(dir.path()).unwrap();
+        let entry = &manifest.repos[0];
+        let trace_paths: Vec<_> = entry
+            .otel_jsonl
+            .iter()
+            .map(|path| dir.path().join(path))
+            .collect();
+        let extraction = crate::extract_tree(
+            &repo_dir,
+            "local/shop",
+            "workdir",
+            &entry.layers,
+            &manifest.env,
+            None,
+            &trace_paths,
+        )
+        .unwrap();
+
+        assert!(extraction.nodes.iter().all(|node| node.label != "Gap"));
+        let channel = extraction
+            .nodes
+            .iter()
+            .find(|node| node.id == "chan:sqs-queue:https://sqs.example/runtime-orders")
+            .unwrap();
+        assert_eq!(channel.props["prov"]["tier"], "Dynamic");
+        assert_eq!(channel.props["prov"]["confidence_tier"], "Confirmed");
+        assert_eq!(channel.props["observed"]["span_id"], "span-send");
+        let publish = extraction
+            .edges
+            .iter()
+            .find(|edge| edge.label == "PUBLISHES")
+            .unwrap();
+        assert_eq!(publish.dst, channel.id);
+        assert_eq!(publish.props["resolver"], dynamic::OTEL_EXTRACTOR_ID);
+        assert_eq!(publish.props["prov"]["tier"], "Dynamic");
+        let endpoint = extraction
+            .nodes
+            .iter()
+            .find(|node| node.label == "Endpoint")
+            .unwrap();
+        assert_eq!(endpoint.props["prov"]["tier"], "Deterministic");
+        assert_eq!(endpoint.props["observed"]["span_id"], "span-http");
+        assert_eq!(endpoint.props["observed_prov"]["tier"], "Dynamic");
+        assert_eq!(
+            endpoint.props["observed_prov"]["evidence"][0]["path"],
+            trace_path.to_string_lossy().as_ref()
+        );
     }
 
     #[test]
@@ -1034,6 +1159,7 @@ state_json = "shop.state.json"
                 &entry.layers,
                 &manifest.env,
                 state_path.as_deref(),
+                &[],
             )
             .unwrap();
             crate::load_into_graph(&mut store, &ex, "local/shop", &root, "workdir").unwrap();
