@@ -265,7 +265,7 @@ A new language/cloud/event system = a new adapter crate implementing the SPI. No
 ### 8.3 Data stores
 - **Graph:** Kuzu (fallback SQLite recursive-CTE).
 - **Relational/state spine:** SQLite/WAL — jobs, provenance log, artifact versions, eval results, config.
-- **Embedding index:** `usearch` (fallback `sqlite-vec`). *Verify binding at M7.*
+- **Embedding index:** `usearch` (fallback `sqlite-vec`), verified at M7 per ADR-0010.
 - **Evidence blobs:** content-addressed files under app data dir; referenced by `content_hash`.
 
 ### 8.4 Process / concurrency
@@ -374,7 +374,7 @@ Each milestone names explicit tech and an exit gate. Preference order honored th
 | Diagram export | **Mermaid+SVG**, Graphviz/DOT, D2 | **Mermaid+SVG** — portable, Claude-Code-friendly |
 | UI state | **Zustand**, Redux Toolkit, Jotai | **Zustand** — light, sufficient |
 
-**Verify-at-build (integrity flags):** ~~Kuzu embedding fit + maintenance~~ (verified at M0 — archived upstream, resolved per ADR-0008); ~~`hcl-rs` maintenance~~ (verified at M2 — actively maintained, 2026 releases; `hcl-edit` 0.9 from the same project is used for span-preserving parsing; coverage against real work Terraform still to be exercised); `usearch`/`fastembed` Rust bindings (verify at M7); ~~OTel ingest format~~ (verified at M6 — OTLP/JSON file-exporter spec is Stable, JSON Lines; ingest lands per #54). Confirm each against current reality before relying on it.
+**Verify-at-build (integrity flags):** ~~Kuzu embedding fit + maintenance~~ (verified at M0 — archived upstream, resolved per ADR-0008); ~~`hcl-rs` maintenance~~ (verified at M2 — actively maintained, 2026 releases; `hcl-edit` 0.9 from the same project is used for span-preserving parsing; coverage against real work Terraform still to be exercised); ~~`usearch`/`fastembed` Rust bindings~~ (verified at M7 — USearch 2.26 adopted; FastEmbed 5.17 viable but not an implicit fallback, per ADR-0010); ~~OTel ingest format~~ (verified at M6 — OTLP/JSON file-exporter spec is Stable, JSON Lines; ingest lands per #54). Confirm each against current reality before relying on it.
 
 ---
 

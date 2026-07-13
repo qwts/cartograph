@@ -22,6 +22,8 @@ events = { workspace = true }
 flowtracer = { workspace = true }
 ingest = { workspace = true }
 spec = { workspace = true }
+llm = { workspace = true }
+semantic = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

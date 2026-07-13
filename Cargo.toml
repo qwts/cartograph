@@ -17,6 +17,8 @@ serde_json = "1"
 thiserror = "2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 blake3 = "1"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"] }
+usearch = { version = "2.26", default-features = false }
 
 # Internal crates (SPEC-00 §8.1 crate map)
 core-graph = { path = "crates/core-graph" }
@@ -29,3 +31,5 @@ flowtracer = { path = "crates/flowtracer" }
 ingest = { path = "crates/ingest" }
 iac = { path = "crates/iac" }
 spec = { path = "crates/spec" }
+llm = { path = "crates/llm" }
+semantic = { path = "crates/semantic" }

@@ -8,7 +8,8 @@ mod evidence;
 mod jobs;
 
 use core_graph::{GraphStore, Node, SqliteGraphStore};
-use jobs::{Job, JobStore};
+use jobs::{EvalResult, Job, JobStore};
+use llm::LlmProvider;
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -103,6 +104,12 @@ fn enqueue_job(kind: String, state: State<'_, AppState>) -> Result<Job, String> 
 fn list_jobs(state: State<'_, AppState>) -> Result<Vec<Job>, String> {
     let jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.list().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_evals(state: State<'_, AppState>) -> Result<Vec<EvalResult>, String> {
+    let jobs = state.jobs.lock().map_err(|error| error.to_string())?;
+    jobs.list_evals().map_err(|error| error.to_string())
 }
 
 #[derive(Serialize)]
@@ -618,6 +625,89 @@ fn list_flows(state: State<'_, AppState>) -> Result<Vec<flowtracer::Flow>, Strin
     Ok(flowtracer::trace(&nodes, &edges))
 }
 
+#[derive(Serialize)]
+struct SemanticPreview {
+    eval_id: Option<i64>,
+    provider: String,
+    eval: semantic::EvalReport,
+    proposals: Vec<semantic::SemanticProposal>,
+    approved: Vec<semantic::SemanticProposal>,
+    gaps_filled: usize,
+    flows: Vec<flowtracer::Flow>,
+    dossier: String,
+}
+
+fn build_semantic_preview(
+    provider: &dyn LlmProvider,
+    nodes: &[Node],
+    edges: &[core_graph::Edge],
+    eval_pairs: &[semantic::LabeledPair],
+    precision_floor: f32,
+) -> Result<SemanticPreview, String> {
+    let eval = semantic::evaluate(provider, eval_pairs, precision_floor)
+        .map_err(|error| error.to_string())?;
+    let (hops, candidates) = semantic::graph_inputs(nodes, edges);
+    let proposals =
+        semantic::propose(provider, &hops, &candidates, 3).map_err(|error| error.to_string())?;
+    let approved = semantic::gated_proposals(&proposals, &eval);
+    let overlay = semantic::overlay(nodes, edges, &approved, &eval);
+    let flows = flowtracer::trace(&overlay.nodes, &overlay.edges);
+    let dossier = spec::flow_dossier(&flows);
+    Ok(SemanticPreview {
+        eval_id: None,
+        provider: provider.id().to_string(),
+        eval,
+        proposals,
+        approved,
+        gaps_filled: overlay.gaps_filled,
+        flows,
+        dossier,
+    })
+}
+
+/// Run the local-only T2 resolver as a best-effort preview. Confirmed graph
+/// facts are read into an ephemeral overlay; only eval-approved Gap fills are
+/// reflected in the returned flows and dossier.
+#[tauri::command]
+async fn semantic_preview(
+    eval_pairs: Vec<semantic::LabeledPair>,
+    precision_floor: f32,
+    state: State<'_, AppState>,
+) -> Result<SemanticPreview, String> {
+    let (nodes, edges) = {
+        let graph = state.graph.lock().map_err(|error| error.to_string())?;
+        let mut nodes = Vec::new();
+        for label in flowtracer::FLOW_NODE_LABELS {
+            nodes.extend(
+                graph
+                    .nodes_with_label(label)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        let edges = graph
+            .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
+            .map_err(|error| error.to_string())?;
+        (nodes, edges)
+    };
+    let mut preview = tauri::async_runtime::spawn_blocking(move || {
+        let provider = llm::OllamaProvider::local_default().map_err(|error| error.to_string())?;
+        build_semantic_preview(&provider, &nodes, &edges, &eval_pairs, precision_floor)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let mut jobs = state.jobs.lock().map_err(|error| error.to_string())?;
+    let eval = jobs
+        .record_eval(
+            &preview.provider,
+            &preview.eval,
+            preview.proposals.len(),
+            preview.approved.len(),
+        )
+        .map_err(|error| error.to_string())?;
+    preview.eval_id = Some(eval.id);
+    Ok(preview)
+}
+
 /// Nodes carrying `label` (e.g. `Endpoint`, `Repo`), ordered by id.
 #[tauri::command]
 fn list_nodes(label: String, state: State<'_, AppState>) -> Result<Vec<Node>, String> {
@@ -669,12 +759,14 @@ fn main() {
             clear_graph,
             enqueue_job,
             list_jobs,
+            list_evals,
             ingest_path,
             list_nodes,
             read_evidence,
             export_topology,
             export_flows,
             list_flows,
+            semantic_preview,
             add_repo,
             add_system
         ])
@@ -685,6 +777,150 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
+    use llm::{Embedding, Locality, ProviderCaps, ProviderError};
+
+    struct M7KeywordProvider;
+
+    impl llm::LlmProvider for M7KeywordProvider {
+        fn id(&self) -> &str {
+            "test-keywords"
+        }
+
+        fn locality(&self) -> Locality {
+            Locality::Local
+        }
+
+        fn capabilities(&self) -> ProviderCaps {
+            ProviderCaps {
+                embeddings: true,
+                chat: false,
+                tool_use: false,
+            }
+        }
+
+        fn embed(&self, batch: &[String]) -> Result<Vec<Embedding>, ProviderError> {
+            Ok(batch
+                .iter()
+                .map(|text| {
+                    let text = text.to_ascii_lowercase();
+                    vec![
+                        f32::from(text.contains("order")),
+                        f32::from(text.contains("user")),
+                        f32::from(text.contains("billing")),
+                        0.01,
+                    ]
+                })
+                .collect())
+        }
+    }
+
+    fn m7_prov(path: &str, confidence: &str) -> serde_json::Value {
+        serde_json::json!({
+            "tier": "Deterministic",
+            "confidence_tier": confidence,
+            "evidence": [{
+                "repo": "local/shop",
+                "path": path,
+                "byte_start": 1,
+                "byte_end": 5,
+                "commit_sha": "abc123"
+            }],
+            "extractor_id": "t0.test",
+            "content_hash": "hash"
+        })
+    }
+
+    #[test]
+    fn semantic_preview_fills_only_eval_gated_gap_overlay() {
+        // AC-0021/AC-0022: app path stages T2 links, gates them on paired
+        // precision, and traces an inferred overlay without mutating T0 input.
+        let nodes = vec![
+            Node {
+                id: "ep:shop@POST:/orders".into(),
+                label: "Endpoint".into(),
+                props: serde_json::json!({
+                    "method": "POST", "path": "/orders", "prov": m7_prov("api.ts", "Confirmed")
+                }),
+            },
+            Node {
+                id: "sym:shop@api.ts#placeOrder".into(),
+                label: "Symbol".into(),
+                props: serde_json::json!({
+                    "name": "placeOrder", "prov": m7_prov("api.ts", "Confirmed")
+                }),
+            },
+            Node {
+                id: "gap:chan:shop@api.ts@10".into(),
+                label: "Gap".into(),
+                props: serde_json::json!({
+                    "kind": "sqs-queue",
+                    "raw": "computed order destination",
+                    "reason": "runtime-computed channel identity",
+                    "prov": m7_prov("api.ts", "Gap")
+                }),
+            },
+            Node {
+                id: "chan:sqs-queue:orders".into(),
+                label: "Channel".into(),
+                props: serde_json::json!({
+                    "kind": "sqs-queue", "identity": "orders queue",
+                    "prov": m7_prov("infra.tf", "Confirmed")
+                }),
+            },
+            Node {
+                id: "chan:sqs-queue:users".into(),
+                label: "Channel".into(),
+                props: serde_json::json!({
+                    "kind": "sqs-queue", "identity": "users queue",
+                    "prov": m7_prov("infra.tf", "Confirmed")
+                }),
+            },
+        ];
+        let edges = vec![
+            Edge {
+                src: "ep:shop@POST:/orders".into(),
+                dst: "sym:shop@api.ts#placeOrder".into(),
+                label: "HANDLES".into(),
+                props: serde_json::json!({"prov": m7_prov("api.ts", "Confirmed")}),
+            },
+            Edge {
+                src: "sym:shop@api.ts#placeOrder".into(),
+                dst: "gap:chan:shop@api.ts@10".into(),
+                label: "PUBLISHES".into(),
+                props: serde_json::json!({"prov": m7_prov("api.ts", "Gap")}),
+            },
+        ];
+        let eval_pairs = vec![
+            semantic::LabeledPair {
+                query: "order destination".into(),
+                candidate: "orders queue".into(),
+                is_match: true,
+            },
+            semantic::LabeledPair {
+                query: "order destination".into(),
+                candidate: "users queue".into(),
+                is_match: false,
+            },
+            semantic::LabeledPair {
+                query: "billing event".into(),
+                candidate: "billing channel".into(),
+                is_match: true,
+            },
+            semantic::LabeledPair {
+                query: "billing event".into(),
+                candidate: "users queue".into(),
+                is_match: false,
+            },
+        ];
+        let preview =
+            crate::build_semantic_preview(&M7KeywordProvider, &nodes, &edges, &eval_pairs, 0.95)
+                .unwrap();
+        assert_eq!(preview.gaps_filled, 1);
+        assert_eq!(preview.approved[0].target_id, "chan:sqs-queue:orders");
+        assert_eq!(preview.flows[0].status, flowtracer::FlowStatus::Inferred);
+        assert!(preview.dossier.contains("InferredStrong"));
+        assert!(nodes.iter().any(|node| node.label == "Gap"));
+    }
 
     #[test]
     fn layer_summary_reports_ts_and_tf_files_and_facts() {

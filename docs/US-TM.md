@@ -11,7 +11,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0005 | AC-0013..0014 | adapters-lang-ts(tsx), adapters-fw | M4 | F-* | ADR-0003 | T-0013..0014 |
 | US-0006 | AC-0015..0017 | flowtracer | M3–M5 | F-* | ADR-0002 | T-0015..0017 |
 | US-0007 | AC-0018..0020 | core-prov, agents | M0, M8 | — | ADR-0002, ADR-0006 | T-0018..0020 |
-| US-0008 | AC-0021..0022 | semantic, llm | M7 | — | ADR-0002, ADR-0004 | T-0021..0022 |
+| US-0008 | AC-0021..0022 | semantic, llm, app | M7 | F-* | ADR-0002, ADR-0004, ADR-0010 | T-0021..0022 |
 | US-0009 | AC-0023..0025 | agents, llm | M8 | — | ADR-0004 | T-0023..0025 |
 | US-0010 | AC-0026..0028 | app, ui | M9 | — | ADR-0001 | T-0026..0028 |
 | US-0011 | AC-0029..0031 | app, flowtracer, ui | M9 | F-* | ADR-0002 | T-0029..0031 |
@@ -37,3 +37,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0007 | Strict agentic SDLC from inception; dogfood v1, expand scope later |
 | ADR-0008 | SQLite recursive-CTE as primary graph store (Kuzu archived upstream) |
 | ADR-0009 | v1 GitHub auth ladder: env token → gh CLI; GitHub App deferred |
+| ADR-0010 | USearch + Ollama semantic staging with paired-eval gating |

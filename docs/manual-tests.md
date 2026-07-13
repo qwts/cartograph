@@ -118,6 +118,21 @@ PR — per-PR verification is CI's job.
    same-kind observations leave the Gap explicit with T0 and T1 recorded in
    `attempted_tiers` (AC-0012, R-INT-1, R-INT-4, M6 exit gate).
 
+## MT-M7-01 — Local semantic resolution clears its precision gate (T2)
+
+1. Start Ollama locally and make the configured embedding model available:
+   `ollama pull nomic-embed-text` (Cartograph never downloads it implicitly).
+2. Run
+   `cargo test -p semantic real_ollama_resolves_eval_gated_gap -- --ignored --nocapture`.
+3. Inspect the printed report: provider is local Ollama, paired-eval precision
+   meets the configured floor, ANN lookup is below 100ms, and one explicit
+   channel Gap is replaced only in the returned best-effort overlay.
+4. Stop Ollama and repeat the semantic preview from the app/API.
+5. **Pass:** the stopped provider fails explicitly with no graph change or
+   network fallback; the passing preview edge is Semantic/InferredStrong with
+   evidence from both Gap and target, while the stored confirmed graph retains
+   its original Gap (AC-0021, AC-0022, R-INT-1, M7 exit gate).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

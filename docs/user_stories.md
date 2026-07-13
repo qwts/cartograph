@@ -96,7 +96,7 @@
 ### US-0008 — Semantic tier with eval gating
 - **Actor:** Engine
 - **As a** engineer **I want** semantic matching gated by paired evals **so that** inferred links meet a precision floor.
-- **Priority:** Should · **Status:** Draft
+- **Priority:** Should · **Status:** Done
 - **AC-0021** Given unresolved hops, when T2 runs, then proposals are marked InferredStrong with evidence.
 - **AC-0022** Given a labeled eval set, when T2 is measured, then proposals below the precision floor are excluded from `best-effort` exports.
 - **Security:** Embeddings computed locally by default.
