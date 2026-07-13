@@ -542,24 +542,39 @@ fn deterministic_graph_hashes(graph: &impl GraphStore) -> Result<Vec<String>, St
 /// Join observed infra to the event layer: insert a `BACKS` edge wherever
 /// an enriched `Resource`'s observed identity names a `Channel` that code
 /// actually publishes or subscribes (SPEC-00 §4.1, M6). Runs over the
-/// whole graph after every load — `put_edge` upserts, so it is idempotent
-/// and later repos can back channels from earlier ones.
+/// whole graph after every load. Existing state-derived edges are reconciled
+/// against the current candidates before `put_edge` upserts, so removed or
+/// changed observations cannot leave stale cross-layer topology behind.
 fn stitch_backings(graph: &mut SqliteGraphStore) -> Result<u64, String> {
     let resources = graph
         .nodes_with_label("Resource")
         .map_err(|e| e.to_string())?;
-    let mut inserted = 0;
+    let mut candidates = std::collections::BTreeMap::new();
     for edge in dynamic::backing_candidates(&resources) {
         let channel_exists = graph
             .get_node(&edge.dst)
             .map_err(|e| e.to_string())?
             .is_some();
         if channel_exists {
-            graph.put_edge(&edge).map_err(|e| e.to_string())?;
-            inserted += 1;
+            candidates.insert(edge_key(&edge), edge);
         }
     }
-    Ok(inserted)
+    for edge in graph
+        .edges_with_labels(&["BACKS"])
+        .map_err(|error| error.to_string())?
+    {
+        let is_state_backing =
+            edge.props["prov"]["extractor_id"].as_str() == Some(dynamic::EXTRACTOR_ID);
+        if is_state_backing && !candidates.contains_key(&edge_key(&edge)) {
+            graph
+                .delete_edge(&edge.src, &edge.dst, &edge.label)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    for edge in candidates.values() {
+        graph.put_edge(edge).map_err(|error| error.to_string())?;
+    }
+    Ok(candidates.len() as u64)
 }
 
 /// Reconcile explicit found-ADR target ids against the complete graph.
@@ -2438,6 +2453,35 @@ state_json = "shop.state.json"
         // Re-running the join is idempotent (US-0014 re-ingest).
         assert_eq!(crate::stitch_backings(&mut store).unwrap(), 1);
         assert_eq!(store.edges_with_labels(&["BACKS"]).unwrap().len(), 1);
+
+        // AC-0009/T-0009 and AC-0040: removing the observation on re-ingest
+        // removes its derived BACKS edge instead of retaining stale topology.
+        let without_state = crate::extract_tree(
+            &repo_dir,
+            "local/shop",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+        )
+        .unwrap();
+        crate::load_into_graph(
+            &mut store,
+            &without_state,
+            "local/shop",
+            &repo_dir,
+            "workdir",
+        )
+        .unwrap();
+        assert_eq!(crate::stitch_backings(&mut store).unwrap(), 0);
+        assert!(store.edges_with_labels(&["BACKS"]).unwrap().is_empty());
+        let queue = store
+            .get_node("res:local/shop@aws_sqs_queue.orders")
+            .unwrap()
+            .unwrap();
+        assert!(queue.props.get("observed").is_none());
+        assert!(queue.props.get("observed_prov").is_none());
     }
 
     #[test]
