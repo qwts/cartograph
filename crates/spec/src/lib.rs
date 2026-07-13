@@ -17,6 +17,7 @@ pub const TOPOLOGY_EDGE_LABELS: &[&str] = &[
     "ROUTES",
     "SUBSCRIBES",
     "GRANTS",
+    "BACKS",
     "DEPENDS_ON",
     "REFERENCES",
 ];
@@ -28,6 +29,7 @@ const TOPOLOGY_EDGES: &[(&str, &str)] = &[
     ("ROUTES", "-->"),
     ("SUBSCRIBES", "-->"),
     ("GRANTS", "-->"),
+    ("BACKS", "-->"),
     ("DEPENDS_ON", "-.->"),
     ("REFERENCES", "-.->"),
 ];
@@ -46,13 +48,29 @@ fn mermaid_id(id: &str) -> String {
 }
 
 /// Compile the resource/topology map (SPEC-00 §7 artifact table) from
-/// `Resource` nodes and their infra edges. Deterministic output: same graph,
-/// same text (US-0014).
+/// `Resource` nodes and their infra edges. Channels join the map only via
+/// an observed `BACKS` edge (M6: deployed resource → the code-layer
+/// channel it backs) and render as cylinders. Deterministic output: same
+/// graph, same text (US-0014).
 pub fn topology_mermaid(nodes: &[Node], edges: &[Edge]) -> String {
     let resources: BTreeMap<&str, &Node> = nodes
         .iter()
         .filter(|n| n.label == "Resource")
         .map(|n| (n.id.as_str(), n))
+        .collect();
+    let channels: BTreeMap<&str, &Node> = nodes
+        .iter()
+        .filter(|n| n.label == "Channel")
+        .map(|n| (n.id.as_str(), n))
+        .collect();
+    let backed: std::collections::BTreeSet<&str> = edges
+        .iter()
+        .filter(|e| {
+            e.label == "BACKS"
+                && resources.contains_key(e.src.as_str())
+                && channels.contains_key(e.dst.as_str())
+        })
+        .map(|e| e.dst.as_str())
         .collect();
 
     let mut out = String::from("flowchart LR\n");
@@ -81,13 +99,20 @@ pub fn topology_mermaid(nodes: &[Node], edges: &[Edge]) -> String {
         .expect("write to string");
     }
 
+    for id in &backed {
+        let display = id.strip_prefix("chan:").unwrap_or(id);
+        writeln!(out, "    {}[(\"{}\")]", mermaid_id(id), display).expect("write to string");
+    }
+
     let mut lines = Vec::new();
     for edge in edges {
         let Some((_, arrow)) = TOPOLOGY_EDGES.iter().find(|(l, _)| *l == edge.label) else {
             continue;
         };
-        if !resources.contains_key(edge.src.as_str()) || !resources.contains_key(edge.dst.as_str())
-        {
+        let endpoints_known = resources.contains_key(edge.src.as_str())
+            && (resources.contains_key(edge.dst.as_str())
+                || (edge.label == "BACKS" && backed.contains(edge.dst.as_str())));
+        if !endpoints_known {
             continue;
         }
         lines.push(format!(
@@ -299,6 +324,37 @@ mod tests {
         assert!(dossier.contains("| 1 | HANDLES `ep:GET:/users` → `sym:app.ts#list` | Deterministic | Confirmed | src/app.ts bytes 1..9 |"));
         // Deterministic (US-0014).
         assert_eq!(dossier, flow_dossier(&flows));
+    }
+
+    #[test]
+    fn backs_edge_renders_the_channel_as_a_cylinder() {
+        // M6: the infra↔code join is visible on the topology map — but a
+        // channel appears only through an observed BACKS edge.
+        let queue = resource(
+            "res:local/infra@aws_sqs_queue.orders",
+            "aws_sqs_queue.orders",
+        );
+        let chan = Node {
+            id: "chan:sqs-queue:https://sqs.us-east-1.amazonaws.com/1/orders".into(),
+            label: "Channel".into(),
+            props: serde_json::json!({}),
+        };
+        let orphan_chan = Node {
+            id: "chan:sqs-queue:https://sqs.us-east-1.amazonaws.com/1/other".into(),
+            label: "Channel".into(),
+            props: serde_json::json!({}),
+        };
+        let backs = edge(
+            "res:local/infra@aws_sqs_queue.orders",
+            "chan:sqs-queue:https://sqs.us-east-1.amazonaws.com/1/orders",
+            "BACKS",
+        );
+        let mmd = topology_mermaid(&[queue, chan, orphan_chan], &[backs]);
+        assert!(mmd.contains(r#"[("sqs-queue:https://sqs.us-east-1.amazonaws.com/1/orders")]"#));
+        assert!(mmd.contains("-->|BACKS|"));
+        // No BACKS edge, no cylinder: channels are not infra topology on
+        // their own.
+        assert!(!mmd.contains("1/other"));
     }
 
     #[test]

@@ -79,6 +79,7 @@ fn extract_tree(
     commit: &str,
     layers: &[String],
     manifest_env: &std::collections::BTreeMap<String, String>,
+    state_json: Option<&std::path::Path>,
 ) -> Result<adapters_lang_ts::Extraction, String> {
     // Layer hints gate extractors (AC-0002): empty means everything; the
     // TS pass covers server/events/client, the HCL pass infra/cloud.
@@ -95,6 +96,19 @@ fn extract_tree(
         let tf = iac::extract_dir(root, &tf_id).map_err(|e| e.to_string())?;
         extraction.nodes.extend(tf.nodes);
         extraction.edges.extend(tf.edges);
+        // T1: observed state supersedes ambiguous T0 refs (AC-0009).
+        if let Some(state_path) = state_json {
+            let raw = std::fs::read_to_string(state_path)
+                .map_err(|e| format!("state_json {}: {e}", state_path.display()))?;
+            let observed = dynamic::parse_state(&raw).map_err(|e| e.to_string())?;
+            dynamic::enrich_resources(
+                &mut extraction.nodes,
+                repo,
+                &observed,
+                &state_path.to_string_lossy(),
+                &raw,
+            );
+        }
     }
     let mut cfg = events::ConfigIndex::from_dir(root).map_err(|e| e.to_string())?;
     cfg.apply_manifest(manifest_env, ingest::manifest::MANIFEST_NAME);
@@ -152,6 +166,29 @@ fn load_into_graph(
     Ok(())
 }
 
+/// Join observed infra to the event layer: insert a `BACKS` edge wherever
+/// an enriched `Resource`'s observed identity names a `Channel` that code
+/// actually publishes or subscribes (SPEC-00 §4.1, M6). Runs over the
+/// whole graph after every load — `put_edge` upserts, so it is idempotent
+/// and later repos can back channels from earlier ones.
+fn stitch_backings(graph: &mut SqliteGraphStore) -> Result<u64, String> {
+    let resources = graph
+        .nodes_with_label("Resource")
+        .map_err(|e| e.to_string())?;
+    let mut inserted = 0;
+    for edge in dynamic::backing_candidates(&resources) {
+        let channel_exists = graph
+            .get_node(&edge.dst)
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if channel_exists {
+            graph.put_edge(&edge).map_err(|e| e.to_string())?;
+            inserted += 1;
+        }
+    }
+    Ok(inserted)
+}
+
 /// Run T0 extraction over a local directory and load the facts into the
 /// graph (US-0002 local path; GitHub clone ingest is `add_repo`).
 #[tauri::command]
@@ -187,6 +224,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         "workdir",
         &[],
         &std::collections::BTreeMap::new(),
+        None,
     )
     .map_err(|e| fail(e, &state, job_id))?;
     let files = extraction
@@ -201,6 +239,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
         load_into_graph(&mut graph, &extraction, &repo, &root, "workdir")
             .map_err(|e| fail(e, &state, job_id))?;
+        stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
@@ -262,6 +301,7 @@ fn add_repo(
         &cloned.commit_sha,
         &[],
         &std::collections::BTreeMap::new(),
+        None,
     )
     .map_err(|e| fail(e, &state, job_id))?;
     let files = extraction
@@ -282,6 +322,7 @@ fn add_repo(
             &cloned.commit_sha,
         )
         .map_err(|e| fail(e, &state, job_id))?;
+        stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
@@ -317,6 +358,14 @@ struct AddSystemSummary {
     edges: u64,
 }
 
+fn manifest_dir(path: &std::path::Path) -> &std::path::Path {
+    if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(std::path::Path::new("."))
+    }
+}
+
 /// Ingest a whole system from `cartograph.system.toml` (US-0001 AC-0002):
 /// clone/read every declared repo, apply its layer hints and the
 /// manifest's known channel identities at ingest.
@@ -346,7 +395,7 @@ fn add_system(
         std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
     let manifest = ingest::manifest::SystemManifest::load(&manifest_path)
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let base = manifest_path.parent().unwrap_or(std::path::Path::new("."));
+    let base = manifest_dir(&manifest_path);
     let repos_dir = app
         .path()
         .app_data_dir()
@@ -371,8 +420,18 @@ fn add_system(
                 .unwrap_or_default();
             (root, format!("local/{name}"), "workdir".to_string())
         };
-        let extraction = extract_tree(&root, &repo, &commit, &entry.layers, &manifest.env)
-            .map_err(|e| fail(e, &state, job_id))?;
+        // state_json travels with the manifest, so it resolves against the
+        // manifest dir — same rule as local repo paths.
+        let state_path = entry.state_json.as_ref().map(|p| base.join(p));
+        let extraction = extract_tree(
+            &root,
+            &repo,
+            &commit,
+            &entry.layers,
+            &manifest.env,
+            state_path.as_deref(),
+        )
+        .map_err(|e| fail(e, &state, job_id))?;
         files += extraction
             .nodes
             .iter()
@@ -391,6 +450,15 @@ fn add_system(
         let sha12: String = commit.chars().take(12).collect();
         repos.push(format!("{repo}@{sha12}"));
     }
+    {
+        // After every repo is in: infra from one repo can back channels
+        // published by another.
+        let mut graph = state
+            .graph
+            .lock()
+            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
+    }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
     Ok(AddSystemSummary {
@@ -403,13 +471,19 @@ fn add_system(
 }
 
 /// The resource/topology map artifact as Mermaid text (SPEC-00 §7, M2 exit
-/// gate). Deterministic for a given graph.
+/// gate; channels join via observed BACKS edges at M6). Deterministic for
+/// a given graph.
 #[tauri::command]
 fn export_topology(state: State<'_, AppState>) -> Result<String, String> {
     let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    let nodes = graph
+    let mut nodes = graph
         .nodes_with_label("Resource")
         .map_err(|e| e.to_string())?;
+    nodes.extend(
+        graph
+            .nodes_with_label("Channel")
+            .map_err(|e| e.to_string())?,
+    );
     let edges = graph
         .edges_with_labels(spec::TOPOLOGY_EDGE_LABELS)
         .map_err(|e| e.to_string())?;
@@ -515,6 +589,26 @@ mod tests {
     use core_graph::{GraphStore, SqliteGraphStore};
 
     #[test]
+    fn state_json_resolves_from_manifest_directory_for_both_input_forms() {
+        // AC-0009: observed state is relative to the topology manifest,
+        // whether add_system receives that manifest file or its directory.
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_file = dir.path().join(ingest::manifest::MANIFEST_NAME);
+        std::fs::write(&manifest_file, "[[repos]]\nurl = \"acme/shop\"\n").unwrap();
+
+        assert_eq!(crate::manifest_dir(dir.path()), dir.path());
+        assert_eq!(crate::manifest_dir(&manifest_file), dir.path());
+        assert_eq!(
+            crate::manifest_dir(dir.path()).join("state.json"),
+            dir.path().join("state.json")
+        );
+        assert_eq!(
+            crate::manifest_dir(&manifest_file).join("state.json"),
+            dir.path().join("state.json")
+        );
+    }
+
+    #[test]
     fn cloned_repo_ingests_with_real_identity() {
         // US-0001 (AC-0001): clone -> extract -> every fact carries
         // owner-ish identity + commit SHA instead of local@workdir.
@@ -568,6 +662,7 @@ mod tests {
             &cloned.commit_sha,
             &[],
             &std::collections::BTreeMap::new(),
+            None,
         )
         .unwrap();
         let ep = extraction
@@ -629,8 +724,15 @@ export function beat() { bus.emit('heartbeat'); }
             (a.path(), "acme/one", "a".repeat(40)),
             (b.path(), "acme/two", "b".repeat(40)),
         ] {
-            let ex = crate::extract_tree(dir, repo, &sha, &[], &std::collections::BTreeMap::new())
-                .unwrap();
+            let ex = crate::extract_tree(
+                dir,
+                repo,
+                &sha,
+                &[],
+                &std::collections::BTreeMap::new(),
+                None,
+            )
+            .unwrap();
             crate::load_into_graph(&mut store, &ex, repo, dir, &sha).unwrap();
         }
 
@@ -729,7 +831,8 @@ ORDERS_QUEUE = "https://sqs.example/orders"
             let name = root.file_name().unwrap().to_string_lossy().into_owned();
             let repo = format!("local/{name}");
             let ex =
-                crate::extract_tree(&root, &repo, "workdir", &entry.layers, &manifest.env).unwrap();
+                crate::extract_tree(&root, &repo, "workdir", &entry.layers, &manifest.env, None)
+                    .unwrap();
             crate::load_into_graph(&mut store, &ex, &repo, &root, "workdir").unwrap();
         }
 
@@ -807,7 +910,8 @@ layers = ["events", "server"]
             let name = root.file_name().unwrap().to_string_lossy().into_owned();
             let repo = format!("local/{name}");
             let ex =
-                crate::extract_tree(&root, &repo, "workdir", &entry.layers, &manifest.env).unwrap();
+                crate::extract_tree(&root, &repo, "workdir", &entry.layers, &manifest.env, None)
+                    .unwrap();
             crate::load_into_graph(&mut store, &ex, &repo, &root, "workdir").unwrap();
         }
 
@@ -846,6 +950,129 @@ layers = ["events", "server"]
         // No gaps anywhere: both sides carry the same literal identity
         // (AC-0010); the config-resolved path is AC-0011's manifest test.
         assert!(store.nodes_with_label("Gap").unwrap().is_empty());
+    }
+
+    #[test]
+    fn observed_state_backs_channels_and_resolves_placeholders() {
+        // M6 slice 1 (AC-0009, T-0009): `terraform show -json` output
+        // enriches the T0 graph — the module placeholder resolves, the
+        // secret is redacted, and the observed queue URL joins infra to
+        // the code-layer channel with a BACKS edge on the topology map.
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("shop");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::write(
+            repo_dir.join("main.tf"),
+            r#"
+resource "aws_sqs_queue" "orders" {
+  tags = { vpc = module.network.vpc_id }
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            repo_dir.join("app.ts"),
+            r#"
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+const sqs = new SQSClient({});
+export function queueOrder() {
+  return sqs.send(new SendMessageCommand({ QueueUrl: 'https://sqs.us-east-1.amazonaws.com/9/orders', MessageBody: '{}' }));
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("shop.state.json"),
+            r#"{
+  "format_version": "1.0",
+  "values": { "root_module": {
+    "resources": [{
+      "address": "aws_sqs_queue.orders",
+      "mode": "managed",
+      "type": "aws_sqs_queue",
+      "name": "orders",
+      "values": {
+        "url": "https://sqs.us-east-1.amazonaws.com/9/orders",
+        "master_key": "hunter2"
+      },
+      "sensitive_values": { "master_key": true }
+    }],
+    "child_modules": [{
+      "address": "module.network",
+      "resources": [{
+        "address": "module.network.aws_vpc.main",
+        "mode": "managed",
+        "type": "aws_vpc",
+        "name": "main",
+        "values": { "id": "vpc-123" },
+        "sensitive_values": {}
+      }]
+    }]
+  } }
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("cartograph.system.toml"),
+            r#"
+[[repos]]
+url = "shop"
+state_json = "shop.state.json"
+"#,
+        )
+        .unwrap();
+
+        let manifest = ingest::manifest::SystemManifest::load(dir.path()).unwrap();
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        for entry in &manifest.repos {
+            let root = std::fs::canonicalize(dir.path().join(&entry.url)).unwrap();
+            let state_path = entry.state_json.as_ref().map(|p| dir.path().join(p));
+            let ex = crate::extract_tree(
+                &root,
+                "local/shop",
+                "workdir",
+                &entry.layers,
+                &manifest.env,
+                state_path.as_deref(),
+            )
+            .unwrap();
+            crate::load_into_graph(&mut store, &ex, "local/shop", &root, "workdir").unwrap();
+        }
+        let backed = crate::stitch_backings(&mut store).unwrap();
+        assert_eq!(backed, 1);
+
+        let resources = store.nodes_with_label("Resource").unwrap();
+        let queue = resources
+            .iter()
+            .find(|n| n.id == "res:local/shop@aws_sqs_queue.orders")
+            .unwrap();
+        // T0 provenance untouched; observation lands beside it (R-INT-1).
+        assert_eq!(queue.props["prov"]["tier"], "Deterministic");
+        assert_eq!(
+            queue.props["observed"]["url"],
+            "https://sqs.us-east-1.amazonaws.com/9/orders"
+        );
+        assert_eq!(queue.props["observed_prov"]["tier"], "Dynamic");
+        // The secret never reaches the graph (US-0003 Security).
+        assert_eq!(queue.props["observed"]["master_key"], dynamic::REDACTED);
+        // The module placeholder was an ambiguous T0 ref; state resolved it.
+        let module = resources
+            .iter()
+            .find(|n| n.id == "res:local/shop@module.network")
+            .unwrap();
+        assert!(module.props.get("placeholder").is_none());
+        assert_eq!(module.props["resolved_by"], dynamic::EXTRACTOR_ID);
+
+        // The join is on the artifact: channel cylinder + BACKS arrow.
+        let mut nodes = store.nodes_with_label("Resource").unwrap();
+        nodes.extend(store.nodes_with_label("Channel").unwrap());
+        let edges = store.edges_with_labels(spec::TOPOLOGY_EDGE_LABELS).unwrap();
+        let mmd = spec::topology_mermaid(&nodes, &edges);
+        assert!(mmd.contains(r#"[("sqs-queue:https://sqs.us-east-1.amazonaws.com/9/orders")]"#));
+        assert!(mmd.contains("-->|BACKS|"));
+        // Re-running the join is idempotent (US-0014 re-ingest).
+        assert_eq!(crate::stitch_backings(&mut store).unwrap(), 1);
+        assert_eq!(store.edges_with_labels(&["BACKS"]).unwrap().len(), 1);
     }
 
     #[test]

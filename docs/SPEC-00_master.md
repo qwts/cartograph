@@ -4,7 +4,7 @@
 | Field | Value |
 |---|---|
 | Doc ID | SPEC-00 |
-| Version | 0.1.3 (draft — §17 per ADR-0007; §4.4/§15 graph store per ADR-0008; §14 M3 gate wording at M3 open) |
+| Version | 0.1.4 (draft — §17 per ADR-0007; §4.4/§15 graph store per ADR-0008; §14 M3 gate wording at M3 open; §4.1 BACKS edge + §15 OTel verify at M6) |
 | Status | Ready-for-build planning |
 | Owner | Chris Kane |
 | Purpose | Single source of truth for design/architecture/requirements. Intended to answer ~95% of build-time questions for the author and for Claude Code. |
@@ -120,7 +120,8 @@ Two layers in one store. The **Code layer** holds T0/T1 facts. The **Domain laye
 
 ### 4.1 Code layer
 **Nodes:** `Repo, Module, File, Symbol(Function|Class|Method), Endpoint, DataEntity, Resource, Channel, Screen, Component, Config`.
-**Edges:** `DEFINED_IN, IMPORTS, CALLS, HANDLES, READS, WRITES, PUBLISHES, SUBSCRIBES, TRIGGERS, ROUTES, RENDERS, FETCHES, DEPENDS_ON, REFERENCES, GRANTS`.
+**Edges:** `DEFINED_IN, IMPORTS, CALLS, HANDLES, READS, WRITES, PUBLISHES, SUBSCRIBES, TRIGGERS, ROUTES, RENDERS, FETCHES, DEPENDS_ON, REFERENCES, GRANTS, BACKS`.
+*Amended at M6:* `BACKS(Resource→Channel)` — the deployed resource backing a code-layer channel, asserted only from observed identity (T1, `terraform show -json`); the seam where the infra layer joins the event layer.
 
 ### 4.2 Domain layer
 **Nodes:** `Capability, BusinessFlow, BusinessRule, DomainEntity, Actor, ADR`.
@@ -373,7 +374,7 @@ Each milestone names explicit tech and an exit gate. Preference order honored th
 | Diagram export | **Mermaid+SVG**, Graphviz/DOT, D2 | **Mermaid+SVG** — portable, Claude-Code-friendly |
 | UI state | **Zustand**, Redux Toolkit, Jotai | **Zustand** — light, sufficient |
 
-**Verify-at-build (integrity flags):** ~~Kuzu embedding fit + maintenance~~ (verified at M0 — archived upstream, resolved per ADR-0008); ~~`hcl-rs` maintenance~~ (verified at M2 — actively maintained, 2026 releases; `hcl-edit` 0.9 from the same project is used for span-preserving parsing; coverage against real work Terraform still to be exercised); `usearch`/`fastembed` Rust bindings (verify at M7); OTel ingest format for your stack (verify at M6). Confirm each against current reality before relying on it.
+**Verify-at-build (integrity flags):** ~~Kuzu embedding fit + maintenance~~ (verified at M0 — archived upstream, resolved per ADR-0008); ~~`hcl-rs` maintenance~~ (verified at M2 — actively maintained, 2026 releases; `hcl-edit` 0.9 from the same project is used for span-preserving parsing; coverage against real work Terraform still to be exercised); `usearch`/`fastembed` Rust bindings (verify at M7); ~~OTel ingest format~~ (verified at M6 — OTLP/JSON file-exporter spec is Stable, JSON Lines; ingest lands per #54). Confirm each against current reality before relying on it.
 
 ---
 

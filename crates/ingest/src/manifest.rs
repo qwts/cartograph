@@ -36,6 +36,11 @@ pub struct ManifestRepo {
     /// Layer hints; empty means "extract everything".
     #[serde(default)]
     pub layers: Vec<String>,
+    /// Path to `terraform show -json` output (state or plan) for this
+    /// repo's infra, relative to the manifest. Observed values feed T1
+    /// enrichment (SPEC-00 §3.1, AC-0009); absent means T0 only.
+    #[serde(default)]
+    pub state_json: Option<String>,
 }
 
 /// The parsed manifest.

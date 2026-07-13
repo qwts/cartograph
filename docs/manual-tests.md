@@ -84,6 +84,22 @@ PR — per-PR verification is CI's job.
    hop, never a silent stitch (M5 exit gate: cross-repo flow via literal
    channel ids).
 
+## MT-M6-01 — Observed state joins infra to code (T1)
+
+1. In a repo with Terraform + publishing code, run
+   `terraform show -json > state.json` (or `terraform show -json plan.out`
+   for a plan); add `state_json = "state.json"` to that repo's `[[repos]]`
+   entry in `cartograph.system.toml` and ingest the manifest.
+2. The **Topology map** shows the backed channel as a cylinder with a
+   `BACKS` arrow from its resource — infra and the event layer are one
+   picture.
+3. Inspect an enriched resource's evidence: T0 `prov` (Deterministic)
+   remains, and `observed_prov` (Dynamic, Confirmed) points into the state
+   file; any placeholder the state confirms has lost its `?`.
+4. **Pass:** BACKS appears only for channels code actually publishes or
+   subscribes; values `terraform show` marks sensitive read `[redacted]`
+   everywhere in the UI (M6: observed-fact provenance; AC-0009).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.
