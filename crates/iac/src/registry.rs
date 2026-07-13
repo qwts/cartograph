@@ -1,7 +1,7 @@
 //! AWS Capability Registry (SPEC-00 §3.2): versioned deterministic knowledge
 //! mapping resource types to runtime semantics. This is data, not inference —
-//! every entry says "when this resource type appears, the reference in
-//! `source_attr` acts on the reference in `target_attr` with this verb".
+//! every entry says "when this resource type appears, the references selected
+//! by `source` act on the references selected by `target` with this verb".
 //! Priority per spec: AWS first; Azure/GCP entries join later.
 
 /// Semantic verb an entry contributes to the graph.
@@ -26,54 +26,96 @@ impl CapabilityKind {
     }
 }
 
-/// One registry entry: a mediating resource type whose attributes reference
+/// One endpoint of a deterministic capability edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointSelector {
+    /// The mediating resource itself (for example a CloudFront distribution).
+    Resource,
+    /// References selected by a path through attributes/nested blocks.
+    ///
+    /// A segment prefixed with `*` matches a nested block by suffix, so
+    /// `*cache_behavior` covers both `default_cache_behavior` and
+    /// `ordered_cache_behavior` without matching unrelated blocks.
+    Path(&'static [&'static str]),
+}
+
+/// One registry entry: a mediating resource type whose selectors establish
 /// the source and target of a semantic edge.
 pub struct Capability {
     /// Terraform resource type that mediates the relationship.
     pub resource_type: &'static str,
     /// Verb contributed to the graph.
     pub kind: CapabilityKind,
-    /// Attribute whose reference is the edge source.
-    pub source_attr: &'static str,
-    /// Attribute whose reference is the edge target.
-    pub target_attr: &'static str,
+    /// Selector producing the edge source(s).
+    pub source: EndpointSelector,
+    /// Selector producing the edge target(s).
+    pub target: EndpointSelector,
 }
 
 /// Registry version — bump when entries change (registry knowledge is
 /// versioned per SPEC-00 §3.2).
-pub const REGISTRY_VERSION: &str = "aws-2026.07";
+pub const REGISTRY_VERSION: &str = "aws-2026.07.1";
 
-/// AWS capability entries (M2 initial set).
+/// AWS capability entries (M2 versioned set).
 pub const AWS_CAPABILITIES: &[Capability] = &[
     Capability {
         resource_type: "aws_lambda_event_source_mapping",
         kind: CapabilityKind::Triggers,
-        source_attr: "event_source_arn",
-        target_attr: "function_name",
+        source: EndpointSelector::Path(&["event_source_arn"]),
+        target: EndpointSelector::Path(&["function_name"]),
     },
     Capability {
         resource_type: "aws_cloudwatch_event_target",
         kind: CapabilityKind::Triggers,
-        source_attr: "rule",
-        target_attr: "arn",
+        source: EndpointSelector::Path(&["rule"]),
+        target: EndpointSelector::Path(&["arn"]),
     },
     Capability {
         resource_type: "aws_sns_topic_subscription",
         kind: CapabilityKind::Subscribes,
-        source_attr: "endpoint",
-        target_attr: "topic_arn",
+        source: EndpointSelector::Path(&["endpoint"]),
+        target: EndpointSelector::Path(&["topic_arn"]),
     },
     Capability {
         resource_type: "aws_lb_listener",
         kind: CapabilityKind::Routes,
-        source_attr: "load_balancer_arn",
-        target_attr: "default_action", // target_group_arn ref lives in the nested block
+        source: EndpointSelector::Path(&["load_balancer_arn"]),
+        // target_group_arn ref lives in the nested block.
+        target: EndpointSelector::Path(&["default_action"]),
     },
     Capability {
         resource_type: "aws_lb_target_group_attachment",
         kind: CapabilityKind::Routes,
-        source_attr: "target_group_arn",
-        target_attr: "target_id",
+        source: EndpointSelector::Path(&["target_group_arn"]),
+        target: EndpointSelector::Path(&["target_id"]),
+    },
+    Capability {
+        resource_type: "aws_api_gateway_integration",
+        kind: CapabilityKind::Routes,
+        source: EndpointSelector::Path(&["rest_api_id"]),
+        target: EndpointSelector::Path(&["uri"]),
+    },
+    Capability {
+        resource_type: "aws_lambda_permission",
+        kind: CapabilityKind::Triggers,
+        source: EndpointSelector::Path(&["source_arn"]),
+        target: EndpointSelector::Path(&["function_name"]),
+    },
+    Capability {
+        resource_type: "aws_cloudfront_distribution",
+        kind: CapabilityKind::Triggers,
+        source: EndpointSelector::Resource,
+        target: EndpointSelector::Path(&[
+            "*cache_behavior",
+            "lambda_function_association",
+            "lambda_arn",
+        ]),
+    },
+    Capability {
+        resource_type: "aws_pipes_pipe",
+        kind: CapabilityKind::Triggers,
+        source: EndpointSelector::Path(&["source"]),
+        target: EndpointSelector::Path(&["target"]),
     },
 ];
 

@@ -38,9 +38,13 @@
 - **AC-0007** Given Terraform HCL, when parsed, then a resource DAG is built from interpolation references.
 - **AC-0008** Given AWS resources, when resolved against the Capability Registry, then TRIGGERS/ROUTES/GRANTS edges are emitted deterministically.
 - **AC-0009** Given Terraform state/plan JSON, when available, then T1 enrichment supersedes ambiguous T0 refs (observed provenance).
+- **AC-0043** Given an API Gateway v1 integration with direct resource references, when resolved against the Capability Registry, then a Confirmed ROUTES edge links the REST API to its integration target.
+- **AC-0044** Given a Lambda permission with direct resource references, when resolved against the Capability Registry, then a Confirmed TRIGGERS edge links its source ARN to the Lambda function.
+- **AC-0045** Given Lambda@Edge associations nested under default or ordered CloudFront cache behaviors, when resolved against the Capability Registry, then Confirmed TRIGGERS edges link the distribution to every referenced Lambda function.
+- **AC-0046** Given an EventBridge Pipe with direct resource references, when resolved against the Capability Registry, then a Confirmed TRIGGERS edge links its source to its target.
 - **Security:** IAM GRANTS feed the security view; secrets in state are redacted.
 - **Performance:** Registry lookups O(1) per resource type.
-- **Trace:** M2,M6 · `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009
+- **Trace:** M2,M6 · `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0046
 
 ### US-0004 — Event graph with channel-identity stitching
 - **Actor:** Engine

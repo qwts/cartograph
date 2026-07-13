@@ -159,6 +159,140 @@ fn capability_registry_emits_subscribes() {
 }
 
 #[test]
+fn capability_registry_routes_nested_lb_listener_action() {
+    // AC-0008: the selector refactor preserves refs inside a nested target
+    // block for the original ALB registry entry.
+    let source = r#"
+resource "aws_lb" "public" {}
+resource "aws_lb_target_group" "app" {}
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.public.arn
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app.arn
+  }
+}
+"#;
+    let ex = extract_source(source, "alb.tf", &id()).unwrap();
+    assert_eq!(
+        edge_pairs(&ex, "ROUTES"),
+        vec![(
+            "res:qwtm/infra@aws_lb.public",
+            "res:qwtm/infra@aws_lb_target_group.app"
+        )]
+    );
+}
+
+#[test]
+fn capability_registry_routes_api_gateway_integrations() {
+    // AC-0043: API Gateway v1 integration mediates REST API -> target ROUTES.
+    let source = r#"
+resource "aws_api_gateway_rest_api" "orders" {}
+resource "aws_lambda_function" "handler" {}
+resource "aws_api_gateway_integration" "orders" {
+  rest_api_id = aws_api_gateway_rest_api.orders.id
+  uri         = aws_lambda_function.handler.invoke_arn
+}
+"#;
+    let ex = extract_source(source, "api.tf", &id()).unwrap();
+    assert_eq!(
+        edge_pairs(&ex, "ROUTES"),
+        vec![(
+            "res:qwtm/infra@aws_api_gateway_rest_api.orders",
+            "res:qwtm/infra@aws_lambda_function.handler"
+        )]
+    );
+    let edge = ex.edges.iter().find(|edge| edge.label == "ROUTES").unwrap();
+    assert_eq!(
+        edge.props["via"],
+        "res:qwtm/infra@aws_api_gateway_integration.orders"
+    );
+    assert_eq!(edge.props["registry"], registry::REGISTRY_VERSION);
+}
+
+#[test]
+fn capability_registry_triggers_through_lambda_permissions() {
+    // AC-0044: a permission's source ARN invokes its Lambda function.
+    let source = r#"
+resource "aws_cloudwatch_event_rule" "nightly" {}
+resource "aws_lambda_function" "worker" {}
+resource "aws_lambda_permission" "nightly" {
+  source_arn    = aws_cloudwatch_event_rule.nightly.arn
+  function_name = aws_lambda_function.worker.function_name
+}
+"#;
+    let ex = extract_source(source, "permission.tf", &id()).unwrap();
+    assert_eq!(
+        edge_pairs(&ex, "TRIGGERS"),
+        vec![(
+            "res:qwtm/infra@aws_cloudwatch_event_rule.nightly",
+            "res:qwtm/infra@aws_lambda_function.worker"
+        )]
+    );
+}
+
+#[test]
+fn capability_registry_triggers_lambda_at_edge_from_nested_cache_behaviors() {
+    // AC-0045: both CloudFront cache-behavior forms select nested Lambda ARNs;
+    // unrelated nested blocks must not broaden the deterministic match.
+    let source = r#"
+resource "aws_lambda_function" "viewer_request" {}
+resource "aws_lambda_function" "origin_response" {}
+resource "aws_lambda_function" "unrelated" {}
+resource "aws_cloudfront_distribution" "site" {
+  default_cache_behavior {
+    lambda_function_association {
+      event_type = "viewer-request"
+      lambda_arn = aws_lambda_function.viewer_request.qualified_arn
+    }
+  }
+  ordered_cache_behavior {
+    lambda_function_association {
+      event_type = "origin-response"
+      lambda_arn = aws_lambda_function.origin_response.qualified_arn
+    }
+  }
+  origin {
+    lambda_arn = aws_lambda_function.unrelated.arn
+  }
+}
+"#;
+    let ex = extract_source(source, "cloudfront.tf", &id()).unwrap();
+    let triggers = edge_pairs(&ex, "TRIGGERS");
+    assert_eq!(triggers.len(), 2);
+    assert!(triggers.contains(&(
+        "res:qwtm/infra@aws_cloudfront_distribution.site",
+        "res:qwtm/infra@aws_lambda_function.viewer_request"
+    )));
+    assert!(triggers.contains(&(
+        "res:qwtm/infra@aws_cloudfront_distribution.site",
+        "res:qwtm/infra@aws_lambda_function.origin_response"
+    )));
+    assert!(!triggers.iter().any(|(_, dst)| dst.contains("unrelated")));
+}
+
+#[test]
+fn capability_registry_triggers_aws_pipes() {
+    // AC-0046: EventBridge Pipes deterministically connect source -> target.
+    let source = r#"
+resource "aws_sqs_queue" "orders" {}
+resource "aws_lambda_function" "dispatch" {}
+resource "aws_pipes_pipe" "orders" {
+  source = aws_sqs_queue.orders.arn
+  target = aws_lambda_function.dispatch.arn
+}
+"#;
+    let ex = extract_source(source, "pipes.tf", &id()).unwrap();
+    assert_eq!(
+        edge_pairs(&ex, "TRIGGERS"),
+        vec![(
+            "res:qwtm/infra@aws_sqs_queue.orders",
+            "res:qwtm/infra@aws_lambda_function.dispatch"
+        )]
+    );
+}
+
+#[test]
 fn iam_policy_grants_reference_target_resources_with_actions() {
     // AC-0008 (GRANTS) — feeds the security view (US-0015).
     let ex = extract_source(MAIN_TF, "main.tf", &id()).unwrap();

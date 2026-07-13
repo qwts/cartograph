@@ -21,7 +21,7 @@ rows in the same PR (see AGENTS.md).
 | T-0005 | AC-0005 | rust | adapters-lang-ts::call_edges_are_symbol_to_symbol, adapters-lang-ts::imports_resolve_relative_files_and_modules | intra-proc + import-bound; typed inter-proc still open (#2) |
 | T-0006 | AC-0006 | rust | adapters-lang-ts::every_fact_carries_confirmed_t0_provenance, adapters-lang-ts::evidence_spans_point_at_the_actual_source | plus story:Atlas/EvidencePanel/WithSource and manual:MT-M1-01 |
 | T-0007 | AC-0007 | rust | iac::resources_data_and_modules_become_resource_nodes, iac::interpolation_references_build_the_dag, iac::depends_on_is_distinct_from_references | resource DAG from HCL |
-| T-0008 | AC-0008 | rust | iac::capability_registry_emits_triggers_deterministically, iac::capability_registry_emits_subscribes, iac::iam_policy_grants_reference_target_resources_with_actions | TRIGGERS/SUBSCRIBES/GRANTS via registry, plus manual:MT-M2-01 |
+| T-0008 | AC-0008 | rust | iac::capability_registry_emits_triggers_deterministically, iac::capability_registry_emits_subscribes, iac::capability_registry_routes_nested_lb_listener_action, iac::iam_policy_grants_reference_target_resources_with_actions | TRIGGERS/ROUTES/SUBSCRIBES/GRANTS via registry, plus manual:MT-M2-01 |
 | T-0009 | AC-0009 | rust | dynamic::state_and_plan_shapes_both_parse, dynamic::sensitive_values_are_redacted_never_stored, dynamic::observed_values_enrich_t0_resources_with_dynamic_provenance, dynamic::observation_supersedes_placeholder_refs, dynamic::backing_candidates_name_the_channel_from_observed_identity, dynamic::redacted_identity_never_becomes_a_channel, spec::backs_edge_renders_the_channel_as_a_cylinder, app::observed_state_backs_channels_and_resolves_placeholders, app::state_json_resolves_from_manifest_directory_for_both_input_forms | terraform show -json T1 enrichment with the BACKS join at M6, plus manual:MT-M6-01 |
 | T-0010 | AC-0010 | rust | events::literal_channel_ids_link_producer_and_consumer, events::kafka_producer_and_consumer_stitch_across_files, adapters-lang-ts::event_receiver_must_come_from_sdk_constructor, app::cross_repo_flow_stitches_via_literal_channel_identity | literal ids stitch within and across repos (M5), plus manual:MT-M5-01 |
 | T-0011 | AC-0011 | rust | events::config_resolved_channel_is_confirmed_via_env_file, events::config_index_parses_env_files_deterministically, adapters-lang-ts::bracketed_env_access_is_an_env_ref | env-file resolver; JSON/YAML config at M5 with the manifest |
@@ -56,3 +56,7 @@ rows in the same PR (see AGENTS.md).
 | T-0040 | AC-0040 | reserved | — | M10: delta re-ingest |
 | T-0041 | AC-0041 | reserved | — | M9: unauth endpoint findings |
 | T-0042 | AC-0042 | reserved | — | M9: over-broad GRANTS findings |
+| T-0043 | AC-0043 | rust | iac::capability_registry_routes_api_gateway_integrations | API Gateway v1 REST API to direct integration target via ROUTES |
+| T-0044 | AC-0044 | rust | iac::capability_registry_triggers_through_lambda_permissions | source ARN to Lambda function via TRIGGERS |
+| T-0045 | AC-0045 | rust | iac::capability_registry_triggers_lambda_at_edge_from_nested_cache_behaviors | default/ordered cache behavior traversal with distribution as source |
+| T-0046 | AC-0046 | rust | iac::capability_registry_triggers_aws_pipes | EventBridge Pipes source to target via TRIGGERS |

@@ -173,6 +173,56 @@ fn refs_for_attr(block: &Block, name: &str) -> BTreeSet<String> {
     BTreeSet::new()
 }
 
+fn block_name_matches(actual: &str, selector: &str) -> bool {
+    selector
+        .strip_prefix('*')
+        .map_or(actual == selector, |suffix| actual.ends_with(suffix))
+}
+
+/// References selected by a path through nested blocks to a final attribute
+/// (or final nested block). A leading `*` on a block segment means suffix
+/// matching; registry paths use that only for Terraform's parallel
+/// `default_cache_behavior` / `ordered_cache_behavior` shapes.
+fn refs_for_path(body: &Body, path: &[&str]) -> BTreeSet<String> {
+    let Some((head, tail)) = path.split_first() else {
+        return BTreeSet::new();
+    };
+
+    if tail.is_empty() {
+        let mut refs = BTreeSet::new();
+        for attr in body.attributes() {
+            if attr.key.as_str() == *head {
+                refs.extend(refs_in_expr(&attr.value));
+            }
+        }
+        for nested in body.blocks() {
+            if block_name_matches(nested.ident.as_str(), head) {
+                refs.extend(refs_in_body(&nested.body));
+            }
+        }
+        return refs;
+    }
+
+    let mut refs = BTreeSet::new();
+    for nested in body.blocks() {
+        if block_name_matches(nested.ident.as_str(), head) {
+            refs.extend(refs_for_path(&nested.body, tail));
+        }
+    }
+    refs
+}
+
+fn refs_for_selector(
+    block: &Block,
+    selector: registry::EndpointSelector,
+    resource_address: &str,
+) -> BTreeSet<String> {
+    match selector {
+        registry::EndpointSelector::Resource => BTreeSet::from([resource_address.to_string()]),
+        registry::EndpointSelector::Path(path) => refs_for_path(&block.body, path),
+    }
+}
+
 /// IAM action strings (`"s3:GetObject"`) appearing literally in the raw text
 /// of a policy block — used as edge annotations on GRANTS, never invented.
 fn literal_actions(raw: &str) -> Vec<String> {
@@ -276,8 +326,8 @@ pub fn extract_source(source: &str, path: &str, id: &SourceId) -> Result<Extract
 
         // Capability Registry: mediating resource -> semantic edge.
         for cap in registry::capabilities_for(&labels[0]) {
-            let sources = refs_for_attr(block, cap.source_attr);
-            let targets = refs_for_attr(block, cap.target_attr);
+            let sources = refs_for_selector(block, cap.source, &address);
+            let targets = refs_for_selector(block, cap.target, &address);
             for s in &sources {
                 for t in &targets {
                     out.edges.push(Edge {
