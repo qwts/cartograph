@@ -28,6 +28,7 @@ struct AppState {
 struct RepoExtractionCache {
     ts: adapters_lang_ts::IncrementalCache,
     python: adapters_lang_python::IncrementalCache,
+    go: adapters_lang_go::IncrementalCache,
     tf: iac::IncrementalCache,
 }
 
@@ -61,6 +62,7 @@ impl LayerSummary {
 struct LayerBreakdown {
     ts: LayerSummary,
     python: LayerSummary,
+    go: LayerSummary,
     tf: LayerSummary,
 }
 
@@ -68,11 +70,12 @@ impl LayerBreakdown {
     fn add(&mut self, other: Self) {
         self.ts.add(other.ts);
         self.python.add(other.python);
+        self.go.add(other.go);
         self.tf.add(other.tf);
     }
 
     fn files(self) -> u64 {
-        self.ts.files + self.python.files + self.tf.files
+        self.ts.files + self.python.files + self.go.files + self.tf.files
     }
 }
 
@@ -218,7 +221,7 @@ impl DeltaSummary {
     }
 }
 
-/// The cross-layer T0 pipeline over one tree: TypeScript, Python, Terraform,
+/// The cross-layer T0 pipeline over one tree: TypeScript, Python, Go, Terraform,
 /// channel stitching, client fetch resolution — closed over so the
 /// FK-enforcing store never sees a dangling endpoint.
 #[cfg(test)]
@@ -317,6 +320,26 @@ fn extract_tree_incremental(
         };
         extraction.nodes.extend(python.nodes);
         extraction.edges.extend(python.edges);
+
+        let go_id = adapters_lang_go::SourceId { repo, commit };
+        let (go, stats) = adapters_lang_go::extract_dir_incremental(root, &go_id, &mut cache.go)
+            .map_err(|error| error.to_string())?;
+        delta.add(
+            stats.recomputed_files,
+            stats.reused_files,
+            stats.deleted_files,
+        );
+        layers.go = LayerSummary {
+            files: go
+                .nodes
+                .iter()
+                .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
+                .count() as u64,
+            nodes: go.nodes.len() as u64,
+            edges: go.edges.len() as u64,
+        };
+        extraction.nodes.extend(go.nodes);
+        extraction.edges.extend(go.edges);
     }
     if wants_infra {
         let tf_id = iac::SourceId { repo, commit };
@@ -1834,6 +1857,63 @@ resource "aws_sqs_queue" "orders" {
                 .nodes
                 .iter()
                 .all(|node| node.props["language"] != "python")
+        );
+    }
+
+    #[test]
+    fn go_server_ingest_reports_layer_and_endpoints() {
+        // AC-0054/T-0054: the app runs Go only for server scope and reports
+        // its facts independently from the other deterministic languages.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/api\n").unwrap();
+        std::fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nimport \"net/http\"\n\nfunc orders(w http.ResponseWriter, r *http.Request) {}\nfunc routes() { http.HandleFunc(\"GET /orders\", orders) }\n",
+        )
+        .unwrap();
+
+        let (extraction, summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/go-app",
+            "workdir",
+            &["server".into()],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(summary.go.files, 1);
+        assert!(summary.go.nodes > 0);
+        assert_eq!(summary.ts, crate::LayerSummary::default());
+        assert_eq!(summary.python, crate::LayerSummary::default());
+        assert_eq!(summary.tf, crate::LayerSummary::default());
+        let endpoint = extraction
+            .nodes
+            .iter()
+            .find(|node| node.id == "ep:local/go-app@GET:/orders")
+            .expect("net/http endpoint");
+        assert_eq!(endpoint.props["language"], "go");
+        assert_eq!(endpoint.props["framework"], "net/http");
+        assert_eq!(endpoint.props["prov"]["extractor_id"], "t0.adapter-go");
+
+        let (client_only, client_summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/go-app",
+            "workdir",
+            &["client".into()],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(client_summary.go, crate::LayerSummary::default());
+        assert!(
+            client_only
+                .nodes
+                .iter()
+                .all(|node| node.props["language"] != "go")
         );
     }
 

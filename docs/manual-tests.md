@@ -308,6 +308,21 @@ PR — per-PR verification is CI's job.
    one Python file. **Pass:** unchanged Python contexts are reused and only the
    changed file is recomputed (AC-0053, ADR-0003, M10 language breadth).
 
+## MT-M10-03 — Go server recovery and language summary
+
+1. Ingest a Go module containing import-proven `net/http`, chi, and gin route
+   registrations, with one handler calling a function in another local package.
+2. **Pass:** the ingest summary reports Go file/node/edge counts separately
+   from TypeScript, Python, and Terraform; zero-count languages remain visible.
+3. Inspect the endpoints and their handlers. **Pass:** methods, literal paths,
+   HANDLES, local/imported CALLS, tier, extractor, file, exact byte span, and
+   commit are present and Confirmed.
+4. Add a lookalike router without a matching import and a computed route.
+   **Pass:** neither creates an Endpoint. Mark the repo client-only and ingest;
+   **pass:** no Go facts are produced. Re-ingest unchanged, then change one Go
+   file. **Pass:** unchanged Go contexts are reused and only the changed file is
+   recomputed (AC-0054, ADR-0003, M10 language breadth).
+
 ## MT-SB-01 — Stories render on-brand
 
 1. `cd ui && npm run storybook`.

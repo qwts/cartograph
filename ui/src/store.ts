@@ -60,6 +60,7 @@ export interface IngestSummary {
   layers: {
     ts: LayerSummary;
     python: LayerSummary;
+    go: LayerSummary;
     tf: LayerSummary;
   };
   delta?: {

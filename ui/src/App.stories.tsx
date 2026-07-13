@@ -203,6 +203,7 @@ function installFakeCore() {
           layers: {
             ts: { files: 1, nodes: 8, edges: 12 },
             python: { files: 0, nodes: 0, edges: 0 },
+            go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 1, nodes: 4, edges: 6 },
           },
           delta: { recomputed_files: 2, reused_files: 0, deleted_files: 0 },
@@ -217,6 +218,7 @@ function installFakeCore() {
           layers: {
             ts: { files: 3, nodes: 25, edges: 38 },
             python: { files: 0, nodes: 0, edges: 0 },
+            go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 2, nodes: 15, edges: 22 },
           },
           delta: { recomputed_files: 5, reused_files: 0, deleted_files: 0 },
@@ -232,6 +234,7 @@ function installFakeCore() {
           layers: {
             ts: { files: 3, nodes: 20, edges: 30 },
             python: { files: 0, nodes: 0, edges: 0 },
+            go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 0, nodes: 0, edges: 0 },
           },
           delta: { recomputed_files: 3, reused_files: 0, deleted_files: 0 },

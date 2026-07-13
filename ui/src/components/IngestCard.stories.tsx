@@ -14,6 +14,7 @@ type Story = StoryObj<typeof meta>;
 const EMPTY_LAYERS = {
   ts: { files: 0, nodes: 0, edges: 0 },
   python: { files: 0, nodes: 0, edges: 0 },
+  go: { files: 0, nodes: 0, edges: 0 },
   tf: { files: 0, nodes: 0, edges: 0 },
 };
 
@@ -44,6 +45,7 @@ export const WithSummary: Story = {
       layers: {
         ts: { files: 8, nodes: 50, edges: 90 },
         python: { files: 0, nodes: 0, edges: 0 },
+        go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 4, nodes: 34, edges: 51 },
       },
     },
@@ -61,6 +63,7 @@ export const DeltaReingest: Story = {
       layers: {
         ts: { files: 8, nodes: 50, edges: 90 },
         python: { files: 0, nodes: 0, edges: 0 },
+        go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 4, nodes: 34, edges: 51 },
       },
       delta: { recomputed_files: 1, reused_files: 11, deleted_files: 0 },
@@ -85,6 +88,7 @@ export const PulumiWithoutTerraform: Story = {
       layers: {
         ts: { files: 7, nodes: 31, edges: 22 },
         python: { files: 0, nodes: 0, edges: 0 },
+        go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 0, nodes: 0, edges: 0 },
       },
     },
@@ -112,6 +116,7 @@ export const PythonAndTypeScript: Story = {
       layers: {
         ts: { files: 3, nodes: 24, edges: 20 },
         python: { files: 2, nodes: 20, edges: 19 },
+        go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 0, nodes: 0, edges: 0 },
       },
     },
@@ -123,6 +128,34 @@ export const PythonAndTypeScript: Story = {
     );
     await expect(canvas.getByTestId('ts-layer-summary').textContent).toBe(
       '3 files · 24 nodes · 20 edges',
+    );
+  },
+};
+
+// AC-0054: Go is visible as its own deterministic language layer alongside
+// Python rather than being folded into a generic server count.
+export const GoAndPython: Story = {
+  args: {
+    summary: {
+      job_id: 9,
+      files: 5,
+      nodes: 42,
+      edges: 37,
+      layers: {
+        ts: { files: 0, nodes: 0, edges: 0 },
+        python: { files: 2, nodes: 20, edges: 19 },
+        go: { files: 3, nodes: 22, edges: 18 },
+        tf: { files: 0, nodes: 0, edges: 0 },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId('go-layer-summary').textContent).toBe(
+      '3 files · 22 nodes · 18 edges',
+    );
+    await expect(canvas.getByTestId('python-layer-summary').textContent).toBe(
+      '2 files · 20 nodes · 19 edges',
     );
   },
 };

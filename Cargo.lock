@@ -7,6 +7,20 @@ name = "adapters-fw"
 version = "0.0.1"
 
 [[package]]
+name = "adapters-lang-go"
+version = "0.0.1"
+dependencies = [
+ "core-graph",
+ "core-prov",
+ "serde_json",
+ "streaming-iterator",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tree-sitter",
+ "tree-sitter-go",
+]
+
+[[package]]
 name = "adapters-lang-python"
 version = "0.0.1"
 dependencies = [
@@ -104,6 +118,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 name = "app"
 version = "0.0.1"
 dependencies = [
+ "adapters-lang-go",
  "adapters-lang-python",
  "adapters-lang-ts",
  "agents",
@@ -4095,6 +4110,16 @@ dependencies = [
  "regex-syntax",
  "serde_json",
  "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-go"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 
