@@ -310,6 +310,170 @@ fn iam_policy_grants_reference_target_resources_with_actions() {
 }
 
 #[test]
+fn iam_policy_grants_chase_same_extraction_policy_document() {
+    // AC-0047: a defined policy document is an intermediate contract, not the
+    // terminal resource granted by the IAM policy.
+    let source = r#"
+resource "aws_sqs_queue" "orders" {}
+resource "aws_kms_key" "orders" {}
+resource "aws_s3_bucket" "orders" {}
+
+data "aws_iam_policy_document" "orders" {
+  statement {
+    actions = ["sqs:SendMessage", "kms:Decrypt"]
+    resources = [
+      aws_sqs_queue.orders.arn,
+      aws_kms_key.orders.arn,
+    ]
+  }
+  dynamic "statement" {
+    for_each = [1]
+    content {
+      actions   = ["kms:GenerateDataKey"]
+      resources = [aws_s3_bucket.orders.arn]
+    }
+  }
+}
+
+resource "aws_iam_policy" "orders" {
+  policy = data.aws_iam_policy_document.orders.json
+}
+"#;
+    let ex = extract_source(source, "iam.tf", &id()).unwrap();
+    let grants = edge_pairs(&ex, "GRANTS");
+    assert_eq!(grants.len(), 3);
+    assert!(grants.contains(&(
+        "res:qwtm/infra@aws_iam_policy.orders",
+        "res:qwtm/infra@aws_sqs_queue.orders"
+    )));
+    assert!(grants.contains(&(
+        "res:qwtm/infra@aws_iam_policy.orders",
+        "res:qwtm/infra@aws_kms_key.orders"
+    )));
+    assert!(grants.contains(&(
+        "res:qwtm/infra@aws_iam_policy.orders",
+        "res:qwtm/infra@aws_s3_bucket.orders"
+    )));
+    assert!(
+        !grants
+            .iter()
+            .any(|(_, dst)| dst.contains("policy_document"))
+    );
+    for edge in ex.edges.iter().filter(|edge| edge.label == "GRANTS") {
+        let actions: Vec<String> = serde_json::from_value(edge.props["actions"].clone()).unwrap();
+        assert_eq!(
+            actions,
+            vec!["kms:Decrypt", "kms:GenerateDataKey", "sqs:SendMessage"]
+        );
+        assert_eq!(
+            edge.props["policy_document"],
+            "res:qwtm/infra@data.aws_iam_policy_document.orders"
+        );
+        assert_eq!(edge.props["prov"]["evidence"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn iam_policy_document_chase_spans_files_in_directory() {
+    // AC-0047: "same extraction" covers the whole deterministic directory
+    // walk, not only blocks that happen to share one .tf file.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("policy.tf"),
+        r#"resource "aws_iam_policy" "orders" {
+  policy = data.aws_iam_policy_document.orders.json
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("document.tf"),
+        r#"data "aws_iam_policy_document" "orders" {
+  statement {
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.orders.arn]
+  }
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("queue.tf"),
+        r#"resource "aws_sqs_queue" "orders" {}"#,
+    )
+    .unwrap();
+
+    let ex = extract_dir(dir.path(), &id()).unwrap();
+    let grant = ex.edges.iter().find(|edge| edge.label == "GRANTS").unwrap();
+    assert_eq!(grant.src, "res:qwtm/infra@aws_iam_policy.orders");
+    assert_eq!(grant.dst, "res:qwtm/infra@aws_sqs_queue.orders");
+    let evidence = grant.props["prov"]["evidence"].as_array().unwrap();
+    let paths: BTreeSet<_> = evidence
+        .iter()
+        .map(|item| item["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, BTreeSet::from(["document.tf", "policy.tf"]));
+}
+
+#[test]
+fn missing_or_unresolved_policy_document_keeps_explicit_grant() {
+    // AC-0047: no definition or no resolvable statement resource must never
+    // make the policy relationship disappear.
+    let missing_source = r#"resource "aws_iam_policy" "orders" {
+  policy = data.aws_iam_policy_document.orders.json
+}"#;
+    let missing = extract_source(missing_source, "missing.tf", &id()).unwrap();
+    assert_eq!(
+        edge_pairs(&missing, "GRANTS"),
+        vec![(
+            "res:qwtm/infra@aws_iam_policy.orders",
+            "res:qwtm/infra@data.aws_iam_policy_document.orders"
+        )]
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("missing.tf"), missing_source).unwrap();
+    let closed = extract_dir(dir.path(), &id()).unwrap();
+    let placeholder = closed
+        .nodes
+        .iter()
+        .find(|node| node.id == "res:qwtm/infra@data.aws_iam_policy_document.orders")
+        .unwrap();
+    assert_eq!(placeholder.props["placeholder"], true);
+
+    let unresolved = extract_source(
+        r#"
+data "aws_iam_policy_document" "orders" {
+  statement {
+    actions   = ["sqs:SendMessage"]
+    resources = var.sqs_target_arns
+  }
+}
+resource "aws_iam_policy" "orders" {
+  policy = data.aws_iam_policy_document.orders.json
+}
+"#,
+        "unresolved.tf",
+        &id(),
+    )
+    .unwrap();
+    assert_eq!(
+        edge_pairs(&unresolved, "GRANTS"),
+        vec![(
+            "res:qwtm/infra@aws_iam_policy.orders",
+            "res:qwtm/infra@data.aws_iam_policy_document.orders"
+        )]
+    );
+    let grant = unresolved
+        .edges
+        .iter()
+        .find(|edge| edge.label == "GRANTS")
+        .unwrap();
+    assert_eq!(
+        grant.props["actions"],
+        serde_json::json!(["sqs:SendMessage"])
+    );
+    assert_eq!(grant.props["prov"]["evidence"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn every_fact_carries_confirmed_t0_provenance_with_spans() {
     let ex = extract_source(MAIN_TF, "main.tf", &id()).unwrap();
     for props in ex
