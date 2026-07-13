@@ -360,6 +360,44 @@ fn stitch_backings(graph: &mut SqliteGraphStore) -> Result<u64, String> {
     Ok(inserted)
 }
 
+/// Re-evaluate explicit found-ADR target ids against the complete graph.
+/// Each repo is initially extracted in isolation, but decisions in a docs
+/// repo may govern facts loaded later from another repo in the same system.
+fn relink_found_adrs(graph: &mut SqliteGraphStore) -> Result<u64, String> {
+    let repos = graph
+        .nodes_with_label("Repo")
+        .map_err(|error| error.to_string())?;
+    let candidates = graph
+        .all_nodes()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|node| node.label != "ADR")
+        .collect::<Vec<_>>();
+    let mut linked = 0;
+    for repo_node in repos {
+        let Some(repo) = repo_node.id.strip_prefix("repo:") else {
+            continue;
+        };
+        let Some(root) = repo_node.props["root"].as_str().map(std::path::Path::new) else {
+            continue;
+        };
+        if !root.is_dir() {
+            continue;
+        }
+        let commit = repo_node.props["commit"].as_str().unwrap_or("workdir");
+        let facts = spec::extract_found_adrs(root, repo, commit, &candidates)
+            .map_err(|error| error.to_string())?;
+        for node in facts.nodes {
+            graph.put_node(&node).map_err(|error| error.to_string())?;
+        }
+        for edge in facts.edges {
+            graph.put_edge(&edge).map_err(|error| error.to_string())?;
+            linked += 1;
+        }
+    }
+    Ok(linked)
+}
+
 /// Run T0 extraction over a local directory and load the facts into the
 /// graph (US-0002 local path; GitHub clone ingest is `add_repo`).
 #[tauri::command]
@@ -406,6 +444,7 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
         load_into_graph(&mut graph, &extraction, &repo, &root, "workdir")
             .map_err(|e| fail(e, &state, job_id))?;
+        relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
         stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
@@ -487,6 +526,7 @@ fn add_repo(
             &cloned.commit_sha,
         )
         .map_err(|e| fail(e, &state, job_id))?;
+        relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
         stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
@@ -625,6 +665,7 @@ fn add_system(
             .graph
             .lock()
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
         stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
@@ -1255,6 +1296,74 @@ resource "aws_sqs_queue" "orders" {
         assert_eq!(decides.src, adr.id);
         assert_eq!(decides.dst, "sym:local/shop@orders.ts#placeOrder");
         assert_eq!(decides.props["prov"]["confidence_tier"], "Confirmed");
+    }
+
+    #[test]
+    fn system_relinks_found_adr_to_cross_repo_target() {
+        // AC-0036 (T-0036): a decision repo may be loaded before the service
+        // containing its explicit target; the full-system pass links it once
+        // both repos are present.
+        let dir = tempfile::tempdir().unwrap();
+        let docs = dir.path().join("docs-repo");
+        let service = dir.path().join("service");
+        std::fs::create_dir_all(docs.join("docs/adr")).unwrap();
+        std::fs::create_dir_all(&service).unwrap();
+        std::fs::write(
+            docs.join("docs/adr/ADR-0001-service.md"),
+            "# Service ownership\n\n- **Status:** Accepted\n- **Governs:** `sym:local/service@app.ts#handle`\n",
+        )
+        .unwrap();
+        std::fs::write(service.join("app.ts"), "export function handle() {}\n").unwrap();
+
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        let docs_extraction = crate::extract_tree(
+            &docs,
+            "local/docs-repo",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+        )
+        .unwrap();
+        crate::load_into_graph(
+            &mut store,
+            &docs_extraction,
+            "local/docs-repo",
+            &docs,
+            "workdir",
+        )
+        .unwrap();
+        assert!(store.edges_with_labels(&["DECIDES"]).unwrap().is_empty());
+
+        let service_extraction = crate::extract_tree(
+            &service,
+            "local/service",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            &[],
+        )
+        .unwrap();
+        crate::load_into_graph(
+            &mut store,
+            &service_extraction,
+            "local/service",
+            &service,
+            "workdir",
+        )
+        .unwrap();
+        crate::relink_found_adrs(&mut store).unwrap();
+
+        let decides = store.edges_with_labels(&["DECIDES"]).unwrap();
+        assert_eq!(decides.len(), 1);
+        assert_eq!(
+            decides[0].src,
+            "adr:local/docs-repo@docs/adr/ADR-0001-service.md"
+        );
+        assert_eq!(decides[0].dst, "sym:local/service@app.ts#handle");
+        assert_eq!(decides[0].props["prov"]["confidence_tier"], "Confirmed");
     }
 
     #[test]

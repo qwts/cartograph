@@ -730,10 +730,23 @@ pub fn compile_spec(
     mode: ExportMode,
     rejected_hashes: &BTreeSet<String>,
 ) -> SpecBundle {
-    let derived = crate::derive_adr_facts(nodes, edges, flows);
-    let mut projected_nodes = nodes.to_vec();
+    // Curation is part of the compilation projection, so derived ADRs may
+    // only consume facts that survived the selected export policy. Otherwise
+    // a rejected support edge could disappear while a new derived hash kept
+    // its conclusion visible.
+    let base_nodes = filter_nodes(nodes, mode, rejected_hashes)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let base_edges = filter_edges(edges, mode, rejected_hashes)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let projected_flows = project_flows(flows, mode, rejected_hashes);
+    let derived = crate::derive_adr_facts(&base_nodes, &base_edges, &projected_flows);
+    let mut projected_nodes = base_nodes;
     projected_nodes.extend(derived.nodes);
-    let mut projected_edges = edges.to_vec();
+    let mut projected_edges = base_edges;
     projected_edges.extend(derived.edges);
     let nodes = filter_nodes(&projected_nodes, mode, rejected_hashes);
     let edges = filter_edges(&projected_edges, mode, rejected_hashes);
@@ -1216,5 +1229,91 @@ mod tests {
         assert!(drift.content.contains("sym:handler CALLS sym:remote"));
         assert!(drift.content.contains("ep:orders"));
         assert_eq!(bundle.drift_count, 1);
+    }
+
+    #[test]
+    fn rejected_support_cannot_derive_an_adr_or_drift_finding() {
+        // AC-0037/AC-0038 (T-0037/T-0038): Workbench rejection is applied
+        // before derivation, so a new derived hash cannot bypass curation.
+        let nodes = vec![
+            node(
+                "chan:orders",
+                "Channel",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            node(
+                "sym:publish",
+                "Symbol",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            node(
+                "sym:handler",
+                "Symbol",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            node(
+                "sym:remote",
+                "Symbol",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ),
+            Node {
+                id: "adr:found:no-sync".into(),
+                label: "ADR".into(),
+                props: serde_json::json!({
+                    "title": "No synchronous calls",
+                    "origin": "found",
+                    "forbids": ["CALLS"],
+                    "prov": prov(Tier::Deterministic, ConfidenceTier::Confirmed, "found-adr"),
+                }),
+            },
+        ];
+        let publish = edge(
+            "sym:publish",
+            "chan:orders",
+            "PUBLISHES",
+            Tier::Agentic,
+            ConfidenceTier::InferredWeak,
+        );
+        let decides = edge(
+            "adr:found:no-sync",
+            "sym:handler",
+            "DECIDES",
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+        );
+        let call = edge(
+            "sym:handler",
+            "sym:remote",
+            "CALLS",
+            Tier::Agentic,
+            ConfidenceTier::InferredWeak,
+        );
+        let rejected_hashes = BTreeSet::from([
+            provenance(&publish.props, "publish").content_hash,
+            provenance(&call.props, "call").content_hash,
+        ]);
+
+        let bundle = compile_spec(
+            &nodes,
+            &[publish, decides, call],
+            &[],
+            ExportMode::BestEffort,
+            &rejected_hashes,
+        );
+        let adrs = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "adrs")
+            .unwrap();
+        assert!(
+            adrs.assertions
+                .iter()
+                .all(|assertion| !assertion.subject_id.starts_with("adr:recovered:"))
+        );
+        assert_eq!(bundle.drift_count, 0);
     }
 }

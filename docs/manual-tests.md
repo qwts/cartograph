@@ -224,10 +224,11 @@ PR — per-PR verification is CI's job.
 
 ## MT-M9-04 — Found/recovered ADRs and mapped drift
 
-1. In a fixture repo, add `docs/adr/ADR-0001.md` with `Status`, `Governs`, and
-   `Forbids` fields. Make `Governs` cite an existing graph id in backticks and
-   create a code edge whose label is listed by `Forbids`.
-2. Ingest the repo and open the Workbench **Architecture decisions** artifact.
+1. In a multi-repo fixture system, add `docs/adr/ADR-0001.md` to a docs repo
+   with `Status`, `Governs`, and `Forbids` fields. Make `Governs` cite an
+   existing graph id from a service repo in backticks and create a code edge
+   whose label is listed by `Forbids`.
+2. Ingest the system and open the Workbench **Architecture decisions** artifact.
    **Pass:** the found ADR and DECIDES link are Confirmed with exact file/span
    evidence; unrelated or nonexistent ids are not linked (AC-0036).
 3. Include a code producer and channel not governed by a found ADR. **Pass:**
@@ -236,7 +237,9 @@ PR — per-PR verification is CI's job.
    (AC-0037, R-INT-2).
 4. Open **Drift register**. **Pass:** the found-ADR conflict names the ADR,
    offending edge, any containing flow trigger, and confidence inherited from
-   the offending fact (AC-0038).
+   the offending fact. Reject the supporting inferred edge and export again.
+   **Pass:** neither its recovered ADR nor its drift finding remains
+   (AC-0037, AC-0038).
 
 ## MT-SB-01 — Stories render on-brand
 

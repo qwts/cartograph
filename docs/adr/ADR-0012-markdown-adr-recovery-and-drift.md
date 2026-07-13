@@ -15,7 +15,8 @@ disposable spec projection.
 ## Decision
 - T0 scans confined Markdown ADR/RFC paths and creates Confirmed `ADR` nodes.
   It creates `DECIDES` edges only for existing graph ids explicitly listed by
-  `Governs:` or cited exactly in backticks.
+  `Governs:` or cited exactly in backticks. After every repo is loaded, a
+  deterministic relink pass evaluates those ids against the full system graph.
 - An optional `Forbids:` field lists uppercase graph-edge labels. It is an
   explicit, deterministic author constraint rather than a natural-language
   guess.
@@ -27,7 +28,8 @@ disposable spec projection.
   offending edge confidence and records the exact edge plus containing flow
   triggers.
 - Derived facts never mutate confirmed graph input. Recovered/inferred ADRs and
-  inferred drift remain subject to the Workbench export and curation policies.
+  inferred drift remain subject to the Workbench export and curation policies;
+  supporting facts are filtered by those policies before any derivation runs.
 
 ## Consequences
 - Found author intent is clearly separated from recovered proposed intent.
