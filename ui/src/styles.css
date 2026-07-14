@@ -2067,3 +2067,233 @@ button:disabled {
 .job-action {
   flex: 0 0 auto;
 }
+
+/* ── Ingest flow: Connect → Preflight → Recover (#104, handoff §Screens 1–3) ── */
+
+.ingest-flow {
+  max-width: 720px;
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.ingest-hero h2 {
+  font-size: 1.7rem;
+  margin: 0 0 0.35rem;
+}
+
+.ingest-hero p {
+  margin: 0;
+}
+
+.local-safe {
+  color: var(--accent-local);
+}
+
+.source-picker {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.source-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 1rem;
+  background: var(--control);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.source-option.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--control));
+  color: var(--accent);
+}
+
+.source-option .material-symbols-outlined {
+  font-size: 1.1rem;
+}
+
+.target-field {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1rem 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.target-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.target-field input {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--control);
+  color: var(--text);
+}
+
+.reassure-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0.65rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-local) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-local) 7%, transparent);
+  color: var(--accent-local);
+  font-size: 0.85rem;
+}
+
+.flow-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.4rem;
+}
+
+.flow-actions-right {
+  display: inline-flex;
+  gap: 0.6rem;
+}
+
+.flow-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.flow-actions .material-symbols-outlined {
+  font-size: 1.05rem;
+}
+
+.preflight-target code {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.preflight-cards {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.preflight-card {
+  padding: 0.9rem 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.preflight-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.preflight-card h3 .material-symbols-outlined {
+  font-size: 1.15rem;
+  color: var(--accent-local);
+}
+
+/* The three-way split is visual, not just textual (unsupported ≠ gap). */
+.preflight-card.gap h3 .material-symbols-outlined {
+  color: var(--tier-gap);
+}
+
+.preflight-card.unsupported h3 .material-symbols-outlined {
+  color: var(--finding-unsupported);
+}
+
+.preflight-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.preflight-items code {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.preflight-note {
+  margin: 0.6rem 0 0;
+  padding: 0.55rem 0.8rem;
+  border-left: 3px solid var(--border);
+  border-radius: 0 8px 8px 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.preflight-note.gap-note {
+  border-left-color: var(--tier-gap);
+  background: color-mix(in srgb, var(--tier-gap) 7%, transparent);
+  color: var(--text);
+}
+
+.preflight-note.unsupported-note {
+  border-left-color: var(--finding-unsupported);
+  background: color-mix(in srgb, var(--finding-unsupported) 7%, transparent);
+  color: var(--text);
+}
+
+.ingest-flow .spinning {
+  animation: carto-spin 1.3s linear infinite;
+}
+
+.recover-center {
+  justify-items: center;
+  text-align: center;
+  margin: 3rem auto 0;
+  gap: 0.7rem;
+}
+
+.recover-icon {
+  font-size: 2.6rem;
+  color: var(--accent);
+}
+
+.recover-icon.failed {
+  color: var(--tier-gap);
+}
+
+.recover-stage {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.recover-percent {
+  font-size: 0.9rem;
+}
+
+.recover-progress {
+  width: 320px;
+  max-width: 80vw;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--control);
+  overflow: hidden;
+}
+
+.recover-progress-bar {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}

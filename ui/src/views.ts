@@ -10,7 +10,11 @@ export type SurfaceView =
   | 'gaps'
   | 'prov'
   | 'jobs'
-  | 'settings';
+  | 'settings'
+  // The ingest flow (handoff §Screens 1–3): routed views, not rail surfaces.
+  | 'connect'
+  | 'preflight'
+  | 'recover';
 
 export interface SurfaceDef {
   id: SurfaceView;
@@ -47,7 +51,20 @@ export const SURFACES: readonly SurfaceDef[] = [
   { id: 'settings', label: 'Settings', icon: 'settings', hint: 'Tiers, providers, egress' },
 ] as const;
 
-export function surfaceDef(view: SurfaceView): SurfaceDef {
-  // SURFACES covers every SurfaceView, so the lookup cannot miss.
-  return SURFACES.find((surface) => surface.id === view) as SurfaceDef;
+/** Breadcrumb labels for the ingest-flow views (not on the rail/palette). */
+const INGEST_LABELS: Partial<Record<SurfaceView, string>> = {
+  connect: 'Connect',
+  preflight: 'Preflight',
+  recover: 'Recover',
+};
+
+export function surfaceLabel(view: SurfaceView): string {
+  return (
+    INGEST_LABELS[view] ?? SURFACES.find((surface) => surface.id === view)?.label ?? view
+  );
+}
+
+/** The rail surface to highlight for a view (ingest flow lights Workspace). */
+export function railSurface(view: SurfaceView): SurfaceView {
+  return view in INGEST_LABELS ? 'workspace' : view;
 }

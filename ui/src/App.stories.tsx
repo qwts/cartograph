@@ -194,6 +194,32 @@ function installFakeCore() {
         curation = [record];
         return record;
       }
+      case 'preflight':
+        return {
+          languages: [
+            { language: 'TypeScript/JavaScript', files: 9, adapter: 't0.adapter-ts' },
+          ],
+          frameworks: ['Chrome Extension MV3'],
+          potential_gaps: [
+            {
+              kind: 'dynamic-injection',
+              path: 'src/background.ts',
+              line: 41,
+              message: 'Dynamically injected function bodies (executeScript)',
+              detector: 'preflight@1',
+            },
+          ],
+          unsupported: [
+            {
+              kind: 'inline-eval',
+              path: 'src/legacy.js',
+              line: 120,
+              message: 'Inline eval()',
+              detector: 'preflight@1',
+            },
+          ],
+          detector: 'preflight@1',
+        };
       case 'ingest_path':
         return {
           job_id: 1,
@@ -294,6 +320,11 @@ const meta = {
       ingestBusy: false,
       ingestSummary: null,
       ingestError: null,
+      ingestSource: 'github',
+      ingestTarget: '',
+      preflight: null,
+      preflightBusy: false,
+      preflightError: null,
       clearBusy: false,
       clearError: null,
       selected: null,
@@ -329,6 +360,43 @@ export const ConnectedToCore: Story = {
     await waitFor(() => expect(canvas.getByText('cancelled')).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(canvas.getByText('done')).toBeInTheDocument());
+  },
+};
+
+export const IngestFlowEndToEnd: Story = {
+  // #104 / US-0016: Connect → Preflight → Recover against the fake core.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+    const breadcrumb = () => within(canvas.getByRole('navigation', { name: 'Breadcrumb' }));
+
+    // Workspace → Connect. The ingest flow routes without joining the rail.
+    await userEvent.click(canvas.getByRole('button', { name: 'Connect a target' }));
+    await expect(breadcrumb().getByText('Connect')).toBeInTheDocument();
+    await expect(
+      canvas.getByText(/Nothing leaves the device unless you opt a tier into cloud/),
+    ).toBeInTheDocument();
+
+    // Local target → Preflight runs real (mocked-core) detection.
+    await userEvent.click(canvas.getByRole('radio', { name: 'Local folder' }));
+    await userEvent.type(canvas.getByRole('textbox'), '/fake/repo');
+    await userEvent.click(canvas.getByRole('button', { name: /preflight/i }));
+    await expect(breadcrumb().getByText('Preflight')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(canvas.getByText('Potential system gaps')).toBeInTheDocument(),
+    );
+    // The three-way split renders from detection output, never conflated.
+    await expect(
+      canvas.getByText(/Dynamically injected function bodies \(executeScript\)/),
+    ).toBeInTheDocument();
+    await expect(canvas.getByText(/a tool limitation, not a System Gap/)).toBeInTheDocument();
+    await expect(canvas.getByText('0 bytes egress')).toBeInTheDocument();
+
+    // Run full recovery: the fake core resolves instantly, so the flow lands
+    // back on Workspace with the recovery outcome visible.
+    await userEvent.click(canvas.getByRole('button', { name: /run full recovery/i }));
+    await waitFor(() => expect(breadcrumb().getByText('Workspace')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText(/12 nodes/)).toBeInTheDocument());
   },
 };
 

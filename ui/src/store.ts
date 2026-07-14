@@ -93,6 +93,36 @@ export interface LayerSummary {
   edges: number;
 }
 
+/** Where the Connect step points Cartograph (handoff §Connect). */
+export type IngestSource = 'github' | 'local' | 'manifest';
+
+/** One detected language with adapter coverage (`ingest::preflight`). */
+export interface LanguageDetection {
+  language: string;
+  files: number;
+  /** Covering adapter id; null means the whole language is unsupported. */
+  adapter: string | null;
+}
+
+/** One classified construct from local detection (`ingest::preflight`). */
+export interface PatternFinding {
+  kind: string;
+  path: string;
+  line: number;
+  message: string;
+  detector: string;
+}
+
+/** Local preflight output (#116): the three-way classification exists from
+ *  first contact — potential gaps and unsupported patterns never conflate. */
+export interface PreflightReport {
+  languages: LanguageDetection[];
+  frameworks: string[];
+  unsupported: PatternFinding[];
+  potential_gaps: PatternFinding[];
+  detector: string;
+}
+
 /** One provenance-bearing resolved hop returned by `flowtracer::Flow`. */
 export interface FlowHop {
   label: string;
@@ -198,6 +228,14 @@ export interface AppStore {
   ingestBusy: boolean;
   ingestSummary: IngestSummary | null;
   ingestError: string | null;
+  /** Connect-step target kind; drives placeholder copy and preflight scope. */
+  ingestSource: IngestSource;
+  /** Connect-step target: repo URL, local path, or manifest path. */
+  ingestTarget: string;
+  /** Local detection result; null for remote targets (detected on clone). */
+  preflight: PreflightReport | null;
+  preflightBusy: boolean;
+  preflightError: string | null;
   clearBusy: boolean;
   clearError: string | null;
   /** Node selected for evidence view, with its source window state. */
@@ -223,6 +261,15 @@ export interface AppStore {
   retryJob: (id: number) => Promise<void>;
   /** Apply one job transition pushed by the core (`job://changed`). */
   applyJobEvent: (job: Job) => void;
+  setIngestSource: (source: IngestSource) => void;
+  setIngestTarget: (target: string) => void;
+  /** Navigate to Preflight and run local detection (#116). Local targets get
+   *  a real report; remote/manifest targets are detected during recovery. */
+  runPreflight: () => Promise<void>;
+  /** Navigate to Recover and run the staged pipeline. Returns to Workspace
+   *  on success unless the user has already navigated away (Run in
+   *  background); a failure stays on Recover so the error is never hidden. */
+  startRecovery: () => Promise<void>;
 }
 
 async function loadEndpoints(): Promise<GraphNode[]> {
@@ -257,6 +304,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   ingestBusy: false,
   ingestSummary: null,
   ingestError: null,
+  ingestSource: 'github',
+  ingestTarget: '',
+  preflight: null,
+  preflightBusy: false,
+  preflightError: null,
   clearBusy: false,
   clearError: null,
   selected: null,
@@ -438,4 +490,35 @@ export const useAppStore = create<AppStore>((set, get) => ({
         : [job, ...state.jobs];
       return { jobs };
     }),
+
+  setIngestSource: (ingestSource) => set({ ingestSource }),
+
+  setIngestTarget: (ingestTarget) => set({ ingestTarget }),
+
+  runPreflight: async () => {
+    const target = get().ingestTarget.trim();
+    set({ view: 'preflight', selected: null, preflight: null, preflightError: null });
+    // Only a local tree can be detected before recovery; GitHub and manifest
+    // targets are preflighted against the clone during recovery. Showing
+    // nothing beats inventing a report (three-way honesty starts here).
+    if (get().ingestSource !== 'local') return;
+    set({ preflightBusy: true });
+    try {
+      const preflight = await invokeOr<PreflightReport | null>('preflight', null, {
+        path: target,
+      });
+      set({ preflight });
+    } catch (e) {
+      set({ preflightError: String(e) });
+    } finally {
+      set({ preflightBusy: false });
+    }
+  },
+
+  startRecovery: async () => {
+    const target = get().ingestTarget.trim();
+    set({ view: 'recover', selected: null });
+    await get().ingest(target);
+    if (get().view === 'recover' && !get().ingestError) set({ view: 'workspace' });
+  },
 }));

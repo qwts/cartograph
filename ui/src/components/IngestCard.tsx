@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { IngestSummary } from '../store';
 
 export interface IngestCardProps {
@@ -7,36 +6,21 @@ export interface IngestCardProps {
   error: string | null;
   /** Disabled when there is no live backend. */
   canIngest: boolean;
-  onIngest: (path: string) => void;
+  /** Enter the Connect → Preflight → Recover flow (#104). */
+  onConnect: () => void;
 }
 
-/** Point the T0 extractors at a local directory or a GitHub repo
+/** Workspace entry into the ingest flow, plus the last recovery outcome
  *  (US-0001: a cloned repo is listed with its commit SHA). */
-export function IngestCard({ busy, summary, error, canIngest, onIngest }: IngestCardProps) {
-  const [path, setPath] = useState('');
-
+export function IngestCard({ busy, summary, error, canIngest, onConnect }: IngestCardProps) {
   return (
     <section className="card">
       <h2>Ingest</h2>
-      <form
-        className="ingest-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (path.trim()) onIngest(path.trim());
-        }}
-      >
-        <input
-          type="text"
-          value={path}
-          placeholder="/path, github URL, or cartograph.system.toml"
-          aria-label="Directory to ingest"
-          onChange={(e) => setPath(e.target.value)}
-          disabled={!canIngest || busy}
-        />
-        <button type="submit" disabled={!canIngest || busy || path.trim() === ''}>
-          {busy ? 'Ingesting…' : 'Ingest'}
+      <div className="ingest-form">
+        <button type="button" onClick={onConnect} disabled={!canIngest || busy}>
+          {busy ? 'Recovering…' : 'Connect a target'}
         </button>
-      </form>
+      </div>
       {error && <p className="error-text">{error}</p>}
       {summary && !busy && (
         <div className="ingest-summary">
