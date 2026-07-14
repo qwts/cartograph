@@ -143,25 +143,29 @@ impl JobStore {
         self.get(id)
     }
 
-    /// Complete a job, recording the artifacts it produced.
+    /// Complete a job, recording the artifacts it produced. Guarded: only a
+    /// job still `queued`/`running` transitions — a cancellation that lands
+    /// mid-pipeline is never overwritten back to `done` (the returned row
+    /// tells the caller which outcome won).
     pub fn finish(&mut self, id: i64, artifacts: &[String]) -> rusqlite::Result<Job> {
         let artifacts_json = serde_json::to_string(artifacts).expect("string vec serializes");
         self.conn.execute(
             "UPDATE jobs SET status = 'done', progress = 100.0, error = NULL,
                  artifacts = ?2,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-             WHERE id = ?1",
+             WHERE id = ?1 AND status IN ('queued', 'running')",
             params![id, artifacts_json],
         )?;
         self.get(id)
     }
 
-    /// Fail a job with its error detail preserved for display.
+    /// Fail a job with its error detail preserved for display. Guarded like
+    /// [`Self::finish`]: a concurrent cancel wins over a late failure.
     pub fn fail(&mut self, id: i64, error: &str) -> rusqlite::Result<Job> {
         self.conn.execute(
             "UPDATE jobs SET status = 'failed', error = ?2,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-             WHERE id = ?1",
+             WHERE id = ?1 AND status IN ('queued', 'running')",
             params![id, error],
         )?;
         self.get(id)
@@ -438,6 +442,28 @@ mod tests {
         let job = store.fail(failed, "adapter panicked: bad span").unwrap();
         assert_eq!(job.status, "failed");
         assert_eq!(job.error.as_deref(), Some("adapter panicked: bad span"));
+    }
+
+    #[test]
+    fn cancel_wins_races_against_finish_and_fail() {
+        // Review fix (#127): a cancel landing mid-pipeline must never be
+        // overwritten by the pipeline's own completion or failure.
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = JobStore::open(dir.path().join("state.db")).unwrap();
+
+        let id = store.enqueue("ingest:/repo").unwrap().id;
+        store.set_status(id, "running").unwrap();
+        store.cancel(id).unwrap();
+        let job = store.finish(id, &["graph:x".into()]).unwrap();
+        assert_eq!(job.status, "cancelled");
+        assert!(job.artifacts.is_empty());
+
+        let other = store.enqueue("ingest:/repo2").unwrap().id;
+        store.set_status(other, "running").unwrap();
+        store.cancel(other).unwrap();
+        let job = store.fail(other, "late error").unwrap();
+        assert_eq!(job.status, "cancelled");
+        assert_eq!(job.error, None);
     }
 
     #[test]
