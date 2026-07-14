@@ -78,7 +78,10 @@ fn fallback_provenance(identity: &str) -> Provenance {
     .expect("Gap is within the deterministic confidence ceiling")
 }
 
-fn provenance(props: &serde_json::Value, identity: &str) -> Provenance {
+/// The validated provenance of a fact, or the explicit-Gap fallback when a
+/// fact carries none. Public for the same reason as the register predicates
+/// (#116): tier tallies must count with one definition on every surface.
+pub fn provenance(props: &serde_json::Value, identity: &str) -> Provenance {
     serde_json::from_value::<Provenance>(props["prov"].clone())
         .ok()
         .filter(|provenance| provenance.validate().is_ok())

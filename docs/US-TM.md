@@ -17,7 +17,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0011 | AC-0029..0031 | app, flowtracer, ui | M9 | F-* | ADR-0002 | T-0029..0031 |
 | US-0012 | AC-0032..0035,AC-0057..0058 | core-prov, spec, agents, app, flowtracer, ui | M9–M10 | — | ADR-0002, ADR-0011 | T-0032..0035,T-0057..0058 |
 | US-0013 | AC-0036..0038,AC-0059 | spec, app, ui | M9 | F-* | ADR-0002, ADR-0012 | T-0036..0038,T-0059 |
-| US-0014 | AC-0039..0040 | adapters-lang-ts, iac, core-graph, core-prov, app | M10 | — | ADR-0006, ADR-0014 | T-0039..0040 |
+| US-0014 | AC-0039..0040,AC-0060 | adapters-lang-ts, iac, core-graph, core-prov, app | M10 | — | ADR-0006, ADR-0014 | T-0039..0040,T-0060 |
 | US-0015 | AC-0041..0042 | iac, spec, ui | M9 | — | ADR-0003, ADR-0013 | T-0041..0042 |
 
 ## Coverage assertions

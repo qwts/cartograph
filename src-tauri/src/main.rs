@@ -7,6 +7,7 @@
 mod evidence;
 mod findings;
 mod jobs;
+mod metrics;
 mod settings;
 
 use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
@@ -27,6 +28,7 @@ struct AppState {
     settings: Mutex<settings::SettingsStore>,
     decisions: Mutex<agents::DecisionLog>,
     extraction_caches: Mutex<ExtractionCaches>,
+    metrics: Mutex<metrics::MetricsStore>,
 }
 
 #[derive(Default)]
@@ -915,6 +917,66 @@ fn cloud_disclosure(tier: String) -> Result<llm::anthropic::CloudDisclosure, Str
     Ok(llm::anthropic::disclosure(lane))
 }
 
+/// Compute and persist one ingest's recovery metrics (#119): tier tallies,
+/// register counts, extractor coverage, and the whole-graph content hash
+/// that makes AC-0039's determinism observable as history data. Reads the
+/// same whole-graph projection every other surface reads.
+fn record_ingest_metrics(
+    state: &AppState,
+    job_id: i64,
+    repo: &str,
+    commit_sha: &str,
+    layers: &LayerBreakdown,
+) -> Result<(), String> {
+    let (nodes, edges) = {
+        let graph = state.graph.lock().map_err(|e| e.to_string())?;
+        (
+            graph.all_nodes().map_err(|e| e.to_string())?,
+            graph.all_edges().map_err(|e| e.to_string())?,
+        )
+    };
+    let scope = std::collections::BTreeMap::from([
+        ("t0.adapter-ts".to_string(), layers.ts.files),
+        ("t0.adapter-python".to_string(), layers.python.files),
+        ("t0.adapter-go".to_string(), layers.go.files),
+        ("t0.iac-terraform".to_string(), layers.tf.files),
+    ]);
+    let computed = metrics::compute(&nodes, &edges, &scope);
+    let (unsupported, no_evidence) = {
+        let findings = state.findings.lock().map_err(|e| e.to_string())?;
+        findings.counts().map_err(|e| e.to_string())?
+    };
+    let mut store = state.metrics.lock().map_err(|e| e.to_string())?;
+    store
+        .record(
+            job_id,
+            repo,
+            commit_sha,
+            &computed,
+            unsupported,
+            no_evidence,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Ingest records, newest first (#119): tier tallies, register counts, and
+/// the graph content hash per run — evidence health over re-ingests.
+#[tauri::command]
+fn ingest_history(state: State<'_, AppState>) -> Result<Vec<metrics::IngestRecord>, String> {
+    let store = state.metrics.lock().map_err(|e| e.to_string())?;
+    store.history(50).map_err(|e| e.to_string())
+}
+
+/// Per-extractor coverage for the most recent ingest (#119).
+#[tauri::command]
+fn extractor_coverage(
+    state: State<'_, AppState>,
+) -> Result<Vec<metrics::ExtractorCoverage>, String> {
+    let store = state.metrics.lock().map_err(|e| e.to_string())?;
+    store.latest_coverage().map_err(|e| e.to_string())
+}
+
 /// Notify the shell of a job transition (`job://changed`); the Jobs surface
 /// and the global progress bar stay live without polling (#117).
 fn emit_job(app: &tauri::AppHandle, job: &Job) {
@@ -1022,6 +1084,8 @@ fn run_ingest(
         relink_found_adrs(&mut graph).map_err(&fail)?;
         stitch_backings(&mut graph).map_err(&fail)?;
     }
+
+    record_ingest_metrics(state, job_id, &repo, "workdir", &layers).map_err(&fail)?;
 
     // A cancel can land at any point after the last check; `finish` is
     // guarded to only transition a running job, so whichever outcome hit
@@ -1196,6 +1260,8 @@ fn add_repo(
         relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
         stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
+    record_ingest_metrics(&state, job_id, &cloned.repo, &cloned.commit_sha, &layers)
+        .map_err(|e| fail(e, &state, job_id))?;
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
     let done = jobs.get(job_id).map_err(|e| e.to_string())?;
@@ -1355,6 +1421,10 @@ fn add_system(
         relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
         stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
+    // One history record for the whole system; the per-repo identities are
+    // the record's identity (a system has no single commit).
+    record_ingest_metrics(&state, job_id, &repos.join(","), "system", &layers)
+        .map_err(|e| fail(e, &state, job_id))?;
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
     let done = jobs.get(job_id).map_err(|e| e.to_string())?;
@@ -1614,6 +1684,7 @@ fn main() {
             let findings = FindingStore::open(&state_path)?;
             let tier_settings = settings::SettingsStore::open(&state_path)?;
             let decisions = agents::DecisionLog::open(&state_path)?;
+            let recovery_metrics = metrics::MetricsStore::open(&state_path)?;
             app.manage(AppState {
                 graph: Mutex::new(graph),
                 jobs: Mutex::new(jobs),
@@ -1621,6 +1692,7 @@ fn main() {
                 settings: Mutex::new(tier_settings),
                 decisions: Mutex::new(decisions),
                 extraction_caches: Mutex::new(ExtractionCaches::default()),
+                metrics: Mutex::new(recovery_metrics),
             });
             Ok(())
         })
@@ -1649,6 +1721,8 @@ fn main() {
             revoke_cloud_consent,
             egress_summary,
             cloud_disclosure,
+            ingest_history,
+            extractor_coverage,
             list_nodes,
             atlas_snapshot,
             read_evidence,
