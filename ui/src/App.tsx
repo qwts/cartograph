@@ -15,6 +15,7 @@ import { JobsSurface } from './components/JobsSurface';
 import { ConnectSurface } from './components/ConnectSurface';
 import { PreflightSurface } from './components/PreflightSurface';
 import { RecoverSurface } from './components/RecoverSurface';
+import { SettingsSurface } from './components/SettingsSurface';
 import { IngestCard } from './components/IngestCard';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
@@ -83,6 +84,10 @@ export default function App() {
     preflightError,
     clearBusy,
     clearError,
+    tierSettings,
+    egress,
+    disclosures,
+    settingsError,
     selected,
     refresh,
     enqueueJob,
@@ -99,6 +104,10 @@ export default function App() {
     setIngestTarget,
     runPreflight,
     startRecovery,
+    setTierEnabled,
+    setTierProvider,
+    grantCloudConsent,
+    revokeCloudConsent,
   } = useAppStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -167,6 +176,8 @@ export default function App() {
       : backend === 'browser'
         ? 'No core (browser preview)'
         : 'Connecting…';
+  // Without a core nothing can egress, so the local-only line stays honest.
+  const egressLine = egress?.label ?? 'Local-only · 0 bytes egress';
 
   const surface = (() => {
     switch (view) {
@@ -293,10 +304,16 @@ export default function App() {
         );
       case 'settings':
         return (
-          <EmptySurface
-            icon="settings"
-            title="Settings"
-            description="Recovery-tier toggles, provider selection, and fail-closed cloud consent land with the settings surface (#112) on top of persisted settings state (#118). Everything currently runs local-only."
+          <SettingsSurface
+            tiers={tierSettings}
+            egressLabel={egressLine}
+            disclosures={disclosures}
+            error={settingsError}
+            canEdit={backend === 'up'}
+            onToggleTier={(tier, enabled) => void setTierEnabled(tier, enabled)}
+            onProviderChange={(tier, provider) => void setTierProvider(tier, provider)}
+            onGrantConsent={(tier) => void grantCloudConsent(tier)}
+            onRevokeConsent={(tier) => void revokeCloudConsent(tier)}
           />
         );
     }
@@ -320,7 +337,7 @@ export default function App() {
         <main className="shell-content">
           <RouteErrorBoundary view={view}>{surface}</RouteErrorBoundary>
         </main>
-        <StatusBar status={status} busy={busy} egress="Local-only · 0 bytes egress">
+        <StatusBar status={status} busy={busy} egress={egressLine}>
           <StatusBadge backend={backend} version={version} />
         </StatusBar>
       </div>

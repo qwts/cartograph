@@ -901,6 +901,20 @@ fn egress_summary(state: State<'_, AppState>) -> Result<settings::EgressSummary,
     store.egress_summary().map_err(|e| e.to_string())
 }
 
+/// The full consent disclosure for a tier's cloud lane (#112): everything
+/// the Settings consent panel must show *before* consent is recordable.
+/// T2 semantic triage runs the Haiku lane; T3 agentic reasoning runs Opus
+/// (Fable stays a per-escalation opt-in, #120). T0/T1 have no cloud lane.
+#[tauri::command]
+fn cloud_disclosure(tier: String) -> Result<llm::anthropic::CloudDisclosure, String> {
+    let lane = match tier.as_str() {
+        "T2" => llm::anthropic::ClaudeLane::Haiku,
+        "T3" => llm::anthropic::ClaudeLane::Opus,
+        other => return Err(format!("tier '{other}' has no cloud lane")),
+    };
+    Ok(llm::anthropic::disclosure(lane))
+}
+
 /// Notify the shell of a job transition (`job://changed`); the Jobs surface
 /// and the global progress bar stay live without polling (#117).
 fn emit_job(app: &tauri::AppHandle, job: &Job) {
@@ -1634,6 +1648,7 @@ fn main() {
             grant_cloud_consent,
             revoke_cloud_consent,
             egress_summary,
+            cloud_disclosure,
             list_nodes,
             atlas_snapshot,
             read_evidence,

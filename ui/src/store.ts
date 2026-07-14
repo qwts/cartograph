@@ -202,6 +202,35 @@ export interface EvidenceSource {
 /** Source view state: loading → window, or unavailable (file moved, no root). */
 export type SourceState = EvidenceSource | 'loading' | 'unavailable';
 
+/** One configurable recovery tier's persisted state (#118). T0 is absent by
+ *  design — it is always on and never configurable. */
+export interface TierSettings {
+  tier: 'T1' | 'T2' | 'T3';
+  enabled: boolean;
+  provider: 'local' | 'cloud';
+  consented: boolean;
+  consent_disclosure: string | null;
+  consented_at: string | null;
+}
+
+/** Live egress line for the status bar (#118). */
+export interface EgressSummary {
+  cloud_tiers: string[];
+  bytes_sent: number;
+  label: string;
+}
+
+/** Everything the fail-closed consent panel shows *before* consent
+ *  (`llm::anthropic::disclosure`). */
+export interface CloudDisclosure {
+  provider: string;
+  model: string;
+  endpoint: string;
+  input_usd_per_mtok: number;
+  output_usd_per_mtok: number;
+  notes: string[];
+}
+
 export interface AppStore {
   /** Active shell surface (handoff: the router is a single `view` value). */
   view: SurfaceView;
@@ -238,6 +267,15 @@ export interface AppStore {
   preflightError: string | null;
   clearBusy: boolean;
   clearError: string | null;
+  /** Persisted tier configuration (T1/T2/T3; T0 is always-on, not stored). */
+  tierSettings: TierSettings[];
+  /** Live status-bar egress line; null with no backend (shown as local-only). */
+  egress: EgressSummary | null;
+  /** Disclosure for the tier currently offered cloud consent, keyed by tier.
+   *  Loaded before the consent panel renders — fail closed: no disclosure,
+   *  no recordable consent. */
+  disclosures: Partial<Record<string, CloudDisclosure>>;
+  settingsError: string | null;
   /** Node selected for evidence view, with its source window state. */
   selected: { node: GraphNode; source: SourceState } | null;
   refresh: () => Promise<void>;
@@ -273,6 +311,16 @@ export interface AppStore {
    *  on success unless the user has already navigated away (Run in
    *  background); a failure stays on Recover so the error is never hidden. */
   startRecovery: () => Promise<void>;
+  /** Enable/disable a configurable tier (#118); refreshes the egress line. */
+  setTierEnabled: (tier: string, enabled: boolean) => Promise<void>;
+  /** Choose local or cloud for an LLM tier. Choosing cloud loads the full
+   *  disclosure so the consent panel can render it; leaving cloud revokes
+   *  standing consent in the core. */
+  setTierProvider: (tier: string, provider: 'local' | 'cloud') => Promise<void>;
+  /** Record standing cloud consent, storing the exact disclosure shown. */
+  grantCloudConsent: (tier: string) => Promise<void>;
+  /** Revoke standing consent — immediate, the tier stays on cloud unconsented. */
+  revokeCloudConsent: (tier: string) => Promise<void>;
 }
 
 async function loadEndpoints(): Promise<GraphNode[]> {
@@ -314,6 +362,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   preflightError: null,
   clearBusy: false,
   clearError: null,
+  tierSettings: [],
+  egress: null,
+  disclosures: {},
+  settingsError: null,
   selected: null,
 
   refresh: async () => {
@@ -331,10 +383,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         flowList: [],
         specBundle: null,
         curation: [],
+        tierSettings: [],
+        egress: null,
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -344,6 +398,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<Flow[]>('list_flows', []),
       invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
       invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
+      invokeOr<TierSettings[]>('get_settings', []),
+      invokeOr<EgressSummary | null>('egress_summary', null),
+      // Disclosures are static per tier — prefetched so the consent panel
+      // can always show them before consent is recordable (fail closed).
+      invokeOr<CloudDisclosure | null>('cloud_disclosure', null, { tier: 'T2' }),
+      invokeOr<CloudDisclosure | null>('cloud_disclosure', null, { tier: 'T3' }),
     ]);
     set({
       backend: 'up',
@@ -357,6 +417,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       flowList,
       specBundle,
       curation,
+      tierSettings,
+      egress,
+      disclosures: { T2: disclosureT2 ?? undefined, T3: disclosureT3 ?? undefined },
     });
   },
 
@@ -528,5 +591,67 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ view: 'recover', selected: null });
     await get().ingest(target, get().ingestSource);
     if (get().view === 'recover' && !get().ingestError) set({ view: 'workspace' });
+  },
+
+  setTierEnabled: async (tier, enabled) => {
+    set({ settingsError: null });
+    try {
+      const tierSettings = await invokeOr<TierSettings[] | null>('set_tier_enabled', null, {
+        tier,
+        enabled,
+      });
+      const egress = await invokeOr<EgressSummary | null>('egress_summary', null);
+      if (tierSettings) set({ tierSettings, egress });
+    } catch (e) {
+      set({ settingsError: String(e) });
+    }
+  },
+
+  setTierProvider: async (tier, provider) => {
+    set({ settingsError: null });
+    try {
+      const tierSettings = await invokeOr<TierSettings[] | null>('set_tier_provider', null, {
+        tier,
+        provider,
+      });
+      const egress = await invokeOr<EgressSummary | null>('egress_summary', null);
+      if (tierSettings) set({ tierSettings, egress });
+    } catch (e) {
+      set({ settingsError: String(e) });
+    }
+  },
+
+  grantCloudConsent: async (tier) => {
+    const disclosure = get().disclosures[tier];
+    // Fail closed: consent is only recordable against a loaded disclosure,
+    // and the stored consent carries exactly what the user saw.
+    if (!disclosure) {
+      set({ settingsError: `no disclosure loaded for ${tier} — consent not recorded` });
+      return;
+    }
+    set({ settingsError: null });
+    try {
+      const tierSettings = await invokeOr<TierSettings[] | null>('grant_cloud_consent', null, {
+        tier,
+        disclosure: JSON.stringify(disclosure),
+      });
+      const egress = await invokeOr<EgressSummary | null>('egress_summary', null);
+      if (tierSettings) set({ tierSettings, egress });
+    } catch (e) {
+      set({ settingsError: String(e) });
+    }
+  },
+
+  revokeCloudConsent: async (tier) => {
+    set({ settingsError: null });
+    try {
+      const tierSettings = await invokeOr<TierSettings[] | null>('revoke_cloud_consent', null, {
+        tier,
+      });
+      const egress = await invokeOr<EgressSummary | null>('egress_summary', null);
+      if (tierSettings) set({ tierSettings, egress });
+    } catch (e) {
+      set({ settingsError: String(e) });
+    }
   },
 }));

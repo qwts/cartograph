@@ -2297,3 +2297,216 @@ button:disabled {
   background: var(--accent);
   transition: width 0.3s ease;
 }
+
+/* ── Settings surface: tiers, providers, fail-closed consent (#112) ── */
+
+.settings-surface {
+  max-width: 760px;
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.settings-banner > span:last-child {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.settings-egress {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.settings-section-title {
+  margin: 0.4rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.tier-cards {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.tier-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  padding: 1rem 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.tier-code {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--tier-confirmed);
+  color: var(--tier-confirmed);
+}
+
+.tier-main {
+  flex: 1;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.tier-main h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.tier-main p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.tier-locked {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--accent-local);
+}
+
+.tier-locked .material-symbols-outlined {
+  font-size: 1rem;
+}
+
+/* On/off switch: a button so play tests drive it like the design's toggle. */
+.tier-toggle {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 24px;
+  padding: 2px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--control);
+  display: inline-flex;
+  align-items: center;
+}
+
+.tier-toggle-knob {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 0.15s ease;
+}
+
+.tier-toggle.on {
+  background: color-mix(in srgb, var(--accent-local) 45%, var(--control));
+  border-color: var(--accent-local);
+}
+
+.tier-toggle.on .tier-toggle-knob {
+  transform: translateX(20px);
+  background: #ffffff;
+}
+
+.provider-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+}
+
+.provider-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.revoke-button {
+  font-size: 0.8rem;
+}
+
+.consent-panel {
+  margin-top: 0.5rem;
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--finding-unsupported) 40%, var(--border));
+  background: color-mix(in srgb, var(--finding-unsupported) 6%, transparent);
+  display: grid;
+  gap: 0.55rem;
+}
+
+.consent-panel.consented {
+  border-color: color-mix(in srgb, var(--accent-local) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent-local) 6%, transparent);
+}
+
+.consent-panel h4 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--finding-unsupported);
+}
+
+.consent-panel h4 .material-symbols-outlined {
+  font-size: 1.05rem;
+}
+
+.consent-meta {
+  margin: 0;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+}
+
+.consent-meta div {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.consent-meta dt {
+  flex: 0 0 130px;
+  color: var(--text-muted);
+}
+
+.consent-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.consent-notes {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+}
+
+.consent-panel .muted {
+  font-size: 0.78rem;
+}
+
+.consent-panel button {
+  justify-self: start;
+}
+
+.consent-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--accent-local);
+}
+
+.consent-status .material-symbols-outlined {
+  font-size: 1.05rem;
+}

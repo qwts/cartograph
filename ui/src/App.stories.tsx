@@ -120,10 +120,38 @@ const FAKE_SPEC: SpecBundle = {
   security_count: 0,
 };
 
+interface MockTier {
+  tier: string;
+  enabled: boolean;
+  provider: string;
+  consented: boolean;
+  consent_disclosure: string | null;
+  consented_at: string | null;
+}
+
 function installFakeCore() {
   let jobs: MockJob[] = [];
   let curation: AssertionDecisionRecord[] = [];
   let graphStats = { nodes: 42, edges: 99 };
+  // Mirrors the #118 SettingsStore defaults and invariants.
+  let tiers: MockTier[] = ['T1', 'T2', 'T3'].map((tier) => ({
+    tier,
+    enabled: tier !== 'T3',
+    provider: 'local',
+    consented: false,
+    consent_disclosure: null,
+    consented_at: null,
+  }));
+  const egressSummary = () => {
+    const cloud = tiers.filter((t) => t.enabled && t.provider === 'cloud' && t.consented);
+    return {
+      cloud_tiers: cloud.map((t) => t.tier),
+      bytes_sent: 0,
+      label: cloud.length
+        ? `Cloud enabled (${cloud.map((t) => t.tier).join(', ')}) · 0 bytes egress`
+        : 'Local-only · 0 bytes egress',
+    };
+  };
   mockIPC((cmd, args) => {
     switch (cmd) {
       case 'ping':
@@ -193,6 +221,66 @@ function installFakeCore() {
         };
         curation = [record];
         return record;
+      }
+      case 'get_settings':
+        return tiers;
+      case 'egress_summary':
+        return egressSummary();
+      case 'cloud_disclosure': {
+        const tier = (args as { tier: string }).tier;
+        return {
+          provider: 'Anthropic',
+          model: tier === 'T2' ? 'claude-haiku-4-5-20251001' : 'claude-opus-4-8',
+          endpoint: 'https://api.anthropic.com/v1/messages',
+          input_usd_per_mtok: tier === 'T2' ? 1 : 5,
+          output_usd_per_mtok: tier === 'T2' ? 5 : 25,
+          notes: ['payload is the exact redacted span set shown by the egress firewall'],
+        };
+      }
+      case 'set_tier_enabled': {
+        const input = args as { tier: string; enabled: boolean };
+        tiers = tiers.map((t) => (t.tier === input.tier ? { ...t, enabled: input.enabled } : t));
+        return tiers;
+      }
+      case 'set_tier_provider': {
+        const input = args as { tier: string; provider: string };
+        // Leaving cloud revokes consent (SettingsStore invariant).
+        tiers = tiers.map((t) =>
+          t.tier === input.tier
+            ? {
+                ...t,
+                provider: input.provider,
+                consented: input.provider === 'cloud' ? t.consented : false,
+                consent_disclosure:
+                  input.provider === 'cloud' ? t.consent_disclosure : null,
+                consented_at: input.provider === 'cloud' ? t.consented_at : null,
+              }
+            : t,
+        );
+        return tiers;
+      }
+      case 'grant_cloud_consent': {
+        const input = args as { tier: string; disclosure: string };
+        tiers = tiers.map((t) =>
+          t.tier === input.tier
+            ? {
+                ...t,
+                consented: true,
+                consent_disclosure: input.disclosure,
+                consented_at: '2026-07-14T20:00:00Z',
+              }
+            : t,
+        );
+        return tiers;
+      }
+      case 'revoke_cloud_consent': {
+        const tier = (args as { tier: string }).tier;
+        tiers = tiers.map((t) =>
+          t.tier === tier
+            ? { ...t, consented: false, consent_disclosure: null, consented_at: null }
+            : t,
+        );
+        return tiers;
       }
       case 'preflight':
         return {
@@ -327,6 +415,10 @@ const meta = {
       preflightError: null,
       clearBusy: false,
       clearError: null,
+      tierSettings: [],
+      egress: null,
+      disclosures: {},
+      settingsError: null,
       selected: null,
     });
     return () => clearMocks();
@@ -422,6 +514,47 @@ export const ManifestDirectoryUsesAddSystem: Story = {
       expect(canvas.getByTestId('system-repos')).toHaveTextContent(
         'acme/shop@a1b2c3d4e5f6, local/infra@workdir',
       ),
+    );
+  },
+};
+
+export const SettingsConsentRoundTrip: Story = {
+  // #112 / US-0009: opt T2 into cloud, grant consent, watch the status bar
+  // flip — then revoke and watch it fail closed again.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+    const statusBar = () => within(canvasElement.querySelector('.status-bar') as HTMLElement);
+    await expect(statusBar().getByText('Local-only · 0 bytes egress')).toBeInTheDocument();
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Settings' }));
+    await waitFor(() =>
+      expect(canvas.getByRole('switch', { name: 'Semantic enabled' })).toBeInTheDocument(),
+    );
+
+    // Cloud selection reveals the full disclosure before consent exists.
+    const t2Group = within(canvas.getByRole('radiogroup', { name: 'T2 provider' }));
+    await userEvent.click(t2Group.getByRole('radio', { name: 'Cloud (opt-in)' }));
+    await waitFor(() =>
+      expect(canvas.getByText('Cloud egress consent — T2')).toBeInTheDocument(),
+    );
+    await expect(canvas.getByText('claude-haiku-4-5-20251001')).toBeInTheDocument();
+    // Still consentless: the status bar has not moved.
+    await expect(statusBar().getByText('Local-only · 0 bytes egress')).toBeInTheDocument();
+
+    // Grant: the summary derives from settings state everywhere.
+    await userEvent.click(canvas.getByRole('button', { name: 'Grant revocable consent' }));
+    await waitFor(() =>
+      expect(
+        statusBar().getByText('Cloud enabled (T2) · 0 bytes egress'),
+      ).toBeInTheDocument(),
+    );
+    await expect(canvas.getByText(/Standing cloud consent granted/)).toBeInTheDocument();
+
+    // Revoke: immediate, and the shell reads local-only again.
+    await userEvent.click(canvas.getByRole('button', { name: 'Revoke consent' }));
+    await waitFor(() =>
+      expect(statusBar().getByText('Local-only · 0 bytes egress')).toBeInTheDocument(),
     );
   },
 };
