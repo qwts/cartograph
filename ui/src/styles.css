@@ -2730,3 +2730,150 @@ button:disabled {
 .artifact-badge.missing {
   border-style: dashed;
 }
+
+/* ── Gaps & Drift register (#109) ── */
+
+.register-surface {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  max-width: 880px;
+}
+
+.lane-gap {
+  color: var(--tier-gap);
+  font-weight: 600;
+}
+
+.lane-unsupported {
+  color: var(--finding-unsupported);
+  font-weight: 600;
+}
+
+.register-tabs {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.register-tab {
+  padding: 0.4rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.register-tab.active {
+  background: var(--control);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.register-lanes {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.register-lane {
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.register-lane h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem;
+  font-size: 0.92rem;
+}
+
+.register-lane p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+/* The three lanes carry distinct identities — never conflated. */
+.register-lane.gap-lane {
+  border-color: color-mix(in srgb, var(--tier-gap) 35%, var(--border));
+}
+.register-lane.gap-lane h3 {
+  color: var(--tier-gap);
+}
+.register-lane.unsupported-lane {
+  border-color: color-mix(in srgb, var(--finding-unsupported) 35%, var(--border));
+}
+.register-lane.unsupported-lane h3 {
+  color: var(--finding-unsupported);
+}
+.register-lane.no-evidence-lane h3 {
+  color: var(--finding-no-evidence);
+}
+.register-lane.drift-lane h3 {
+  color: var(--tier-inferred-weak);
+}
+
+.register-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.register-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 0.95rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  font-weight: 400;
+  font-size: 0.87rem;
+}
+
+button.register-row:hover {
+  border-color: var(--accent);
+  filter: none;
+}
+
+.register-row.static {
+  cursor: default;
+}
+
+.register-id {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--control);
+  color: var(--text-muted);
+}
+
+.register-text {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.register-tail {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--accent);
+}
+
+.register-row.static .register-tail {
+  color: var(--text-muted);
+}
+
+.gap-row .register-id {
+  border-color: color-mix(in srgb, var(--tier-gap) 40%, var(--border));
+  color: var(--tier-gap);
+}

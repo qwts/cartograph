@@ -17,6 +17,7 @@ import { PreflightSurface } from './components/PreflightSurface';
 import { RecoverSurface } from './components/RecoverSurface';
 import { SettingsSurface } from './components/SettingsSurface';
 import { WorkspaceSurface } from './components/WorkspaceSurface';
+import { GapsDriftSurface } from './components/GapsDriftSurface';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
 import { TopologyCard } from './components/TopologyCard';
@@ -85,6 +86,7 @@ export default function App() {
     clearBusy,
     clearError,
     findings,
+    registerFindings,
     tierSettings,
     egress,
     disclosures,
@@ -245,14 +247,25 @@ export default function App() {
             />
           </Suspense>
         );
-      case 'gaps':
+      case 'gaps': {
+        const registerArtifact = (file: string) =>
+          specBundle?.artifacts.find((artifact) => artifact.file_name === file)?.assertions ??
+          [];
         return (
-          <EmptySurface
-            icon="report"
-            title="Gaps & Drift"
-            description="The open-findings register — system gaps, unsupported patterns, no-evidence findings, and ADR drift — lands with the register surface (#109) once the core's finding model (#116) is in place."
+          <GapsDriftSurface
+            summary={findings}
+            gaps={registerArtifact('gap_register.md')}
+            drift={registerArtifact('drift_register.md')}
+            registerFindings={registerFindings}
+            onOpenGap={(assertion) => {
+              // Until the Resolution Strategy modal lands (#113), a gap row
+              // opens its evidence trail when the subject is in the atlas.
+              const node = atlas.nodes.find((candidate) => candidate.id === assertion.subject_id);
+              if (node) void select(node);
+            }}
           />
         );
+      }
       case 'prov':
         return (
           <EmptySurface

@@ -202,6 +202,20 @@ export interface EvidenceSource {
 /** Source view state: loading → window, or unavailable (file moved, no root). */
 export type SourceState = EvidenceSource | 'loading' | 'unavailable';
 
+/** One persisted register finding (`list_findings`, #116): an unsupported
+ *  pattern or a no-evidence question — tool limitations, never Gaps. */
+export interface RegisterFinding {
+  id: number;
+  /** `unsupported` | `no-evidence` (Gap cannot enter by schema). */
+  kind: string;
+  detector: string;
+  repo: string;
+  path: string;
+  line: number;
+  message: string;
+  created_at: string;
+}
+
 /** Register headline counts (`findings_summary`, #116): one definition —
  *  the spec register's own predicates — reused by every surface. */
 export interface FindingsSummary {
@@ -326,6 +340,8 @@ export interface AppStore {
   clearError: string | null;
   /** Register headline counts; null with no backend. */
   findings: FindingsSummary | null;
+  /** Persisted unsupported/no-evidence rows for the register surface. */
+  registerFindings: RegisterFinding[];
   /** Persisted tier configuration (T1/T2/T3; T0 is always-on, not stored). */
   tierSettings: TierSettings[];
   /** Live status-bar egress line; null with no backend (shown as local-only). */
@@ -422,6 +438,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   clearBusy: false,
   clearError: null,
   findings: null,
+  registerFindings: [],
   tierSettings: [],
   egress: null,
   disclosures: {},
@@ -444,12 +461,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         specBundle: null,
         curation: [],
         findings: null,
+        registerFindings: [],
         tierSettings: [],
         egress: null,
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation, findings, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation, findings, registerFindings, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -460,6 +478,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
       invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
       invokeOr<FindingsSummary | null>('findings_summary', null),
+      invokeOr<RegisterFinding[]>('list_findings', []),
       invokeOr<TierSettings[]>('get_settings', []),
       invokeOr<EgressSummary | null>('egress_summary', null),
       // Disclosures are static per tier — prefetched so the consent panel
@@ -480,6 +499,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       specBundle,
       curation,
       findings,
+      registerFindings,
       tierSettings,
       egress,
       disclosures: { T2: disclosureT2 ?? undefined, T3: disclosureT3 ?? undefined },

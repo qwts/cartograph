@@ -163,9 +163,10 @@
 - **AC-0036** Given existing Markdown ADR/RFC files, when parsed or re-ingested, then explicit `Governs:` or exact backtick target ids link to existing full-system graph targets as Confirmed facts, including targets from another repo, while removed declarations and deleted ADR files remove their prior links and found nodes.
 - **AC-0037** Given evidence-backed channel architecture, when recovered ADRs are drafted, then they are marked recovered/inferred, cite the producing graph evidence, remain curatable, and cannot survive rejection of their supporting facts.
 - **AC-0038** Given a found ADR with an explicit `Forbids:` edge constraint, when governed code conflicts, then a confidence-preserving finding appears in the Drift register mapped to the offending edge and any containing flow, unless that supporting edge was rejected.
+- **AC-0059** Given the Gaps & Drift register surface, when it renders, then System Gaps, unsupported patterns, and no-evidence findings appear in three distinct lanes that never conflate (an unsupported item is a tool limitation, never a Gap), the header tally quotes the same register summary Workspace quotes, gaps group by their next escalation tier, and drift findings list under their own tab — all wired from the spec compiler's registers, never re-derived in the UI.
 - **Security:** —
 - **Performance:** —
-- **Trace:** M9 · `spec`, `app` · — · T-0036..0038
+- **Trace:** M9 · `spec`, `app` · — · T-0036..0038,T-0059
 
 ### US-0014 — Determinism and re-ingest idempotency
 - **Actor:** Engine

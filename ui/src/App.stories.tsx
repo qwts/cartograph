@@ -233,6 +233,8 @@ function installFakeCore() {
           open_findings: graphStats.nodes > 0 ? 1 : 0,
           graph_facts: graphStats.nodes + graphStats.edges,
         };
+      case 'list_findings':
+        return [];
       case 'get_settings':
         return tiers;
       case 'egress_summary':
@@ -427,6 +429,7 @@ const meta = {
       clearBusy: false,
       clearError: null,
       findings: null,
+      registerFindings: [],
       tierSettings: [],
       egress: null,
       disclosures: {},
