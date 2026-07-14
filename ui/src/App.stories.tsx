@@ -265,6 +265,7 @@ const meta = {
     // story files see a clean window.
     installFakeCore();
     useAppStore.setState({
+      view: 'workspace',
       backend: 'unknown',
       version: null,
       stats: null,
@@ -296,16 +297,70 @@ type Story = StoryObj<typeof meta>;
 export const ConnectedToCore: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // Boot: ping resolves and the badge reports the core version.
+    // Boot: ping resolves and the status bar reports the core version.
     await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
     await expect(canvas.getByText('42')).toBeInTheDocument();
     await expect(canvas.getByText('99')).toBeInTheDocument();
+
+    // Spec Workbench lives on its own surface now.
+    await userEvent.click(canvas.getByRole('button', { name: 'Spec Workbench' }));
     await waitFor(() => expect(canvas.getByText('9 artifacts')).toBeInTheDocument());
 
-    // Enqueue round-trip: command hits the fake core, list refreshes.
+    // Enqueue round-trip on the Jobs surface: command hits the fake core,
+    // the list refreshes.
+    await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
     await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
     await waitFor(() => expect(canvas.getByText('#1 noop')).toBeInTheDocument());
     await expect(canvas.getByText('queued')).toBeInTheDocument();
+  },
+};
+
+export const ShellNavigation: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+    const breadcrumb = () => within(canvas.getByRole('navigation', { name: 'Breadcrumb' }));
+
+    // ⌘K opens the palette; Esc closes it without navigating.
+    await userEvent.keyboard('{Meta>}k{/Meta}');
+    await expect(canvas.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(canvas.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument(),
+    );
+    await expect(breadcrumb().getByText('Workspace')).toBeInTheDocument();
+
+    // Palette navigation: ⌘K → pick a surface.
+    await userEvent.keyboard('{Meta>}k{/Meta}');
+    await userEvent.click(canvas.getByRole('option', { name: /Gaps & Drift/ }));
+    await expect(breadcrumb().getByText('Gaps & Drift')).toBeInTheDocument();
+
+    // ⌘-digit shortcuts jump directly.
+    await userEvent.keyboard('{Meta>}3{/Meta}');
+    await expect(breadcrumb().getByText('Flows')).toBeInTheDocument();
+
+    // Every rail surface renders — no dead or crashing route (handoff #2).
+    for (const label of [
+      'Workspace',
+      'Atlas',
+      'Flows',
+      'Spec Workbench',
+      'Gaps & Drift',
+      'Provenance & Eval',
+      'Jobs',
+      'Settings',
+    ]) {
+      await userEvent.click(canvas.getByRole('button', { name: label }));
+      await expect(breadcrumb().getByText(label)).toBeInTheDocument();
+      await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+    }
+
+    // The Legend popover is reachable from the header.
+    await userEvent.click(canvas.getByRole('button', { name: /legend/i }));
+    await expect(
+      canvas.getByRole('dialog', { name: 'Tier, shape, and edge legend' }),
+    ).toBeInTheDocument();
+    await userEvent.click(canvas.getByRole('button', { name: 'Close legend' }));
   },
 };
 
@@ -333,6 +388,8 @@ export const EvidenceJumpToSource: Story = {
 export const AtlasNodeToEvidence: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: 'Atlas' }));
     await waitFor(() =>
       expect(within(canvas.getByLabelText('Confidence legend')).getByRole('status')).toHaveTextContent(
         '1 nodes · 0 edges',
@@ -352,6 +409,8 @@ export const AtlasNodeToEvidence: Story = {
 export const WorkbenchCurationRoundTrip: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: 'Spec Workbench' }));
     await waitFor(() => expect(canvas.getByText('9 artifacts')).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: /Architecture decisions/ }));
     await expect(canvas.getByText(FAKE_INFERRED.summary)).toBeInTheDocument();
@@ -367,13 +426,20 @@ export const ClearGraphPreservesJobs: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByTestId('graph-node-count')).toHaveTextContent('42'));
+
+    // Enqueue on the Jobs surface, then clear the graph from Workspace: the
+    // durable job spine must survive a graph clear.
+    await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
     await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
     await waitFor(() => expect(canvas.getByText('#1 noop')).toBeInTheDocument());
 
+    await userEvent.click(canvas.getByRole('button', { name: 'Workspace' }));
     await userEvent.click(canvas.getByRole('button', { name: 'Clear graph' }));
     await userEvent.click(canvas.getByRole('button', { name: 'Confirm clear' }));
     await waitFor(() => expect(canvas.getByTestId('graph-node-count')).toHaveTextContent('0'));
     await expect(canvas.getByTestId('graph-edge-count')).toHaveTextContent('0');
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
     await expect(canvas.getByText('#1 noop')).toBeInTheDocument();
   },
 };
