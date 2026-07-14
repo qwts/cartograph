@@ -3083,3 +3083,7 @@ button.register-row:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.seg-unattributed {
+  background: var(--finding-no-evidence);
+}
