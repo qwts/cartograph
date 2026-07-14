@@ -46,3 +46,25 @@ test('macOS packaging is exact-ref, universal, fail-closed, and verified', () =>
   assert.match(workflow, /cargo clippy --workspace --all-targets -- -D warnings/u);
   assert.match(workflow, /npm --prefix ui run build/u);
 });
+
+test('release publication is reviewed-tag-only, exact-artifact, and idempotent', () => {
+  const workflow = readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8');
+
+  assert.match(workflow, /^\s{2}push:\n\s{4}tags:/mu);
+  assert.match(workflow, /^\s{2}workflow_dispatch:/mu);
+  assert.match(workflow, /group: release-\$\{\{ inputs\.tag \|\| github\.ref_name \}\}/u);
+  assert.match(workflow, /cancel-in-progress: false/u);
+  assert.match(workflow, /git cat-file -t "refs\/tags\/\$TAG"/u);
+  assert.match(workflow, /expected=\$\(node scripts\/release-version\.mjs tag\)/u);
+  assert.match(workflow, /commits\/\$tag_commit\/pulls/u);
+  assert.match(workflow, /\.head\.ref == "changeset-release\/main"/u);
+  assert.match(workflow, /uses: \.\/\.github\/workflows\/package\.yml/u);
+  assert.match(workflow, /ref: \$\{\{ needs\.validate\.outputs\.tag \}\}/u);
+  assert.match(workflow, /name: \$\{\{ needs\.build\.outputs\.artifact_name \}\}/u);
+  assert.match(workflow, /SIGNING_MODE: \$\{\{ needs\.build\.outputs\.signing_mode \}\}/u);
+  assert.match(workflow, /release-metadata\.mjs notes "\$VERSION" CHANGELOG\.md/u);
+  assert.match(workflow, /gh release edit "\$TAG"/u);
+  assert.match(workflow, /gh release delete-asset/u);
+  assert.match(workflow, /gh release upload "\$TAG" dist\/\* --clobber/u);
+  assert.match(workflow, /permissions:\n\s{6}contents: write/u);
+});

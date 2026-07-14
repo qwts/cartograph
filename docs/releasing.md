@@ -3,6 +3,48 @@
 Semantic version application and tags are automation-owned; see ADR-0015 and
 the release rules in `AGENTS.md`. macOS bundle trust is governed by ADR-0016.
 
+## Cut and publish a release
+
+1. Merge behavior changes with their required Changesets. The **Version cut**
+   workflow keeps the `changeset-release/main` **Version packages** PR current.
+2. Review that PR, require CI to pass, and merge it. This merge is the release
+   decision: automation creates the immutable annotated `vX.Y.Z` tag and hands
+   it to the **Release** workflow.
+3. The Release workflow validates that exact tag and reviewed PR, runs the
+   reusable macOS package workflow, and publishes only its named artifact. The
+   release notes come from the exact version section generated in
+   `CHANGELOG.md`.
+
+With the complete five-secret set below, the result is a normal GitHub Release
+containing signed, notarized, stapled, Gatekeeper-verified universal app and DMG
+assets. With no signing secrets, it is an explicitly titled and warned
+`unsigned-dev` prerelease. A partial secret set fails before packaging.
+
+Publication is idempotent. Dispatching **Release** again with the same existing
+tag updates the release's title, notes, flags, and assets in place. It replaces
+same-named assets and removes stale assets from the opposite signing mode; it
+does not create another release or move the tag.
+
+## Recovery and verification
+
+If the reviewed version merge created its tag but the release handoff failed,
+run **Version cut** manually. It requires the existing tag and redispatches the
+missing release. You may instead dispatch **Release** with that exact tag. Do
+not create, delete, or move a tag by hand.
+
+After publication, verify the workflow and release:
+
+```sh
+gh run list --workflow release.yml --limit 5
+gh release view vX.Y.Z --json tagName,isDraft,isPrerelease,name,assets
+gh release download vX.Y.Z --pattern 'Cartograph_*_universal_*' --dir dist
+```
+
+For a production release, require `isDraft: false`, `isPrerelease: false`, and
+exactly the versioned `signed` app zip and DMG. Then perform the manual
+Gatekeeper installation smoke test below and record the evidence on the release
+task.
+
 ## macOS packaging
 
 Run the **Package macOS** workflow manually for a branch, tag, or commit SHA.

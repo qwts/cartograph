@@ -1,0 +1,192 @@
+# Tag-driven, idempotent GitHub Release publication for issue #93. The exact
+# tag is validated before the reusable macOS packaging workflow is allowed to
+# produce the only assets this workflow publishes.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated vX.Y.Z tag to recover or republish
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate reviewed release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Validate tag, version, and reviewed cut
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          npm run version:check
+          expected=$(node scripts/release-version.mjs tag)
+          if [ "$TAG" != "$expected" ]; then
+            echo "::error::Requested tag $TAG does not match synchronized version tag $expected."
+            exit 1
+          fi
+          if [ "$(git cat-file -t "refs/tags/$TAG")" != 'tag' ]; then
+            echo "::error::$TAG must be an annotated tag."
+            exit 1
+          fi
+
+          tag_commit=$(git rev-list -n 1 "$TAG")
+          if [ "$(git rev-parse HEAD)" != "$tag_commit" ]; then
+            echo "::error::Checkout is not the commit referenced by $TAG."
+            exit 1
+          fi
+          pending=$(node scripts/release-version.mjs pending)
+          if [ -n "$pending" ]; then
+            echo "::error::$TAG still contains pending Changesets: $pending"
+            exit 1
+          fi
+
+          version_pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag_commit/pulls" \
+            --jq '[.[] | select(.merged_at != null and .base.ref == "main" and .head.ref == "changeset-release/main")] | first | .number // empty')
+          if [ -z "$version_pr" ]; then
+            echo "::error::$TAG is not a merged changeset-release/main Version packages PR."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Validated $TAG at reviewed Version packages PR #$version_pr."
+
+  build:
+    name: Build exact release tag
+    needs: validate
+    uses: ./.github/workflows/package.yml
+    with:
+      ref: ${{ needs.validate.outputs.tag }}
+    secrets: inherit
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGNING_MODE: ${{ needs.build.outputs.signing_mode }}
+      TAG: ${{ needs.validate.outputs.tag }}
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Checkout exact tag for changelog
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - name: Download this run's exact package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: dist
+
+      - name: Validate release assets and metadata
+        id: publication
+        run: |
+          set -euo pipefail
+          node scripts/release-metadata.mjs metadata "$TAG" "$SIGNING_MODE" >> "$GITHUB_OUTPUT"
+
+          expected_app="Cartograph_${VERSION}_universal_${SIGNING_MODE}.app.zip"
+          expected_dmg="Cartograph_${VERSION}_universal_${SIGNING_MODE}.dmg"
+          mapfile -t assets < <(find dist -maxdepth 1 -type f -printf '%f\n' | sort)
+          if [ "${#assets[@]}" -ne 2 ] \
+            || [ "${assets[0]}" != "$expected_app" ] \
+            || [ "${assets[1]}" != "$expected_dmg" ]; then
+            printf '::error::Expected only %s and %s; found: %s\n' \
+              "$expected_app" "$expected_dmg" "${assets[*]}"
+            exit 1
+          fi
+
+          if [ "$SIGNING_MODE" = 'unsigned-dev' ]; then
+            {
+              printf '> [!WARNING]\n'
+              printf '> Unsigned development build: not a production release and not trusted by Gatekeeper.\n\n'
+              node scripts/release-metadata.mjs notes "$VERSION" CHANGELOG.md
+            } > release-notes.md
+          else
+            node scripts/release-metadata.mjs notes "$VERSION" CHANGELOG.md > release-notes.md
+          fi
+
+      - name: Create or update release without duplicate assets
+        env:
+          PRERELEASE: ${{ steps.publication.outputs.prerelease }}
+          RELEASE_TITLE: ${{ steps.publication.outputs.title }}
+        run: |
+          set -euo pipefail
+
+          if [ "$SIGNING_MODE" = 'signed' ]; then
+            stale_mode='unsigned-dev'
+            latest='true'
+          else
+            stale_mode='signed'
+            latest='false'
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --verify-tag \
+              --draft=false \
+              --prerelease="$PRERELEASE" \
+              --latest="$latest" \
+              --title "$RELEASE_TITLE" \
+              --notes-file release-notes.md
+
+            for extension in app.zip dmg; do
+              stale_asset="Cartograph_${VERSION}_universal_${stale_mode}.${extension}"
+              if gh release view "$TAG" --json assets \
+                --jq ".assets[].name | select(. == \"$stale_asset\")" | grep -q .; then
+                gh release delete-asset "$TAG" "$stale_asset" --yes
+              fi
+            done
+            gh release upload "$TAG" dist/* --clobber
+          elif [ "$SIGNING_MODE" = 'signed' ]; then
+            gh release create "$TAG" dist/* \
+              --verify-tag \
+              --latest \
+              --title "$RELEASE_TITLE" \
+              --notes-file release-notes.md
+          else
+            gh release create "$TAG" dist/* \
+              --verify-tag \
+              --prerelease \
+              --latest=false \
+              --title "$RELEASE_TITLE" \
+              --notes-file release-notes.md
+          fi
