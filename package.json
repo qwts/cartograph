@@ -6,6 +6,7 @@
   "scripts": {
     "changeset": "changeset",
     "changeset:version": "changeset version && npm run version:sync",
+    "package:macos": "tauri build --bundles app,dmg --target universal-apple-darwin",
     "tauri": "tauri",
     "check:traceability": "node scripts/check-traceability.mjs",
     "test:version": "node --test scripts/*.test.mjs",
