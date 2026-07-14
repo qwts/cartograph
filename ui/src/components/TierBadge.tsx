@@ -1,6 +1,6 @@
 import type { Tier } from '../store';
 
-const LABEL: Record<Tier, string> = {
+export const TIER_LABELS: Record<Tier, string> = {
   Confirmed: 'Confirmed',
   InferredStrong: 'Inferred (strong)',
   InferredWeak: 'Inferred (weak)',
@@ -13,5 +13,5 @@ const LABEL: Record<Tier, string> = {
  * docs/design/production-ui/README.md (confidence-tier palette).
  */
 export function TierBadge({ tier }: { tier: Tier }) {
-  return <span className={`tier-badge tier-${tier.toLowerCase()}`}>{LABEL[tier]}</span>;
+  return <span className={`tier-badge tier-${tier.toLowerCase()}`}>{TIER_LABELS[tier]}</span>;
 }

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { invokeOr } from './tauri';
+import type { SurfaceView } from './views';
 
 export interface GraphStats {
   nodes: number;
@@ -161,6 +162,8 @@ export interface EvidenceSource {
 export type SourceState = EvidenceSource | 'loading' | 'unavailable';
 
 export interface AppStore {
+  /** Active shell surface (handoff: the router is a single `view` value). */
+  view: SurfaceView;
   /** Backend liveness: unknown until the first ping resolves. */
   backend: 'unknown' | 'up' | 'browser';
   version: string | null;
@@ -200,6 +203,8 @@ export interface AppStore {
   ) => Promise<void>;
   select: (node: GraphNode) => Promise<void>;
   clearSelection: () => void;
+  /** Navigate the shell; clears the evidence selection (handoff §Interactions). */
+  setView: (view: SurfaceView) => void;
 }
 
 async function loadEndpoints(): Promise<GraphNode[]> {
@@ -216,6 +221,7 @@ async function repoRoot(repo: string): Promise<string | null> {
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
+  view: 'workspace',
   backend: 'unknown',
   version: null,
   stats: null,
@@ -391,4 +397,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   clearSelection: () => set({ selected: null }),
+
+  setView: (view) => set({ view, selected: null }),
 }));
