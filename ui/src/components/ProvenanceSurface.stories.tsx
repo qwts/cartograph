@@ -111,7 +111,7 @@ export const FullPicture: Story = {
     // nothing depends on color alone.
     await expect(
       canvas.getByRole('img', {
-        name: /134 graph facts: 98 Confirmed, 22 Inferred Strong, 11 Inferred Weak, 3 Gap; plus 2 unsupported patterns/,
+        name: /134 graph facts: 98 Confirmed, 22 Inferred Strong, 11 Inferred Weak, 3 Gap, 0 unattributed; plus 2 unsupported patterns/,
       }),
     ).toBeInTheDocument();
     // The legend keeps register findings distinct from graph facts.
@@ -159,6 +159,47 @@ export const HashDivergenceIsNotClaimedVerified: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId('determinism-note')).toHaveTextContent(
       'Re-ingesting the same commit yields an identical graph — equal content hashes in this history are the proof.',
+    );
+  },
+};
+
+export const UnattributedFactsAreAccounted: Story = {
+  // Review fix on #139: a fact with no valid provenance is still one of
+  // the N facts the chart claims to describe — never silently omitted.
+  args: {
+    distribution: {
+      confirmed: 98,
+      inferredStrong: 22,
+      inferredWeak: 11,
+      gap: 3,
+      unattributed: 4,
+      total: 138,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole('img', { name: /138 graph facts: .*, 4 unattributed;/ }),
+    ).toBeInTheDocument();
+    const legendEntry = canvas.getByText('Unattributed').closest('li') as HTMLElement;
+    await expect(within(legendEntry).getByText('4')).toBeInTheDocument();
+  },
+};
+
+export const DivergentRepeatIsFlagged: Story = {
+  // Review fix on #139: same commit twice with different hashes must not
+  // read as verified — it is a determinism violation, stated loudly.
+  args: {
+    history: [
+      record(3, { content_hash: 'f'.repeat(64) }),
+      record(2),
+      record(1),
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId('determinism-note')).toHaveTextContent(
+      /Determinism violated in this history/,
     );
   },
 };

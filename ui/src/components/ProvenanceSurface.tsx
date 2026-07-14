@@ -24,7 +24,30 @@ const TIER_SEGMENTS = [
   { key: 'inferredStrong', label: 'Inferred Strong', className: 'seg-inferred-strong' },
   { key: 'inferredWeak', label: 'Inferred Weak', className: 'seg-inferred-weak' },
   { key: 'gap', label: 'Gap', className: 'seg-gap' },
+  // Facts with no valid provenance are still facts — the chart must
+  // account for every one of the N it claims to describe.
+  { key: 'unattributed', label: 'Unattributed', className: 'seg-unattributed' },
 ] as const;
+
+/** Determinism from displayed history: verified only when repeated
+ *  repo/commit ingests exist AND every repeated group's hashes agree;
+ *  a repeated group with divergent hashes is a violation, not noise. */
+function determinismState(history: IngestRecord[]): 'verified' | 'violated' | 'unproven' {
+  const byCommit = new Map<string, Set<string>>();
+  for (const record of history) {
+    const key = `${record.repo}@${record.commit_sha}`;
+    const hashes = byCommit.get(key) ?? new Set<string>();
+    hashes.add(record.content_hash);
+    byCommit.set(key, hashes);
+  }
+  const repeats = [...byCommit.entries()].filter(
+    ([key]) =>
+      history.filter((record) => `${record.repo}@${record.commit_sha}` === key).length >= 2,
+  );
+  if (repeats.some(([, hashes]) => hashes.size > 1)) return 'violated';
+  if (repeats.length > 0) return 'verified';
+  return 'unproven';
+}
 
 function pct(part: number, total: number): number {
   return total === 0 ? 0 : (part / total) * 100;
@@ -45,18 +68,7 @@ export function ProvenanceSurface({
   const unsupported = findings?.unsupported ?? 0;
   // Oldest → newest so the history chart reads left to right in time.
   const timeline = [...history].slice(0, 8).reverse();
-  const deterministic =
-    timeline.length >= 2 &&
-    timeline.some((record, index) =>
-      timeline
-        .slice(index + 1)
-        .some(
-          (later) =>
-            later.commit_sha === record.commit_sha &&
-            later.repo === record.repo &&
-            later.content_hash === record.content_hash,
-        ),
-    );
+  const determinism = determinismState(timeline);
 
   return (
     <section className="prov-surface" aria-label="Provenance and evaluation">
@@ -74,7 +86,7 @@ export function ProvenanceSurface({
       <div
         className="tier-bar"
         role="img"
-        aria-label={`Tier distribution of ${facts} graph facts: ${distribution.confirmed} Confirmed, ${distribution.inferredStrong} Inferred Strong, ${distribution.inferredWeak} Inferred Weak, ${distribution.gap} Gap; plus ${unsupported} unsupported patterns in the register`}
+        aria-label={`Tier distribution of ${facts} graph facts: ${distribution.confirmed} Confirmed, ${distribution.inferredStrong} Inferred Strong, ${distribution.inferredWeak} Inferred Weak, ${distribution.gap} Gap, ${distribution.unattributed} unattributed; plus ${unsupported} unsupported patterns in the register`}
       >
         {TIER_SEGMENTS.map((segment) => (
           <div
@@ -219,11 +231,19 @@ export function ProvenanceSurface({
               );
             })}
           </div>
-          <p className="muted prov-note" data-testid="determinism-note">
-            {deterministic
-              ? 'Determinism verified in this history: repeated ingests of the same commit carry identical content hashes.'
-              : 'Re-ingesting the same commit yields an identical graph — equal content hashes in this history are the proof.'}
-          </p>
+          {determinism === 'violated' ? (
+            <p className="error-text prov-note" data-testid="determinism-note">
+              Determinism violated in this history: a repeated ingest of the same commit produced
+              a different content hash. Re-ingest should be byte-identical — investigate before
+              trusting exports.
+            </p>
+          ) : (
+            <p className="muted prov-note" data-testid="determinism-note">
+              {determinism === 'verified'
+                ? 'Determinism verified in this history: repeated ingests of the same commit carry identical content hashes.'
+                : 'Re-ingesting the same commit yields an identical graph — equal content hashes in this history are the proof.'}
+            </p>
+          )}
         </>
       )}
     </section>
