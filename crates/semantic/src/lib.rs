@@ -6,6 +6,8 @@
 //! overlay only after a paired eval clears its precision floor. Confirmed T0/T1
 //! facts are never mutation targets (R-INT-1).
 
+pub mod context;
+
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier, may_overwrite};
 use llm::{Embedding, LlmProvider, ProviderError};
