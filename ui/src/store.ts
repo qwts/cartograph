@@ -7,10 +7,21 @@ export interface GraphStats {
   edges: number;
 }
 
+/** A durable job row from the state spine. The v2 fields (#117) are
+ *  optional so the UI degrades gracefully against a pre-v2 core. */
 export interface Job {
   id: number;
   kind: string;
+  /** queued | running | done | failed | cancelled | interrupted. */
   status: string;
+  /** Current pipeline stage while running. */
+  stage?: string | null;
+  /** Percent complete (0–100). */
+  progress?: number | null;
+  /** Failure detail once failed. */
+  error?: string | null;
+  /** Artifact identifiers produced by a completed job. */
+  artifacts?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -205,6 +216,13 @@ export interface AppStore {
   clearSelection: () => void;
   /** Navigate the shell; clears the evidence selection (handoff §Interactions). */
   setView: (view: SurfaceView) => void;
+  /** Cancel a queued/running job (#117); running work stops at its next
+   *  stage boundary. */
+  cancelJob: (id: number) => Promise<void>;
+  /** Retry a failed/cancelled job or resume an interrupted one (#117). */
+  retryJob: (id: number) => Promise<void>;
+  /** Apply one job transition pushed by the core (`job://changed`). */
+  applyJobEvent: (job: Job) => void;
 }
 
 async function loadEndpoints(): Promise<GraphNode[]> {
@@ -399,4 +417,25 @@ export const useAppStore = create<AppStore>((set, get) => ({
   clearSelection: () => set({ selected: null }),
 
   setView: (view) => set({ view, selected: null }),
+
+  cancelJob: async (id) => {
+    const job = await invokeOr<Job | null>('cancel_job', null, { id });
+    if (job) get().applyJobEvent(job);
+  },
+
+  retryJob: async (id) => {
+    const job = await invokeOr<Job | null>('retry_job', null, { id });
+    if (job) get().applyJobEvent(job);
+    // A retried ingest may have rebuilt graph artifacts — refresh everything.
+    await get().refresh();
+  },
+
+  applyJobEvent: (job) =>
+    set((state) => {
+      const known = state.jobs.some((existing) => existing.id === job.id);
+      const jobs = known
+        ? state.jobs.map((existing) => (existing.id === job.id ? job : existing))
+        : [job, ...state.jobs];
+      return { jobs };
+    }),
 }));
