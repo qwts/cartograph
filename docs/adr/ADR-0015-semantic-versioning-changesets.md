@@ -40,6 +40,17 @@ change without allowing a bot to infer release intent from commit messages.
   explicitly dispatch the release workflow, because events created with
   `GITHUB_TOKEN` do not recursively start those workflows. A manual version-cut
   dispatch recovers a correct tag whose release handoff failed.
+- Release publication checks out the exact annotated tag, proves its commit came
+  from the merged `changeset-release/main` Version packages PR, verifies the tag
+  equals the synchronized application version, and requires that no Changesets
+  remain. It then reuses the macOS packaging workflow and downloads only that
+  invocation's named artifact.
+- The generated `CHANGELOG.md` section for the exact version is the release note.
+  Signed, notarized, and Gatekeeper-verified output is a normal GitHub Release;
+  credential-free `unsigned-dev` output is a prominently warned prerelease.
+- Publication is serialized per tag and idempotent. Re-running the release
+  workflow updates title, notes, trust flags, and current assets in place,
+  removes stale assets from the opposite signing mode, and never moves the tag.
 
 ## Consequences
 
@@ -51,6 +62,8 @@ change without allowing a bot to infer release intent from commit messages.
   script and its tests in the same PR.
 - A version can be intentionally cut without any npm publication or manual tag
   operation.
+- A stranded valid tag can be safely republished, while an arbitrary tag or
+  unreviewed version commit cannot become an official Cartograph release.
 
 ## Alternatives (≤3)
 
