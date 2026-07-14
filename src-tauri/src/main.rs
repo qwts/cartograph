@@ -827,11 +827,17 @@ fn run_ingest(
         stitch_backings(&mut graph).map_err(&fail)?;
     }
 
+    // A cancel can land at any point after the last check; `finish` is
+    // guarded to only transition a running job, so whichever outcome hit
+    // the store first wins — read the row back to learn which.
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     let job = jobs
         .finish(job_id, &[format!("graph:{repo}@workdir")])
         .map_err(|e| e.to_string())?;
     emit_job(app, &job);
+    if job.status != "done" {
+        return Err("cancelled".to_string());
+    }
     Ok(IngestSummary {
         job_id,
         files: layers.files(),
