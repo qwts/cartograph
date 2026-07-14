@@ -103,6 +103,14 @@ spacing:
   stack-gap: 8px
 ---
 
+> **Superseded for tokens and visuals.** The production UI design handoff in
+> [`production-ui/README.md`](production-ui/README.md) is now the authoritative
+> source for colors, typography, spacing, radius, shadows, motion, and
+> interaction states; `ui/src/styles.css` implements its token set. The
+> frontmatter above is the original Stitch export, retained for history —
+> where values differ, the handoff wins. The tier palette (Confirmed /
+> InferredStrong / InferredWeak / Gap) is identical in both.
+
 ## Brand & Style
 
 The design system embodies **Technical Rigor and Absolute Transparency**. As a developer tool for high-stakes system mapping, it rejects decorative flourishes in favor of "Integrity-first" aesthetics. The brand personality is authoritative, precise, and honest—prioritizing the distinction between "Confirmed" facts and "Inferred" hypotheses.

@@ -110,5 +110,6 @@ Storybook itself: `npm run storybook` (from `ui/`).
 - `docs/user_stories.md` / `docs/US-TM.md` — US/AC + traceability matrix
 - `docs/adr/` — ADRs for *this app's own* decisions
 - `docs/VISION.md` — post-v1 direction (SDLC-in-core); not license to build it
-- `docs/design/` — design tokens (`DESIGN.md`) + Stitch mockups per view
+- `docs/design/production-ui/` — production UI design handoff (authoritative)
+- `docs/design/` — earlier design tokens (`DESIGN.md`) + Stitch mockups per view
 - GitHub wiki — narrative contributor/process docs (`CONTRIBUTING.md` is a stub)
