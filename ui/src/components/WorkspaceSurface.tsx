@@ -32,11 +32,12 @@ function percent(part: number, total: number): string {
   return total === 0 ? '0%' : `${Math.round((part / total) * 100)}%`;
 }
 
-/** Authority on the recovery axis: gaps make it partial; inferred facts make
- *  it inferred; a fully Confirmed graph is authoritative. Never conflated
- *  with the generation axis. */
+/** Authority on the recovery axis: any open finding (gap, unsupported, or
+ *  no-evidence) means the recovery did not cover everything — partial;
+ *  inferred facts without findings — inferred; only a fully Confirmed,
+ *  finding-free graph is authoritative. Never conflated with generation. */
 function recoveryAuthority(findings: FindingsSummary, distribution: TierDistribution): string {
-  if (findings.gaps > 0) return 'Recovery: partial';
+  if (findings.open_findings > 0) return 'Recovery: partial';
   if (distribution.inferredStrong + distribution.inferredWeak > 0) return 'Recovery: inferred';
   return 'Recovery: authoritative';
 }
@@ -61,7 +62,15 @@ export function WorkspaceSurface({
     summary?.repo ??
     (summary?.repos?.length ? `${summary.repos.length} repos as one system` : null) ??
     (recovered ? 'Ingested system' : 'No system yet');
-  const commit = summary?.commit_sha?.slice(0, 7) ?? (recovered ? 'workdir' : null);
+  // Manifest recoveries carry per-repo identities (`identity@sha12`) instead
+  // of one top-level SHA — show those, never a false mutable-workdir label.
+  const commit = summary?.repos?.length
+    ? summary.repos.join(' · ')
+    : summary?.commit_sha
+      ? `@ ${summary.commit_sha.slice(0, 7)}`
+      : recovered && summary
+        ? '@ workdir'
+        : null;
 
   const outcomeTitle = !recovered
     ? 'No recovery yet'
@@ -81,7 +90,7 @@ export function WorkspaceSurface({
       <header className="workspace-title-row">
         <div className="workspace-title">
           <h2>{systemName}</h2>
-          {commit && <code className="commit-chip">@ {commit}</code>}
+          {commit && <code className="commit-chip">{commit}</code>}
         </div>
         <button type="button" onClick={onReingest}>
           <span className="material-symbols-outlined" aria-hidden="true">

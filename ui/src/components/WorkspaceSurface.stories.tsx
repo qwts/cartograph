@@ -152,6 +152,62 @@ export const FullyConfirmedRecovery: Story = {
   },
 };
 
+export const UnsupportedOnlyIsNotAuthoritative: Story = {
+  // Review fix on #136: unsupported/no-evidence findings without gaps must
+  // still keep artifacts from claiming authoritative recovery.
+  args: {
+    findings: {
+      gaps: 0,
+      unsupported: 2,
+      no_evidence: 0,
+      drift: 0,
+      open_findings: 2,
+      graph_facts: 134,
+    },
+    distribution: {
+      confirmed: 134,
+      inferredStrong: 0,
+      inferredWeak: 0,
+      gap: 0,
+      unattributed: 0,
+      total: 134,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getAllByText('Recovery: partial')).toHaveLength(5);
+    await expect(canvas.queryByText('Recovery: authoritative')).not.toBeInTheDocument();
+  },
+};
+
+export const ManifestRecoveryShowsRepoIdentities: Story = {
+  // Review fix on #136: a manifest recovery lists exact per-repo identities,
+  // never a false mutable-workdir chip.
+  args: {
+    summary: {
+      job_id: 5,
+      files: 5,
+      nodes: 40,
+      edges: 60,
+      layers: {
+        ts: { files: 3, nodes: 25, edges: 38 },
+        python: { files: 0, nodes: 0, edges: 0 },
+        go: { files: 0, nodes: 0, edges: 0 },
+        tf: { files: 2, nodes: 15, edges: 22 },
+      },
+      repos: ['acme/shop@a1b2c3d4e5f6', 'local/infra@workdir'],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText('2 repos as one system')).toBeInTheDocument();
+    await expect(
+      canvas.getByText('acme/shop@a1b2c3d4e5f6 · local/infra@workdir'),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByText('@ workdir')).not.toBeInTheDocument();
+  },
+};
+
 export const NoRecoveryYet: Story = {
   args: { summary: null, findings: null, bundle: null },
   play: async ({ canvasElement, args }) => {
