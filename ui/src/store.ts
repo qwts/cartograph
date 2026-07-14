@@ -900,67 +900,64 @@ export const useAppStore = create<AppStore>((set, get) => ({
   runStrategy: async (strategyId) => {
     const current = get().escalation;
     if (!current) return;
+    // Results attach only to the gap that started them — the user may have
+    // closed this modal and opened another gap before the run resolves.
+    const gapId = current.gapId;
+    const patch = (fields: Partial<EscalationState>) =>
+      set((state) =>
+        state.escalation?.gapId === gapId
+          ? { escalation: { ...state.escalation, ...fields } }
+          : {},
+      );
     if (strategyId === 'cloud-opus') {
       // Cloud never runs from this click: load the exact preview so the
       // one-action consent dialog can show precisely what would leave.
       set({ escalation: { ...current, error: null } });
       try {
         const preview = await invokeOr<EgressPreview | null>('escalation_preview', null, {
-          gapId: current.gapId,
+          gapId,
         });
-        set((state) =>
-          state.escalation ? { escalation: { ...state.escalation, preview } } : {},
-        );
+        patch({ preview });
       } catch (e) {
-        set((state) =>
-          state.escalation ? { escalation: { ...state.escalation, error: String(e) } } : {},
-        );
+        patch({ error: String(e) });
       }
       return;
     }
     set({ escalation: { ...current, running: true, error: null } });
     try {
       const proposal = await invokeOr<AgentProposal | null>('run_escalation', null, {
-        gapId: current.gapId,
+        gapId,
         mode: 'local',
         approvedPayloadHash: null,
       });
-      set((state) =>
-        state.escalation
-          ? { escalation: { ...state.escalation, proposal, running: false } }
-          : {},
-      );
+      patch({ proposal, running: false });
     } catch (e) {
-      set((state) =>
-        state.escalation
-          ? { escalation: { ...state.escalation, error: String(e), running: false } }
-          : {},
-      );
+      patch({ error: String(e), running: false });
     }
   },
 
   consentAndRun: async (preview) => {
     const current = get().escalation;
     if (!current) return;
+    const gapId = current.gapId;
+    const patch = (fields: Partial<EscalationState>) =>
+      set((state) =>
+        state.escalation?.gapId === gapId
+          ? { escalation: { ...state.escalation, ...fields } }
+          : {},
+      );
     set({ escalation: { ...current, preview: null, running: true, error: null } });
     try {
       const proposal = await invokeOr<AgentProposal | null>('run_escalation', null, {
-        gapId: current.gapId,
+        gapId,
         mode: 'cloud',
         approvedPayloadHash: preview.payload_hash,
       });
       const egress = await invokeOr<EgressSummary | null>('egress_summary', null);
-      set((state) =>
-        state.escalation
-          ? { escalation: { ...state.escalation, proposal, running: false }, egress }
-          : { egress },
-      );
+      set({ egress });
+      patch({ proposal, running: false });
     } catch (e) {
-      set((state) =>
-        state.escalation
-          ? { escalation: { ...state.escalation, error: String(e), running: false } }
-          : {},
-      );
+      patch({ error: String(e), running: false });
     }
   },
 
