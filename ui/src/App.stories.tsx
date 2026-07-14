@@ -239,6 +239,17 @@ function installFakeCore() {
           },
           delta: { recomputed_files: 3, reused_files: 0, deleted_files: 0 },
         };
+      case 'cancel_job': {
+        const id = (args as { id: number }).id;
+        jobs = jobs.map((job) => (job.id === id ? { ...job, status: 'cancelled' } : job));
+        return jobs.find((job) => job.id === id);
+      }
+      case 'retry_job': {
+        // The fake core mirrors #117's noop re-dispatch: re-queue then done.
+        const id = (args as { id: number }).id;
+        jobs = jobs.map((job) => (job.id === id ? { ...job, status: 'done' } : job));
+        return jobs.find((job) => job.id === id);
+      }
       case 'enqueue_job': {
         const job: MockJob = {
           id: jobs.length + 1,
@@ -310,8 +321,14 @@ export const ConnectedToCore: Story = {
     // the list refreshes.
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
     await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
-    await waitFor(() => expect(canvas.getByText('#1 noop')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('noop')).toBeInTheDocument());
     await expect(canvas.getByText('queued')).toBeInTheDocument();
+
+    // Lifecycle round-trip (#117/#111): cancel the queued job, then retry it.
+    await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(canvas.getByText('cancelled')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(canvas.getByText('done')).toBeInTheDocument());
   },
 };
 
@@ -431,7 +448,7 @@ export const ClearGraphPreservesJobs: Story = {
     // durable job spine must survive a graph clear.
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
     await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
-    await waitFor(() => expect(canvas.getByText('#1 noop')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('noop')).toBeInTheDocument());
 
     await userEvent.click(canvas.getByRole('button', { name: 'Workspace' }));
     await userEvent.click(canvas.getByRole('button', { name: 'Clear graph' }));
@@ -440,6 +457,6 @@ export const ClearGraphPreservesJobs: Story = {
     await expect(canvas.getByTestId('graph-edge-count')).toHaveTextContent('0');
 
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
-    await expect(canvas.getByText('#1 noop')).toBeInTheDocument();
+    await expect(canvas.getByText('noop')).toBeInTheDocument();
   },
 };

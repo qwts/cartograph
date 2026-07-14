@@ -11,12 +11,12 @@ import { RouteErrorBoundary } from './components/RouteErrorBoundary';
 import { EmptySurface } from './components/EmptySurface';
 import { StatusBadge } from './components/StatusBadge';
 import { GraphStatsCard } from './components/GraphStatsCard';
-import { JobsCard } from './components/JobsCard';
+import { JobsSurface } from './components/JobsSurface';
 import { IngestCard } from './components/IngestCard';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
 import { TopologyCard } from './components/TopologyCard';
-import type { SpecArtifact, SpecBundle } from './store';
+import type { Job, SpecArtifact, SpecBundle } from './store';
 
 const AtlasCanvas = lazy(() =>
   import('./components/AtlasCanvas').then(({ AtlasCanvas: Component }) => ({
@@ -85,6 +85,9 @@ export default function App() {
     select,
     clearSelection,
     setView,
+    cancelJob,
+    retryJob,
+    applyJobEvent,
   } = useAppStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -93,6 +96,28 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Live job transitions (#117): the core pushes every change, so progress
+  // and the global bar stay current without polling. Outside Tauri (browser
+  // preview, stories) there is no event bridge — refresh() still covers it.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const stop = await listen<Job>('job://changed', (event) => applyJobEvent(event.payload));
+        if (disposed) stop();
+        else unlisten = stop;
+      } catch {
+        // No event bridge available.
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [applyJobEvent]);
 
   const navigate = useCallback(
     (next: SurfaceView) => {
@@ -212,13 +237,13 @@ export default function App() {
         );
       case 'jobs':
         return (
-          <div className="card-grid utility">
-            <JobsCard
-              jobs={jobs}
-              canEnqueue={backend === 'up'}
-              onEnqueue={(kind) => void enqueueJob(kind)}
-            />
-          </div>
+          <JobsSurface
+            jobs={jobs}
+            canEnqueue={backend === 'up'}
+            onEnqueue={(kind) => void enqueueJob(kind)}
+            onCancel={(id) => void cancelJob(id)}
+            onRetry={(id) => void retryJob(id)}
+          />
         );
       case 'settings':
         return (

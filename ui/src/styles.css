@@ -1904,3 +1904,166 @@ button:disabled {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* ── Jobs surface (#111): durable lifecycle management ────────────────── */
+
+.jobs-surface {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 1rem 1.25rem;
+}
+
+.jobs-surface-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.jobs-rows {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.job-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--surface-alt);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius-control);
+}
+
+.job-icon {
+  font-size: 1.15rem;
+  color: var(--text-muted);
+  margin-top: 0.1rem;
+}
+
+.job-running .job-icon {
+  color: var(--accent);
+}
+
+.job-done .job-icon {
+  color: var(--tier-confirmed);
+}
+
+.job-failed .job-icon {
+  color: var(--tier-gap);
+}
+
+.job-interrupted .job-icon {
+  color: var(--tier-inferred-weak);
+}
+
+.job-icon.spinning {
+  animation: carto-spin 1.3s linear infinite;
+}
+
+.job-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.job-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+
+.job-title code {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.job-status {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: var(--radius-badge);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.job-status-running {
+  color: var(--accent);
+  border-color: rgb(171 199 255 / 40%);
+}
+
+.job-status-done {
+  color: var(--tier-confirmed);
+  border-color: rgb(39 201 63 / 40%);
+}
+
+.job-status-failed {
+  color: var(--tier-gap);
+  border-color: rgb(235 87 87 / 40%);
+}
+
+.job-status-interrupted {
+  color: var(--tier-inferred-weak);
+  border-color: rgb(242 201 76 / 40%);
+}
+
+.job-stage {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-body);
+}
+
+.job-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--control);
+  overflow: hidden;
+}
+
+.job-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.job-error {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--tier-gap);
+  white-space: pre-wrap;
+}
+
+.job-artifacts {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.job-artifacts code {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--accent-local);
+  border: 1px solid rgb(122 218 161 / 30%);
+  border-radius: var(--radius-badge);
+  padding: 1px 5px;
+}
+
+.job-times {
+  font-size: 0.68rem;
+}
+
+.job-action {
+  flex: 0 0 auto;
+}
