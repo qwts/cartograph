@@ -831,12 +831,22 @@ button:disabled {
 /* Interim right-anchored drawer (resizable v2 lands with #113): fixed and
    width-constrained so long paths/hashes can never squeeze the shell or
    force horizontal overflow. */
+/* Overlay wrapper: the drawer floats over the app but must never swallow
+ * clicks outside itself (handoff interaction #1) — the wrapper is inert,
+ * only the panel inside accepts pointer events. */
 .evidence-area {
   position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
-  width: 420px;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.evidence-panel {
+  pointer-events: auto;
+  position: relative;
+  height: 100%;
   max-width: 90vw;
   overflow-y: auto;
   padding: 1rem 1.25rem 1.25rem;
@@ -844,14 +854,175 @@ button:disabled {
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-drawer);
   animation: carto-up 0.17s ease;
-  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.evidence-resize {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.evidence-resize:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.evidence-kicker {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.evidence-why {
+  margin: 0;
+  padding: 0.55rem 0.8rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  border-left: 3px solid var(--border);
+}
+
+.evidence-why.gap {
+  border-left-color: var(--tier-gap);
+  background: color-mix(in srgb, var(--tier-gap) 8%, transparent);
+}
+
+.evidence-why.inferred {
+  border-left-color: var(--tier-inferred-strong);
+  background: color-mix(in srgb, var(--tier-inferred-strong) 8%, transparent);
+}
+
+.evidence-why-tier summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.evidence-why-tier p {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+}
+
+.evidence-span-range {
+  margin: 0;
+}
+
+.evidence-span-range code {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.evidence-code {
+  display: flex;
+  gap: 0.6rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0.6rem 0.7rem;
+}
+
+.evidence-gutter {
+  margin: 0;
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+  font-size: 0.76rem;
+}
+
+.provenance-table {
+  margin: 0;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.provenance-table div {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+}
+
+.provenance-table dt {
+  flex: 0 0 110px;
+  color: var(--text-muted);
+}
+
+.provenance-table dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.evidence-hash-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.evidence-hash-cell code {
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+
+.copy-hash {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.6rem;
+}
+
+.supporting-evidence {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.evidence-ref {
+  width: 100%;
+  text-align: left;
+  background: var(--control);
+  color: var(--text);
+  font-weight: 400;
+  font-size: 0.76rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.evidence-ref.active {
+  border-color: var(--accent);
+}
+
+.resolution-cta {
+  justify-self: start;
+  align-self: start;
+}
+
+.evidence-footer {
+  margin-top: auto;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.74rem;
 }
 
 .evidence-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.5rem;
+  gap: 0.6rem;
+}
+
+.evidence-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
 }
 
 .evidence-meta {
@@ -867,13 +1038,16 @@ button:disabled {
   font-family: var(--font-mono);
   font-size: 0.8rem;
   line-height: 1.5;
-  background: var(--surface-alt);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.75rem;
+  margin: 0;
   overflow: auto;
   max-height: 40vh;
-  white-space: pre-wrap;
+  white-space: pre;
+}
+
+.evidence-gutter {
+  line-height: 1.5;
+  max-height: 40vh;
+  overflow: hidden;
 }
 
 .evidence-source mark {
