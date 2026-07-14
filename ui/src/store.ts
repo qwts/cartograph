@@ -242,7 +242,10 @@ export interface AppStore {
   selected: { node: GraphNode; source: SourceState } | null;
   refresh: () => Promise<void>;
   enqueueJob: (kind: string) => Promise<void>;
-  ingest: (path: string) => Promise<void>;
+  /** Run recovery over a target. An explicit `source` (from the Connect
+   *  step) picks the command directly; without one it is inferred from the
+   *  target string. */
+  ingest: (path: string, source?: IngestSource) => Promise<void>;
   clearGraph: () => Promise<void>;
   setSpecMode: (mode: SpecExportMode) => Promise<void>;
   curateAssertion: (
@@ -362,15 +365,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     await get().refresh();
   },
 
-  ingest: async (path: string) => {
+  ingest: async (path: string, source?: IngestSource) => {
     // Clear prior outcome up front so a failed run never shows a stale summary.
     set({ ingestBusy: true, ingestError: null, ingestSummary: null });
     // A GitHub reference clones with real identity (US-0001); a topology
     // manifest ingests the whole declared system (AC-0002); anything else
-    // ingests as a local tree.
+    // ingests as a local tree. The Connect step's explicit source wins over
+    // string inference — a manifest can also be a directory holding one.
     const trimmed = path.trim();
-    const isRepoUrl = /^(https:\/\/github\.com\/|git@github\.com:)/.test(trimmed);
-    const isManifest = trimmed.endsWith('cartograph.system.toml');
+    const isRepoUrl =
+      source === 'github' ||
+      (source === undefined && /^(https:\/\/github\.com\/|git@github\.com:)/.test(trimmed));
+    const isManifest =
+      source === 'manifest' ||
+      (source === undefined && trimmed.endsWith('cartograph.system.toml'));
     const command = isManifest ? 'add_system' : isRepoUrl ? 'add_repo' : 'ingest_path';
     try {
       const summary = await invokeOr<IngestSummary | null>(
@@ -518,7 +526,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   startRecovery: async () => {
     const target = get().ingestTarget.trim();
     set({ view: 'recover', selected: null });
-    await get().ingest(target);
+    await get().ingest(target, get().ingestSource);
     if (get().view === 'recover' && !get().ingestError) set({ view: 'workspace' });
   },
 }));

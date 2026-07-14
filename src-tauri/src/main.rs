@@ -1130,6 +1130,8 @@ fn add_repo(
             .map_err(|e| e.to_string())?;
         jobs.set_status(job.id, "running")
             .map_err(|e| e.to_string())?;
+        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
+        emit_job(&app, &running);
         job.id
     };
     let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
@@ -1182,6 +1184,8 @@ fn add_repo(
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
+    let done = jobs.get(job_id).map_err(|e| e.to_string())?;
+    emit_job(&app, &done);
     Ok(AddRepoSummary {
         job_id,
         repo: cloned.repo,
@@ -1242,6 +1246,8 @@ fn add_system(
             .map_err(|e| e.to_string())?;
         jobs.set_status(job.id, "running")
             .map_err(|e| e.to_string())?;
+        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
+        emit_job(&app, &running);
         job.id
     };
     let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
@@ -1337,6 +1343,8 @@ fn add_system(
     }
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
+    let done = jobs.get(job_id).map_err(|e| e.to_string())?;
+    emit_job(&app, &done);
     Ok(AddSystemSummary {
         job_id,
         repos,
