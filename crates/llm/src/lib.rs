@@ -6,6 +6,8 @@
 //! span-level payload. Provider-facing completion requests cannot be
 //! constructed outside this crate, so callers cannot bypass the gate.
 
+pub mod catalog;
+
 use regex::Regex;
 use reqwest::Url;
 use reqwest::blocking::{Client, ClientBuilder};
@@ -409,6 +411,27 @@ impl OllamaProvider {
             Self::DEFAULT_COMPLETION_MODEL,
             Duration::from_secs(120),
         )
+    }
+
+    /// Probe the local endpoint for installed model references (`name:tag`).
+    /// Loopback-only like every other call on this provider; the result
+    /// feeds [`catalog::classify_health`] — Cartograph reports a missing
+    /// model, it never pulls one itself.
+    pub fn list_local_models(&self) -> Result<Vec<String>, ProviderError> {
+        #[derive(Deserialize)]
+        struct Tags {
+            models: Vec<TagEntry>,
+        }
+        #[derive(Deserialize)]
+        struct TagEntry {
+            name: String,
+        }
+        let url = self
+            .base_url
+            .join("api/tags")
+            .map_err(|error| ProviderError::InvalidUrl(error.to_string()))?;
+        let tags: Tags = self.client.get(url).send()?.error_for_status()?.json()?;
+        Ok(tags.models.into_iter().map(|entry| entry.name).collect())
     }
 }
 
