@@ -751,14 +751,13 @@ fn summarize_register(
 ) -> FindingsSummary {
     let gaps = nodes.iter().filter(|node| spec::is_gap_node(node)).count() as u64
         + edges.iter().filter(|edge| spec::is_gap_edge(edge)).count() as u64;
+    // Drift counts nodes only, matching the drift register's own headline
+    // (`drift_register` counts drift nodes; CONFLICTS/DRIFTS_FROM edges are
+    // supporting assertions of the same finding, not additional findings).
     let drift = nodes
         .iter()
         .filter(|node| spec::is_drift_node(node))
-        .count() as u64
-        + edges
-            .iter()
-            .filter(|edge| spec::is_drift_edge(edge))
-            .count() as u64;
+        .count() as u64;
     FindingsSummary {
         gaps,
         unsupported,
@@ -1610,7 +1609,9 @@ mod tests {
         }];
         let summary = super::summarize_register(&nodes, &edges, 2, 1);
         assert_eq!(summary.gaps, 1);
-        assert_eq!(summary.drift, 2); // drift node + CONFLICTS edge
+        // One drift finding: the CONFLICTS edge supports the drift node, it
+        // is not a second finding (parity with drift_register's count).
+        assert_eq!(summary.drift, 1);
         assert_eq!(summary.unsupported, 2);
         assert_eq!(summary.no_evidence, 1);
         assert_eq!(summary.open_findings, 4); // 1 gap + 2 unsupported + 1 no-evidence
