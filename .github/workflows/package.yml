@@ -1,0 +1,190 @@
+# Reusable macOS packaging for issue #92. A complete five-secret credential
+# set produces Developer ID signed, notarized artifacts. No credentials produce
+# explicitly labeled unsigned-dev artifacts; any partial set fails closed.
+name: Package macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact branch, tag, or SHA to package (defaults to the triggering ref)
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact branch, tag, or SHA to package
+        required: false
+        type: string
+        default: ''
+    secrets:
+      CSC_LINK:
+        required: false
+      CSC_KEY_PASSWORD:
+        required: false
+      APPLE_API_KEY:
+        required: false
+      APPLE_API_KEY_ID:
+        required: false
+      APPLE_API_ISSUER:
+        required: false
+    outputs:
+      signing_mode:
+        description: signed or unsigned-dev
+        value: ${{ jobs.package.outputs.signing_mode }}
+      artifact_name:
+        description: Uploaded macOS artifact name
+        value: ${{ jobs.package.outputs.artifact_name }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: macOS universal bundle
+    runs-on: macos-latest
+    outputs:
+      signing_mode: ${{ steps.signing.outputs.mode }}
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+    steps:
+      - name: Checkout exact ref
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix ui ci
+
+      - name: Install browser and universal Rust targets
+        run: |
+          npm --prefix ui exec -- playwright install chromium
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Create frontend placeholder for Tauri's Rust macro
+        # generate_context! reads frontendDist while clippy/tests compile the
+        # app crate; the real production UI build still runs in the gate below.
+        run: mkdir -p ui/dist
+
+      - name: Run required repository gates
+        run: |
+          node scripts/check-traceability.mjs
+          npm run version:check
+          npm run test:version
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          npm --prefix ui run lint
+          npm --prefix ui run typecheck
+          npm --prefix ui run test
+          npm --prefix ui run build
+
+      - name: Select signing mode
+        id: signing
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: node scripts/signing-secrets.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Decode App Store Connect key
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_B64" | openssl base64 -d -A -out "$key_path"
+          test -s "$key_path"
+          echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+
+      - name: Build signed and notarized universal bundle
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          # Map the established Photos secret names to Tauri's documented inputs.
+          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run package:macos
+
+      - name: Build ad-hoc signed unsigned-dev universal bundle
+        if: steps.signing.outputs.signed == 'false'
+        env:
+          # Apple Silicon requires a signature; '-' is Tauri's ad-hoc identity.
+          APPLE_SIGNING_IDENTITY: '-'
+        run: npm run package:macos
+
+      - name: Locate bundles
+        id: bundles
+        run: |
+          set -euo pipefail
+          app="target/universal-apple-darwin/release/bundle/macos/Cartograph.app"
+          dmg=$(find target/universal-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)
+          test -d "$app"
+          test -n "$dmg"
+          test -f "$dmg"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Developer ID signature, Gatekeeper, and notarization
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "${{ steps.bundles.outputs.app }}"
+          codesign --verify --strict --verbose=2 "${{ steps.bundles.outputs.dmg }}"
+          spctl --assess --type execute --verbose=2 "${{ steps.bundles.outputs.app }}"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "${{ steps.bundles.outputs.dmg }}"
+          xcrun stapler validate "${{ steps.bundles.outputs.app }}"
+          xcrun stapler validate "${{ steps.bundles.outputs.dmg }}"
+
+      - name: Verify unsigned-dev boundary
+        if: steps.signing.outputs.signed == 'false'
+        run: |
+          set -euo pipefail
+          app="${{ steps.bundles.outputs.app }}"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          details=$(codesign --display --verbose=4 "$app" 2>&1)
+          if printf '%s\n' "$details" | grep -Eq '^Authority=|Developer ID Application'; then
+            echo '::error::unsigned-dev bundle unexpectedly has a trusted signing authority'
+            exit 1
+          fi
+
+      - name: Stage stable versioned artifacts
+        id: metadata
+        env:
+          SIGNING_MODE: ${{ steps.signing.outputs.mode }}
+          APP_PATH: ${{ steps.bundles.outputs.app }}
+          DMG_PATH: ${{ steps.bundles.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          artifact_name="cartograph-${version}-macos-universal-${SIGNING_MODE}"
+          mkdir -p dist
+          cp "$DMG_PATH" "dist/Cartograph_${version}_universal_${SIGNING_MODE}.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" \
+            "dist/Cartograph_${version}_universal_${SIGNING_MODE}.app.zip"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload versioned artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

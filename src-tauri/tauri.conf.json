@@ -24,6 +24,16 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "category": "DeveloperTool",
+    "shortDescription": "Recover a system specification from its source repositories.",
+    "longDescription": "Cartograph recovers a provenance-tagged, cross-layer system specification from infrastructure, cloud, server, event, and client repositories.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }

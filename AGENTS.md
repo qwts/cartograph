@@ -79,6 +79,12 @@ events, client), then compiles official spec artifacts. Master spec:
   exact annotated `vX.Y.Z` tag and dispatches the release handoff. A failed
   handoff is recovered by manually dispatching the version-cut workflow; tags
   are immutable and are never moved.
+- macOS production bundles are universal Intel + Apple Silicon `.app` and `.dmg`
+  artifacts. Signing is all-or-nothing across the five repository secrets
+  `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, and
+  `APPLE_API_ISSUER`. With none, packaging emits visibly labeled
+  `unsigned-dev` artifacts; any partial set fails. Only signed, notarized,
+  Gatekeeper-verified artifacts qualify for a production release.
 
 ## Verification before "done"
 
