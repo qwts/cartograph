@@ -920,10 +920,13 @@ button:disabled {
   color: var(--text-muted);
 }
 
+/* One scroller for both columns — the gutter must never drift from the
+ * code lines it numbers (#140 review). */
 .evidence-code {
   display: flex;
   gap: 0.6rem;
-  overflow-x: auto;
+  overflow: auto;
+  max-height: 40vh;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -935,7 +938,12 @@ button:disabled {
   text-align: right;
   color: var(--text-muted);
   user-select: none;
+  font-family: var(--font-mono);
   font-size: 0.76rem;
+  /* Exactly the source's rendered line box (0.8rem × 1.5) so the gutter
+   * can never drift from the lines it numbers. */
+  line-height: 1.2rem;
+  overflow: visible;
 }
 
 .provenance-table {
@@ -1039,15 +1047,14 @@ button:disabled {
   font-size: 0.8rem;
   line-height: 1.5;
   margin: 0;
-  overflow: auto;
-  max-height: 40vh;
+  overflow: visible;
   white-space: pre;
 }
 
 .evidence-gutter {
   line-height: 1.5;
-  max-height: 40vh;
-  overflow: hidden;
+  font-family: var(--font-mono);
+  overflow: visible;
 }
 
 .evidence-source mark {
