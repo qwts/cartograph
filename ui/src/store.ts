@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invokeOr } from './tauri';
 import type { SurfaceView } from './views';
+import type { EgressPreview } from './components/EgressConsentDialog';
 
 export interface GraphStats {
   nodes: number;
@@ -319,6 +320,60 @@ export function tierDistribution(atlas: AtlasSnapshot): TierDistribution {
   return distribution;
 }
 
+/** One escalation option (`gap_strategies`, #120). */
+export interface StrategyCard {
+  id: 'local-slm' | 'cloud-opus';
+  tier: string;
+  provider: string;
+  locality: 'local' | 'cloud';
+  egress_bytes: number;
+  est_usd: number | null;
+  latency: string;
+  privacy: string;
+  export_impact: string;
+  available: boolean;
+  unavailable_reason: string | null;
+}
+
+/** The Resolution Strategy report for one gap (`gap_strategies`, #120). */
+export interface GapStrategyReport {
+  gap_id: string;
+  summary: string;
+  stop_reason: string;
+  attempted_tiers: string[];
+  required_evidence: string[];
+  candidates: number;
+  strategies: StrategyCard[];
+}
+
+/** A staged propose-only escalation result (`run_escalation`, #120). */
+export interface AgentProposal {
+  gap_id: string;
+  source_id: string;
+  target_id: string;
+  edge_label: string;
+  annotation: string;
+  basis_hash: string;
+  provenance: Provenance;
+}
+
+/** UI state of the Resolution Strategy modal (#113). */
+export interface EscalationState {
+  gapId: string;
+  report: GapStrategyReport | null;
+  loading: boolean;
+  error: string | null;
+  running: boolean;
+  /** Cloud one-action consent step: the exact preview awaiting a grant. */
+  preview: EgressPreview | null;
+  proposal: AgentProposal | null;
+  /** Set once the user accepted/rejected the proposal. */
+  decided: 'accepted' | 'rejected' | null;
+}
+
+/** Exact redacted payload preview for the one-action consent dialog. */
+export type { EgressPreview } from './components/EgressConsentDialog';
+
 /** One configurable recovery tier's persisted state (#118). T0 is absent by
  *  design — it is always on and never configurable. */
 export interface TierSettings {
@@ -394,6 +449,8 @@ export interface AppStore {
   coverage: ExtractorCoverage[];
   /** Paired-eval calibration records, newest first. */
   evals: EvalResult[];
+  /** Resolution Strategy modal state; null while closed (#113). */
+  escalation: EscalationState | null;
   /** Persisted tier configuration (T1/T2/T3; T0 is always-on, not stored). */
   tierSettings: TierSettings[];
   /** Live status-bar egress line; null with no backend (shown as local-only). */
@@ -450,6 +507,18 @@ export interface AppStore {
   grantCloudConsent: (tier: string) => Promise<void>;
   /** Revoke standing consent — immediate, the tier stays on cloud unconsented. */
   revokeCloudConsent: (tier: string) => Promise<void>;
+  /** Open the Resolution Strategy modal for a gap and load its report. */
+  openResolution: (gapId: string) => Promise<void>;
+  closeResolution: () => void;
+  /** Run a strategy. Local runs immediately; cloud first loads the exact
+   *  egress preview so the one-action consent dialog can show it. */
+  runStrategy: (strategyId: 'local-slm' | 'cloud-opus') => Promise<void>;
+  /** The user approved the previewed payload — run cloud with its hash. */
+  consentAndRun: (preview: EgressPreview) => Promise<void>;
+  /** Keep local: dismiss the pending cloud preview without running. */
+  dismissPreview: () => void;
+  /** Record the human verdict on a staged proposal (R-INT-3). */
+  decideProposal: (decision: 'accepted' | 'rejected') => Promise<void>;
 }
 
 async function loadEndpoints(): Promise<GraphNode[]> {
@@ -496,6 +565,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   ingestHistory: [],
   coverage: [],
   evals: [],
+  escalation: null,
   tierSettings: [],
   egress: null,
   disclosures: {},
@@ -791,6 +861,132 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (tierSettings) set({ tierSettings, egress });
     } catch (e) {
       set({ settingsError: String(e) });
+    }
+  },
+
+  openResolution: async (gapId) => {
+    set({
+      escalation: {
+        gapId,
+        report: null,
+        loading: true,
+        error: null,
+        running: false,
+        preview: null,
+        proposal: null,
+        decided: null,
+      },
+    });
+    try {
+      const report = await invokeOr<GapStrategyReport | null>('gap_strategies', null, {
+        gapId,
+      });
+      set((state) =>
+        state.escalation?.gapId === gapId
+          ? { escalation: { ...state.escalation, report, loading: false } }
+          : {},
+      );
+    } catch (e) {
+      set((state) =>
+        state.escalation?.gapId === gapId
+          ? { escalation: { ...state.escalation, error: String(e), loading: false } }
+          : {},
+      );
+    }
+  },
+
+  closeResolution: () => set({ escalation: null }),
+
+  runStrategy: async (strategyId) => {
+    const current = get().escalation;
+    if (!current) return;
+    if (strategyId === 'cloud-opus') {
+      // Cloud never runs from this click: load the exact preview so the
+      // one-action consent dialog can show precisely what would leave.
+      set({ escalation: { ...current, error: null } });
+      try {
+        const preview = await invokeOr<EgressPreview | null>('escalation_preview', null, {
+          gapId: current.gapId,
+        });
+        set((state) =>
+          state.escalation ? { escalation: { ...state.escalation, preview } } : {},
+        );
+      } catch (e) {
+        set((state) =>
+          state.escalation ? { escalation: { ...state.escalation, error: String(e) } } : {},
+        );
+      }
+      return;
+    }
+    set({ escalation: { ...current, running: true, error: null } });
+    try {
+      const proposal = await invokeOr<AgentProposal | null>('run_escalation', null, {
+        gapId: current.gapId,
+        mode: 'local',
+        approvedPayloadHash: null,
+      });
+      set((state) =>
+        state.escalation
+          ? { escalation: { ...state.escalation, proposal, running: false } }
+          : {},
+      );
+    } catch (e) {
+      set((state) =>
+        state.escalation
+          ? { escalation: { ...state.escalation, error: String(e), running: false } }
+          : {},
+      );
+    }
+  },
+
+  consentAndRun: async (preview) => {
+    const current = get().escalation;
+    if (!current) return;
+    set({ escalation: { ...current, preview: null, running: true, error: null } });
+    try {
+      const proposal = await invokeOr<AgentProposal | null>('run_escalation', null, {
+        gapId: current.gapId,
+        mode: 'cloud',
+        approvedPayloadHash: preview.payload_hash,
+      });
+      const egress = await invokeOr<EgressSummary | null>('egress_summary', null);
+      set((state) =>
+        state.escalation
+          ? { escalation: { ...state.escalation, proposal, running: false }, egress }
+          : { egress },
+      );
+    } catch (e) {
+      set((state) =>
+        state.escalation
+          ? { escalation: { ...state.escalation, error: String(e), running: false } }
+          : {},
+      );
+    }
+  },
+
+  dismissPreview: () =>
+    set((state) =>
+      state.escalation ? { escalation: { ...state.escalation, preview: null } } : {},
+    ),
+
+  decideProposal: async (decision) => {
+    const current = get().escalation;
+    if (!current?.proposal) return;
+    try {
+      await invokeOr('record_agent_decision', null, {
+        proposal: current.proposal,
+        decision,
+        note: null,
+      });
+      set((state) =>
+        state.escalation ? { escalation: { ...state.escalation, decided: decision } } : {},
+      );
+      // An accepted proposal changes best-effort exports — refresh them.
+      await get().refresh();
+    } catch (e) {
+      set((state) =>
+        state.escalation ? { escalation: { ...state.escalation, error: String(e) } } : {},
+      );
     }
   },
 

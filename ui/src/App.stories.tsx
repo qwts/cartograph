@@ -120,6 +120,13 @@ const FAKE_SPEC: SpecBundle = {
         subject_kind: 'CALLS',
         summary: 'sym:capture CALLS sym:sync — callee not statically resolvable',
         provenance: { ...FAKE_PROVENANCE, confidence_tier: 'Gap' as const },
+      }, {
+        // A gap node: its row opens the Resolution Strategy modal (#120).
+        id: 'node:gap:sync',
+        subject_id: 'gap:sync',
+        subject_kind: 'Gap',
+        summary: 'Gap: remote sync target computed at runtime',
+        provenance: { ...FAKE_PROVENANCE, confidence_tier: 'Gap' as const },
       }] : [],
   })),
   assertion_count: 2,
@@ -245,6 +252,49 @@ function installFakeCore() {
         return [];
       case 'list_evals':
         return [];
+      case 'gap_strategies':
+        return {
+          gap_id: (args as { gapId: string }).gapId,
+          summary: 'Gap: remote sync target computed at runtime',
+          stop_reason: 'endpoint host computed from config at runtime',
+          attempted_tiers: ['T0'],
+          required_evidence: ['E1 · local:src/app.ts'],
+          candidates: 1,
+          strategies: [
+            {
+              id: 'local-slm',
+              tier: 'T3',
+              provider: 'ollama:qwen3:8b',
+              locality: 'local',
+              egress_bytes: 0,
+              est_usd: null,
+              latency: 'seconds on-device',
+              privacy: 'payload never leaves the device',
+              export_impact: 'Best-effort only until accepted (R-INT-5).',
+              available: true,
+              unavailable_reason: null,
+            },
+          ],
+        };
+      case 'run_escalation':
+        return {
+          gap_id: (args as { gapId: string }).gapId,
+          source_id: 'sym:capture',
+          target_id: FAKE_ENDPOINT.id,
+          edge_label: 'CALLS',
+          annotation: 'capture() resolves to the users endpoint per E1.',
+          basis_hash: 'b'.repeat(64),
+          provenance: {
+            ...FAKE_PROVENANCE,
+            tier: 'Agentic',
+            confidence_tier: 'InferredWeak',
+            extractor_id: 't3.agent',
+          },
+        };
+      case 'record_agent_decision': {
+        const input = args as { decision: string };
+        return { decision: input.decision, recorded_at: '2026-07-14T22:00:00Z' };
+      }
       case 'extractor_coverage':
         return [
           {
@@ -486,6 +536,7 @@ const meta = {
       ingestHistory: [],
       coverage: [],
       evals: [],
+      escalation: null,
       tierSettings: [],
       egress: null,
       disclosures: {},
@@ -607,6 +658,40 @@ export const GapRowOpensEvidenceForEdgeGap: Story = {
       const mark = canvasElement.querySelector('.evidence-source mark');
       expect(mark?.textContent).toBe(SPAN_TEXT);
     });
+  },
+};
+
+export const EscalationRoundTrip: Story = {
+  // #113/#120 end to end: gap row → Resolution Strategy → local run →
+  // staged proposal → accept records the decision (propose-only, R-INT-3).
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: 'Gaps & Drift' }));
+    await waitFor(() =>
+      expect(canvas.getByText(/remote sync target computed at runtime/)).toBeInTheDocument(),
+    );
+
+    await userEvent.click(canvas.getByText(/remote sync target computed at runtime/));
+    await waitFor(() =>
+      expect(
+        canvas.getByRole('dialog', { name: /remote sync target/i }),
+      ).toBeInTheDocument(),
+    );
+    await expect(
+      canvas.getByText(/Why deterministic recovery stopped: endpoint host computed/),
+    ).toBeInTheDocument();
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Run locally' }));
+    await waitFor(() => expect(canvas.getByTestId('proposal-card')).toBeInTheDocument());
+    await expect(canvas.getByText(/never joins the spec until accepted/)).toBeInTheDocument();
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Accept as InferredWeak' }));
+    await waitFor(() =>
+      expect(canvas.getByTestId('decision-recorded')).toHaveTextContent(
+        'Decision recorded: accepted',
+      ),
+    );
   },
 };
 

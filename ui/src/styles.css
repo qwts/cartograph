@@ -3268,3 +3268,56 @@ button.register-row:hover {
 .seg-unattributed {
   background: var(--finding-no-evidence);
 }
+
+/* ── Resolution Strategy modal (#113/#120) ── */
+
+.resolution-modal {
+  max-width: 640px;
+}
+
+.ladder-line {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.strategy-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.7rem;
+}
+
+.strategy-card {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.82rem;
+  align-content: start;
+}
+
+.strategy-card.unavailable {
+  opacity: 0.75;
+}
+
+.strategy-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.strategy-card header code {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.strategy-card button {
+  justify-self: start;
+}
+
+.proposal-card p {
+  margin: 0.2rem 0;
+}

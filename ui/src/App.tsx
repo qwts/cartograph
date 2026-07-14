@@ -18,6 +18,7 @@ import { SettingsSurface } from './components/SettingsSurface';
 import { WorkspaceSurface } from './components/WorkspaceSurface';
 import { GapsDriftSurface } from './components/GapsDriftSurface';
 import { ProvenanceSurface } from './components/ProvenanceSurface';
+import { ResolutionStrategyModal } from './components/ResolutionStrategyModal';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
 import { TopologyCard } from './components/TopologyCard';
@@ -114,6 +115,13 @@ export default function App() {
     setTierProvider,
     grantCloudConsent,
     revokeCloudConsent,
+    escalation,
+    openResolution,
+    closeResolution,
+    runStrategy,
+    consentAndRun,
+    dismissPreview,
+    decideProposal,
   } = useAppStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -261,10 +269,13 @@ export default function App() {
             drift={registerArtifact('drift_register.md')}
             registerFindings={registerFindings}
             onOpenGap={(assertion) => {
-              // Until the Resolution Strategy modal lands (#113), a gap row
-              // opens its evidence trail. Edge/flow gaps have no atlas node,
-              // so fall back to the assertion itself — it carries the same
-              // provenance and evidence spans the drawer needs.
+              // A gap node opens its Resolution Strategy (#120 runner); an
+              // edge/flow gap has no node to escalate, so its row opens the
+              // evidence drawer from the assertion's own provenance.
+              if (assertion.id.startsWith('node:')) {
+                void openResolution(assertion.subject_id);
+                return;
+              }
               const node = atlas.nodes.find(
                 (candidate) => candidate.id === assertion.subject_id,
               ) ?? {
@@ -385,8 +396,19 @@ export default function App() {
             evidenceIndex={selected.evidenceIndex}
             onClose={clearSelection}
             onShowEvidence={(index) => void select(selected.node, index)}
+            onOpenResolution={(node) => void openResolution(node.id)}
           />
         </div>
+      )}
+      {escalation && (
+        <ResolutionStrategyModal
+          state={escalation}
+          onRun={(strategyId) => void runStrategy(strategyId)}
+          onConsent={(preview) => void consentAndRun(preview)}
+          onDismissPreview={dismissPreview}
+          onDecide={(decision) => void decideProposal(decision)}
+          onClose={closeResolution}
+        />
       )}
     </div>
   );
