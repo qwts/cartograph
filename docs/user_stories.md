@@ -128,9 +128,10 @@
 - **AC-0026** Given the graph, when I filter by layer, then only that layer's nodes/edges render.
 - **AC-0027** Given the confidence overlay, when active, then nodes/edges are colored by tier and Gaps are flagged.
 - **AC-0028** Given a node, when selected, then the evidence panel shows file/span/commit with read-only jump-to-source.
+- **AC-0062** Given the evidence drawer, when open, then it is resizable (320↔560px), its overlay never swallows clicks outside the panel, Esc closes it, the source view carries true file line numbers (windowed files report their real starting line) and the full span range including end line:col, non-Confirmed facts show a why-strip plus a collapsible why-this-tier explanation, the provenance table renders the complete 64-hex content hash with a copy affordance whose payload equals the displayed value, supporting evidence spans are navigable, a Gap offers the Resolution Strategy CTA, and the footer states the R-INT-1 integrity rule.
 - **Security:** Source view is read-only (NG1).
 - **Performance:** Canvas remains interactive at 10k+ nodes (Cytoscape.js).
-- **Trace:** M9 · `core-graph`, `app`, `ui` · — · T-0026..0028
+- **Trace:** M9 · `core-graph`, `app`, `ui` · — · T-0026..0028,T-0062
 
 ### US-0011 — Flow Inspector with explicit gaps
 - **Actor:** Engineer

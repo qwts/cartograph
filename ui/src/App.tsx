@@ -379,7 +379,13 @@ export default function App() {
       <LegendPopover open={legendOpen} onClose={() => setLegendOpen(false)} />
       {selected && (
         <div className="evidence-area">
-          <EvidencePanel node={selected.node} source={selected.source} onClose={clearSelection} />
+          <EvidencePanel
+            node={selected.node}
+            source={selected.source}
+            evidenceIndex={selected.evidenceIndex}
+            onClose={clearSelection}
+            onShowEvidence={(index) => void select(selected.node, index)}
+          />
         </div>
       )}
     </div>

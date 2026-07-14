@@ -16,6 +16,9 @@ pub struct SourceWindow {
     /// Byte offset of the window within the file — subtract from span offsets
     /// to highlight within `text`.
     pub window_start: u64,
+    /// 1-based line number of the window's first line, so a windowed view
+    /// can show true file line numbers instead of pretending it starts at 1.
+    pub window_start_line: u64,
     /// True when the file was larger than the window.
     pub truncated: bool,
 }
@@ -47,12 +50,31 @@ pub fn read_source(root: &Path, rel_path: &str, span: &Range<u64>) -> io::Result
     };
     let window_len = MAX_EVIDENCE_BYTES.min(len - window_start);
 
+    // True line number of the window's first line: count the newlines
+    // before it, streaming so a deep window never loads the whole prefix.
+    let window_start_line = 1 + {
+        let mut newlines = 0u64;
+        if window_start > 0 {
+            file.seek(SeekFrom::Start(0))?;
+            let mut remaining = window_start;
+            let mut chunk = vec![0u8; 64 * 1024];
+            while remaining > 0 {
+                let take = chunk.len().min(remaining as usize);
+                file.read_exact(&mut chunk[..take])?;
+                newlines += chunk[..take].iter().filter(|byte| **byte == b'\n').count() as u64;
+                remaining -= take as u64;
+            }
+        }
+        newlines
+    };
+
     file.seek(SeekFrom::Start(window_start))?;
     let mut bytes = vec![0u8; window_len as usize];
     file.read_exact(&mut bytes)?;
     Ok(SourceWindow {
         text: String::from_utf8_lossy(&bytes).into_owned(),
         window_start,
+        window_start_line,
         truncated: window_start > 0 || window_start + window_len < len,
     })
 }
@@ -102,5 +124,30 @@ mod tests {
         let local_start = (span.start - w.window_start) as usize;
         let local_end = (span.end - w.window_start) as usize;
         assert_eq!(&w.text[local_start..local_end], needle);
+    }
+
+    #[test]
+    fn windowed_reads_report_true_starting_line() {
+        // A deep window must know the real file line it starts on, so the
+        // drawer's gutter never pretends the window starts at line 1.
+        let dir = tempfile::tempdir().unwrap();
+        let line = "y".repeat(63); // 64 bytes with the newline
+        let line_count = (3 * MAX_EVIDENCE_BYTES as usize) / 64;
+        let content: String = (0..line_count).map(|_| format!("{line}\n")).collect();
+        let span_start = content.len() as u64 - 100;
+        std::fs::write(dir.path().join("long.ts"), &content).unwrap();
+
+        let w = read_source(dir.path(), "long.ts", &(span_start..span_start + 10)).unwrap();
+        assert!(w.window_start > 0);
+        // Every line is exactly 64 bytes (newline at 64k-1), so the number
+        // of newlines before window_start is floor(window_start / 64) —
+        // the streamed count must match the closed form.
+        let expected = 1 + w.window_start / 64;
+        assert_eq!(w.window_start_line, expected);
+
+        // A small file starts at line 1, no prefix scan involved.
+        std::fs::write(dir.path().join("small.ts"), "a\nb\nc\n").unwrap();
+        let small = read_source(dir.path(), "small.ts", &(2..3)).unwrap();
+        assert_eq!(small.window_start_line, 1);
     }
 }

@@ -1681,6 +1681,7 @@ fn atlas_snapshot(state: State<'_, AppState>) -> Result<AtlasSnapshot, String> {
 struct EvidenceSource {
     text: String,
     window_start: u64,
+    window_start_line: u64,
     truncated: bool,
 }
 
@@ -1698,6 +1699,7 @@ fn read_evidence(
     Ok(EvidenceSource {
         text: window.text,
         window_start: window.window_start,
+        window_start_line: window.window_start_line,
         truncated: window.truncated,
     })
 }

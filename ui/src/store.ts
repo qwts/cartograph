@@ -196,6 +196,9 @@ export interface EvidenceSource {
   text: string;
   /** Byte offset of the window within the file (large files are windowed). */
   window_start: number;
+  /** 1-based file line number of the window's first line; optional so the
+   *  UI degrades against a pre-#113 core (assumes 1). */
+  window_start_line?: number;
   truncated: boolean;
 }
 
@@ -401,7 +404,7 @@ export interface AppStore {
   disclosures: Partial<Record<string, CloudDisclosure>>;
   settingsError: string | null;
   /** Node selected for evidence view, with its source window state. */
-  selected: { node: GraphNode; source: SourceState } | null;
+  selected: { node: GraphNode; source: SourceState; evidenceIndex: number } | null;
   refresh: () => Promise<void>;
   enqueueJob: (kind: string) => Promise<void>;
   /** Run recovery over a target. An explicit `source` (from the Connect
@@ -415,7 +418,9 @@ export interface AppStore {
     decision: AssertionDecision,
     note?: string,
   ) => Promise<void>;
-  select: (node: GraphNode) => Promise<void>;
+  /** Open the evidence drawer for a fact; `evidenceIndex` picks among its
+   *  supporting evidence spans (default first). */
+  select: (node: GraphNode, evidenceIndex?: number) => Promise<void>;
   clearSelection: () => void;
   /** Navigate the shell; clears the evidence selection (handoff §Interactions). */
   setView: (view: SurfaceView) => void;
@@ -657,13 +662,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  select: async (node: GraphNode) => {
-    set({ selected: { node, source: 'loading' } });
+  select: async (node: GraphNode, evidenceIndex = 0) => {
+    set({ selected: { node, source: 'loading', evidenceIndex } });
     const done = (source: SourceState) => {
       // Ignore if the user selected something else meanwhile.
-      if (get().selected?.node.id === node.id) set({ selected: { node, source } });
+      const current = get().selected;
+      if (current?.node.id === node.id && current.evidenceIndex === evidenceIndex) {
+        set({ selected: { node, source, evidenceIndex } });
+      }
     };
-    const ev = node.props.prov?.evidence[0];
+    const ev = node.props.prov?.evidence[evidenceIndex] ?? node.props.prov?.evidence[0];
     if (!ev) return done('unavailable');
     const root = await repoRoot(ev.repo);
     if (root === null) return done('unavailable');
