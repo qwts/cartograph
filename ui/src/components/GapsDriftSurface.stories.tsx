@@ -46,6 +46,25 @@ const GAPS: SpecAssertion[] = [
   },
 ];
 
+// Raw registers restate findings in other shapes: a flow-hop assertion
+// repeats a gap inside its flow; CONFLICTS edges support a drift node.
+// The tally counts neither — the surface must filter them out (#137 review).
+const FLOW_HOP_RESTATEMENT: SpecAssertion = {
+  id: 'flow:ep:capture:1:CALLS:sym:sync',
+  subject_id: 'sym:capture CALLS sym:sync',
+  subject_kind: 'FlowHop',
+  summary: 'CALLS: capture → sync (unresolved)',
+  provenance: gapProvenance('Deterministic'),
+};
+
+const DRIFT_SUPPORT_EDGE: SpecAssertion = {
+  id: 'edge:adr:sync CONFLICTS ch:events',
+  subject_id: 'adr:sync CONFLICTS ch:events',
+  subject_kind: 'CONFLICTS',
+  summary: 'adr:sync CONFLICTS ch:events',
+  provenance: { ...gapProvenance('Deterministic'), confidence_tier: 'InferredStrong' },
+};
+
 const DRIFT: SpecAssertion[] = [
   {
     id: 'node:drift:sync-batching',
@@ -54,6 +73,7 @@ const DRIFT: SpecAssertion[] = [
     summary: 'ADR-0002 declares batched sync; observed per-event POST on capture',
     provenance: { ...gapProvenance('Deterministic'), confidence_tier: 'InferredStrong' },
   },
+  DRIFT_SUPPORT_EDGE,
 ];
 
 const REGISTER_FINDINGS: RegisterFinding[] = [
@@ -101,7 +121,7 @@ const meta = {
       open_findings: 6,
       graph_facts: 134,
     },
-    gaps: GAPS,
+    gaps: [...GAPS, FLOW_HOP_RESTATEMENT],
     drift: DRIFT,
     registerFindings: REGISTER_FINDINGS,
     onOpenGap: fn(),
@@ -120,8 +140,10 @@ export const ThreeLanesNeverConflate: Story = {
     await expect(canvas.getByText('3 gaps')).toBeInTheDocument();
     await expect(canvas.getByText('2 unsupported')).toBeInTheDocument();
 
-    // Lane headers reconcile with the tally.
+    // Lane headers reconcile with the tally — the raw register's flow-hop
+    // restatement (a 4th assertion) is filtered out, not double-counted.
     await expect(canvas.getByText('System gaps · 3')).toBeInTheDocument();
+    await expect(canvas.queryByText(/capture → sync \(unresolved\)/)).not.toBeInTheDocument();
     await expect(canvas.getByText('Unsupported patterns · 2')).toBeInTheDocument();
     await expect(canvas.getByText('No evidence found · 1')).toBeInTheDocument();
 
@@ -175,11 +197,16 @@ export const DriftTab: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole('tab', { name: 'Drift' }));
+    // The headline counts drift nodes only — the CONFLICTS support edge in
+    // the raw register is the same finding, not a second one.
     await expect(canvas.getByText('ADR / code drift · 1')).toBeInTheDocument();
     await expect(
       canvas.getByText(/ADR-0002 declares batched sync; observed per-event POST/),
     ).toBeInTheDocument();
     await expect(canvas.getByText('drift:sync-batching')).toBeInTheDocument();
+    await expect(
+      canvas.queryByText('adr:sync CONFLICTS ch:events'),
+    ).not.toBeInTheDocument();
   },
 };
 

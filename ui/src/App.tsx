@@ -259,9 +259,17 @@ export default function App() {
             registerFindings={registerFindings}
             onOpenGap={(assertion) => {
               // Until the Resolution Strategy modal lands (#113), a gap row
-              // opens its evidence trail when the subject is in the atlas.
-              const node = atlas.nodes.find((candidate) => candidate.id === assertion.subject_id);
-              if (node) void select(node);
+              // opens its evidence trail. Edge/flow gaps have no atlas node,
+              // so fall back to the assertion itself — it carries the same
+              // provenance and evidence spans the drawer needs.
+              const node = atlas.nodes.find(
+                (candidate) => candidate.id === assertion.subject_id,
+              ) ?? {
+                id: assertion.subject_id,
+                label: assertion.subject_kind,
+                props: { name: assertion.summary, prov: assertion.provenance },
+              };
+              void select(node);
             }}
           />
         );
