@@ -11,7 +11,7 @@ const readText = (root, relativePath) => readFileSync(path.join(root, relativePa
 const readJson = (root, relativePath) => JSON.parse(readText(root, relativePath));
 const jsonText = (value) => `${JSON.stringify(value, null, 2)}\n`;
 
-function assertSemver(version) {
+export function assertSemver(version) {
   const match = version.match(
     /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u,
   );

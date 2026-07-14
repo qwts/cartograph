@@ -8,7 +8,7 @@
     "changeset:version": "changeset version && npm run version:sync",
     "tauri": "tauri",
     "check:traceability": "node scripts/check-traceability.mjs",
-    "test:version": "node --test scripts/version.test.mjs",
+    "test:version": "node --test scripts/*.test.mjs",
     "version:check": "node scripts/version.mjs check",
     "version:sync": "node scripts/version.mjs sync"
   },

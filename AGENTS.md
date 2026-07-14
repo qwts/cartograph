@@ -73,9 +73,12 @@ events, client), then compiles official spec artifacts. Master spec:
   the shipped application may omit one. Run `npm run changeset` to record the
   release note; `CHANGELOG.md` is generated and must not be hand-edited.
 - Version application is automation-owned. Do not run `changeset version`,
-  edit version mirrors, or create release tags by hand. Until issue #91 lands,
-  no release cut is supported; that issue will make merging the reviewed
-  **Version packages** PR the release decision.
+  edit version mirrors, or create release tags by hand. The version-cut
+  workflow keeps a **Version packages** PR current while Changesets are
+  pending. Merging that reviewed PR is the release decision: it creates the
+  exact annotated `vX.Y.Z` tag and dispatches the release handoff. A failed
+  handoff is recovered by manually dispatching the version-cut workflow; tags
+  are immutable and are never moved.
 
 ## Verification before "done"
 

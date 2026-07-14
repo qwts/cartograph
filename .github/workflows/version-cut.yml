@@ -1,0 +1,147 @@
+# Version automation for issue #91. Changesets maintains the reviewed version
+# PR; merging that PR is the only supported release-cut operation.
+name: Version cut
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: version-cut
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version-pr:
+    name: Version packages PR
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install version tooling
+        run: npm ci --ignore-scripts
+
+      - name: Create or refresh the Version packages PR
+        id: changesets
+        # changesets/action v1.8.0; immutable pin reviewed for issue #91.
+        uses: changesets/action@d94a5c301145045a0960133674e003b265942a22
+        with:
+          version: npm run changeset:version
+          commit: 'Version packages'
+          title: 'Version packages'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run required checks on the version branch
+        if: steps.changesets.outputs.hasChangesets == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref changeset-release/main
+
+  tag:
+    name: Tag version merges
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Tag a fresh reviewed version cut
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          npm run version:check
+          current=$(node -p 'require("./package.json").version')
+
+          # Locate the exact first-parent commit that introduced this version.
+          # A manual recovery may run after later main commits, but the tag must
+          # still point at the reviewed Version packages merge, never at HEAD by
+          # convenience.
+          cut_commit=''
+          if [ "$EVENT_NAME" = "push" ]; then
+            previous=$(git show "$BEFORE_SHA:package.json" 2>/dev/null \
+              | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version' \
+              2>/dev/null || true)
+            if [ -z "$previous" ] || [ "$previous" = "$current" ]; then
+              echo "Version did not change ($current); nothing to tag."
+              exit 0
+            fi
+            cut_commit=$(git rev-parse HEAD)
+          else
+            while read -r candidate; do
+              candidate_version=$(git show "$candidate:package.json" 2>/dev/null \
+                | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version' \
+                2>/dev/null || true)
+              parent_version=$(git show "$candidate^1:package.json" 2>/dev/null \
+                | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version' \
+                2>/dev/null || true)
+              if [ "$candidate_version" = "$current" ] && [ "$parent_version" != "$current" ]; then
+                cut_commit="$candidate"
+                break
+              fi
+            done < <(git log --first-parent --format=%H -- package.json)
+            if [ -z "$cut_commit" ]; then
+              echo "::error::No reviewed first-parent version cut found for $current."
+              exit 1
+            fi
+          fi
+
+          tag=$(node scripts/release-version.mjs tag)
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            tagged_commit=$(git rev-list -n 1 "$tag")
+            if [ "$tagged_commit" != "$cut_commit" ]; then
+              echo "::error::$tag points to $tagged_commit, not cut $cut_commit; tags are immutable."
+              exit 1
+            fi
+            echo "$tag already exists at the correct commit."
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              echo "$tag has no GitHub Release; dispatching recovery."
+              gh workflow run release.yml --ref main -f tag="$tag" \
+                || echo "::notice::release.yml is not dispatchable yet; rerun Version cut after #93."
+            fi
+            exit 0
+          fi
+
+          pending=$(node scripts/release-version.mjs pending)
+          if [ -n "$pending" ]; then
+            echo "Changesets remain pending ($pending); nothing to tag."
+            exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" "$cut_commit" -m "Release $tag"
+          git push origin "$tag"
+          echo "Created $tag at $cut_commit."
+
+          # A GITHUB_TOKEN tag push does not recursively start release.yml.
+          gh workflow run release.yml --ref main -f tag="$tag" \
+            || echo "::notice::release.yml is not dispatchable yet; $tag can be recovered after #93."

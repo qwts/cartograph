@@ -31,7 +31,15 @@ change without allowing a bot to infer release intent from commit messages.
   mirrors. Release automation owns that command; contributors do not hand-edit
   versions, changelogs, or release tags.
 - Changesets does not publish Cartograph to npm and does not create tags. The
-  reviewed version PR and tag/release workflows own those later transitions.
+  version-cut workflow maintains a **Version packages** PR while release intent
+  is pending. Merging that reviewed PR is the human release decision.
+- A merge that changes the synchronized version and consumes all Changesets is
+  tagged exactly once with an annotated `vX.Y.Z` tag at that merge commit. Tags
+  are immutable; an existing tag at another commit is a hard failure.
+- Bot-authored branch updates explicitly dispatch CI, and bot-authored tags
+  explicitly dispatch the release workflow, because events created with
+  `GITHUB_TOKEN` do not recursively start those workflows. A manual version-cut
+  dispatch recovers a correct tag whose release handoff failed.
 
 ## Consequences
 
@@ -41,8 +49,8 @@ change without allowing a bot to infer release intent from commit messages.
   a deliberate, reviewable action.
 - Adding another version-bearing manifest requires extending the sync/check
   script and its tests in the same PR.
-- Until the version-cut workflow is implemented, releases intentionally cannot
-  be cut from the new policy alone.
+- A version can be intentionally cut without any npm publication or manual tag
+  operation.
 
 ## Alternatives (≤3)
 

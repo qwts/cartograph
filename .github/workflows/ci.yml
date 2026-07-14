@@ -1,6 +1,10 @@
 name: CI
 
 on:
+  # Version-cut explicitly dispatches CI after refreshing the bot-managed
+  # Version packages branch because GITHUB_TOKEN PR updates do not emit a
+  # pull_request event.
+  workflow_dispatch:
   pull_request:
     branches:
       - main
