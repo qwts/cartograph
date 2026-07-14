@@ -2510,3 +2510,223 @@ button:disabled {
 .consent-status .material-symbols-outlined {
   font-size: 1.05rem;
 }
+
+/* ── Workspace landing: outcome, provenance health, artifacts (#105) ── */
+
+.workspace-landing {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  max-width: 980px;
+}
+
+.workspace-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.workspace-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+}
+
+.workspace-title h2 {
+  margin: 0;
+  font-size: 1.7rem;
+}
+
+.commit-chip {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--control);
+  color: var(--text-muted);
+}
+
+.workspace-title-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.outcome-card {
+  display: flex;
+  gap: 0.9rem;
+  padding: 1.2rem 1.3rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.outcome-icon {
+  font-size: 1.7rem;
+  color: var(--accent);
+}
+
+.outcome-main {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.outcome-main h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.outcome-main p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.outcome-main p strong {
+  color: var(--text);
+}
+
+.outcome-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.2rem;
+}
+
+.prov-health {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.7rem;
+}
+
+.prov-card {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.prov-card strong {
+  font-size: 1.5rem;
+  font-family: var(--font-mono);
+}
+
+.prov-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.prov-card .muted {
+  font-size: 0.74rem;
+}
+
+/* Tier identity per card — confirmed / inferred / gap never look alike. */
+.prov-card.confirmed {
+  border-color: color-mix(in srgb, var(--tier-confirmed) 35%, var(--border));
+}
+.prov-card.confirmed .prov-name {
+  color: var(--tier-confirmed);
+}
+.prov-card.inferred-strong {
+  border-color: color-mix(in srgb, var(--tier-inferred-strong) 35%, var(--border));
+}
+.prov-card.inferred-strong .prov-name {
+  color: var(--tier-inferred-strong);
+}
+.prov-card.inferred-weak {
+  border-color: color-mix(in srgb, var(--tier-inferred-weak) 35%, var(--border));
+}
+.prov-card.inferred-weak .prov-name {
+  color: var(--tier-inferred-weak);
+}
+.prov-card.gap {
+  border-color: color-mix(in srgb, var(--tier-gap) 35%, var(--border));
+}
+.prov-card.gap .prov-name {
+  color: var(--tier-gap);
+}
+.prov-card.unsupported {
+  border-color: color-mix(in srgb, var(--finding-unsupported) 35%, var(--border));
+}
+.prov-card.unsupported .prov-name {
+  color: var(--finding-unsupported);
+}
+
+.prov-note {
+  margin: -0.3rem 0 0;
+  font-size: 0.78rem;
+}
+
+.artifact-grid {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.7rem;
+}
+
+.artifact-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.9rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  font-weight: 500;
+}
+
+.artifact-card:hover {
+  border-color: var(--accent);
+  filter: none;
+}
+
+.artifact-card .material-symbols-outlined {
+  color: var(--accent);
+}
+
+.artifact-title {
+  flex: 1;
+}
+
+.artifact-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+}
+
+.artifact-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.artifact-badge.generated {
+  border-color: color-mix(in srgb, var(--tier-confirmed) 45%, var(--border));
+  color: var(--tier-confirmed);
+}
+
+.artifact-badge.findings {
+  border-color: color-mix(in srgb, var(--finding-unsupported) 45%, var(--border));
+  color: var(--finding-unsupported);
+}
+
+.artifact-badge.missing {
+  border-style: dashed;
+}

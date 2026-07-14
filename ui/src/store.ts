@@ -202,6 +202,63 @@ export interface EvidenceSource {
 /** Source view state: loading → window, or unavailable (file moved, no root). */
 export type SourceState = EvidenceSource | 'loading' | 'unavailable';
 
+/** Register headline counts (`findings_summary`, #116): one definition —
+ *  the spec register's own predicates — reused by every surface. */
+export interface FindingsSummary {
+  gaps: number;
+  unsupported: number;
+  no_evidence: number;
+  drift: number;
+  /** gaps + unsupported + no_evidence. */
+  open_findings: number;
+  /** Total graph facts (nodes + edges). */
+  graph_facts: number;
+}
+
+/** Fact counts by confidence tier, derived from the same atlas projection
+ *  every surface renders (handoff interaction #3: one source of truth). */
+export interface TierDistribution {
+  confirmed: number;
+  inferredStrong: number;
+  inferredWeak: number;
+  gap: number;
+  /** Facts carrying no provenance — never silently promoted. */
+  unattributed: number;
+  total: number;
+}
+
+export function tierDistribution(atlas: AtlasSnapshot): TierDistribution {
+  const distribution: TierDistribution = {
+    confirmed: 0,
+    inferredStrong: 0,
+    inferredWeak: 0,
+    gap: 0,
+    unattributed: 0,
+    total: 0,
+  };
+  const facts = [...atlas.nodes, ...atlas.edges];
+  for (const fact of facts) {
+    distribution.total += 1;
+    switch (fact.props.prov?.confidence_tier) {
+      case 'Confirmed':
+        distribution.confirmed += 1;
+        break;
+      case 'InferredStrong':
+        distribution.inferredStrong += 1;
+        break;
+      case 'InferredWeak':
+        distribution.inferredWeak += 1;
+        break;
+      case 'Gap':
+        distribution.gap += 1;
+        break;
+      default:
+        distribution.unattributed += 1;
+    }
+  }
+  return distribution;
+}
+
 /** One configurable recovery tier's persisted state (#118). T0 is absent by
  *  design — it is always on and never configurable. */
 export interface TierSettings {
@@ -267,6 +324,8 @@ export interface AppStore {
   preflightError: string | null;
   clearBusy: boolean;
   clearError: string | null;
+  /** Register headline counts; null with no backend. */
+  findings: FindingsSummary | null;
   /** Persisted tier configuration (T1/T2/T3; T0 is always-on, not stored). */
   tierSettings: TierSettings[];
   /** Live status-bar egress line; null with no backend (shown as local-only). */
@@ -362,6 +421,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   preflightError: null,
   clearBusy: false,
   clearError: null,
+  findings: null,
   tierSettings: [],
   egress: null,
   disclosures: {},
@@ -383,12 +443,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         flowList: [],
         specBundle: null,
         curation: [],
+        findings: null,
         tierSettings: [],
         egress: null,
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation, findings, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -398,6 +459,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<Flow[]>('list_flows', []),
       invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
       invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
+      invokeOr<FindingsSummary | null>('findings_summary', null),
       invokeOr<TierSettings[]>('get_settings', []),
       invokeOr<EgressSummary | null>('egress_summary', null),
       // Disclosures are static per tier — prefetched so the consent panel
@@ -417,6 +479,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       flowList,
       specBundle,
       curation,
+      findings,
       tierSettings,
       egress,
       disclosures: { T2: disclosureT2 ?? undefined, T3: disclosureT3 ?? undefined },

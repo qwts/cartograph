@@ -150,9 +150,11 @@
 - **AC-0033** Given an inferred item, when I accept/reject/annotate, then the decision persists and survives re-ingest via content_hash.
 - **AC-0034** Given export, when run, then it honors R-INT-5 (`verified-only` vs `best-effort`) and includes Gap + Drift registers.
 - **AC-0035** Given the full set, when exported, then it produces user stories, US-TM, flow dossiers, resource topology as Markdown with fenced Mermaid plus provenance, a data model retaining READS/WRITES/MAPS_TO relations that terminate at DataEntity, ADRs, Gap + Drift registers, and mapped security findings.
+- **AC-0057** Given a completed recovery, when the Workspace landing renders, then the outcome tally (open findings split into gaps, unsupported patterns, and no-evidence) and every provenance-health count derive from the single register summary and atlas projection all surfaces share — findings are listed explicitly, never guessed or double-counted.
+- **AC-0058** Given the artifacts grid, when an artifact was generated, then it carries two independent badges — generation ("Artifact generated") and recovery authority (authoritative/partial/inferred) — while the gap register carries exactly one completion-style badge ("N open findings") and a missing artifact is labeled "Not generated" rather than omitted.
 - **Security:** —
 - **Performance:** —
-- **Trace:** M9–M10 · `spec`, UI · — · T-0032..0035
+- **Trace:** M9–M10 · `spec`, UI · — · T-0032..0035,T-0057..0058
 
 ### US-0013 — ADR recovery and drift detection
 - **Actor:** Engine

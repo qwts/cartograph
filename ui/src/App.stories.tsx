@@ -222,6 +222,17 @@ function installFakeCore() {
         curation = [record];
         return record;
       }
+      case 'findings_summary':
+        // Derives from live graph state like the real core: a cleared graph
+        // reports zero facts and the landing collapses honestly.
+        return {
+          gaps: graphStats.nodes > 0 ? 1 : 0,
+          unsupported: 0,
+          no_evidence: 0,
+          drift: 0,
+          open_findings: graphStats.nodes > 0 ? 1 : 0,
+          graph_facts: graphStats.nodes + graphStats.edges,
+        };
       case 'get_settings':
         return tiers;
       case 'egress_summary':
@@ -415,6 +426,7 @@ const meta = {
       preflightError: null,
       clearBusy: false,
       clearError: null,
+      findings: null,
       tierSettings: [],
       egress: null,
       disclosures: {},
@@ -463,7 +475,8 @@ export const IngestFlowEndToEnd: Story = {
     const breadcrumb = () => within(canvas.getByRole('navigation', { name: 'Breadcrumb' }));
 
     // Workspace → Connect. The ingest flow routes without joining the rail.
-    await userEvent.click(canvas.getByRole('button', { name: 'Connect a target' }));
+    // (The fake core boots with facts, so the landing offers Re-ingest.)
+    await userEvent.click(canvas.getByRole('button', { name: /re-ingest/i }));
     await expect(breadcrumb().getByText('Connect')).toBeInTheDocument();
     await expect(
       canvas.getByText(/Nothing leaves the device unless you opt a tier into cloud/),
@@ -488,7 +501,10 @@ export const IngestFlowEndToEnd: Story = {
     // back on Workspace with the recovery outcome visible.
     await userEvent.click(canvas.getByRole('button', { name: /run full recovery/i }));
     await waitFor(() => expect(breadcrumb().getByText('Workspace')).toBeInTheDocument());
-    await waitFor(() => expect(canvas.getByText(/12 nodes/)).toBeInTheDocument());
+    // The landing shows the honest outcome from the register summary.
+    await waitFor(() =>
+      expect(within(canvas.getByTestId('outcome-card')).getByText('1 open findings')).toBeInTheDocument(),
+    );
   },
 };
 
@@ -500,7 +516,7 @@ export const ManifestDirectoryUsesAddSystem: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
 
-    await userEvent.click(canvas.getByRole('button', { name: 'Connect a target' }));
+    await userEvent.click(canvas.getByRole('button', { name: /re-ingest/i }));
     await userEvent.click(canvas.getByRole('radio', { name: 'System manifest' }));
     await userEvent.type(canvas.getByRole('textbox'), '/fake/system-checkout');
     await userEvent.click(canvas.getByRole('button', { name: /preflight/i }));
@@ -508,12 +524,11 @@ export const ManifestDirectoryUsesAddSystem: Story = {
     await expect(canvas.getByText('Detection deferred')).toBeInTheDocument();
 
     await userEvent.click(canvas.getByRole('button', { name: /run full recovery/i }));
-    // add_system's summary lists every declared repo with its identity —
-    // proof the manifest loader ran, not the single-repo local path.
+    // add_system's summary lists every declared repo — the landing titles
+    // itself from that multi-repo identity, proof the manifest loader ran
+    // rather than the single-repo local path.
     await waitFor(() =>
-      expect(canvas.getByTestId('system-repos')).toHaveTextContent(
-        'acme/shop@a1b2c3d4e5f6, local/infra@workdir',
-      ),
+      expect(canvas.getByText('2 repos as one system')).toBeInTheDocument(),
     );
   },
 };

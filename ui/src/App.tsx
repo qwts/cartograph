@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
-import { useAppStore } from './store';
+import { tierDistribution, useAppStore } from './store';
 import { railSurface, SURFACES, surfaceLabel, type SurfaceView } from './views';
 import { NavRail } from './components/NavRail';
 import { ShellHeader, type Scope } from './components/ShellHeader';
@@ -16,7 +16,7 @@ import { ConnectSurface } from './components/ConnectSurface';
 import { PreflightSurface } from './components/PreflightSurface';
 import { RecoverSurface } from './components/RecoverSurface';
 import { SettingsSurface } from './components/SettingsSurface';
-import { IngestCard } from './components/IngestCard';
+import { WorkspaceSurface } from './components/WorkspaceSurface';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
 import { TopologyCard } from './components/TopologyCard';
@@ -84,6 +84,7 @@ export default function App() {
     preflightError,
     clearBusy,
     clearError,
+    findings,
     tierSettings,
     egress,
     disclosures,
@@ -184,14 +185,17 @@ export default function App() {
       case 'workspace':
         return (
           <>
+            <WorkspaceSurface
+              summary={ingestSummary}
+              findings={findings}
+              distribution={tierDistribution(atlas)}
+              bundle={specBundle}
+              onReingest={() => navigate('connect')}
+              onTriageGaps={() => navigate('gaps')}
+              onProvenance={() => navigate('prov')}
+              onOpenArtifact={() => navigate('spec')}
+            />
             <div className="card-grid utility">
-              <IngestCard
-                busy={ingestBusy}
-                summary={ingestSummary}
-                error={ingestError}
-                canIngest={backend === 'up'}
-                onConnect={() => navigate('connect')}
-              />
               <GraphStatsCard
                 stats={stats}
                 canClear={backend === 'up' && !ingestBusy && (stats?.nodes ?? 0) > 0}
