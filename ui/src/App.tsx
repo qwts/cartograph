@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useAppStore } from './store';
-import { SURFACES, surfaceDef, type SurfaceView } from './views';
+import { railSurface, SURFACES, surfaceLabel, type SurfaceView } from './views';
 import { NavRail } from './components/NavRail';
 import { ShellHeader, type Scope } from './components/ShellHeader';
 import { StatusBar } from './components/StatusBar';
@@ -12,6 +12,9 @@ import { EmptySurface } from './components/EmptySurface';
 import { StatusBadge } from './components/StatusBadge';
 import { GraphStatsCard } from './components/GraphStatsCard';
 import { JobsSurface } from './components/JobsSurface';
+import { ConnectSurface } from './components/ConnectSurface';
+import { PreflightSurface } from './components/PreflightSurface';
+import { RecoverSurface } from './components/RecoverSurface';
 import { IngestCard } from './components/IngestCard';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
@@ -73,12 +76,16 @@ export default function App() {
     ingestBusy,
     ingestSummary,
     ingestError,
+    ingestSource,
+    ingestTarget,
+    preflight,
+    preflightBusy,
+    preflightError,
     clearBusy,
     clearError,
     selected,
     refresh,
     enqueueJob,
-    ingest,
     clearGraph,
     setSpecMode,
     curateAssertion,
@@ -88,6 +95,10 @@ export default function App() {
     cancelJob,
     retryJob,
     applyJobEvent,
+    setIngestSource,
+    setIngestTarget,
+    runPreflight,
+    startRecovery,
   } = useAppStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -168,7 +179,7 @@ export default function App() {
                 summary={ingestSummary}
                 error={ingestError}
                 canIngest={backend === 'up'}
-                onIngest={(path) => void ingest(path)}
+                onConnect={() => navigate('connect')}
               />
               <GraphStatsCard
                 stats={stats}
@@ -245,6 +256,41 @@ export default function App() {
             onRetry={(id) => void retryJob(id)}
           />
         );
+      case 'connect':
+        return (
+          <ConnectSurface
+            source={ingestSource}
+            target={ingestTarget}
+            canPreflight={backend === 'up'}
+            onSourceChange={setIngestSource}
+            onTargetChange={setIngestTarget}
+            onBack={() => navigate('workspace')}
+            onPreflight={() => void runPreflight()}
+          />
+        );
+      case 'preflight':
+        return (
+          <PreflightSurface
+            source={ingestSource}
+            target={ingestTarget}
+            report={preflight}
+            busy={preflightBusy}
+            error={preflightError}
+            canRecover={backend === 'up'}
+            onBack={() => navigate('connect')}
+            onRunRecovery={() => void startRecovery()}
+          />
+        );
+      case 'recover':
+        return (
+          <RecoverSurface
+            job={jobs.find((job) => job.status === 'running' || job.status === 'queued') ?? null}
+            busy={ingestBusy}
+            error={ingestError}
+            onBack={() => navigate('connect')}
+            onBackground={() => navigate('jobs')}
+          />
+        );
       case 'settings':
         return (
           <EmptySurface
@@ -259,11 +305,15 @@ export default function App() {
   return (
     <div className="shell">
       <GlobalProgress active={busy} />
-      <NavRail active={view} onNavigate={navigate} onOpenPalette={() => setPaletteOpen(true)} />
+      <NavRail
+        active={railSurface(view)}
+        onNavigate={navigate}
+        onOpenPalette={() => setPaletteOpen(true)}
+      />
       <div className="shell-main">
         <ShellHeader
           system={systemName}
-          surface={surfaceDef(view).label}
+          surface={surfaceLabel(view)}
           scope={scope}
           onShowLegend={() => setLegendOpen(true)}
         />

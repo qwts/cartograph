@@ -5,7 +5,7 @@ import { IngestCard } from './IngestCard';
 const meta = {
   title: 'Shell/IngestCard',
   component: IngestCard,
-  args: { onIngest: fn(), busy: false, summary: null, error: null, canIngest: true },
+  args: { onConnect: fn(), busy: false, summary: null, error: null, canIngest: true },
 } satisfies Meta<typeof IngestCard>;
 
 export default meta;
@@ -21,9 +21,9 @@ const EMPTY_LAYERS = {
 export const Idle: Story = {
   play: async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(canvas.getByRole('textbox'), '/tmp/some-repo');
-    await userEvent.click(canvas.getByRole('button', { name: /ingest/i }));
-    await expect(args.onIngest).toHaveBeenCalledWith('/tmp/some-repo');
+    // The card is the entry into the Connect → Preflight → Recover flow.
+    await userEvent.click(canvas.getByRole('button', { name: 'Connect a target' }));
+    await expect(args.onConnect).toHaveBeenCalled();
   },
 };
 
@@ -31,7 +31,7 @@ export const Busy: Story = {
   args: { busy: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole('button', { name: /ingesting/i })).toBeDisabled();
+    await expect(canvas.getByRole('button', { name: /recovering/i })).toBeDisabled();
   },
 };
 
