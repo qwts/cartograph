@@ -7,6 +7,7 @@
 mod evidence;
 mod findings;
 mod jobs;
+mod settings;
 
 use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
 use findings::{Finding, FindingStore, NewFinding};
@@ -23,6 +24,7 @@ struct AppState {
     graph: Mutex<SqliteGraphStore>,
     jobs: Mutex<JobStore>,
     findings: Mutex<FindingStore>,
+    settings: Mutex<settings::SettingsStore>,
     decisions: Mutex<agents::DecisionLog>,
     extraction_caches: Mutex<ExtractionCaches>,
 }
@@ -830,6 +832,75 @@ fn preflight(
     Ok(report)
 }
 
+/// All configurable tier settings (T0 is always on and absent by design).
+#[tauri::command]
+fn get_settings(state: State<'_, AppState>) -> Result<Vec<settings::TierSettings>, String> {
+    let store = state.settings.lock().map_err(|e| e.to_string())?;
+    store.all().map_err(|e| e.to_string())
+}
+
+/// Enable/disable a configurable tier (#118).
+#[tauri::command]
+fn set_tier_enabled(
+    tier: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<settings::TierSettings>, String> {
+    let mut store = state.settings.lock().map_err(|e| e.to_string())?;
+    store
+        .set_enabled(&tier, enabled)
+        .map_err(|e| e.to_string())?;
+    store.all().map_err(|e| e.to_string())
+}
+
+/// Choose local or cloud for an LLM tier; leaving cloud revokes consent.
+#[tauri::command]
+fn set_tier_provider(
+    tier: String,
+    provider: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<settings::TierSettings>, String> {
+    let mut store = state.settings.lock().map_err(|e| e.to_string())?;
+    store
+        .set_provider(&tier, &provider)
+        .map_err(|e| e.to_string())?;
+    store.all().map_err(|e| e.to_string())
+}
+
+/// Record standing cloud consent for a tier, storing the disclosure the
+/// user saw. Only permits cloud — every call still needs the firewall's
+/// per-payload grant (fail closed).
+#[tauri::command]
+fn grant_cloud_consent(
+    tier: String,
+    disclosure: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<settings::TierSettings>, String> {
+    let mut store = state.settings.lock().map_err(|e| e.to_string())?;
+    store
+        .grant_consent(&tier, &disclosure)
+        .map_err(|e| e.to_string())?;
+    store.all().map_err(|e| e.to_string())
+}
+
+/// Revoke a tier's standing cloud consent — immediate.
+#[tauri::command]
+fn revoke_cloud_consent(
+    tier: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<settings::TierSettings>, String> {
+    let mut store = state.settings.lock().map_err(|e| e.to_string())?;
+    store.revoke_consent(&tier).map_err(|e| e.to_string())?;
+    store.all().map_err(|e| e.to_string())
+}
+
+/// Live egress summary for the status bar (#103's seam, now real).
+#[tauri::command]
+fn egress_summary(state: State<'_, AppState>) -> Result<settings::EgressSummary, String> {
+    let store = state.settings.lock().map_err(|e| e.to_string())?;
+    store.egress_summary().map_err(|e| e.to_string())
+}
+
 /// Notify the shell of a job transition (`job://changed`); the Jobs surface
 /// and the global progress bar stay live without polling (#117).
 fn emit_job(app: &tauri::AppHandle, job: &Job) {
@@ -1519,11 +1590,13 @@ fn main() {
             // `interrupted` rows — resumable, never silently stuck (#117).
             jobs.recover_interrupted()?;
             let findings = FindingStore::open(&state_path)?;
+            let tier_settings = settings::SettingsStore::open(&state_path)?;
             let decisions = agents::DecisionLog::open(&state_path)?;
             app.manage(AppState {
                 graph: Mutex::new(graph),
                 jobs: Mutex::new(jobs),
                 findings: Mutex::new(findings),
+                settings: Mutex::new(tier_settings),
                 decisions: Mutex::new(decisions),
                 extraction_caches: Mutex::new(ExtractionCaches::default()),
             });
@@ -1547,6 +1620,12 @@ fn main() {
             preflight,
             findings_summary,
             list_findings,
+            get_settings,
+            set_tier_enabled,
+            set_tier_provider,
+            grant_cloud_consent,
+            revoke_cloud_consent,
+            egress_summary,
             list_nodes,
             atlas_snapshot,
             read_evidence,
