@@ -57,11 +57,20 @@ pub struct GraphMetrics {
 }
 
 /// Compute tallies, coverage, and the canonical graph content hash from a
-/// whole-graph projection. `scope` maps extractor id → source files in its
-/// scope this ingest (extractors it omits report a null coverage_pct).
-/// Counts use the spec register's own provenance definition — one
-/// definition, every surface (#116).
-pub fn compute(nodes: &[Node], edges: &[Edge], scope: &BTreeMap<String, u64>) -> GraphMetrics {
+/// whole-graph projection. Tallies and the hash describe the whole graph
+/// (they must reconcile with findings_summary), while coverage attributes
+/// only facts whose evidence lives in `coverage_repos` — the repos this
+/// ingest actually processed — so a multi-repo graph never inflates one
+/// run's coverage with another run's facts. `scope` maps extractor id →
+/// source files in scope this ingest; extractors it omits (including
+/// layers with zero files) report a null coverage_pct. Counts use the spec
+/// register's own provenance definition — one definition, every surface.
+pub fn compute(
+    nodes: &[Node],
+    edges: &[Edge],
+    scope: &BTreeMap<String, u64>,
+    coverage_repos: &BTreeSet<String>,
+) -> GraphMetrics {
     let mut confirmed = 0u64;
     let mut inferred_strong = 0u64;
     let mut inferred_weak = 0u64;
@@ -81,19 +90,31 @@ pub fn compute(nodes: &[Node], edges: &[Edge], scope: &BTreeMap<String, u64>) ->
             Gap => gap += 1,
         }
     };
-
-    for node in nodes {
-        let provenance = spec::provenance(&node.props, &node.id);
-        tally(&provenance);
+    let mut cover = |provenance: &core_prov::Provenance| {
+        if !provenance
+            .evidence
+            .iter()
+            .any(|evidence| coverage_repos.contains(&evidence.repo))
+        {
+            return;
+        }
         *facts_by_extractor
             .entry(provenance.extractor_id.clone())
             .or_default() += 1;
         for evidence in &provenance.evidence {
-            files_by_extractor
-                .entry(provenance.extractor_id.clone())
-                .or_default()
-                .insert(format!("{}:{}", evidence.repo, evidence.path));
+            if coverage_repos.contains(&evidence.repo) {
+                files_by_extractor
+                    .entry(provenance.extractor_id.clone())
+                    .or_default()
+                    .insert(format!("{}:{}", evidence.repo, evidence.path));
+            }
         }
+    };
+
+    for node in nodes {
+        let provenance = spec::provenance(&node.props, &node.id);
+        tally(&provenance);
+        cover(&provenance);
         lines.push(format!(
             "n {} {} {}",
             node.id, node.label, provenance.content_hash
@@ -103,15 +124,7 @@ pub fn compute(nodes: &[Node], edges: &[Edge], scope: &BTreeMap<String, u64>) ->
         let identity = format!("{} {} {}", edge.src, edge.label, edge.dst);
         let provenance = spec::provenance(&edge.props, &identity);
         tally(&provenance);
-        *facts_by_extractor
-            .entry(provenance.extractor_id.clone())
-            .or_default() += 1;
-        for evidence in &provenance.evidence {
-            files_by_extractor
-                .entry(provenance.extractor_id.clone())
-                .or_default()
-                .insert(format!("{}:{}", evidence.repo, evidence.path));
-        }
+        cover(&provenance);
         lines.push(format!("e {} {}", identity, provenance.content_hash));
     }
     lines.sort();
@@ -352,6 +365,10 @@ mod tests {
         BTreeMap::from([("t0.adapter-ts".to_string(), files)])
     }
 
+    fn fixture_repos() -> BTreeSet<String> {
+        BTreeSet::from(["local/fixture".to_string()])
+    }
+
     #[test]
     fn coverage_counts_distinct_files_and_reports_unscoped_extractors() {
         let nodes = vec![
@@ -361,7 +378,7 @@ mod tests {
             node("d", "t1.dynamic", "InferredStrong", "traces/run.json"),
         ];
         let edges = vec![edge("a", "b", "t0.adapter-ts")];
-        let metrics = compute(&nodes, &edges, &ts_scope(4));
+        let metrics = compute(&nodes, &edges, &ts_scope(4), &fixture_repos());
 
         let ts = metrics
             .coverage
@@ -388,8 +405,28 @@ mod tests {
     }
 
     #[test]
+    fn coverage_attributes_only_the_current_ingests_repos() {
+        // A prior ingest's facts stay in the graph — tallies and the hash
+        // describe the whole graph, but coverage must not mix runs (#138
+        // review): otherwise a 1-file re-ingest against a 100-file graph
+        // reports >100% coverage.
+        let mut foreign = node("z", "t0.adapter-ts", "Confirmed", "src/old.ts");
+        foreign.props["prov"]["evidence"][0]["repo"] = json!("local/previous");
+        let nodes = vec![node("a", "t0.adapter-ts", "Confirmed", "src/a.ts"), foreign];
+        let metrics = compute(&nodes, &[], &ts_scope(1), &fixture_repos());
+
+        let ts = &metrics.coverage[0];
+        assert_eq!(ts.facts, 1);
+        assert_eq!(ts.files_with_facts, 1);
+        assert_eq!(ts.coverage_pct, Some(100.0));
+        // The whole-graph views still see both facts.
+        assert_eq!(metrics.graph_facts, 2);
+        assert_eq!(metrics.confirmed, 2);
+    }
+
+    #[test]
     fn scoped_adapter_with_zero_facts_is_a_zero_row_not_a_missing_row() {
-        let metrics = compute(&[], &[], &ts_scope(3));
+        let metrics = compute(&[], &[], &ts_scope(3), &fixture_repos());
         let ts = &metrics.coverage[0];
         assert_eq!(ts.extractor, "t0.adapter-ts");
         assert_eq!(ts.coverage_pct, Some(0.0));
@@ -401,14 +438,14 @@ mod tests {
         let b = node("b", "t0.adapter-ts", "Confirmed", "src/b.ts");
         let scope = ts_scope(2);
 
-        let forward = compute(&[a.clone(), b.clone()], &[], &scope);
-        let reversed = compute(&[b.clone(), a.clone()], &[], &scope);
+        let forward = compute(&[a.clone(), b.clone()], &[], &scope, &fixture_repos());
+        let reversed = compute(&[b.clone(), a.clone()], &[], &scope, &fixture_repos());
         // AC-0039 made observable: same facts ⇒ same hash, store order aside.
         assert_eq!(forward.content_hash, reversed.content_hash);
 
         let mut changed = a.clone();
         changed.props["prov"]["content_hash"] = json!("c".repeat(64));
-        let different = compute(&[changed, b], &[], &scope);
+        let different = compute(&[changed, b], &[], &scope, &fixture_repos());
         assert_ne!(forward.content_hash, different.content_hash);
     }
 
@@ -417,7 +454,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = MetricsStore::open(dir.path().join("state.db")).unwrap();
         let nodes = vec![node("a", "t0.adapter-ts", "Confirmed", "src/a.ts")];
-        let metrics = compute(&nodes, &[], &ts_scope(1));
+        let metrics = compute(&nodes, &[], &ts_scope(1), &fixture_repos());
 
         let first = store
             .record(7, "local/fixture", "workdir", &metrics, 2, 1)

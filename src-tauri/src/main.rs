@@ -924,9 +924,10 @@ fn cloud_disclosure(tier: String) -> Result<llm::anthropic::CloudDisclosure, Str
 fn record_ingest_metrics(
     state: &AppState,
     job_id: i64,
-    repo: &str,
+    record_repo: &str,
     commit_sha: &str,
     layers: &LayerBreakdown,
+    coverage_repos: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     let (nodes, edges) = {
         let graph = state.graph.lock().map_err(|e| e.to_string())?;
@@ -935,13 +936,20 @@ fn record_ingest_metrics(
             graph.all_edges().map_err(|e| e.to_string())?,
         )
     };
-    let scope = std::collections::BTreeMap::from([
-        ("t0.adapter-ts".to_string(), layers.ts.files),
-        ("t0.adapter-python".to_string(), layers.python.files),
-        ("t0.adapter-go".to_string(), layers.go.files),
-        ("t0.iac-terraform".to_string(), layers.tf.files),
-    ]);
-    let computed = metrics::compute(&nodes, &edges, &scope);
+    // Only layers this ingest actually contained are in scope — a
+    // zero-file layer's extractor did not run, so it reports null
+    // coverage (not applicable), never a misleading 0%.
+    let scope: std::collections::BTreeMap<String, u64> = [
+        ("t0.adapter-ts", layers.ts.files),
+        ("t0.adapter-python", layers.python.files),
+        ("t0.adapter-go", layers.go.files),
+        ("t0.iac-terraform", layers.tf.files),
+    ]
+    .into_iter()
+    .filter(|(_, files)| *files > 0)
+    .map(|(extractor, files)| (extractor.to_string(), files))
+    .collect();
+    let computed = metrics::compute(&nodes, &edges, &scope, coverage_repos);
     let (unsupported, no_evidence) = {
         let findings = state.findings.lock().map_err(|e| e.to_string())?;
         findings.counts().map_err(|e| e.to_string())?
@@ -950,7 +958,7 @@ fn record_ingest_metrics(
     store
         .record(
             job_id,
-            repo,
+            record_repo,
             commit_sha,
             &computed,
             unsupported,
@@ -1085,7 +1093,15 @@ fn run_ingest(
         stitch_backings(&mut graph).map_err(&fail)?;
     }
 
-    record_ingest_metrics(state, job_id, &repo, "workdir", &layers).map_err(&fail)?;
+    record_ingest_metrics(
+        state,
+        job_id,
+        &repo,
+        "workdir",
+        &layers,
+        &std::collections::BTreeSet::from([repo.clone()]),
+    )
+    .map_err(&fail)?;
 
     // A cancel can land at any point after the last check; `finish` is
     // guarded to only transition a running job, so whichever outcome hit
@@ -1260,8 +1276,15 @@ fn add_repo(
         relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
         stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
-    record_ingest_metrics(&state, job_id, &cloned.repo, &cloned.commit_sha, &layers)
-        .map_err(|e| fail(e, &state, job_id))?;
+    record_ingest_metrics(
+        &state,
+        job_id,
+        &cloned.repo,
+        &cloned.commit_sha,
+        &layers,
+        &std::collections::BTreeSet::from([cloned.repo.clone()]),
+    )
+    .map_err(|e| fail(e, &state, job_id))?;
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
     let done = jobs.get(job_id).map_err(|e| e.to_string())?;
@@ -1348,6 +1371,7 @@ fn add_system(
     let token = ingest::discover_token();
 
     let mut repos = Vec::new();
+    let mut repo_identities = std::collections::BTreeSet::new();
     let (mut files, mut nodes, mut edges) = (0u64, 0u64, 0u64);
     let mut layers = LayerBreakdown::default();
     let mut delta = DeltaSummary::default();
@@ -1410,6 +1434,7 @@ fn add_system(
         }
         let sha12: String = commit.chars().take(12).collect();
         repos.push(format!("{repo}@{sha12}"));
+        repo_identities.insert(repo.clone());
     }
     {
         // After every repo is in: infra from one repo can back channels
@@ -1423,8 +1448,15 @@ fn add_system(
     }
     // One history record for the whole system; the per-repo identities are
     // the record's identity (a system has no single commit).
-    record_ingest_metrics(&state, job_id, &repos.join(","), "system", &layers)
-        .map_err(|e| fail(e, &state, job_id))?;
+    record_ingest_metrics(
+        &state,
+        job_id,
+        &repos.join(","),
+        "system",
+        &layers,
+        &repo_identities,
+    )
+    .map_err(|e| fail(e, &state, job_id))?;
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
     jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
     let done = jobs.get(job_id).map_err(|e| e.to_string())?;
