@@ -6,6 +6,7 @@
 //! span-level payload. Provider-facing completion requests cannot be
 //! constructed outside this crate, so callers cannot bypass the gate.
 
+pub mod anthropic;
 pub mod catalog;
 
 use regex::Regex;
@@ -243,6 +244,15 @@ pub enum ProviderError {
     /// Provider returned an empty completion.
     #[error("provider returned an empty completion")]
     EmptyCompletion,
+    /// A cloud provider's safety classifiers declined the request. The
+    /// escalation surfaces this as an explicit outcome, never a retry storm.
+    #[error("cloud provider {provider} declined the request (category: {category:?})")]
+    Refused {
+        /// Declining provider.
+        provider: String,
+        /// Policy category when the provider reported one.
+        category: Option<String>,
+    },
 }
 
 /// Model-provider SPI from SPEC-00 §8.2.
