@@ -413,11 +413,12 @@ impl OllamaProvider {
         )
     }
 
-    /// Probe the local endpoint for installed model references (`name:tag`).
-    /// Loopback-only like every other call on this provider; the result
-    /// feeds [`catalog::classify_health`] — Cartograph reports a missing
-    /// model, it never pulls one itself.
-    pub fn list_local_models(&self) -> Result<Vec<String>, ProviderError> {
+    /// Probe the local endpoint for installed models (name **and** digest —
+    /// the digest is what makes two artifacts behind the same mutable tag
+    /// distinguishable). Loopback-only like every other call on this
+    /// provider; the result feeds [`catalog::classify_health`] — Cartograph
+    /// reports a missing model, it never pulls one itself.
+    pub fn list_local_models(&self) -> Result<Vec<crate::catalog::LocalModel>, ProviderError> {
         #[derive(Deserialize)]
         struct Tags {
             models: Vec<TagEntry>,
@@ -425,13 +426,22 @@ impl OllamaProvider {
         #[derive(Deserialize)]
         struct TagEntry {
             name: String,
+            #[serde(default)]
+            digest: String,
         }
         let url = self
             .base_url
             .join("api/tags")
             .map_err(|error| ProviderError::InvalidUrl(error.to_string()))?;
         let tags: Tags = self.client.get(url).send()?.error_for_status()?.json()?;
-        Ok(tags.models.into_iter().map(|entry| entry.name).collect())
+        Ok(tags
+            .models
+            .into_iter()
+            .map(|entry| crate::catalog::LocalModel {
+                name: entry.name,
+                digest: entry.digest,
+            })
+            .collect())
     }
 }
 
