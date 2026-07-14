@@ -112,7 +112,15 @@ const FAKE_SPEC: SpecBundle = {
         subject_kind: 'Endpoint',
         summary: 'Endpoint: GET /users',
         provenance: FAKE_PROVENANCE,
-      }] : index === 5 ? [FAKE_INFERRED] : [],
+      }] : index === 5 ? [FAKE_INFERRED] : index === 6 ? [{
+        // An edge gap: no atlas node carries this id, so the register row
+        // must open evidence from the assertion's own provenance (#137).
+        id: 'edge:sym:capture CALLS sym:sync',
+        subject_id: 'sym:capture CALLS sym:sync',
+        subject_kind: 'CALLS',
+        summary: 'sym:capture CALLS sym:sync — callee not statically resolvable',
+        provenance: { ...FAKE_PROVENANCE, confidence_tier: 'Gap' as const },
+      }] : [],
   })),
   assertion_count: 2,
   gap_count: 0,
@@ -533,6 +541,24 @@ export const ManifestDirectoryUsesAddSystem: Story = {
     await waitFor(() =>
       expect(canvas.getByText('2 repos as one system')).toBeInTheDocument(),
     );
+  },
+};
+
+export const GapRowOpensEvidenceForEdgeGap: Story = {
+  // #109 review fix: an edge gap has no atlas node, yet its register row
+  // must still open the evidence drawer from the assertion's provenance.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: 'Gaps & Drift' }));
+    await waitFor(() =>
+      expect(canvas.getByText(/callee not statically resolvable/)).toBeInTheDocument(),
+    );
+    await userEvent.click(canvas.getByText(/callee not statically resolvable/));
+    await waitFor(() => {
+      const mark = canvasElement.querySelector('.evidence-source mark');
+      expect(mark?.textContent).toBe(SPAN_TEXT);
+    });
   },
 };
 

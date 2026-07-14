@@ -4,9 +4,10 @@ import type { FindingsSummary, RegisterFinding, SpecAssertion } from '../store';
 export interface GapsDriftSurfaceProps {
   /** Header tally — the same register summary Workspace quotes. */
   summary: FindingsSummary | null;
-  /** Gap-register assertions from the spec bundle (wired, not re-derived). */
+  /** Raw gap-register assertions from the spec bundle (wired, not
+   *  re-derived). The surface filters to the tally's own definition. */
   gaps: SpecAssertion[];
-  /** Drift-register assertions from the spec bundle. */
+  /** Raw drift-register assertions from the spec bundle. */
   drift: SpecAssertion[];
   /** Persisted unsupported/no-evidence rows (#116). */
   registerFindings: RegisterFinding[];
@@ -73,6 +74,12 @@ export function GapsDriftSurface({
   onOpenGap,
 }: GapsDriftSurfaceProps) {
   const [tab, setTab] = useState<Tab>('lanes');
+  // Reconcile with findings_summary's own definitions: the gap tally counts
+  // gap nodes + gap edges (flow-hop assertions restate the same gaps inside
+  // flows), and the drift headline counts drift nodes (CONFLICTS/DRIFTS_FROM
+  // edges are supporting assertions of the same finding, not new findings).
+  const gapFindings = gaps.filter((assertion) => !assertion.id.startsWith('flow:'));
+  const driftFindings = drift.filter((assertion) => assertion.id.startsWith('node:'));
   const unsupported = registerFindings.filter((finding) => finding.kind === 'unsupported');
   const noEvidence = registerFindings.filter((finding) => finding.kind === 'no-evidence');
   const tiers: ('T1' | 'T2' | 'T3')[] = ['T1', 'T2', 'T3'];
@@ -123,16 +130,16 @@ export function GapsDriftSurface({
               <span className="material-symbols-outlined" aria-hidden="true">
                 link_off
               </span>
-              System gaps · {gaps.length}
+              System gaps · {gapFindings.length}
             </h3>
             <p className="muted">
               Hops the deterministic tier could not resolve. Each has a Resolution Strategy.
             </p>
           </div>
-          {gaps.length === 0 ? (
+          {gapFindings.length === 0 ? (
             <p className="muted">No unresolved facts.</p>
           ) : (
-            <GapRows gaps={gaps} onOpenGap={onOpenGap} />
+            <GapRows gaps={gapFindings} onOpenGap={onOpenGap} />
           )}
 
           <div className="register-lane unsupported-lane">
@@ -194,7 +201,7 @@ export function GapsDriftSurface({
       {tab === 'tiers' && (
         <div className="register-lanes">
           {tiers.map((tier) => {
-            const tierGaps = gaps.filter((gap) => nextTier(gap) === tier);
+            const tierGaps = gapFindings.filter((gap) => nextTier(gap) === tier);
             return (
               <div key={tier}>
                 <div className="register-lane">
@@ -224,18 +231,18 @@ export function GapsDriftSurface({
               <span className="material-symbols-outlined" aria-hidden="true">
                 gavel
               </span>
-              ADR / code drift · {drift.length}
+              ADR / code drift · {driftFindings.length}
             </h3>
             <p className="muted">
               Declared decisions the recovered behavior conflicts with — mapped to the offending
               edge, confidence preserved.
             </p>
           </div>
-          {drift.length === 0 ? (
+          {driftFindings.length === 0 ? (
             <p className="muted">No ADR/code conflicts recovered.</p>
           ) : (
             <ul className="register-rows">
-              {drift.map((finding) => (
+              {driftFindings.map((finding) => (
                 <li key={finding.id} className="register-row static">
                   <span className="register-text">{finding.summary}</span>
                   <code className="register-tail">{finding.subject_id}</code>
