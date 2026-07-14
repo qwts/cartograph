@@ -48,7 +48,10 @@ impl ClaudeLane {
     /// Exact API model id.
     pub fn model_id(self) -> &'static str {
         match self {
-            Self::Haiku => "claude-haiku-4-5",
+            // Dated snapshot, not the alias: pre-4.6 aliases are mutable
+            // convenience pointers, and a pinned lane must not change model
+            // behind a stable identity (review fix on #131).
+            Self::Haiku => "claude-haiku-4-5-20251001",
             Self::Opus => "claude-opus-4-8",
             Self::Fable => "claude-fable-5",
         }
@@ -151,8 +154,8 @@ impl AnthropicProvider {
         });
         if self.lane == ClaudeLane::Fable {
             // Thinking is always on for Fable (no `thinking` param), and a
-            // policy refusal re-runs server-side on Opus.
-            body["betas"] = serde_json::json!([FALLBACK_BETA]);
+            // policy refusal re-runs server-side on Opus. The beta opt-in
+            // travels as the `anthropic-beta` header (see `complete`).
             body["fallbacks"] = serde_json::json!([{ "model": ClaudeLane::Opus.model_id() }]);
         }
         body
@@ -205,11 +208,17 @@ impl LlmProvider for AnthropicProvider {
     }
 
     fn complete(&self, request: &ProviderCompletionRequest) -> Result<Completion, ProviderError> {
-        let response = self
+        let mut builder = self
             .client
             .post(&self.endpoint)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", API_VERSION)
+            .header("anthropic-version", API_VERSION);
+        if self.lane == ClaudeLane::Fable {
+            // The server-side fallback opt-in is a header, not a body field;
+            // `fallbacks` without it is rejected (review fix on #131).
+            builder = builder.header("anthropic-beta", FALLBACK_BETA);
+        }
+        let response = builder
             .json(&self.request_body(request))
             .send()?
             .error_for_status()?;
@@ -345,8 +354,11 @@ mod tests {
         }
         let raw = server.join().unwrap();
         assert!(raw.contains("claude-fable-5"));
-        assert!(raw.contains(FALLBACK_BETA));
-        assert!(raw.contains("claude-opus-4-8")); // fallback target
+        // The beta opt-in travels as a header — `fallbacks` in the body is
+        // rejected without it.
+        assert!(raw.contains(&format!("anthropic-beta: {FALLBACK_BETA}")));
+        assert!(raw.contains("claude-opus-4-8")); // fallback target in body
+        assert!(!raw.contains("\"betas\"")); // never a body field
         assert!(!raw.contains("\"thinking\"")); // always-on: param omitted
     }
 
