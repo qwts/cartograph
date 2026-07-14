@@ -57,10 +57,27 @@ pub fn model_for(action: ModelAction) -> ModelSpec {
     }
 }
 
-/// Provenance-ready identity for an action's local lane, e.g.
-/// `ollama:qwen3:8b@slm-catalog@1`.
-pub fn provider_identity(action: ModelAction) -> String {
-    format!("ollama:{}@{CATALOG_VERSION}", model_for(action).model)
+/// One installed model as reported by the local endpoint. The digest is the
+/// immutable artifact identity behind the mutable `name:tag` reference —
+/// two pulls of the same tag can be different artifacts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalModel {
+    /// Model reference (`name:tag`).
+    pub name: String,
+    /// Content digest of the installed artifact.
+    pub digest: String,
+}
+
+/// Provenance-ready identity for an action's lane **as observed**: the
+/// catalog pin plus the installed artifact's digest, e.g.
+/// `ollama:qwen3:8b@slm-catalog@1#sha256:abcd…`. Recording the digest is
+/// what keeps two artifacts behind the same tag distinguishable in
+/// provenance (review fix on #130).
+pub fn provider_identity(action: ModelAction, digest: &str) -> String {
+    format!(
+        "ollama:{}@{CATALOG_VERSION}#{digest}",
+        model_for(action).model
+    )
 }
 
 /// Health of one catalog lane. `Missing`/`Unreachable` are explicit,
@@ -69,8 +86,12 @@ pub fn provider_identity(action: ModelAction) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum ModelHealth {
-    /// The pinned model is installed and the endpoint answers.
-    Available,
+    /// The pinned model is installed and the endpoint answers. Carries the
+    /// installed artifact's digest so callers record exactly what ran.
+    Available {
+        /// Content digest of the installed artifact.
+        digest: String,
+    },
     /// The endpoint answers but the pinned model is not installed.
     Missing {
         /// The pinned model reference.
@@ -92,27 +113,29 @@ pub enum ModelHealth {
 /// itself is [`crate::OllamaProvider::list_local_models`].
 pub fn classify_health(
     action: ModelAction,
-    installed: &Result<Vec<String>, crate::ProviderError>,
+    installed: &Result<Vec<LocalModel>, crate::ProviderError>,
 ) -> ModelHealth {
     let pinned = model_for(action).model;
     match installed {
         Ok(models) => {
             // Ollama reports `name:tag`; an untagged pin matches any tag.
-            let found = models.iter().any(|installed| {
-                installed == pinned
+            let found = models.iter().find(|installed| {
+                installed.name == pinned
                     || installed
+                        .name
                         .split_once(':')
                         .is_some_and(|(name, _)| name == pinned)
             });
-            if found {
-                ModelHealth::Available
-            } else {
-                ModelHealth::Missing {
+            match found {
+                Some(model) => ModelHealth::Available {
+                    digest: model.digest.clone(),
+                },
+                None => ModelHealth::Missing {
                     model: pinned.to_string(),
                     remediation: format!(
                         "run `ollama pull {pinned}` — Cartograph never downloads models itself"
                     ),
-                }
+                },
             }
         }
         Err(error) => ModelHealth::Unreachable {
@@ -215,33 +238,50 @@ mod tests {
         }
     }
 
+    fn local(name: &str, digest: &str) -> LocalModel {
+        LocalModel {
+            name: name.into(),
+            digest: digest.into(),
+        }
+    }
+
     #[test]
-    fn every_action_has_a_pinned_identity() {
+    fn every_action_has_a_digest_pinned_identity() {
         for action in [
             ModelAction::Embedding,
             ModelAction::Triage,
             ModelAction::Proposal,
         ] {
-            let identity = provider_identity(action);
+            let identity = provider_identity(action, "sha256:abc123");
             assert!(identity.starts_with("ollama:"));
-            assert!(identity.ends_with(CATALOG_VERSION));
+            assert!(identity.contains(CATALOG_VERSION));
+            // The observed artifact digest is part of the recorded identity:
+            // two artifacts behind the same tag stay distinguishable.
+            assert!(identity.ends_with("#sha256:abc123"));
         }
     }
 
     #[test]
     fn health_classification_is_explicit_never_silent() {
         let installed = Ok(vec![
-            "qwen3:8b".to_string(),
-            "nomic-embed-text:latest".to_string(),
+            local("qwen3:8b", "sha256:aaa"),
+            local("nomic-embed-text:latest", "sha256:bbb"),
         ]);
+        // Available carries the installed digest so callers record exactly
+        // which artifact ran.
         assert_eq!(
             classify_health(ModelAction::Proposal, &installed),
-            ModelHealth::Available
+            ModelHealth::Available {
+                digest: "sha256:aaa".into()
+            }
         );
-        // Untagged pin matches an installed tag.
+        // Untagged pin matches an installed tag — and reports that tag's
+        // observed digest.
         assert_eq!(
             classify_health(ModelAction::Embedding, &installed),
-            ModelHealth::Available
+            ModelHealth::Available {
+                digest: "sha256:bbb".into()
+            }
         );
         // Missing model: explicit state with remediation — not an error
         // swallowed, not a cloud fallback.
@@ -253,7 +293,7 @@ mod tests {
             other => panic!("expected Missing, got {other:?}"),
         }
         // Unreachable endpoint: same discipline.
-        let down: Result<Vec<String>, crate::ProviderError> =
+        let down: Result<Vec<LocalModel>, crate::ProviderError> =
             Err(crate::ProviderError::Unsupported("probe"));
         assert!(matches!(
             classify_health(ModelAction::Proposal, &down),
