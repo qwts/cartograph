@@ -12,7 +12,7 @@ use jobs::{EvalResult, Job, JobStore};
 use llm::LlmProvider;
 use serde::Serialize;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 /// Stores managed by the Tauri runtime. Graph and state spine are separate
 /// databases (ADR-0008): the graph is a disposable ingest artifact, the spine
@@ -719,40 +719,89 @@ fn relink_found_adrs(graph: &mut SqliteGraphStore) -> Result<u64, String> {
     Ok(linked)
 }
 
-/// Run T0 extraction over a local directory and load the facts into the
-/// graph (US-0002 local path; GitHub clone ingest is `add_repo`).
-#[tauri::command]
-fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary, String> {
-    let job_id = {
-        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs
-            .enqueue(&format!("ingest:{path}"))
-            .map_err(|e| e.to_string())?;
-        jobs.set_status(job.id, "running")
-            .map_err(|e| e.to_string())?;
-        job.id
+/// Notify the shell of a job transition (`job://changed`); the Jobs surface
+/// and the global progress bar stay live without polling (#117).
+fn emit_job(app: &tauri::AppHandle, job: &Job) {
+    let _ = app.emit("job://changed", job);
+}
+
+/// Record stage + percent for a running job and notify the shell.
+fn report_progress(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    job_id: i64,
+    stage: &str,
+    percent: f64,
+) -> Result<(), String> {
+    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+    let job = jobs
+        .set_progress(job_id, stage, percent)
+        .map_err(|e| e.to_string())?;
+    emit_job(app, &job);
+    Ok(())
+}
+
+/// Persist a job failure with its detail and notify the shell.
+fn report_failure(app: &tauri::AppHandle, state: &AppState, job_id: i64, error: &str) {
+    let Ok(mut jobs) = state.jobs.lock() else {
+        return;
     };
-    let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
-        if let Ok(mut jobs) = state.jobs.lock() {
-            let _ = jobs.set_status(job_id, "failed");
+    if let Ok(job) = jobs.fail(job_id, error) {
+        emit_job(app, &job);
+    }
+}
+
+/// True when the user cancelled the job — long work checks this between
+/// stages and stops at the next safe boundary (content-addressed delta
+/// ingest keeps the graph consistent, ADR-0014).
+fn job_cancelled(state: &AppState, job_id: i64) -> bool {
+    state
+        .jobs
+        .lock()
+        .ok()
+        .and_then(|jobs| jobs.is_cancelled(job_id).ok())
+        .unwrap_or(false)
+}
+
+/// The staged ingest pipeline behind `ingest_path` and `retry_job`: extract →
+/// load → stitch, with progress events and cooperative cancellation.
+fn run_ingest(
+    path: &str,
+    job_id: i64,
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<IngestSummary, String> {
+    let fail = |error: String| -> String {
+        report_failure(app, state, job_id, &error);
+        error
+    };
+    let cancelled = || -> Result<(), String> {
+        if job_cancelled(state, job_id) {
+            // Cancelled by the user: status is already `cancelled`; the
+            // pipeline just stops. Not a failure.
+            return Err("cancelled".to_string());
         }
-        e
+        Ok(())
     };
 
     // Local unversioned tree: identified by directory basename (two dirs
     // with the same basename still collide — real identity is `add_repo`).
-    let root = std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
+    report_progress(app, state, job_id, "scan", 5.0)?;
+    let root = std::fs::canonicalize(path).map_err(|e| fail(e.to_string()))?;
     let repo = format!(
         "local/{}",
         root.file_name()
             .map(|n| n.to_string_lossy())
             .unwrap_or_default()
     );
+
+    cancelled()?;
+    report_progress(app, state, job_id, "extract", 15.0)?;
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
             .lock()
-            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+            .map_err(|e| fail(e.to_string()))?;
         let cache = caches.repos.entry(repo.clone()).or_default();
         extract_tree_incremental(
             &root,
@@ -765,20 +814,24 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
             &[],
             cache,
         )
-        .map_err(|e| fail(e, &state, job_id))?
+        .map_err(fail)?
     };
+
+    cancelled()?;
+    report_progress(app, state, job_id, "load", 70.0)?;
     {
-        let mut graph = state
-            .graph
-            .lock()
-            .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        load_into_graph(&mut graph, &extraction, &repo, &root, "workdir")
-            .map_err(|e| fail(e, &state, job_id))?;
-        relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
-        stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
+        let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
+        load_into_graph(&mut graph, &extraction, &repo, &root, "workdir").map_err(&fail)?;
+        report_progress(app, state, job_id, "stitch", 90.0)?;
+        relink_found_adrs(&mut graph).map_err(&fail)?;
+        stitch_backings(&mut graph).map_err(&fail)?;
     }
+
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
+    let job = jobs
+        .finish(job_id, &[format!("graph:{repo}@workdir")])
+        .map_err(|e| e.to_string())?;
+    emit_job(app, &job);
     Ok(IngestSummary {
         job_id,
         files: layers.files(),
@@ -787,6 +840,77 @@ fn ingest_path(path: String, state: State<'_, AppState>) -> Result<IngestSummary
         layers,
         delta,
     })
+}
+
+/// Run T0 extraction over a local directory and load the facts into the
+/// graph (US-0002 local path; GitHub clone ingest is `add_repo`).
+#[tauri::command]
+fn ingest_path(
+    path: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<IngestSummary, String> {
+    let job_id = {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        let job = jobs
+            .enqueue(&format!("ingest:{path}"))
+            .map_err(|e| e.to_string())?;
+        jobs.set_status(job.id, "running")
+            .map_err(|e| e.to_string())?;
+        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
+        emit_job(&app, &running);
+        job.id
+    };
+    run_ingest(&path, job_id, &app, &state)
+}
+
+/// Cancel a queued or running job; running work stops at its next stage
+/// boundary (#117).
+#[tauri::command]
+fn cancel_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Job, String> {
+    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+    let job = jobs.cancel(id).map_err(|e| e.to_string())?;
+    emit_job(&app, &job);
+    Ok(job)
+}
+
+/// Retry a failed or cancelled job, or resume an interrupted one: re-queues
+/// the same row, then re-dispatches execution for kinds the shell can re-run
+/// (`ingest:*` reuses the content-addressed cache, so a resume recomputes
+/// only what the interrupted run didn't finish — ADR-0014).
+#[tauri::command]
+fn retry_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Job, String> {
+    let kind = {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        let job = jobs.retry(id).map_err(|e| e.to_string())?;
+        emit_job(&app, &job);
+        job.kind
+    };
+
+    if let Some(path) = kind.strip_prefix("ingest:") {
+        {
+            let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+            jobs.set_status(id, "running").map_err(|e| e.to_string())?;
+            let running = jobs.get(id).map_err(|e| e.to_string())?;
+            emit_job(&app, &running);
+        }
+        let path = path.to_string();
+        run_ingest(&path, id, &app, &state)?;
+        let jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        return jobs.get(id).map_err(|e| e.to_string());
+    }
+    if kind == "noop" {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        let job = jobs.finish(id, &[]).map_err(|e| e.to_string())?;
+        emit_job(&app, &job);
+        return Ok(job);
+    }
+    // add-repo / add-system re-dispatch needs their pipelines refactored
+    // behind the same job-id seam; until then the caller is told explicitly
+    // rather than silently doing nothing.
+    let error = format!("retry re-dispatch not yet supported for kind '{kind}' — re-run the add");
+    report_failure(&app, &state, id, &error);
+    Err(error)
 }
 
 #[derive(Serialize)]
@@ -821,9 +945,7 @@ fn add_repo(
         job.id
     };
     let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
-        if let Ok(mut jobs) = state.jobs.lock() {
-            let _ = jobs.set_status(job_id, "failed");
-        }
+        report_failure(&app, state, job_id, &e);
         e
     };
 
@@ -935,9 +1057,7 @@ fn add_system(
         job.id
     };
     let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
-        if let Ok(mut jobs) = state.jobs.lock() {
-            let _ = jobs.set_status(job_id, "failed");
-        }
+        report_failure(&app, state, job_id, &e);
         e
     };
 
@@ -1277,7 +1397,10 @@ fn main() {
             std::fs::create_dir_all(&data_dir)?;
             let graph = SqliteGraphStore::open(data_dir.join("graph.db"))?;
             let state_path = data_dir.join("state.db");
-            let jobs = JobStore::open(&state_path)?;
+            let mut jobs = JobStore::open(&state_path)?;
+            // Jobs left running by a dead process become explicit
+            // `interrupted` rows — resumable, never silently stuck (#117).
+            jobs.recover_interrupted()?;
             let decisions = agents::DecisionLog::open(&state_path)?;
             app.manage(AppState {
                 graph: Mutex::new(graph),
@@ -1300,6 +1423,8 @@ fn main() {
             record_assertion_decision,
             list_assertion_decisions,
             ingest_path,
+            cancel_job,
+            retry_job,
             list_nodes,
             atlas_snapshot,
             read_evidence,
