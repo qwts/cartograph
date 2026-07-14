@@ -400,6 +400,32 @@ export const IngestFlowEndToEnd: Story = {
   },
 };
 
+export const ManifestDirectoryUsesAddSystem: Story = {
+  // The Connect step's explicit source wins over string inference: a manifest
+  // target that is a *directory* (no cartograph.system.toml suffix) must
+  // still dispatch add_system, never ingest_path (#104 review).
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Connect a target' }));
+    await userEvent.click(canvas.getByRole('radio', { name: 'System manifest' }));
+    await userEvent.type(canvas.getByRole('textbox'), '/fake/system-checkout');
+    await userEvent.click(canvas.getByRole('button', { name: /preflight/i }));
+    // Manifest detection defers to recovery rather than inventing a report.
+    await expect(canvas.getByText('Detection deferred')).toBeInTheDocument();
+
+    await userEvent.click(canvas.getByRole('button', { name: /run full recovery/i }));
+    // add_system's summary lists every declared repo with its identity —
+    // proof the manifest loader ran, not the single-repo local path.
+    await waitFor(() =>
+      expect(canvas.getByTestId('system-repos')).toHaveTextContent(
+        'acme/shop@a1b2c3d4e5f6, local/infra@workdir',
+      ),
+    );
+  },
+};
+
 export const ShellNavigation: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
