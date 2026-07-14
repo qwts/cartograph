@@ -9,7 +9,8 @@ const LABEL: Record<Tier, string> = {
 
 /**
  * Confidence-tier badge (R-INT-2): inferred content must never be visually
- * indistinguishable from confirmed. Colors come from docs/design/DESIGN.md.
+ * indistinguishable from confirmed. Colors come from
+ * docs/design/production-ui/README.md (confidence-tier palette).
  */
 export function TierBadge({ tier }: { tier: Tier }) {
   return <span className={`tier-badge tier-${tier.toLowerCase()}`}>{LABEL[tier]}</span>;

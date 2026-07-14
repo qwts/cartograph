@@ -1,21 +1,102 @@
-/* Design tokens from docs/design/DESIGN.md (Stitch export). Tier colors are
-   load-bearing (R-INT-2): confirmed / inferred / gap must never look alike. */
+/* Design tokens from docs/design/production-ui/README.md (authoritative
+   handoff; supersedes the Stitch export in docs/design/DESIGN.md). Tier
+   colors are load-bearing (R-INT-2): confirmed / inferred / gap must never
+   look alike, and color is never the only encoding (pair with label + code
+   + shape). */
 :root {
-  --surface: #131313;
-  --surface-container: #201f1f;
-  --surface-container-high: #2a2a2a;
-  --on-surface: #e5e2e1;
-  --on-surface-variant: #c1c6d5;
-  --outline-variant: #414753;
-  --primary: #abc7ff;
-  --on-primary: #002f65;
-  --bg-panel: #242424;
-  --border-subtle: #333333;
+  /* Surfaces */
+  --bg: #0e0e0e; /* app background / content area */
+  --bg-rail: #0b0b0b; /* left rail, header, status bar */
+  --surface: #141414; /* cards, panels, controls */
+  --surface-alt: #111111; /* inset panels, list rows, modal inner cards */
+  --surface-raised: #161616; /* drawer, command palette, modals, legend */
+  --control: #242424; /* interactive control fill / row hover */
+  --border: #2a2a2a;
+  --border-dim: #1f1f1f;
+
+  /* Text */
+  --text: #e5e2e1; /* primary headings/values */
+  --text-body: #c1c6d5;
   --text-muted: #888888;
+  --text-faint: #666666;
+
+  /* Accents */
+  --accent: #abc7ff; /* CTAs, active nav, links, focus */
+  --on-accent: #002f65;
+  --accent-local: #7adaa1; /* "on-device / 0 bytes egress" affirmations */
+  --accent-local-bright: #9bfcc1;
+
+  /* Confidence tiers (semantic palette) */
   --tier-confirmed: #27c93f;
   --tier-inferred-strong: #2d9cdb;
   --tier-inferred-weak: #f2c94c;
   --tier-gap: #eb5757;
+  /* Register findings — not graph facts (unsupported ≠ gap) */
+  --finding-unsupported: #ffb688;
+  --finding-no-evidence: #7f7f7f;
+
+  /* Typography */
+  --font-sans:
+    'Inter',
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Radius scale: badges 4–5, controls 7–8, cards 9–11, overlays 12–14 */
+  --radius-badge: 4px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --radius-overlay: 13px;
+
+  /* Overlay shadows */
+  --shadow-drawer: -30px 0 70px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 30px 70px rgba(0, 0, 0, 0.6);
+  --shadow-palette: 0 24px 70px rgba(0, 0, 0, 0.7);
+}
+
+/* Motion (handoff §Motion) */
+@keyframes carto-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Animated dashed Gap/inferred edges. */
+@keyframes carto-dash {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+/* Drawer/modal/palette entrance. */
+@keyframes carto-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Thin indeterminate global progress bar. */
+@keyframes carto-indet {
+  0% {
+    left: -30%;
+    width: 30%;
+  }
+  50% {
+    left: 40%;
+    width: 40%;
+  }
+  100% {
+    left: 100%;
+    width: 30%;
+  }
 }
 
 * {
@@ -24,14 +105,9 @@
 }
 
 body {
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
-  background: var(--surface);
-  color: var(--on-surface);
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -46,8 +122,8 @@ body {
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem 1.25rem;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-container);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .topbar h1 {
@@ -60,7 +136,7 @@ body {
   font-size: 0.72rem;
   padding: 0.15rem 0.55rem;
   border-radius: 999px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   color: var(--text-muted);
 }
 
@@ -126,16 +202,16 @@ main {
 .atlas-overlay-toggle,
 .atlas-toolbar button,
 .atlas-entity-index button {
-  background: var(--surface-container-high);
-  color: var(--on-surface-variant);
-  border-color: var(--border-subtle);
+  background: var(--control);
+  color: var(--text-body);
+  border-color: var(--border);
 }
 
 .atlas-overlay-toggle.active,
 .atlas-toolbar button.active {
-  color: var(--primary);
-  border-color: var(--primary);
-  background: color-mix(in srgb, var(--primary) 12%, var(--surface-container-high));
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control));
 }
 
 .atlas-toolbar {
@@ -158,9 +234,9 @@ main {
   gap: 0.85rem;
   min-height: 2.2rem;
   padding: 0.5rem 1.25rem;
-  border-top: 1px solid var(--border-subtle);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-container);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -194,7 +270,7 @@ main {
 
 .atlas-legend strong {
   margin-left: auto;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   font-variant-numeric: tabular-nums;
 }
 
@@ -225,7 +301,7 @@ main {
   align-items: baseline;
   gap: 0.75rem;
   padding: 0.65rem 1.25rem 0.8rem;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border);
   font-size: 0.7rem;
 }
 
@@ -245,14 +321,14 @@ main {
 .atlas-entity-index button {
   flex: 0 0 auto;
   padding: 0.25rem 0.5rem;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 0.68rem;
   font-weight: 500;
 }
 
 .card {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1rem 1.25rem;
   /* Grid items default to min-width auto: one long unbreakable string
@@ -302,12 +378,12 @@ main {
 .stat {
   font-size: 2rem;
   font-weight: 700;
-  color: var(--primary);
+  color: var(--accent);
 }
 
 .stat-label {
   font-size: 0.8rem;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
 }
 
 .jobs-list {
@@ -326,9 +402,9 @@ main {
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface-container-high);
+  background: var(--control);
   /* Ingest paths are long and unbreakable. */
   overflow-wrap: anywhere;
   min-width: 0;
@@ -342,9 +418,9 @@ button {
   font: inherit;
   padding: 0.45rem 0.9rem;
   border-radius: 8px;
-  border: 1px solid var(--outline-variant);
-  background: var(--primary);
-  color: var(--on-primary);
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: var(--on-accent);
   font-weight: 600;
   cursor: pointer;
 }
@@ -377,14 +453,14 @@ button:disabled {
 }
 
 .secondary-button {
-  background: var(--surface-container-high);
-  color: var(--on-surface);
+  background: var(--control);
+  color: var(--text);
 }
 
 .danger-button {
   border-color: var(--tier-gap);
   background: var(--tier-gap);
-  color: var(--surface);
+  color: var(--bg);
 }
 
 /* Confidence tiers (R-INT-2): confirmed / inferred / gap never look alike. */
@@ -426,9 +502,9 @@ button:disabled {
   font: inherit;
   padding: 0.45rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid var(--outline-variant);
-  background: var(--surface-container-high);
-  color: var(--on-surface);
+  border: 1px solid var(--border);
+  background: var(--control);
+  color: var(--text);
 }
 
 .ingest-summary {
@@ -444,20 +520,20 @@ button:disabled {
 
 .layer-summary > div {
   padding: 0.5rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface-container-high);
+  background: var(--control);
 }
 
 .layer-summary dt {
-  color: var(--primary);
+  color: var(--accent);
   font-size: 0.78rem;
   font-weight: 700;
 }
 
 .layer-summary dd {
   margin-top: 0.2rem;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   font-size: 0.75rem;
 }
 
@@ -479,10 +555,10 @@ button:disabled {
   align-items: baseline;
   gap: 0.6rem;
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface-container-high);
-  color: var(--on-surface);
+  background: var(--control);
+  color: var(--text);
   font-weight: 400;
   text-align: left;
   cursor: pointer;
@@ -490,13 +566,13 @@ button:disabled {
 
 .endpoint-method {
   font-weight: 700;
-  color: var(--primary);
+  color: var(--accent);
   min-width: 3.2rem;
 }
 
 .endpoint-path {
   flex: 1;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   /* The route is the content: wrap it in full rather than clip it. The
      tier badge stays pinned inside the row (flex-shrink: 0 on .tier-badge). */
   min-width: 0;
@@ -531,23 +607,23 @@ button:disabled {
 .flow-mode-toggle {
   display: flex;
   padding: 0.2rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface-container);
+  background: var(--surface);
 }
 
 .flow-mode-toggle button {
   padding: 0.35rem 0.65rem;
   border-color: transparent;
   background: transparent;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   font-size: 0.72rem;
 }
 
 .flow-mode-toggle button.active {
-  border-color: var(--outline-variant);
-  background: var(--surface-container-high);
-  color: var(--primary);
+  border-color: var(--border);
+  background: var(--control);
+  color: var(--accent);
 }
 
 .flow-inspector-toolbar {
@@ -555,9 +631,9 @@ button:disabled {
   align-items: center;
   gap: 0.65rem;
   padding: 0.65rem 1.25rem;
-  border-top: 1px solid var(--border-subtle);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-container);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
   font-size: 0.75rem;
 }
 
@@ -572,11 +648,11 @@ button:disabled {
 .flow-inspector-toolbar select {
   min-width: min(25rem, 42vw);
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface-container-high);
-  color: var(--on-surface);
-  font: 0.75rem ui-monospace, monospace;
+  background: var(--control);
+  color: var(--text);
+  font: 0.75rem var(--font-mono);
 }
 
 .flow-inspector-toolbar [role='status'] {
@@ -585,7 +661,7 @@ button:disabled {
 
 .flow-score {
   flex-shrink: 0;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   font-variant-numeric: tabular-nums;
 }
 
@@ -598,10 +674,10 @@ button:disabled {
   width: 290px;
   padding: 0;
   overflow: hidden;
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface-container-high);
-  color: var(--on-surface);
+  background: var(--control);
+  color: var(--text);
   box-shadow: 0 10px 30px rgb(0 0 0 / 24%);
   text-align: left;
 }
@@ -613,21 +689,21 @@ button:disabled {
 .flow-inspector-canvas .react-flow__handle {
   width: 7px;
   height: 7px;
-  border-color: var(--surface);
-  background: var(--outline-variant);
+  border-color: var(--bg);
+  background: var(--border);
 }
 
 .flow-inspector-canvas .react-flow__controls {
   overflow: hidden;
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: none;
 }
 
 .flow-inspector-canvas .react-flow__controls-button {
-  border-color: var(--border-subtle);
-  background: var(--surface-container-high);
-  fill: var(--on-surface);
+  border-color: var(--border);
+  background: var(--control);
+  fill: var(--text);
 }
 
 .flow-node-content {
@@ -641,7 +717,7 @@ button:disabled {
 
 .flow-node-content.trigger {
   justify-content: center;
-  border-top: 3px solid var(--primary);
+  border-top: 3px solid var(--accent);
 }
 
 .flow-node-content.unresolved {
@@ -649,7 +725,7 @@ button:disabled {
 }
 
 .flow-node-content > strong {
-  font: 600 0.78rem ui-monospace, monospace;
+  font: 600 0.78rem var(--font-mono);
   overflow-wrap: anywhere;
 }
 
@@ -677,7 +753,7 @@ button:disabled {
 
 .flow-gap-details > div {
   padding: 0.4rem 0.5rem;
-  border: 1px solid color-mix(in srgb, var(--tier-gap) 30%, var(--border-subtle));
+  border: 1px solid color-mix(in srgb, var(--tier-gap) 30%, var(--border));
   border-radius: 5px;
   background: color-mix(in srgb, var(--tier-gap) 7%, transparent);
 }
@@ -692,7 +768,7 @@ button:disabled {
 
 .flow-gap-details dd {
   margin-top: 0.15rem;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   overflow-wrap: anywhere;
 }
 
@@ -704,17 +780,17 @@ button:disabled {
   padding: 0.8rem 1.25rem;
   overflow-y: auto;
   list-style: none;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border);
 }
 
 .flow-sequence li {
   display: grid;
   gap: 0.4rem;
   padding: 0.65rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: var(--surface-container-high);
-  font: 0.72rem ui-monospace, monospace;
+  background: var(--control);
+  font: 0.72rem var(--font-mono);
 }
 
 .flow-sequence li.unresolved {
@@ -722,17 +798,17 @@ button:disabled {
 }
 
 .flow-sequence li > span {
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   overflow-wrap: anywhere;
 }
 
 .flow-dossier-details {
   padding: 0.75rem 1.25rem 0;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border);
 }
 
 .flow-dossier-details summary {
-  color: var(--primary);
+  color: var(--accent);
   cursor: pointer;
   font-size: 0.75rem;
   font-weight: 600;
@@ -796,11 +872,11 @@ button:disabled {
 }
 
 .evidence-source {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   line-height: 1.5;
-  background: var(--surface-container-lowest, #0e0e0e);
-  border: 1px solid var(--border-subtle);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.75rem;
   overflow: auto;
@@ -810,7 +886,7 @@ button:disabled {
 
 .evidence-source mark {
   background: color-mix(in srgb, var(--tier-confirmed) 25%, transparent);
-  color: var(--on-surface);
+  color: var(--text);
   border-radius: 3px;
   outline: 1px solid var(--tier-confirmed);
 }
@@ -824,7 +900,7 @@ button:disabled {
   padding: 2rem;
   display: grid;
   place-items: center;
-  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
 }
 
 .egress-dialog {
@@ -834,7 +910,7 @@ button:disabled {
   padding: 1.25rem;
   border: 1px solid var(--tier-inferred-weak);
   border-radius: 12px;
-  background: var(--surface-container);
+  background: var(--surface);
   box-shadow: 0 20px 70px rgb(0 0 0 / 45%);
 }
 
@@ -875,9 +951,9 @@ button:disabled {
 .egress-meta > div {
   min-width: 0;
   padding: 0.6rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface-container-high);
+  background: var(--control);
 }
 
 .egress-meta > div:last-child {
@@ -899,7 +975,7 @@ button:disabled {
 
 .egress-hash {
   overflow-wrap: anywhere;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
 }
 
@@ -912,11 +988,11 @@ button:disabled {
   margin-top: 0.4rem;
   padding: 0.65rem;
   overflow: auto;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: #0e0e0e;
-  color: var(--on-surface);
-  font-family: ui-monospace, monospace;
+  color: var(--text);
+  font-family: var(--font-mono);
   font-size: 0.78rem;
   line-height: 1.45;
   white-space: pre-wrap;
@@ -934,7 +1010,7 @@ button:disabled {
 .egress-spans li {
   min-width: 0;
   padding: 0.65rem;
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -945,7 +1021,7 @@ button:disabled {
 
 .egress-span-meta span {
   min-width: 0;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   overflow-wrap: anywhere;
   text-align: right;
 }
@@ -954,7 +1030,7 @@ button:disabled {
   justify-content: flex-end;
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border);
 }
 
 @media (max-width: 600px) {
@@ -1004,7 +1080,7 @@ button:disabled {
 
 .spec-workbench-header {
   padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border);
 }
 
 .spec-workbench-header h2 {
@@ -1027,10 +1103,10 @@ button:disabled {
   flex-wrap: wrap;
   gap: 0.55rem 1rem;
   padding: 0.6rem 1.25rem;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-container);
-  color: var(--on-surface-variant);
-  font: 0.7rem ui-monospace, monospace;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-body);
+  font: 0.7rem var(--font-mono);
 }
 
 .spec-workbench-error,
@@ -1049,7 +1125,7 @@ button:disabled {
 }
 
 .spec-artifact-nav {
-  border-right: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border);
   background: #171717;
 }
 
@@ -1060,22 +1136,22 @@ button:disabled {
   gap: 0.15rem 0.75rem;
   padding: 0.7rem 0.9rem;
   border: 0;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border);
   border-radius: 0;
   background: transparent;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   text-align: left;
 }
 
 .spec-artifact-nav > button:hover,
 .spec-artifact-nav > button.active {
   filter: none;
-  background: var(--surface-container-high);
-  color: var(--on-surface);
+  background: var(--control);
+  color: var(--text);
 }
 
 .spec-artifact-nav > button.active {
-  box-shadow: inset 3px 0 var(--primary);
+  box-shadow: inset 3px 0 var(--accent);
 }
 
 .spec-artifact-nav > button span,
@@ -1088,15 +1164,15 @@ button:disabled {
 
 .spec-artifact-nav > button small {
   color: var(--text-muted);
-  font: 0.65rem ui-monospace, monospace;
+  font: 0.65rem var(--font-mono);
 }
 
 .spec-artifact-nav > button strong {
   grid-column: 2;
   grid-row: 1 / span 2;
   align-self: center;
-  color: var(--primary);
-  font: 0.7rem ui-monospace, monospace;
+  color: var(--accent);
+  font: 0.7rem var(--font-mono);
 }
 
 .spec-curation-log {
@@ -1125,13 +1201,13 @@ button:disabled {
   display: grid;
   gap: 0.2rem;
   padding: 0.55rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.68rem;
 }
 
 .spec-curation-log li strong {
-  color: var(--primary);
+  color: var(--accent);
 }
 
 .spec-curation-log li span,
@@ -1167,7 +1243,7 @@ button:disabled {
 
 .spec-artifact-detail code,
 .spec-provenance code {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
 
@@ -1176,11 +1252,11 @@ button:disabled {
   margin-top: 1rem;
   padding: 0.85rem;
   overflow: auto;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: #0e0e0e;
-  color: var(--on-surface-variant);
-  font: 0.72rem/1.55 ui-monospace, monospace;
+  color: var(--text-body);
+  font: 0.72rem/1.55 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1188,7 +1264,7 @@ button:disabled {
 .spec-assertions {
   margin-top: 1.25rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border);
 }
 
 .spec-assertions > ol {
@@ -1205,10 +1281,10 @@ button:disabled {
 
 .spec-assertion {
   padding: 0.8rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-left-width: 3px;
   border-radius: 8px;
-  background: var(--surface-container-high);
+  background: var(--control);
 }
 
 .tier-border-confirmed { border-left-color: var(--tier-confirmed); }
@@ -1233,7 +1309,7 @@ button:disabled {
 .spec-provenance > div {
   min-width: 0;
   padding: 0.5rem;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 5px;
   background: #1b1b1b;
 }
@@ -1252,7 +1328,7 @@ button:disabled {
 
 .spec-provenance dd {
   margin-top: 0.25rem;
-  color: var(--on-surface-variant);
+  color: var(--text-body);
   font-size: 0.7rem;
   overflow-wrap: anywhere;
 }
@@ -1273,7 +1349,7 @@ button:disabled {
 .spec-curation-controls {
   margin-top: 0.75rem;
   padding-top: 0.75rem;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border);
 }
 
 .spec-curation-controls label {
@@ -1287,11 +1363,11 @@ button:disabled {
   min-height: 4rem;
   resize: vertical;
   padding: 0.55rem;
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--border);
   border-radius: 6px;
   background: #151515;
-  color: var(--on-surface);
-  font: 0.72rem/1.4 ui-monospace, monospace;
+  color: var(--text);
+  font: 0.72rem/1.4 var(--font-mono);
 }
 
 .spec-curation-controls > div {
@@ -1311,7 +1387,7 @@ button:disabled {
 .curation-decision {
   margin-left: auto;
   padding: 0.25rem 0.5rem;
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.65rem;
   font-weight: 700;
@@ -1319,7 +1395,7 @@ button:disabled {
 
 .decision-rejected { color: var(--tier-gap); }
 .decision-accepted { color: var(--tier-confirmed); }
-.decision-annotated { color: var(--primary); }
+.decision-annotated { color: var(--accent); }
 
 @media (max-width: 900px) {
   .spec-workbench-header,
@@ -1336,7 +1412,7 @@ button:disabled {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
     border-right: 0;
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--border);
   }
 
   .spec-curation-log {

@@ -42,7 +42,8 @@ npm run tauri dev   # first run compiles the Rust workspace — takes a few minu
 | [docs/user_stories.md](docs/user_stories.md) | User stories + acceptance criteria (US/AC schema) |
 | [docs/US-TM.md](docs/US-TM.md) | Traceability matrix: US ↔ AC ↔ crate ↔ milestone ↔ ADR ↔ test |
 | [docs/adr/](docs/adr/) | Architecture decision records |
-| [docs/design/](docs/design/) | Design tokens + Stitch UI mockups |
+| [docs/design/production-ui/](docs/design/production-ui/) | Production UI design handoff (authoritative tokens + screenshots) |
+| [docs/design/](docs/design/) | Earlier design tokens + Stitch UI mockups |
 
 Work is tracked in [GitHub Issues + Project](https://github.com/qwtm/cartograph/issues);
 `docs/archive/tracker.csv` is the pre-import snapshot and is not maintained.
