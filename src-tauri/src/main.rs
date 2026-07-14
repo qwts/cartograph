@@ -5,9 +5,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod evidence;
+mod findings;
 mod jobs;
 
 use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
+use findings::{Finding, FindingStore, NewFinding};
 use jobs::{EvalResult, Job, JobStore};
 use llm::LlmProvider;
 use serde::Serialize;
@@ -20,6 +22,7 @@ use tauri::{Emitter, Manager, State};
 struct AppState {
     graph: Mutex<SqliteGraphStore>,
     jobs: Mutex<JobStore>,
+    findings: Mutex<FindingStore>,
     decisions: Mutex<agents::DecisionLog>,
     extraction_caches: Mutex<ExtractionCaches>,
 }
@@ -719,6 +722,115 @@ fn relink_found_adrs(graph: &mut SqliteGraphStore) -> Result<u64, String> {
     Ok(linked)
 }
 
+/// The single source of truth for register counts (#116): every surface —
+/// Workspace outcome, Gaps & Drift, Provenance & Eval — reads these numbers
+/// from this one query so they always reconcile (handoff §Interactions #3).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct FindingsSummary {
+    /// Explicit System Gaps in the graph (spec-register definition).
+    gaps: u64,
+    /// Unsupported patterns — tool limitations, never Gaps.
+    unsupported: u64,
+    /// Questions recovery found no evidence for.
+    no_evidence: u64,
+    /// ADR/code drift findings.
+    drift: u64,
+    /// gaps + unsupported + no_evidence (the register headline).
+    open_findings: u64,
+    /// Total graph facts (nodes + edges).
+    graph_facts: u64,
+}
+
+/// Count register entries from the graph using the spec register's own
+/// predicates — one definition, every surface.
+fn summarize_register(
+    nodes: &[Node],
+    edges: &[Edge],
+    unsupported: u64,
+    no_evidence: u64,
+) -> FindingsSummary {
+    let gaps = nodes.iter().filter(|node| spec::is_gap_node(node)).count() as u64
+        + edges.iter().filter(|edge| spec::is_gap_edge(edge)).count() as u64;
+    let drift = nodes
+        .iter()
+        .filter(|node| spec::is_drift_node(node))
+        .count() as u64
+        + edges
+            .iter()
+            .filter(|edge| spec::is_drift_edge(edge))
+            .count() as u64;
+    FindingsSummary {
+        gaps,
+        unsupported,
+        no_evidence,
+        drift,
+        open_findings: gaps + unsupported + no_evidence,
+        graph_facts: (nodes.len() + edges.len()) as u64,
+    }
+}
+
+/// Register tallies for every surface (#116): gap/drift counts from the
+/// graph, unsupported/no-evidence from the findings store.
+#[tauri::command]
+fn findings_summary(state: State<'_, AppState>) -> Result<FindingsSummary, String> {
+    let (nodes, edges) = {
+        let graph = state.graph.lock().map_err(|e| e.to_string())?;
+        (
+            graph.all_nodes().map_err(|e| e.to_string())?,
+            graph.all_edges().map_err(|e| e.to_string())?,
+        )
+    };
+    let (unsupported, no_evidence) = {
+        let findings = state.findings.lock().map_err(|e| e.to_string())?;
+        findings.counts().map_err(|e| e.to_string())?
+    };
+    Ok(summarize_register(&nodes, &edges, unsupported, no_evidence))
+}
+
+/// All persisted register findings (unsupported / no-evidence lanes).
+#[tauri::command]
+fn list_findings(state: State<'_, AppState>) -> Result<Vec<Finding>, String> {
+    let findings = state.findings.lock().map_err(|e| e.to_string())?;
+    findings.list().map_err(|e| e.to_string())
+}
+
+/// Local-only preflight over a directory (#116, AC-0055/AC-0059): detect
+/// languages/frameworks/adapter coverage and classify constructs into the
+/// three-way split — potential gaps vs unsupported patterns — before any
+/// recovery runs. Zero egress; never invokes an LLM (T0 discipline).
+/// Unsupported findings persist to the register so post-recovery surfaces
+/// reconcile with what preflight predicted.
+#[tauri::command]
+fn preflight(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<ingest::preflight::PreflightReport, String> {
+    let root = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let repo = format!(
+        "local/{}",
+        root.file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default()
+    );
+    let report = ingest::preflight::preflight(&root).map_err(|e| e.to_string())?;
+    let batch: Vec<NewFinding<'_>> = report
+        .unsupported
+        .iter()
+        .map(|finding| NewFinding {
+            kind: "unsupported",
+            detector: &finding.detector,
+            path: &finding.path,
+            line: finding.line as i64,
+            message: &finding.message,
+        })
+        .collect();
+    let mut findings = state.findings.lock().map_err(|e| e.to_string())?;
+    findings
+        .replace_for(&repo, ingest::preflight::DETECTOR_ID, &batch)
+        .map_err(|e| e.to_string())?;
+    Ok(report)
+}
+
 /// Notify the shell of a job transition (`job://changed`); the Jobs surface
 /// and the global progress bar stay live without polling (#117).
 fn emit_job(app: &tauri::AppHandle, job: &Job) {
@@ -1407,10 +1519,12 @@ fn main() {
             // Jobs left running by a dead process become explicit
             // `interrupted` rows — resumable, never silently stuck (#117).
             jobs.recover_interrupted()?;
+            let findings = FindingStore::open(&state_path)?;
             let decisions = agents::DecisionLog::open(&state_path)?;
             app.manage(AppState {
                 graph: Mutex::new(graph),
                 jobs: Mutex::new(jobs),
+                findings: Mutex::new(findings),
                 decisions: Mutex::new(decisions),
                 extraction_caches: Mutex::new(ExtractionCaches::default()),
             });
@@ -1431,6 +1545,9 @@ fn main() {
             ingest_path,
             cancel_job,
             retry_job,
+            preflight,
+            findings_summary,
+            list_findings,
             list_nodes,
             atlas_snapshot,
             read_evidence,
@@ -1450,6 +1567,55 @@ fn main() {
 mod tests {
     use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
     use llm::{Embedding, Locality, ProviderCaps, ProviderError};
+
+    #[test]
+    fn findings_summary_counts_with_register_predicates() {
+        // #116: one predicate set (spec's) feeds every surface, and the
+        // three lanes never bleed into each other. A fact without
+        // provenance counts as a Gap (unknown ≠ confirmed), so the
+        // non-gap fixtures carry real Confirmed provenance.
+        let confirmed = serde_json::to_value(
+            core_prov::Provenance::new(
+                core_prov::Tier::Deterministic,
+                core_prov::ConfidenceTier::Confirmed,
+                vec![],
+                "t0.adapter-ts",
+                b"fixture",
+            )
+            .expect("within ceiling"),
+        )
+        .expect("serializes");
+        let nodes = vec![
+            Node {
+                id: "gap:chan".into(),
+                label: "Gap".into(),
+                props: serde_json::json!({}),
+            },
+            Node {
+                id: "drift:adr-3".into(),
+                label: "Drift".into(),
+                props: serde_json::json!({ "kind": "drift", "prov": confirmed }),
+            },
+            Node {
+                id: "svc:api".into(),
+                label: "Service".into(),
+                props: serde_json::json!({ "prov": confirmed }),
+            },
+        ];
+        let edges = vec![Edge {
+            src: "svc:api".into(),
+            dst: "adr:3".into(),
+            label: "CONFLICTS".into(),
+            props: serde_json::json!({ "prov": confirmed }),
+        }];
+        let summary = super::summarize_register(&nodes, &edges, 2, 1);
+        assert_eq!(summary.gaps, 1);
+        assert_eq!(summary.drift, 2); // drift node + CONFLICTS edge
+        assert_eq!(summary.unsupported, 2);
+        assert_eq!(summary.no_evidence, 1);
+        assert_eq!(summary.open_findings, 4); // 1 gap + 2 unsupported + 1 no-evidence
+        assert_eq!(summary.graph_facts, 4);
+    }
 
     struct M7KeywordProvider;
 

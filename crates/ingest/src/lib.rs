@@ -9,6 +9,7 @@
 //! maps to a typed error carrying remediation text.
 
 pub mod manifest;
+pub mod preflight;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

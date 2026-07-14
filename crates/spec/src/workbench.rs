@@ -629,6 +629,23 @@ fn adr_set(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) {
     (content, assertions)
 }
 
+/// True when `node` is an explicit System Gap. Public so the shell's
+/// findings summary counts with the register's own definition (#116) —
+/// every surface must reconcile from one predicate.
+pub fn is_gap_node(node: &Node) -> bool {
+    node.label == "Gap" || provenance(&node.props, &node.id).confidence_tier == ConfidenceTier::Gap
+}
+
+/// True when `edge` is an explicit Gap relation (see [`is_gap_node`]).
+pub fn is_gap_edge(edge: &Edge) -> bool {
+    provenance(&edge.props, &edge_identity(edge)).confidence_tier == ConfidenceTier::Gap
+}
+
+/// True when `edge` records ADR/code drift (see [`is_drift_node`]).
+pub fn is_drift_edge(edge: &Edge) -> bool {
+    matches!(edge.label.as_str(), "CONFLICTS" | "DRIFTS_FROM")
+}
+
 fn gap_register(
     nodes: &[&Node],
     edges: &[&Edge],
@@ -636,18 +653,13 @@ fn gap_register(
 ) -> (String, Vec<SpecAssertion>) {
     let mut assertions: Vec<SpecAssertion> = nodes
         .iter()
-        .filter(|node| {
-            node.label == "Gap"
-                || provenance(&node.props, &node.id).confidence_tier == ConfidenceTier::Gap
-        })
+        .filter(|node| is_gap_node(node))
         .map(|node| node_assertion(node))
         .collect();
     assertions.extend(
         edges
             .iter()
-            .filter(|edge| {
-                provenance(&edge.props, &edge_identity(edge)).confidence_tier == ConfidenceTier::Gap
-            })
+            .filter(|edge| is_gap_edge(edge))
             .map(|edge| edge_assertion(edge)),
     );
     assertions.extend(
@@ -674,12 +686,14 @@ fn gap_register(
     (content, assertions)
 }
 
-fn is_drift(node: &Node) -> bool {
+/// True when `node` records ADR/code drift (see [`is_gap_node`] for why
+/// these predicates are public).
+pub fn is_drift_node(node: &Node) -> bool {
     node.label == "Drift" || node.props["kind"].as_str() == Some("drift")
 }
 
 fn drift_register(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>, usize) {
-    let drift_nodes: Vec<&&Node> = nodes.iter().filter(|node| is_drift(node)).collect();
+    let drift_nodes: Vec<&&Node> = nodes.iter().filter(|node| is_drift_node(node)).collect();
     let mut assertions: Vec<SpecAssertion> = drift_nodes
         .iter()
         .map(|node| node_assertion(node))
@@ -687,7 +701,7 @@ fn drift_register(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertio
     assertions.extend(
         edges
             .iter()
-            .filter(|edge| matches!(edge.label.as_str(), "CONFLICTS" | "DRIFTS_FROM"))
+            .filter(|edge| is_drift_edge(edge))
             .map(|edge| edge_assertion(edge)),
     );
     let mut content = String::from(
