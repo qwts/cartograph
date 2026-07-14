@@ -59,6 +59,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      pull-requests: read
     steps:
       - name: Checkout full history
         uses: actions/checkout@v7
@@ -81,11 +82,7 @@ jobs:
           npm run version:check
           current=$(node -p 'require("./package.json").version')
 
-          # Locate the exact first-parent commit that introduced this version.
-          # A manual recovery may run after later main commits, but the tag must
-          # still point at the reviewed Version packages merge, never at HEAD by
-          # convenience.
-          cut_commit=''
+          tag=$(node scripts/release-version.mjs tag)
           if [ "$EVENT_NAME" = "push" ]; then
             previous=$(git show "$BEFORE_SHA:package.json" 2>/dev/null \
               | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version' \
@@ -96,32 +93,31 @@ jobs:
             fi
             cut_commit=$(git rev-parse HEAD)
           else
-            while read -r candidate; do
-              candidate_version=$(git show "$candidate:package.json" 2>/dev/null \
-                | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version' \
-                2>/dev/null || true)
-              parent_version=$(git show "$candidate^1:package.json" 2>/dev/null \
-                | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version' \
-                2>/dev/null || true)
-              if [ "$candidate_version" = "$current" ] && [ "$parent_version" != "$current" ]; then
-                cut_commit="$candidate"
-                break
-              fi
-            done < <(git log --first-parent --format=%H -- package.json)
-            if [ -z "$cut_commit" ]; then
-              echo "::error::No reviewed first-parent version cut found for $current."
+            # Manual dispatch is publication recovery only. It must never infer
+            # or create a missing tag from arbitrary version history.
+            if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "::error::Manual recovery requires an existing $tag tag."
               exit 1
             fi
+            cut_commit=$(git rev-list -n 1 "$tag")
           fi
 
-          tag=$(node scripts/release-version.mjs tag)
+          # Prove this commit came from the bot-maintained, reviewed version PR;
+          # a mere version difference is not release authorization.
+          version_pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$cut_commit/pulls" \
+            --jq '[.[] | select(.merged_at != null and .base.ref == "main" and .head.ref == "changeset-release/main")] | first | .number // empty')
+          if [ -z "$version_pr" ]; then
+            echo "::error::$cut_commit is not a merged changeset-release/main PR."
+            exit 1
+          fi
+
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             tagged_commit=$(git rev-list -n 1 "$tag")
             if [ "$tagged_commit" != "$cut_commit" ]; then
               echo "::error::$tag points to $tagged_commit, not cut $cut_commit; tags are immutable."
               exit 1
             fi
-            echo "$tag already exists at the correct commit."
+            echo "$tag already exists at reviewed Version packages PR #$version_pr."
             if ! gh release view "$tag" >/dev/null 2>&1; then
               echo "$tag has no GitHub Release; dispatching recovery."
               gh workflow run release.yml --ref main -f tag="$tag" \
@@ -140,7 +136,7 @@ jobs:
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git tag -a "$tag" "$cut_commit" -m "Release $tag"
           git push origin "$tag"
-          echo "Created $tag at $cut_commit."
+          echo "Created $tag at reviewed Version packages PR #$version_pr ($cut_commit)."
 
           # A GITHUB_TOKEN tag push does not recursively start release.yml.
           gh workflow run release.yml --ref main -f tag="$tag" \
