@@ -396,7 +396,14 @@ export default function App() {
             evidenceIndex={selected.evidenceIndex}
             onClose={clearSelection}
             onShowEvidence={(index) => void select(selected.node, index)}
-            onOpenResolution={(node) => void openResolution(node.id)}
+            onOpenResolution={
+              // Only a real Gap node has strategies to derive; a synthetic
+              // edge/flow subject would ask the backend for a node it does
+              // not have — the CTA stays disabled for those (#142 review).
+              atlas.nodes.some((candidate) => candidate.id === selected.node.id)
+                ? (node) => void openResolution(node.id)
+                : undefined
+            }
           />
         </div>
       )}

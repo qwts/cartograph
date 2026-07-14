@@ -272,7 +272,7 @@ export function EvidencePanel({
               title={
                 onOpenResolution
                   ? undefined
-                  : 'The escalation runner lands with orchestration (#120)'
+                  : 'No runnable strategy for this fact — escalation needs a Gap node'
               }
               onClick={() => onOpenResolution?.(node)}
             >
