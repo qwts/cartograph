@@ -14,7 +14,10 @@ mod adr;
 mod security;
 mod workbench;
 pub use adr::{AdrFacts, derive_adr_facts, extract_found_adrs};
-pub use workbench::{ExportMode, SpecArtifact, SpecAssertion, SpecBundle, compile_spec};
+pub use workbench::{
+    ExportMode, SpecArtifact, SpecAssertion, SpecBundle, compile_spec, is_drift_edge,
+    is_drift_node, is_gap_edge, is_gap_node,
+};
 
 /// Edge labels that appear on the topology map — callers use this to query
 /// exactly the edges the artifact renders.
