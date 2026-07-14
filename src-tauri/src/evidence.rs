@@ -9,6 +9,54 @@ use std::path::Path;
 /// a span, not multi-megabyte payloads.
 pub const MAX_EVIDENCE_BYTES: u64 = 256 * 1024;
 
+/// Resolve `rel_path` under `root`, refusing any escape (`..`, absolute
+/// paths, symlinks out of the tree).
+fn confined_path(root: &Path, rel_path: &str) -> io::Result<std::path::PathBuf> {
+    let root = root.canonicalize()?;
+    let candidate = root.join(rel_path);
+    let file_path = candidate.canonicalize()?;
+    if !file_path.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("evidence path escapes ingest root: {rel_path}"),
+        ));
+    }
+    Ok(file_path)
+}
+
+/// Read exactly the span's bytes and nothing else (lossy UTF-8 applied to
+/// the span alone). This is the citation contract for escalation payloads:
+/// byte offsets index the file, so slicing must happen *before* any lossy
+/// conversion — a window that starts mid-character would otherwise shift
+/// the offsets and leak unrelated source into the payload.
+pub fn read_span_exact(root: &Path, rel_path: &str, span: &Range<u64>) -> io::Result<String> {
+    if span.end <= span.start || span.end - span.start > MAX_EVIDENCE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "evidence span {}..{} is empty or oversized",
+                span.start, span.end
+            ),
+        ));
+    }
+    let file_path = confined_path(root, rel_path)?;
+    let mut file = std::fs::File::open(&file_path)?;
+    let len = file.metadata()?.len();
+    if span.end > len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "evidence span ends at {} but the file has {len} bytes",
+                span.end
+            ),
+        ));
+    }
+    file.seek(SeekFrom::Start(span.start))?;
+    let mut bytes = vec![0u8; (span.end - span.start) as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// A window of a source file guaranteed to contain the evidence span.
 pub struct SourceWindow {
     /// Window content (lossy UTF-8).
@@ -28,15 +76,7 @@ pub struct SourceWindow {
 /// refusing any path that escapes `root` (`..`, absolute paths, symlinks out
 /// of the tree). Only the window is read from disk, never the whole file.
 pub fn read_source(root: &Path, rel_path: &str, span: &Range<u64>) -> io::Result<SourceWindow> {
-    let root = root.canonicalize()?;
-    let candidate = root.join(rel_path);
-    let file_path = candidate.canonicalize()?;
-    if !file_path.starts_with(&root) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("evidence path escapes ingest root: {rel_path}"),
-        ));
-    }
+    let file_path = confined_path(root, rel_path)?;
     let mut file = std::fs::File::open(&file_path)?;
     let len = file.metadata()?.len();
 
@@ -124,6 +164,29 @@ mod tests {
         let local_start = (span.start - w.window_start) as usize;
         let local_end = (span.end - w.window_start) as usize;
         assert_eq!(&w.text[local_start..local_end], needle);
+    }
+
+    #[test]
+    fn exact_span_reads_slice_bytes_before_lossy_conversion() {
+        // Multibyte content before the span: byte offsets index the FILE,
+        // and the exact reader must return precisely the cited bytes —
+        // never more (#141 review: a mid-character window start must not
+        // leak unrelated source into an escalation payload).
+        let dir = tempfile::tempdir().unwrap();
+        let content = "// naïve café — 🚀\nconst handler = capture;\n";
+        std::fs::write(dir.path().join("src.ts"), content).unwrap();
+        let needle = "const handler = capture;";
+        let start = content.find(needle).unwrap() as u64;
+        let span = start..start + needle.len() as u64;
+
+        let text = read_span_exact(dir.path(), "src.ts", &span).unwrap();
+        assert_eq!(text, needle);
+
+        // Empty, oversized, and beyond-EOF spans are explicit errors.
+        assert!(read_span_exact(dir.path(), "src.ts", &(5..5)).is_err());
+        assert!(read_span_exact(dir.path(), "src.ts", &(0..10_000)).is_err());
+        // Escapes are refused exactly like the windowed reader.
+        assert!(read_span_exact(dir.path(), "../src.ts", &(0..4)).is_err());
     }
 
     #[test]

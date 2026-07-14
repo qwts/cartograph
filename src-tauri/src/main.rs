@@ -1006,21 +1006,14 @@ fn graph_and_reader(state: &AppState) -> Result<(Vec<Node>, Vec<Edge>, SpanReade
         .collect();
     let reader: SpanReader = Box::new(move |reference: &core_prov::EvidenceRef| {
         let root = roots.get(&reference.repo)?;
-        evidence::read_source(
+        // Exactly the cited bytes, sliced before any lossy conversion —
+        // an escalation payload never carries more than its citations.
+        evidence::read_span_exact(
             std::path::Path::new(root),
             &reference.path,
             &(reference.byte_start..reference.byte_end),
         )
         .ok()
-        .map(|window| {
-            let start = (reference.byte_start - window.window_start) as usize;
-            let end = (reference.byte_end - window.window_start) as usize;
-            window
-                .text
-                .get(start..end)
-                .unwrap_or(&window.text)
-                .to_string()
-        })
     });
     Ok((nodes, edges, reader))
 }
@@ -1196,6 +1189,12 @@ async fn run_escalation(
         0
     };
 
+    // Cooperative cancellation: a cancel that landed after context assembly
+    // must stop the run before any provider is invoked — for cloud, before
+    // the consented payload could leave the device.
+    if job_cancelled(&state, job_id) {
+        return Err("cancelled".to_string());
+    }
     let proposal = tauri::async_runtime::spawn_blocking(move || {
         broker
             .propose(provider.as_ref(), &firewall, &task, consent.as_ref())
