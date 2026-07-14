@@ -142,6 +142,21 @@ jobs:
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
 
+      - name: Notarize and staple disk image
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          dmg="${{ steps.bundles.outputs.dmg }}"
+          xcrun notarytool submit "$dmg" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$dmg"
+
       - name: Verify Developer ID signature, Gatekeeper, and notarization
         if: steps.signing.outputs.signed == 'true'
         run: |

@@ -36,9 +36,11 @@ environment variables.
   `unsigned-dev`. Any partial set fails before the build. Only the complete set
   can enter the production path.
 - The production path must pass strict `codesign` validation, Gatekeeper
-  assessment, and stapling validation for its bundles before upload. Artifacts
-  include the synchronized application version, universal architecture, and
-  signing mode in stable names.
+  assessment, and stapling validation for its bundles before upload. Tauri
+  notarizes and staples the application; CI separately submits and staples the
+  completed disk image so the outer download artifact also passes Gatekeeper.
+  Artifacts include the synchronized application version, universal
+  architecture, and signing mode in stable names.
 
 ## Consequences
 

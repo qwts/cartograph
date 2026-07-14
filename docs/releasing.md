@@ -40,6 +40,11 @@ The signed path must pass all of these before upload:
 - Gatekeeper assessment of the app and disk image;
 - notarization ticket/staple validation of the app and disk image.
 
+Tauri submits and staples the application during its build. After the signed
+DMG is assembled, the workflow submits that outer disk image to Apple's notary
+service, waits for acceptance, and staples its ticket before running the final
+checks above.
+
 ## Manual Gatekeeper installation smoke test
 
 Perform this procedure on the versioned `signed` DMG downloaded from GitHub
