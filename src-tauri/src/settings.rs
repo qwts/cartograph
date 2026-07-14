@@ -231,7 +231,8 @@ impl SettingsStore {
         let cloud_tiers: Vec<String> = {
             let mut stmt = self.conn.prepare(
                 "SELECT tier FROM tier_settings
-                 WHERE provider = 'cloud' AND consented = 1 ORDER BY tier",
+                 WHERE enabled = 1 AND provider = 'cloud' AND consented = 1
+                 ORDER BY tier",
             )?;
             stmt.query_map([], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?
@@ -379,6 +380,28 @@ mod tests {
         );
         let t2 = &store.all().unwrap()[1];
         assert_eq!(t2.consent_disclosure, None);
+    }
+
+    #[test]
+    fn disabling_a_tier_drops_it_from_the_cloud_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::open(dir.path().join("state.db")).unwrap();
+        store.set_provider("T2", "cloud").unwrap();
+        store.grant_consent("T2", "{}").unwrap();
+        assert_eq!(store.egress_summary().unwrap().cloud_tiers, vec!["T2"]);
+
+        // A disabled tier can never egress, so the status bar must not
+        // advertise it as cloud-enabled — summary and policy stay in lockstep.
+        store.set_enabled("T2", false).unwrap();
+        let summary = store.egress_summary().unwrap();
+        assert!(summary.cloud_tiers.is_empty());
+        assert!(summary.label.starts_with("Local-only"));
+        assert!(
+            !store
+                .egress_policy()
+                .unwrap()
+                .cloud_allowed(llm::AnalysisTier::Semantic)
+        );
     }
 
     #[test]
