@@ -10,7 +10,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0004 | AC-0010..0012 | events, dynamic, flowtracer, app | M3, M5–M6 | F-* | ADR-0002 | T-0010..0012 |
 | US-0005 | AC-0013..0014 | adapters-lang-ts(tsx), adapters-fw | M4 | F-* | ADR-0003 | T-0013..0014 |
 | US-0006 | AC-0015..0017 | flowtracer | M3–M5 | F-* | ADR-0002 | T-0015..0017 |
-| US-0007 | AC-0018..0020 | core-prov, agents | M0, M8 | — | ADR-0002, ADR-0006 | T-0018..0020 |
+| US-0007 | AC-0018..0020,AC-0061 | core-prov, agents, ui | M0, M8 | — | ADR-0002, ADR-0006 | T-0018..0020,T-0061 |
 | US-0008 | AC-0021..0022 | adapters-lang-ts, iac, semantic, llm, app | M7 | F-* | ADR-0002, ADR-0004, ADR-0010 | T-0021..0022 |
 | US-0009 | AC-0023..0025,AC-0055..0056 | agents, llm, app, ui | M8 | — | ADR-0004 | T-0023..0025,T-0055..0056 |
 | US-0010 | AC-0026..0028 | core-graph, app, ui | M9 | — | ADR-0001 | T-0026..0028 |

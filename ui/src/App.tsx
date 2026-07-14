@@ -8,7 +8,6 @@ import { GlobalProgress } from './components/GlobalProgress';
 import { CommandPalette } from './components/CommandPalette';
 import { LegendPopover } from './components/LegendPopover';
 import { RouteErrorBoundary } from './components/RouteErrorBoundary';
-import { EmptySurface } from './components/EmptySurface';
 import { StatusBadge } from './components/StatusBadge';
 import { GraphStatsCard } from './components/GraphStatsCard';
 import { JobsSurface } from './components/JobsSurface';
@@ -18,6 +17,7 @@ import { RecoverSurface } from './components/RecoverSurface';
 import { SettingsSurface } from './components/SettingsSurface';
 import { WorkspaceSurface } from './components/WorkspaceSurface';
 import { GapsDriftSurface } from './components/GapsDriftSurface';
+import { ProvenanceSurface } from './components/ProvenanceSurface';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
 import { TopologyCard } from './components/TopologyCard';
@@ -87,6 +87,9 @@ export default function App() {
     clearError,
     findings,
     registerFindings,
+    ingestHistory,
+    coverage,
+    evals,
     tierSettings,
     egress,
     disclosures,
@@ -276,10 +279,12 @@ export default function App() {
       }
       case 'prov':
         return (
-          <EmptySurface
-            icon="analytics"
-            title="Provenance & Eval"
-            description="Tier distribution, extractor coverage, paired-eval gates, and evidence health over re-ingests land with the provenance surface (#110) on top of the recovery metrics (#119)."
+          <ProvenanceSurface
+            findings={findings}
+            distribution={tierDistribution(atlas)}
+            coverage={coverage}
+            evals={evals}
+            history={ingestHistory}
           />
         );
       case 'jobs':

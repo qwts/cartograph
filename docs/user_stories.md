@@ -93,9 +93,10 @@
 - **AC-0018** Given any fact, when stored, then it has {tier, confidence_tier, evidence[], extractor_id, content_hash}.
 - **AC-0019** Given a T2/T3 producer, when it runs, then it cannot overwrite or upgrade a T0/T1 fact (R-INT-1).
 - **AC-0020** Given an agent (T3), when it acts, then it can only propose edges/annotations with cited evidence; it cannot write T0/T1 (R-INT-3).
+- **AC-0061** Given the Provenance & Eval surface, when it renders, then the tier-distribution, extractor-coverage, eval-gate, and re-ingest-history sections read the shared summary/coverage/history sources (counts identical to Workspace and Gaps & Drift), every chart carries a complete textual description (`role="img"` with a descriptive label — no color-only encoding), a not-in-scope extractor reads n/a rather than 0%, and the determinism footer only claims verification when the history actually contains same-commit records with equal content hashes.
 - **Security:** —
 - **Performance:** —
-- **Trace:** M0,M8 · `core-prov`, `agents` · — · T-0018..0020
+- **Trace:** M0,M8 · `core-prov`, `agents` · — · T-0018..0020,T-0061
 
 ### US-0008 — Semantic tier with eval gating
 - **Actor:** Engine

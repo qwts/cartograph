@@ -243,6 +243,51 @@ function installFakeCore() {
         };
       case 'list_findings':
         return [];
+      case 'list_evals':
+        return [];
+      case 'extractor_coverage':
+        return [
+          {
+            extractor: 't0.adapter-ts',
+            files_in_scope: 2,
+            files_with_facts: 1,
+            facts: 12,
+            coverage_pct: 50,
+          },
+        ];
+      case 'ingest_history':
+        return [
+          {
+            id: 2,
+            job_id: 2,
+            repo: 'local/fixture',
+            commit_sha: 'workdir',
+            confirmed: 40,
+            inferred_strong: 2,
+            inferred_weak: 0,
+            gap: 1,
+            unsupported: 0,
+            no_evidence: 0,
+            graph_facts: 43,
+            content_hash: 'd'.repeat(64),
+            created_at: '2026-07-14T11:00:00Z',
+          },
+          {
+            id: 1,
+            job_id: 1,
+            repo: 'local/fixture',
+            commit_sha: 'workdir',
+            confirmed: 40,
+            inferred_strong: 2,
+            inferred_weak: 0,
+            gap: 1,
+            unsupported: 0,
+            no_evidence: 0,
+            graph_facts: 43,
+            content_hash: 'd'.repeat(64),
+            created_at: '2026-07-14T10:00:00Z',
+          },
+        ];
       case 'get_settings':
         return tiers;
       case 'egress_summary':
@@ -438,6 +483,9 @@ const meta = {
       clearError: null,
       findings: null,
       registerFindings: [],
+      ingestHistory: [],
+      coverage: [],
+      evals: [],
       tierSettings: [],
       egress: null,
       disclosures: {},

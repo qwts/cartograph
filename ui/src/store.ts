@@ -229,6 +229,49 @@ export interface FindingsSummary {
   graph_facts: number;
 }
 
+/** One per-ingest history record (`ingest_history`, #119): tier tallies,
+ *  register counts, and the whole-graph content hash that makes the
+ *  determinism invariant observable. */
+export interface IngestRecord {
+  id: number;
+  job_id: number;
+  repo: string;
+  commit_sha: string;
+  confirmed: number;
+  inferred_strong: number;
+  inferred_weak: number;
+  gap: number;
+  unsupported: number;
+  no_evidence: number;
+  graph_facts: number;
+  content_hash: string;
+  created_at: string;
+}
+
+/** Per-extractor coverage for the latest ingest (`extractor_coverage`). */
+export interface ExtractorCoverage {
+  extractor: string;
+  files_in_scope: number;
+  files_with_facts: number;
+  facts: number;
+  /** Percent of scoped files with facts; null when the extractor was not
+   *  in this ingest's scope (not applicable, never a misleading 0%). */
+  coverage_pct: number | null;
+}
+
+/** One paired-eval calibration record (`list_evals`, M7/M10 gates). */
+export interface EvalResult {
+  id: number;
+  provider: string;
+  precision_floor: number;
+  similarity_threshold: number;
+  precision: number;
+  recall: number;
+  passed: boolean;
+  proposals: number;
+  approved: number;
+}
+
 /** Fact counts by confidence tier, derived from the same atlas projection
  *  every surface renders (handoff interaction #3: one source of truth). */
 export interface TierDistribution {
@@ -342,6 +385,12 @@ export interface AppStore {
   findings: FindingsSummary | null;
   /** Persisted unsupported/no-evidence rows for the register surface. */
   registerFindings: RegisterFinding[];
+  /** Ingest history, newest first (#119). */
+  ingestHistory: IngestRecord[];
+  /** Per-extractor coverage for the latest ingest (#119). */
+  coverage: ExtractorCoverage[];
+  /** Paired-eval calibration records, newest first. */
+  evals: EvalResult[];
   /** Persisted tier configuration (T1/T2/T3; T0 is always-on, not stored). */
   tierSettings: TierSettings[];
   /** Live status-bar egress line; null with no backend (shown as local-only). */
@@ -439,6 +488,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   clearError: null,
   findings: null,
   registerFindings: [],
+  ingestHistory: [],
+  coverage: [],
+  evals: [],
   tierSettings: [],
   egress: null,
   disclosures: {},
@@ -462,12 +514,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
         curation: [],
         findings: null,
         registerFindings: [],
+        ingestHistory: [],
+        coverage: [],
+        evals: [],
         tierSettings: [],
         egress: null,
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation, findings, registerFindings, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -479,6 +534,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
       invokeOr<FindingsSummary | null>('findings_summary', null),
       invokeOr<RegisterFinding[]>('list_findings', []),
+      invokeOr<IngestRecord[]>('ingest_history', []),
+      invokeOr<ExtractorCoverage[]>('extractor_coverage', []),
+      invokeOr<EvalResult[]>('list_evals', []),
       invokeOr<TierSettings[]>('get_settings', []),
       invokeOr<EgressSummary | null>('egress_summary', null),
       // Disclosures are static per tier — prefetched so the consent panel
@@ -500,6 +558,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       curation,
       findings,
       registerFindings,
+      ingestHistory,
+      coverage,
+      evals,
       tierSettings,
       egress,
       disclosures: { T2: disclosureT2 ?? undefined, T3: disclosureT3 ?? undefined },

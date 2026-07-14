@@ -2877,3 +2877,209 @@ button.register-row:hover {
   border-color: color-mix(in srgb, var(--tier-gap) 40%, var(--border));
   color: var(--tier-gap);
 }
+
+/* ── Provenance & Eval (#110) ── */
+
+.prov-surface {
+  display: grid;
+  gap: 0.9rem;
+  align-content: start;
+  max-width: 980px;
+}
+
+/* Tier segment colors are shared by the bar, legend, and history stacks. */
+.seg-confirmed {
+  background: var(--tier-confirmed);
+}
+.seg-inferred-strong {
+  background: var(--tier-inferred-strong);
+}
+.seg-inferred-weak {
+  background: var(--tier-inferred-weak);
+}
+.seg-gap {
+  background: var(--tier-gap);
+}
+.seg-unsupported {
+  background: var(--finding-unsupported);
+}
+
+.tier-bar {
+  display: flex;
+  height: 18px;
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--control);
+}
+
+.tier-legend {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.82rem;
+}
+
+.tier-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.prov-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.2rem;
+  align-items: start;
+}
+
+.coverage-rows {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.coverage-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 0.8rem;
+}
+
+.coverage-name {
+  flex: 0 0 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coverage-bar {
+  flex: 1;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--control);
+  overflow: hidden;
+}
+
+.coverage-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--tier-confirmed);
+}
+
+.coverage-tail {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.eval-cards {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.eval-card {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.75rem 0.95rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.82rem;
+}
+
+.eval-card.passed {
+  border-color: color-mix(in srgb, var(--tier-confirmed) 40%, var(--border));
+}
+
+.eval-card.failed {
+  border-color: color-mix(in srgb, var(--tier-gap) 40%, var(--border));
+}
+
+.eval-provider {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.eval-badge {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  padding: 0.12rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid;
+}
+
+.eval-badge.passed {
+  color: var(--tier-confirmed);
+  border-color: color-mix(in srgb, var(--tier-confirmed) 50%, var(--border));
+}
+
+.eval-badge.failed {
+  color: var(--tier-gap);
+  border-color: color-mix(in srgb, var(--tier-gap) 50%, var(--border));
+}
+
+.eval-numbers {
+  font-size: 0.78rem;
+}
+
+.history-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.8rem;
+  height: 180px;
+  padding: 0.9rem 1rem 0.5rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: auto;
+}
+
+.history-col {
+  flex: 1 1 0;
+  min-width: 70px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: stretch;
+  gap: 0.3rem;
+}
+
+.history-stack {
+  display: flex;
+  flex-direction: column;
+  border-radius: 4px 4px 0 0;
+  overflow: hidden;
+}
+
+.history-stack .tier-bar-seg {
+  width: 100%;
+}
+
+.history-label,
+.history-hash {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
