@@ -20,14 +20,27 @@ use crate::{ExtractError, Extraction, SourceId};
 
 const EXTRACTOR_ID: &str = "t0.webextension";
 
-/// Byte span of `needle`'s first occurrence in the manifest source —
-/// deterministic evidence into the actual declaration. Falls back to the
-/// whole file when the serializer's view has no verbatim counterpart.
-fn span_of(raw: &str, needle: &str) -> (u64, u64) {
-    match raw.find(needle) {
-        Some(start) => (start as u64, (start + needle.len()) as u64),
-        None => (0, raw.len() as u64),
+/// Byte span of `needle` scoped under `anchor` — the manifest key that
+/// declares the fact — so a value repeated elsewhere (e.g. a host pattern
+/// in both `content_scripts.matches` and `optional_host_permissions`)
+/// cites its own declaration, not the first occurrence in the file
+/// (#148 review). Quoted occurrences win, so a pattern embedded in a
+/// longer string can't match; the span covers the string content.
+/// Falls back progressively: unscoped quoted → unscoped raw → whole file.
+fn span_scoped(raw: &str, anchor: &str, needle: &str) -> (u64, u64) {
+    let from = raw.find(&format!("\"{anchor}\"")).unwrap_or(0);
+    let quoted = format!("\"{needle}\"");
+    if let Some(pos) = raw[from..].find(&quoted) {
+        let start = from + pos + 1;
+        return (start as u64, (start + needle.len()) as u64);
     }
+    for haystack_from in [from, 0] {
+        if let Some(pos) = raw[haystack_from..].find(needle) {
+            let start = haystack_from + pos;
+            return (start as u64, (start + needle.len()) as u64);
+        }
+    }
+    (0, raw.len() as u64)
 }
 
 fn prov_value(
@@ -101,6 +114,8 @@ fn entry_path(dir: &str, declared: &str) -> String {
 
 /// One permission grant: exact scopes, never widened or collapsed.
 struct Grant {
+    /// Manifest key that declares this grant (evidence-span scope).
+    anchor: &'static str,
     /// Permission-node id suffix (namespaced per manifest).
     suffix: String,
     /// The manifest-verbatim permission name or match pattern.
@@ -125,11 +140,11 @@ struct ManifestCx<'a> {
 }
 
 impl ManifestCx<'_> {
-    fn prov(&self, needle: &str, fact: &str) -> serde_json::Value {
+    fn prov(&self, anchor: &str, needle: &str, fact: &str) -> serde_json::Value {
         prov_value(
             self.id,
             &self.path,
-            span_of(&self.raw, needle),
+            span_scoped(&self.raw, anchor, needle),
             ConfidenceTier::Confirmed,
             fact,
         )
@@ -138,7 +153,7 @@ impl ManifestCx<'_> {
     /// Bind a context to its entry source file. Manifests point at built
     /// artifacts, so a missing `.js` deterministically falls back to the
     /// sibling `.ts` source. Neither on disk = explicit Gap (R-INT-4).
-    fn bind_entry(&mut self, out: &mut Extraction, ctx_id: &str, declared: &str) {
+    fn bind_entry(&mut self, out: &mut Extraction, ctx_id: &str, anchor: &str, declared: &str) {
         let rel = entry_path(&self.dir, declared);
         let resolved = if self.root.join(&rel).is_file() {
             Some((rel.clone(), false))
@@ -161,7 +176,7 @@ impl ManifestCx<'_> {
                         label: "File".into(),
                         props: serde_json::json!({
                             "path": file_rel,
-                            "prov": self.prov(declared, &format!("File {file_rel}")),
+                            "prov": self.prov(anchor, declared, &format!("File {file_rel}")),
                         }),
                     });
                 }
@@ -172,7 +187,7 @@ impl ManifestCx<'_> {
                     props: serde_json::json!({
                         "declared": declared,
                         "resolved_from_build_path": from_build_path,
-                        "prov": self.prov(declared, &format!("ENTRY {ctx_id} -> {file_rel}")),
+                        "prov": self.prov(anchor, declared, &format!("ENTRY {ctx_id} -> {file_rel}")),
                     }),
                 });
             }
@@ -189,7 +204,7 @@ impl ManifestCx<'_> {
                         "prov": prov_value(
                             self.id,
                             &self.path,
-                            span_of(&self.raw, declared),
+                            span_scoped(&self.raw, anchor, declared),
                             ConfidenceTier::Gap,
                             &format!("Gap {gap_id}"),
                         ),
@@ -204,7 +219,7 @@ impl ManifestCx<'_> {
                         "prov": prov_value(
                             self.id,
                             &self.path,
-                            span_of(&self.raw, declared),
+                            span_scoped(&self.raw, anchor, declared),
                             ConfidenceTier::Gap,
                             &format!("ENTRY {ctx_id} -> {gap_id}"),
                         ),
@@ -214,11 +229,13 @@ impl ManifestCx<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn context(
         &mut self,
         out: &mut Extraction,
         ext_id: &str,
         kind: &str,
+        anchor: &str,
         key: &str,
         entries: &[String],
         extra: serde_json::Value,
@@ -227,7 +244,7 @@ impl ManifestCx<'_> {
         let mut props = serde_json::json!({
             "kind": kind,
             "entries": entries,
-            "prov": self.prov(key, &format!("ExtensionContext {ctx_id}")),
+            "prov": self.prov(anchor, key, &format!("ExtensionContext {ctx_id}")),
         });
         if let (Some(props_map), Some(extra_map)) = (props.as_object_mut(), extra.as_object()) {
             for (k, v) in extra_map {
@@ -244,17 +261,18 @@ impl ManifestCx<'_> {
             dst: ctx_id.clone(),
             label: "DECLARES".into(),
             props: serde_json::json!({
-                "prov": self.prov(key, &format!("DECLARES {ext_id} -> {ctx_id}")),
+                "prov": self.prov(anchor, key, &format!("DECLARES {ext_id} -> {ctx_id}")),
             }),
         });
         for declared in entries {
-            self.bind_entry(out, &ctx_id, declared);
+            self.bind_entry(out, &ctx_id, anchor, declared);
         }
         ctx_id
     }
 
     fn grant(&self, out: &mut Extraction, ext_id: &str, grant: Grant) {
         let Grant {
+            anchor,
             suffix,
             display,
             actions,
@@ -268,7 +286,7 @@ impl ManifestCx<'_> {
             props: serde_json::json!({
                 "name": display,
                 "optional": optional,
-                "prov": self.prov(&display, &format!("Permission {perm_id}")),
+                "prov": self.prov(anchor, &display, &format!("Permission {perm_id}")),
             }),
         });
         out.edges.push(Edge {
@@ -279,7 +297,7 @@ impl ManifestCx<'_> {
                 "actions": actions,
                 "resource_scopes": resource_scopes,
                 "optional": optional,
-                "prov": self.prov(&display, &format!("GRANTS {ext_id} -> {perm_id}")),
+                "prov": self.prov(anchor, &display, &format!("GRANTS {ext_id} -> {perm_id}")),
             }),
         });
     }
@@ -362,7 +380,7 @@ pub fn extract_manifests(
                         .flat_map(|entry| strings(&entry["matches"]))
                         .collect::<Vec<_>>())
                     .unwrap_or_default(),
-                "prov": cx.prov("\"manifest_version\"", &format!("Extension {ext_id}")),
+                "prov": cx.prov("manifest_version", "manifest_version", &format!("Extension {ext_id}")),
             }),
         });
 
@@ -373,6 +391,7 @@ pub fn extract_manifests(
                 &mut out,
                 &ext_id,
                 "service-worker",
+                "background",
                 worker,
                 &[worker.to_string()],
                 serde_json::json!({}),
@@ -384,6 +403,7 @@ pub fn extract_manifests(
                 &mut out,
                 &ext_id,
                 "background-scripts",
+                "background",
                 &mv2_scripts[0].clone(),
                 &mv2_scripts,
                 serde_json::json!({}),
@@ -394,6 +414,7 @@ pub fn extract_manifests(
                 &mut out,
                 &ext_id,
                 "background-page",
+                "background",
                 page,
                 &[page.to_string()],
                 serde_json::json!({}),
@@ -410,42 +431,52 @@ pub fn extract_manifests(
                     &mut out,
                     &ext_id,
                     "content-script",
+                    "content_scripts",
                     &key,
                     &js,
                     serde_json::json!({ "matches": strings(&script["matches"]) }),
                 );
             }
         }
-        for (kind, value) in [
-            ("page", manifest["action"]["default_popup"].as_str()),
-            ("page", manifest["browser_action"]["default_popup"].as_str()),
-            ("page", manifest["options_page"].as_str()),
-            ("page", manifest["options_ui"]["page"].as_str()),
-            ("page", manifest["devtools_page"].as_str()),
+        for (anchor, value) in [
+            ("action", manifest["action"]["default_popup"].as_str()),
+            (
+                "browser_action",
+                manifest["browser_action"]["default_popup"].as_str(),
+            ),
+            ("options_page", manifest["options_page"].as_str()),
+            ("options_ui", manifest["options_ui"]["page"].as_str()),
+            ("devtools_page", manifest["devtools_page"].as_str()),
         ] {
             if let Some(page) = value {
                 cx.context(
                     &mut out,
                     &ext_id,
-                    kind,
+                    "page",
+                    anchor,
                     page,
                     &[page.to_string()],
                     serde_json::json!({}),
                 );
             }
         }
-        // A toolbar action with no popup is still a user trigger.
-        if manifest["action"].is_object() && manifest["action"]["default_popup"].is_null() {
-            cx.context(
-                &mut out,
-                &ext_id,
-                "action",
-                "\"action\"",
-                &[],
-                serde_json::json!({
-                    "title": manifest["action"]["default_title"].as_str().unwrap_or_default(),
-                }),
-            );
+        // A toolbar action with no popup is still a user trigger — the MV3
+        // `action` and the MV2 `browser_action` shape alike (#148 review).
+        for anchor in ["action", "browser_action"] {
+            let action = &manifest[anchor];
+            if action.is_object() && action["default_popup"].is_null() {
+                cx.context(
+                    &mut out,
+                    &ext_id,
+                    "action",
+                    anchor,
+                    anchor,
+                    &[],
+                    serde_json::json!({
+                        "title": action["default_title"].as_str().unwrap_or_default(),
+                    }),
+                );
+            }
         }
 
         // --- Commands (user triggers) ----------------------------------------
@@ -458,7 +489,7 @@ pub fn extract_manifests(
                     props: serde_json::json!({
                         "name": name,
                         "description": command["description"].as_str().unwrap_or_default(),
-                        "prov": cx.prov(name, &format!("Command {cmd_id}")),
+                        "prov": cx.prov("commands", name, &format!("Command {cmd_id}")),
                     }),
                 });
                 out.edges.push(Edge {
@@ -466,46 +497,40 @@ pub fn extract_manifests(
                     dst: cmd_id.clone(),
                     label: "DECLARES".into(),
                     props: serde_json::json!({
-                        "prov": cx.prov(name, &format!("DECLARES {ext_id} -> {cmd_id}")),
+                        "prov": cx.prov("commands", name, &format!("DECLARES {ext_id} -> {cmd_id}")),
                     }),
                 });
             }
         }
 
         // --- Permissions as GRANTS: exact scopes, security-projectable -------
-        for name in strings(&manifest["permissions"]) {
-            // MV2 mixes host patterns into `permissions`.
-            let grant = if name.contains("://") || name.starts_with('<') {
-                Grant {
-                    suffix: format!("host:{name}"),
-                    display: name.clone(),
-                    actions: vec![],
-                    resource_scopes: vec![name.clone()],
-                    optional: false,
-                }
-            } else {
-                Grant {
-                    suffix: name.clone(),
-                    display: name.clone(),
-                    actions: vec![name.clone()],
-                    resource_scopes: vec![],
-                    optional: false,
-                }
-            };
-            cx.grant(&mut out, &ext_id, grant);
-        }
-        for name in strings(&manifest["optional_permissions"]) {
-            cx.grant(
-                &mut out,
-                &ext_id,
-                Grant {
-                    suffix: format!("optional:{name}"),
-                    display: name.clone(),
-                    actions: vec![name.clone()],
-                    resource_scopes: vec![],
-                    optional: true,
-                },
-            );
+        // MV2 mixes host patterns into (optional_)permissions: a pattern is
+        // a resource scope, never an API action (#148 review).
+        let is_host_pattern = |name: &str| name.contains("://") || name.starts_with('<');
+        for (anchor, optional) in [("permissions", false), ("optional_permissions", true)] {
+            for name in strings(&manifest[anchor]) {
+                let optional_prefix = if optional { "optional:" } else { "" };
+                let grant = if is_host_pattern(&name) {
+                    Grant {
+                        anchor,
+                        suffix: format!("{optional_prefix}host:{name}"),
+                        display: name.clone(),
+                        actions: vec![],
+                        resource_scopes: vec![name.clone()],
+                        optional,
+                    }
+                } else {
+                    Grant {
+                        anchor,
+                        suffix: format!("{optional_prefix}{name}"),
+                        display: name.clone(),
+                        actions: vec![name.clone()],
+                        resource_scopes: vec![],
+                        optional,
+                    }
+                };
+                cx.grant(&mut out, &ext_id, grant);
+            }
         }
         for (field, optional) in [
             ("host_permissions", false),
@@ -516,6 +541,7 @@ pub fn extract_manifests(
                     &mut out,
                     &ext_id,
                     Grant {
+                        anchor: field,
                         suffix: format!("host:{pattern}"),
                         display: pattern.clone(),
                         actions: vec![],
@@ -531,6 +557,7 @@ pub fn extract_manifests(
                 &mut out,
                 &ext_id,
                 Grant {
+                    anchor: "externally_connectable",
                     suffix: format!("externally-connectable:{pattern}"),
                     display: pattern.clone(),
                     actions: vec!["externally_connectable".into()],
@@ -682,6 +709,87 @@ mod tests {
                 && edge.dst
                     == "gap:webext:local/image-trail@extension/src/content/content-script.js"
         }));
+    }
+
+    #[test]
+    fn evidence_spans_cite_the_declaring_manifest_key() {
+        // #148 review: a value repeated under two keys must cite its own
+        // declaration — here the same pattern appears in content_scripts
+        // matches first and optional_host_permissions later.
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = r#"{
+  "manifest_version": 3,
+  "name": "x",
+  "content_scripts": [{ "js": [], "matches": ["https://*/*"] }],
+  "optional_host_permissions": ["https://*/*"]
+}"#;
+        std::fs::write(dir.path().join("manifest.json"), manifest).unwrap();
+        let id = SourceId {
+            repo: "local/x",
+            commit: "abc123",
+        };
+        let (out, _) = extract_manifests(dir.path(), &id, &BTreeSet::new()).unwrap();
+        let grant = out
+            .edges
+            .iter()
+            .find(|edge| edge.label == "GRANTS")
+            .expect("host grant");
+        let prov: Provenance = serde_json::from_value(grant.props["prov"].clone()).unwrap();
+        let declaration = manifest.find("optional_host_permissions").unwrap() as u64;
+        assert!(
+            prov.evidence[0].byte_start > declaration,
+            "grant evidence ({}) must point past its declaring key ({declaration}), \
+             not at the content-script match",
+            prov.evidence[0].byte_start
+        );
+        let cited =
+            &manifest[prov.evidence[0].byte_start as usize..prov.evidence[0].byte_end as usize];
+        assert_eq!(cited, "https://*/*");
+    }
+
+    #[test]
+    fn mv2_manifests_keep_toolbar_actions_and_optional_host_scopes() {
+        // #148 review: MV2 `browser_action` without a popup is still a user
+        // trigger, and MV2 optional host patterns live in
+        // `optional_permissions` — they are scopes, never API actions.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            r#"{
+  "manifest_version": 2,
+  "name": "legacy",
+  "browser_action": { "default_title": "Toggle" },
+  "optional_permissions": ["https://*/*", "downloads"]
+}"#,
+        )
+        .unwrap();
+        let id = SourceId {
+            repo: "local/legacy",
+            commit: "abc123",
+        };
+        let (out, _) = extract_manifests(dir.path(), &id, &BTreeSet::new()).unwrap();
+        let action = out
+            .nodes
+            .iter()
+            .find(|node| node.label == "ExtensionContext" && node.props["kind"] == "action")
+            .expect("popupless browser_action is a context");
+        assert_eq!(action.props["title"], "Toggle");
+
+        let host = out
+            .edges
+            .iter()
+            .find(|edge| edge.label == "GRANTS" && edge.dst.ends_with("host:https://*/*"))
+            .expect("optional host grant");
+        assert_eq!(host.props["resource_scopes"][0], "https://*/*");
+        assert_eq!(host.props["actions"].as_array().unwrap().len(), 0);
+        assert_eq!(host.props["optional"], true);
+
+        let api = out
+            .edges
+            .iter()
+            .find(|edge| edge.label == "GRANTS" && edge.dst.ends_with("optional:downloads"))
+            .expect("optional api grant");
+        assert_eq!(api.props["actions"][0], "downloads");
     }
 
     #[test]
