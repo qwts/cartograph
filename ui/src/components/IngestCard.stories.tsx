@@ -16,6 +16,7 @@ const EMPTY_LAYERS = {
   python: { files: 0, nodes: 0, edges: 0 },
   go: { files: 0, nodes: 0, edges: 0 },
   tf: { files: 0, nodes: 0, edges: 0 },
+  webext: { files: 0, nodes: 0, edges: 0 },
 };
 
 export const Idle: Story = {
@@ -47,6 +48,7 @@ export const WithSummary: Story = {
         python: { files: 0, nodes: 0, edges: 0 },
         go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 4, nodes: 34, edges: 51 },
+        webext: { files: 0, nodes: 0, edges: 0 },
       },
     },
   },
@@ -65,6 +67,7 @@ export const DeltaReingest: Story = {
         python: { files: 0, nodes: 0, edges: 0 },
         go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 4, nodes: 34, edges: 51 },
+        webext: { files: 0, nodes: 0, edges: 0 },
       },
       delta: { recomputed_files: 1, reused_files: 11, deleted_files: 0 },
     },
@@ -90,6 +93,7 @@ export const PulumiWithoutTerraform: Story = {
         python: { files: 0, nodes: 0, edges: 0 },
         go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 0, nodes: 0, edges: 0 },
+        webext: { files: 0, nodes: 0, edges: 0 },
       },
     },
   },
@@ -118,6 +122,7 @@ export const PythonAndTypeScript: Story = {
         python: { files: 2, nodes: 20, edges: 19 },
         go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 0, nodes: 0, edges: 0 },
+        webext: { files: 0, nodes: 0, edges: 0 },
       },
     },
   },
@@ -146,6 +151,7 @@ export const GoAndPython: Story = {
         python: { files: 2, nodes: 20, edges: 19 },
         go: { files: 3, nodes: 22, edges: 18 },
         tf: { files: 0, nodes: 0, edges: 0 },
+        webext: { files: 0, nodes: 0, edges: 0 },
       },
     },
   },

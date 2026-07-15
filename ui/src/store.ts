@@ -75,6 +75,7 @@ export interface IngestSummary {
     python: LayerSummary;
     go: LayerSummary;
     tf: LayerSummary;
+    webext: LayerSummary;
   };
   delta?: {
     recomputed_files: number;

@@ -2414,5 +2414,7 @@ fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::
     Ok(())
 }
 
+pub mod webextension;
+
 #[cfg(test)]
 mod tests;

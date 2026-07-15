@@ -72,6 +72,7 @@ struct LayerBreakdown {
     python: LayerSummary,
     go: LayerSummary,
     tf: LayerSummary,
+    webext: LayerSummary,
 }
 
 impl LayerBreakdown {
@@ -80,6 +81,7 @@ impl LayerBreakdown {
         self.python.add(other.python);
         self.go.add(other.go);
         self.tf.add(other.tf);
+        self.webext.add(other.webext);
     }
 
     fn files(self) -> u64 {
@@ -307,6 +309,26 @@ fn extract_tree_incremental(
         nodes: extraction.nodes.len() as u64,
         edges: extraction.edges.len() as u64,
     };
+    if wants_application {
+        // WebExtension manifests (US-0016): topology + permission facts.
+        // Runs after the TS pass so entry bindings reuse its File nodes.
+        let known_files: std::collections::BTreeSet<String> = extraction
+            .nodes
+            .iter()
+            .filter(|node| node.label == "File")
+            .map(|node| node.id.clone())
+            .collect();
+        let (webext, manifests) =
+            adapters_lang_ts::webextension::extract_manifests(root, &ts_id, &known_files)
+                .map_err(|e| e.to_string())?;
+        layers.webext = LayerSummary {
+            files: manifests,
+            nodes: webext.nodes.len() as u64,
+            edges: webext.edges.len() as u64,
+        };
+        extraction.nodes.extend(webext.nodes);
+        extraction.edges.extend(webext.edges);
+    }
     if wants_server {
         let python_id = adapters_lang_python::SourceId { repo, commit };
         let (python, stats) =
@@ -945,6 +967,7 @@ fn record_ingest_metrics(
         ("t0.adapter-python", layers.python.files),
         ("t0.adapter-go", layers.go.files),
         ("t0.iac-terraform", layers.tf.files),
+        ("t0.webextension", layers.webext.files),
     ]
     .into_iter()
     .filter(|(_, files)| *files > 0)
@@ -2556,6 +2579,75 @@ resource "aws_sqs_queue" "orders" {
         assert_eq!(summary.tf.files, 1);
         assert!(summary.tf.nodes > 0);
         assert_eq!(summary.files(), 2);
+    }
+
+    #[test]
+    fn webextension_manifest_ingest_reports_layer_and_security_grants() {
+        // US-0016: a Manifest V3 extension yields deterministic topology,
+        // entry bindings against .ts sources, and exact-scope GRANTS that
+        // the security projection can flag — reported as its own layer.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/background")).unwrap();
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            r#"{
+  "manifest_version": 3,
+  "name": "Image Trail",
+  "version": "0.10.1",
+  "background": { "service_worker": "src/background/service-worker.js" },
+  "permissions": ["activeTab", "storage"],
+  "optional_host_permissions": ["http://*/*"]
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/background/service-worker.ts"),
+            "export function main(): void {}\n",
+        )
+        .unwrap();
+
+        let (extraction, summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/image-trail",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(summary.webext.files, 1);
+        assert!(summary.webext.nodes > 0);
+        let ext = extraction
+            .nodes
+            .iter()
+            .find(|node| node.label == "Extension")
+            .expect("extension node");
+        assert_eq!(ext.props["prov"]["extractor_id"], "t0.webextension");
+        // The declared .js entry binds to the extracted .ts File node —
+        // one node id shared between the manifest fact and the TS pass.
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.label == "ENTRY"
+                && edge.dst == "file:local/image-trail@src/background/service-worker.ts"
+        }));
+        assert_eq!(
+            extraction
+                .nodes
+                .iter()
+                .filter(|node| node.id == "file:local/image-trail@src/background/service-worker.ts")
+                .count(),
+            1,
+            "manifest binding must reuse the TS pass's File node, not duplicate it"
+        );
+        // Wildcard host scope is an exact, projectable GRANTS fact.
+        let grant = extraction
+            .edges
+            .iter()
+            .find(|edge| edge.label == "GRANTS" && edge.dst.ends_with("host:http://*/*"))
+            .expect("host grant");
+        assert_eq!(grant.props["resource_scopes"][0], "http://*/*");
     }
 
     #[test]

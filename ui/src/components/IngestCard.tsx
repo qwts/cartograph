@@ -70,6 +70,13 @@ export function IngestCard({ busy, summary, error, canIngest, onConnect }: Inges
                 {summary.layers.tf.edges} edges
               </dd>
             </div>
+            <div>
+              <dt>WebExtension</dt>
+              <dd data-testid="webext-layer-summary">
+                {summary.layers.webext.files} manifests · {summary.layers.webext.nodes} nodes ·{' '}
+                {summary.layers.webext.edges} edges
+              </dd>
+            </div>
           </dl>
           {summary.delta && (
             <p className="muted" data-testid="delta-summary">

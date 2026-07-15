@@ -196,7 +196,19 @@
 - **Performance:** —
 - **Trace:** M9 · `iac`, `spec`, `ui` · — · T-0041..0042
 
-<!-- US-0016 is reserved for the WebExtension dogfood story (#99). -->
+### US-0016 — Recover WebExtension systems end to end
+- **Actor:** Engineer
+- **As a** engineer **I want** Cartograph to recover a browser extension's entry points, message topology, persisted data, permissions, capabilities, and flows **so that** a real TypeScript WebExtension such as Image Trail compiles into a useful official specification instead of a file-only graph.
+- **Priority:** Must · **Status:** In-Progress
+- _(Issue #99 drafted these as AC-0055..0059 before that range was assigned; renumbered here.)_
+- **AC-0071** Given a Manifest V2/V3 browser extension, when it is ingested, then manifest-declared service workers/background scripts, content scripts, extension pages, toolbar actions, commands, permissions, host permissions, and externally connectable boundaries become deterministic provenance-tagged topology facts (Extension/ExtensionContext/Command nodes with DECLARES/ENTRY edges) and exact-scope GRANTS security facts; declared entry files bind to their `.ts` sources when the built `.js` is absent, a missing entry is an explicit Gap, and the ingest summary reports the WebExtension layer separately.
+- **AC-0072** Given import-proven or global Chrome runtime messaging plus explicit message definitions and handler registrations, when the repository is ingested, then deterministic channels and PUBLISHES/SUBSCRIBES edges connect extension contexts; unresolved or dynamic message identities remain explicit Gaps.
+- **AC-0073** Given explicit IndexedDB schema/store declarations and repository operations, when ingested, then DataEntity nodes and READS/WRITES relations produce a cited data model.
+- **AC-0074** Given recovered WebExtension entry points, message flows, data entities, found ADRs, and permission facts, when the official spec is compiled, then the artifact set contains useful cited assertions and the verified-only output is deterministic across repeat ingest of the same commit.
+- **AC-0075** Given an ingest completes with partial or unsupported coverage, when the engineer reviews the result, then the recovery workspace presents artifact readiness, coverage diagnostics, explicit unsupported-pattern guidance, Atlas/Flow/Spec navigation, and evidence context instead of presenting a file graph as a complete analysis.
+- **Security:** All new facts are T0 Deterministic/Confirmed or explicit Gap; target code stays read-only; manifest host and API permissions retain their exact scopes.
+- **Performance:** Re-ingest uses the existing content-hash cache and determinism guarantees.
+- **Trace:** post-M10 dogfood · `adapters-lang-ts`, `adapters-fw`, `events`, `spec`, `app`, UI · WebExtension flows · T-0071..0075
 
 ### US-0017 — Runtime-loadable adapter plugins
 - **Actor:** Engineer
