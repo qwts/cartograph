@@ -2778,6 +2778,118 @@ resource "aws_sqs_queue" "orders" {
     }
 
     #[test]
+    fn webextension_dogfood_compiles_a_useful_deterministic_spec() {
+        // US-0016/AC-0074: a full fixture extension — manifest, messaging,
+        // IndexedDB — compiles into artifacts with useful cited assertions,
+        // and the verified-only bundle is byte-identical across repeat
+        // ingest of the same tree.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/background")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/content")).unwrap();
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            r#"{
+  "manifest_version": 3,
+  "name": "Fixture Trail",
+  "version": "1.0.0",
+  "action": { "default_title": "Toggle" },
+  "background": { "service_worker": "src/background/worker.js" },
+  "permissions": ["storage"],
+  "optional_host_permissions": ["http://*/*"]
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/protocol.ts"),
+            "export const MessageType = { Capture: 'ext.capture' } as const;\n\
+             export const DataStore = { History: 'history' } as const;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/content/content.ts"),
+            "import { MessageType } from '../protocol.js';\n\
+             export function capture(kind: string) {\n\
+               void chrome.runtime.sendMessage({ type: MessageType.Capture });\n\
+               void chrome.runtime.sendMessage({ type: `ext.${kind}` });\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/background/worker.ts"),
+            "import { MessageType, DataStore } from '../protocol.js';\n\
+             export function persist(tx: IDBTransaction, record: unknown) {\n\
+               tx.objectStore(DataStore.History).put(record);\n\
+             }\n\
+             export const handlers = {\n\
+               [MessageType.Capture]: () => 'ok',\n\
+             };\n\
+             chrome.runtime.onMessage.addListener(() => true);\n",
+        )
+        .unwrap();
+
+        let compile = || {
+            let (extraction, _) = crate::extract_tree_with_summary(
+                dir.path(),
+                "local/fixture-trail",
+                "workdir",
+                &[],
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
+            spec::compile_spec(
+                &extraction.nodes,
+                &extraction.edges,
+                &[],
+                spec::ExportMode::VerifiedOnly,
+                &std::collections::BTreeSet::new(),
+            )
+        };
+        let bundle = compile();
+
+        let artifact = |name: &str| {
+            bundle
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.file_name == name)
+                .unwrap_or_else(|| panic!("{name} artifact"))
+        };
+        // Data model: the IndexedDB entity with its cited WRITES relation.
+        let data = artifact("data_model.md");
+        assert!(
+            data.content
+                .contains("data:local/fixture-trail@idb:history"),
+            "data model names the store: {}",
+            data.content
+        );
+        // Security view: the wildcard optional host permission is a finding.
+        let security = artifact("security.md");
+        assert!(
+            security.content.contains("http://*/*"),
+            "wildcard host grant projected: {}",
+            security.content
+        );
+        // Gap register: the runtime-computed message identity is explicit.
+        let gaps = artifact("gap_register.md");
+        assert!(
+            gaps.content.contains("runtime-computed channel identity"),
+            "computed message identity is an explicit gap: {}",
+            gaps.content
+        );
+        assert!(bundle.assertion_count > 0);
+
+        // Determinism: a second independent ingest compiles byte-identically.
+        let again = compile();
+        assert_eq!(
+            serde_json::to_string(&bundle).unwrap(),
+            serde_json::to_string(&again).unwrap(),
+            "verified-only bundle must be identical across repeat ingest"
+        );
+    }
+
+    #[test]
     fn python_server_ingest_reports_layer_and_endpoints() {
         // AC-0053/T-0053: the app runs the import-proven Python pass for the
         // server layer and reports it independently from TypeScript.

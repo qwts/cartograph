@@ -333,3 +333,20 @@ PR — per-PR verification is CI's job.
 3. **Pass:** components use the DESIGN.md dark tokens; the four TierBadge
    states are visually distinct (R-INT-2); `Shell/App` stories run their
    interactions without error.
+
+## MT-DF-01 — Dogfood: recover Image Trail end to end
+
+1. `npm run tauri dev`; **Connect** → repo `qwts/image-trail` (or a local
+   clone path) and run Preflight → full recovery.
+2. Workspace landing: the outcome tally and artifact grid are populated; the
+   WebExtension layer row in the ingest summary reports ≥1 manifest.
+3. Spec Workbench: `security.md` lists the over-broad optional host grants
+   (`http://*/*`, `https://*/*`) with exact scopes; `data_model.md` names the
+   IndexedDB stores (history, blobs, bookmarks, …); `gap_register.md` lists
+   runtime-computed message identities as explicit Gaps with reasons.
+4. Atlas: the Extension node, its contexts (service worker, action), and
+   `chan:chrome-message:imageTrail.*` channels are present; a Gap octagon
+   opens its Resolution Strategy.
+5. Re-ingest the same commit; open **Provenance & Eval** → history.
+6. **Pass:** the two ingest rows show identical whole-graph content hashes
+   and the determinism footer reads verified (AC-0074, US-0016).
