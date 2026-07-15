@@ -196,6 +196,9 @@ const CY_STYLE: cytoscape.StylesheetStyle[] = [
       'text-background-color': '#131313',
       'text-background-opacity': 0.8,
       'text-background-padding': '2px',
+      // The chip IS the click target: without text-events Cytoscape only
+      // hit-tests the thin edge geometry (#143 review).
+      'text-events': 'yes',
     },
   },
   {
@@ -230,7 +233,14 @@ const CY_STYLE: cytoscape.StylesheetStyle[] = [
   },
   {
     selector: '.atlas-gap',
-    style: { shape: 'octagon', 'border-style': 'dashed', 'border-width': 2 },
+    // The red dashed border is the Gap's identity — it must survive the
+    // confidence overlay being off (#143 review), so it lives here too.
+    style: {
+      shape: 'octagon',
+      'border-style': 'dashed',
+      'border-width': 2,
+      'border-color': '#eb5757',
+    },
   },
   {
     selector: ':selected',

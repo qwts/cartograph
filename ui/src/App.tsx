@@ -157,6 +157,9 @@ export default function App() {
   const navigate = useCallback(
     (next: SurfaceView) => {
       setView(next);
+      // AtlasCanvas remounts with its filter reset to All layers, so the
+      // scope chip must forget the layer too or it lies on return (#143).
+      if (next !== 'atlas') setAtlasLayer('All layers');
       setPaletteOpen(false);
     },
     [setView],
