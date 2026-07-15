@@ -215,7 +215,15 @@ impl JobStore {
     /// True when the job was cancelled — checked between pipeline stages so
     /// running work stops at the next safe boundary.
     pub fn is_cancelled(&self, id: i64) -> rusqlite::Result<bool> {
-        Ok(self.get(id)?.status == "cancelled")
+        match self.get(id) {
+            Ok(job) => Ok(job.status == "cancelled"),
+            // A missing row means the job was removed (e.g. cleared right
+            // after a cancel) while a worker still held its id — fail
+            // closed: the guard reads cancelled, the worker stops (#157
+            // review). Never fall open and keep writing facts.
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(true),
+            Err(error) => Err(error),
+        }
     }
 
     /// Delete terminal jobs (`done` / `failed` / `cancelled`) from the
