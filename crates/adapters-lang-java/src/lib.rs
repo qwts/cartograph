@@ -300,19 +300,33 @@ fn annotation_literal_path(cx: &FileCx<'_>, annotation: TsNode<'_>) -> Option<St
     None
 }
 
-const SPRING_PACKAGE: &str = "org.springframework.";
+/// The exact Spring package each recognized annotation lives in. Proof is
+/// per annotation, not per vendor: a wildcard of one Spring package must
+/// never prove an annotation from another (#170 review, AC-0080).
+fn spring_annotation_package(name: &str) -> Option<&'static str> {
+    match name {
+        "RestController" | "RequestMapping" | "GetMapping" | "PostMapping" | "PutMapping"
+        | "DeleteMapping" | "PatchMapping" => Some("org.springframework.web.bind.annotation"),
+        "Controller" => Some("org.springframework.stereotype"),
+        _ => None,
+    }
+}
 
-/// A Spring annotation is proven only by its import: a named import of the
-/// annotation from an `org.springframework.` package, or a wildcard import
-/// of such a package. Lookalike annotations without the import prove nothing.
+/// A Spring annotation is proven only by its import: a named import of
+/// exactly `{declaring package}.{name}`, or a wildcard import of exactly
+/// its declaring package. Lookalikes — including same-named annotations
+/// from other packages, Spring or not — prove nothing.
 fn spring_proven(name: &str, imports: &Imports) -> bool {
+    let Some(package) = spring_annotation_package(name) else {
+        return false;
+    };
     if let Some(fqn) = imports.bindings.get(name) {
-        return fqn.starts_with(SPRING_PACKAGE);
+        return fqn == &format!("{package}.{name}");
     }
     imports
         .wildcard_packages
         .iter()
-        .any(|package| package.starts_with(SPRING_PACKAGE))
+        .any(|wildcard| wildcard == package)
 }
 
 fn mapping_method(annotation_name: &str) -> Option<&'static str> {
@@ -775,14 +789,18 @@ pub fn extract_dir_incremental(
     }
 
     // Directory join: an imported FQN resolves only to a type this repo
-    // declares; a declared-package import that cannot be proven is an
-    // explicit Gap; a foreign package is outside T0 scope and asserts
-    // nothing.
-    let types_by_fqn: BTreeMap<&str, &DeclaredType> = out
-        .declared_types
-        .iter()
-        .map(|declared| (declared.fqn.as_str(), declared))
-        .collect();
+    // declares exactly once — a duplicate FQN (the same class in two source
+    // roots or modules) is ambiguous and fails closed to a Gap instead of
+    // silently picking whichever file sorts last (#170 review). A
+    // declared-package import that cannot be proven is an explicit Gap; a
+    // foreign package is outside T0 scope and asserts nothing.
+    let mut types_by_fqn: BTreeMap<&str, Option<&DeclaredType>> = BTreeMap::new();
+    for declared in &out.declared_types {
+        types_by_fqn
+            .entry(declared.fqn.as_str())
+            .and_modify(|unique| *unique = None)
+            .or_insert(Some(declared));
+    }
     let repo_packages: BTreeSet<&str> = out
         .declared_types
         .iter()
@@ -795,13 +813,17 @@ pub fn extract_dir_incremental(
         .map(|node| node.id.clone())
         .collect::<HashSet<_>>();
     for pending in std::mem::take(&mut out.pending_calls) {
-        let resolved = types_by_fqn.get(pending.fqn.as_str()).map(|declared| {
-            symbol_id(
-                id.repo,
-                &declared.path,
-                &format!("{}.{}", declared.qualified, pending.method),
-            )
-        });
+        let resolved = types_by_fqn
+            .get(pending.fqn.as_str())
+            .copied()
+            .flatten()
+            .map(|declared| {
+                symbol_id(
+                    id.repo,
+                    &declared.path,
+                    &format!("{}.{}", declared.qualified, pending.method),
+                )
+            });
         match resolved {
             Some(dst) if known.contains(&dst) => out.edges.push(Edge {
                 src: pending.src,

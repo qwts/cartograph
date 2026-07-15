@@ -203,6 +203,113 @@ public class FakeController {
 }
 
 #[test]
+fn wildcard_proof_is_per_annotation_package_not_per_vendor() {
+    // #170 review: a wildcard of one Spring package must not prove an
+    // annotation living in another. Here `stereotype.*` proves @Controller,
+    // but the unimported (custom/lookalike) @GetMapping stays unproven —
+    // no endpoint is asserted.
+    let source = br#"package com.demo.web;
+
+import org.springframework.stereotype.*;
+
+@Controller
+public class HomeController {
+    @GetMapping("/home")
+    public String home() { return "h"; }
+}
+"#;
+    let out = extract_source(
+        source,
+        "src/main/java/com/demo/web/HomeController.java",
+        &id(),
+    )
+    .unwrap();
+    assert_eq!(
+        out.nodes
+            .iter()
+            .filter(|node| node.label == "Endpoint")
+            .count(),
+        0
+    );
+
+    // And a named import from the wrong Spring package proves nothing either.
+    let wrong = br#"package com.demo.web;
+
+import org.springframework.stereotype.RestController;
+import org.springframework.stereotype.GetMapping;
+
+@RestController
+public class WrongController {
+    @GetMapping("/wrong")
+    public String wrong() { return "w"; }
+}
+"#;
+    let out = extract_source(
+        wrong,
+        "src/main/java/com/demo/web/WrongController.java",
+        &id(),
+    )
+    .unwrap();
+    assert_eq!(
+        out.nodes
+            .iter()
+            .filter(|node| node.label == "Endpoint")
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn duplicate_type_declarations_are_ambiguous_and_fail_closed() {
+    // #170 review: the same FQN declared in two source roots (main + test)
+    // must never resolve a Confirmed call to whichever file sorts last —
+    // the import is ambiguous, so the call fails closed to a Gap.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/main/java/com/demo/App.java",
+        r#"package com.demo;
+
+import com.demo.util.Store;
+
+public class App {
+    void run() {
+        Store.save();
+    }
+}
+"#,
+    );
+    for root in ["src/main/java", "src/test/java"] {
+        write(
+            dir.path(),
+            &format!("{root}/com/demo/util/Store.java"),
+            r#"package com.demo.util;
+
+public class Store {
+    public static void save() {}
+}
+"#,
+        );
+    }
+    let (out, _) =
+        extract_dir_incremental(dir.path(), &id(), &mut IncrementalCache::default()).unwrap();
+
+    let src = "sym:local/demo@src/main/java/com/demo/App.java#App.run";
+    // No Confirmed CALLS edge to either declaration…
+    assert!(!out.edges.iter().any(|edge| {
+        edge.label == "CALLS" && edge.src == src && edge.dst.contains("Store.save")
+    }));
+    // …only an explicit Gap.
+    let gap = out
+        .nodes
+        .iter()
+        .find(|node| node.label == "Gap")
+        .expect("ambiguous duplicate declarations gap");
+    assert_eq!(gap.props["callee"], "Store.save");
+    edge(&out.edges, src, &gap.id, "CALLS");
+}
+
+#[test]
 fn named_spring_imports_prove_mappings_too() {
     let source = br#"package com.demo.web;
 
