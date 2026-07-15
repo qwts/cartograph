@@ -97,7 +97,7 @@ export default function App() {
     settingsError,
     selected,
     refresh,
-    enqueueJob,
+    clearFinishedJobs,
     clearGraph,
     setSpecMode,
     curateAssertion,
@@ -337,8 +337,8 @@ export default function App() {
         return (
           <JobsSurface
             jobs={jobs}
-            canEnqueue={backend === 'up'}
-            onEnqueue={(kind) => void enqueueJob(kind)}
+            canClear={backend === 'up'}
+            onClearFinished={() => void clearFinishedJobs()}
             onCancel={(id) => void cancelJob(id)}
             onRetry={(id) => void retryJob(id)}
           />

@@ -145,7 +145,17 @@ interface MockTier {
 }
 
 function installFakeCore() {
-  let jobs: MockJob[] = [];
+  // The fake core boots with one queued job: the production surface offers
+  // no job-creation control (AC-0077), so lifecycle stories act on it.
+  let jobs: MockJob[] = [
+    {
+      id: 1,
+      kind: 'ingest:/seed',
+      status: 'queued',
+      created_at: '2026-07-05T19:00:00Z',
+      updated_at: '2026-07-05T19:00:00Z',
+    },
+  ];
   let curation: AssertionDecisionRecord[] = [];
   let graphStats = { nodes: 42, edges: 99 };
   // Mirrors the #118 SettingsStore defaults and invariants.
@@ -513,16 +523,10 @@ function installFakeCore() {
         jobs = jobs.map((job) => (job.id === id ? { ...job, status: 'done' } : job));
         return jobs.find((job) => job.id === id);
       }
-      case 'enqueue_job': {
-        const job: MockJob = {
-          id: jobs.length + 1,
-          kind: (args as { kind: string }).kind,
-          status: 'queued',
-          created_at: '2026-07-05T20:00:00Z',
-          updated_at: '2026-07-05T20:00:00Z',
-        };
-        jobs = [job, ...jobs];
-        return job;
+      case 'clear_finished_jobs': {
+        const before = jobs.length;
+        jobs = jobs.filter((job) => !['done', 'failed', 'cancelled'].includes(job.status));
+        return before - jobs.length;
       }
       default:
         throw new Error(`unmocked command: ${cmd}`);
@@ -595,18 +599,21 @@ export const ConnectedToCore: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Spec Workbench' }));
     await waitFor(() => expect(canvas.getByText('9 artifacts')).toBeInTheDocument());
 
-    // Enqueue round-trip on the Jobs surface: command hits the fake core,
-    // the list refreshes.
+    // Lifecycle round-trip (#117/#111) on the seeded queued job: cancel,
+    // then retry. No creation control ships on the surface (AC-0077).
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
-    await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
-    await waitFor(() => expect(canvas.getByText('noop')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('ingest:/seed')).toBeInTheDocument());
     await expect(canvas.getByText('queued')).toBeInTheDocument();
-
-    // Lifecycle round-trip (#117/#111): cancel the queued job, then retry it.
+    await expect(canvas.queryByRole('button', { name: /enqueue/i })).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(canvas.getByText('cancelled')).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(canvas.getByText('done')).toBeInTheDocument());
+
+    // Clear finished round-trip (AC-0076): the now-done job is removable.
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear finished' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'Confirm clear' }));
+    await waitFor(() => expect(canvas.getByText('No jobs yet.')).toBeInTheDocument());
   },
 };
 
@@ -923,11 +930,10 @@ export const ClearGraphPreservesJobs: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByTestId('graph-node-count')).toHaveTextContent('42'));
 
-    // Enqueue on the Jobs surface, then clear the graph from Workspace: the
+    // The seeded job exists, then clear the graph from Workspace: the
     // durable job spine must survive a graph clear.
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
-    await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
-    await waitFor(() => expect(canvas.getByText('noop')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('ingest:/seed')).toBeInTheDocument());
 
     await userEvent.click(canvas.getByRole('button', { name: 'Workspace' }));
     await userEvent.click(canvas.getByRole('button', { name: 'Clear graph' }));
@@ -936,6 +942,6 @@ export const ClearGraphPreservesJobs: Story = {
     await expect(canvas.getByTestId('graph-edge-count')).toHaveTextContent('0');
 
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
-    await expect(canvas.getByText('noop')).toBeInTheDocument();
+    await expect(canvas.getByText('ingest:/seed')).toBeInTheDocument();
   },
 };

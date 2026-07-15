@@ -464,7 +464,9 @@ export interface AppStore {
   /** Node selected for evidence view, with its source window state. */
   selected: { node: GraphNode; source: SourceState; evidenceIndex: number } | null;
   refresh: () => Promise<void>;
-  enqueueJob: (kind: string) => Promise<void>;
+  /** Remove terminal (done/failed/cancelled) jobs from the durable spine;
+   *  queued, running, and interrupted (resumable) work is kept (AC-0076). */
+  clearFinishedJobs: () => Promise<void>;
   /** Run recovery over a target. An explicit `source` (from the Connect
    *  step) picks the command directly; without one it is inferred from the
    *  target string. */
@@ -643,8 +645,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
   },
 
-  enqueueJob: async (kind: string) => {
-    await invokeOr<Job | null>('enqueue_job', null, { kind });
+  clearFinishedJobs: async () => {
+    await invokeOr<number | null>('clear_finished_jobs', null);
     await get().refresh();
   },
 
