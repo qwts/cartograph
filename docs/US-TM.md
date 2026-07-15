@@ -19,6 +19,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0013 | AC-0036..0038,AC-0059 | spec, app, ui | M9 | F-* | ADR-0002, ADR-0012 | T-0036..0038,T-0059 |
 | US-0014 | AC-0039..0040,AC-0060 | adapters-lang-ts, iac, core-graph, core-prov, app | M10 | — | ADR-0006, ADR-0014 | T-0039..0040,T-0060 |
 | US-0015 | AC-0041..0042 | iac, spec, ui | M9 | — | ADR-0003, ADR-0013 | T-0041..0042 |
+| US-0017 | AC-0068..0070 | adapters-*, ingest, app, ui | post-M10 | — | ADR-0003, ADR-0017 | T-0068..0070 |
 
 ## Coverage assertions
 - Every Must-priority US is anchored to a milestone ≤ M10.
@@ -44,3 +45,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0014 | Content-addressed delta extraction and graph reconciliation |
 | ADR-0015 | Single-source semantic versioning and Changesets release intent |
 | ADR-0016 | Fail-closed macOS Developer ID distribution |
+| ADR-0017 | Runtime-loadable, AI-authorable adapter plugins (WASM) |
