@@ -1,5 +1,16 @@
 # cartograph
 
+## 0.3.0
+
+### Minor Changes
+
+- 49aebb6: Java language adapter (T0): classes, interfaces, enums, records, and methods become Confirmed Symbols with exact evidence spans; same-class and import-proven cross-file calls join the graph deterministically (declared-package misses fail closed to explicit Gaps); annotation-proven Spring Web mappings become Endpoints with class+method path composition. Preflight now detects Java as covered (and Kotlin as its own uncovered language), and the ingest summary reports a Java layer row.
+- 638126d: Jobs surface hygiene: the dev-only "Enqueue test job" control is gone from the production UI (with its `enqueue_job` command), and a confirm-gated **Clear finished** action removes done/failed/cancelled jobs from the durable spine while queued, running, and interrupted (resumable) work is always kept.
+
+### Patch Changes
+
+- 5d45f56: Recovery no longer freezes the app: ingest, add-repo, add-system, and ingest retry/resume commands now run their extraction on a blocking worker thread instead of the webview/main thread, so a large repository recovers with the UI fully interactive (no more macOS beachball).
+
 ## 0.2.0
 
 ### Minor Changes
