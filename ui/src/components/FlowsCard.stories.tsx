@@ -198,8 +198,15 @@ export const VerifiedOnlyProjection: Story = {
     await expect(canvas.getByRole('note')).toHaveTextContent(
       /Best-effort: includes 1 InferredWeak hop/,
     );
+    // The note's tone must actually resolve (#144 review): a typo'd CSS
+    // token invalidates the declaration and silently falls back to the
+    // confirmed-green base, marking inferred content as confirmed.
+    const bestEffortBorder = getComputedStyle(canvas.getByRole('note')).borderColor;
 
     await userEvent.click(canvas.getByRole('button', { name: 'verified-only' }));
+    await expect(
+      getComputedStyle(canvas.getByRole('note')).borderColor,
+    ).not.toBe(bestEffortBorder);
     // #107: the excluded hop stays visible as an annotated, non-interactive
     // card; the count and the note make the projection difference explicit,
     // and the Gap node is retained (R-INT-4).
@@ -207,9 +214,10 @@ export const VerifiedOnlyProjection: Story = {
     await expect(canvas.getByRole('note')).toHaveTextContent(
       /Verified-only: InferredWeak hops are excluded \(1 hidden\), but the Gap node is retained/,
     );
-    const excluded = canvas
-      .getByText('Excluded in verified-only — InferredWeak')
-      .closest('.flow-hop-card');
+    const excludedNote = canvas.getByText('Excluded in verified-only — InferredWeak');
+    // --tier-inferred-weak resolved, not fallen back to inherited text color.
+    await expect(getComputedStyle(excludedNote).color).toBe('rgb(242, 201, 76)');
+    const excluded = excludedNote.closest('.flow-hop-card');
     await expect(excluded).toHaveClass('excluded');
     await expect(excluded).toHaveAttribute('aria-disabled', 'true');
     await expect(excluded?.tagName).not.toBe('BUTTON');
