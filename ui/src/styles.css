@@ -1364,6 +1364,18 @@ button.flow-hop-card:hover {
   font: 0.7rem var(--font-mono);
 }
 
+.spec-doc-chip {
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.spec-doc-chip.alert {
+  border-color: color-mix(in srgb, var(--tier-gap) 45%, var(--border));
+  color: var(--tier-gap);
+}
+
 .spec-curation-log {
   padding: 1rem 0.9rem;
 }
@@ -1539,6 +1551,26 @@ button.flow-hop-card:hover {
   margin-top: 0.75rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
+}
+
+.spec-curation-controls.locked button {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.spec-lock-note {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.spec-lock-banner {
+  margin: 0 0 0.85rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--tier-confirmed) 35%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--tier-confirmed) 7%, transparent);
+  color: var(--text-body);
+  font-size: 0.75rem;
 }
 
 .spec-curation-controls label {

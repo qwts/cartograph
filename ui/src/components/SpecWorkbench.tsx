@@ -27,6 +27,44 @@ function isInferred(tier: Tier): boolean {
   return tier === 'InferredStrong' || tier === 'InferredWeak';
 }
 
+function producerLabel(tier: string): string {
+  switch (tier) {
+    case 'Deterministic':
+      return 'T0';
+    case 'Dynamic':
+      return 'T1';
+    case 'Semantic':
+      return 'T2';
+    case 'Agentic':
+      return 'T3';
+    default:
+      return tier;
+  }
+}
+
+/** Doc-list count chip (handoff 04): unit named per document, alert tone for
+ * the registers whose counts demand attention. */
+export function docChip(artifact: SpecArtifact): { text: string; tone: 'default' | 'alert' } {
+  const count = artifact.assertions.length;
+  switch (artifact.file_name) {
+    case 'user_stories.md':
+      return { text: `${count} US`, tone: 'default' };
+    case 'US-TM.md':
+      return { text: `${count} AC`, tone: 'default' };
+    case 'flow_dossiers.md':
+      return { text: `${count} flows`, tone: 'default' };
+    case 'adrs.md':
+      return { text: `${count} ADR`, tone: 'default' };
+    case 'gap_register.md':
+    case 'drift_register.md':
+      return { text: `${count}`, tone: count > 0 ? 'alert' : 'default' };
+    case 'security.md':
+      return { text: `${count}`, tone: count > 0 ? 'alert' : 'default' };
+    default:
+      return { text: `${count}`, tone: 'default' };
+  }
+}
+
 function decisionLabel(decision: AssertionDecision): string {
   switch (decision) {
     case 'accepted':
@@ -122,7 +160,12 @@ export function SpecWorkbench({
                 >
                   <span>{artifact.title}</span>
                   <small>{artifact.file_name}</small>
-                  <strong>{artifact.assertions.length}</strong>
+                  {(() => {
+                    const chip = docChip(artifact);
+                    return (
+                      <strong className={`spec-doc-chip ${chip.tone}`}>{chip.text}</strong>
+                    );
+                  })()}
                 </button>
               ))}
               <div className="spec-curation-log">
@@ -155,6 +198,11 @@ export function SpecWorkbench({
                     Copy artifact
                   </button>
                 </header>
+
+                <p className="spec-lock-banner" role="note">
+                  Confirmed (T0/T1) assertions are read-only; only proposed T2/T3 assertions can
+                  be curated (R-INT-1).
+                </p>
 
                 <pre className="spec-artifact-source" data-testid="spec-artifact-source">
                   {selected.content}
@@ -207,6 +255,30 @@ export function SpecWorkbench({
                               </div>
                             </dl>
 
+                            {provenance.confidence_tier === 'Confirmed' && (
+                              // The lock is visible and explained, not hidden
+                              // (#108): deterministic facts are never
+                              // curatable (R-INT-1), and the disabled state
+                              // is real in the a11y tree.
+                              <div className="spec-curation-controls locked">
+                                <div>
+                                  {(['Accept', 'Reject', 'Annotate'] as const).map((action) => (
+                                    <button
+                                      key={action}
+                                      type="button"
+                                      disabled
+                                      aria-disabled="true"
+                                      className={action === 'Reject' ? 'danger' : undefined}
+                                    >
+                                      {action}
+                                    </button>
+                                  ))}
+                                  <span className="spec-lock-note">
+                                    Confirmed {producerLabel(provenance.tier)} — locked, read-only
+                                  </span>
+                                </div>
+                              </div>
+                            )}
                             {curatable && (
                               <div className="spec-curation-controls">
                                 <label>
