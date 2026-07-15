@@ -64,6 +64,13 @@ export function IngestCard({ busy, summary, error, canIngest, onConnect }: Inges
               </dd>
             </div>
             <div>
+              <dt>Java</dt>
+              <dd data-testid="java-layer-summary">
+                {summary.layers.java.files} files · {summary.layers.java.nodes} nodes ·{' '}
+                {summary.layers.java.edges} edges
+              </dd>
+            </div>
+            <div>
               <dt>Terraform</dt>
               <dd data-testid="tf-layer-summary">
                 {summary.layers.tf.files} files · {summary.layers.tf.nodes} nodes ·{' '}

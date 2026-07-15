@@ -75,6 +75,7 @@ export interface IngestSummary {
     python: LayerSummary;
     go: LayerSummary;
     tf: LayerSummary;
+    java: LayerSummary;
     webext: LayerSummary;
   };
   delta?: {

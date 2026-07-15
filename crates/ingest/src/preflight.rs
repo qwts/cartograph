@@ -74,6 +74,7 @@ fn adapter_for(extension: &str) -> Option<(&'static str, &'static str)> {
         }
         "py" => Some(("Python", "t0.adapter-python")),
         "go" => Some(("Go", "t0.adapter-go")),
+        "java" => Some(("Java", "t0.adapter-java")),
         "tf" => Some(("Terraform", "t0.iac-tf")),
         _ => None,
     }
@@ -84,7 +85,7 @@ fn adapter_for(extension: &str) -> Option<(&'static str, &'static str)> {
 fn uncovered_language(extension: &str) -> Option<&'static str> {
     match extension {
         "rb" => Some("Ruby"),
-        "java" | "kt" => Some("JVM (Java/Kotlin)"),
+        "kt" => Some("Kotlin"),
         "cs" => Some("C#"),
         "php" => Some("PHP"),
         "rs" => Some("Rust"),
@@ -204,6 +205,7 @@ fn detect_framework(name: &str, path: &Path, frameworks: &mut Vec<String>) {
         }
         "go.mod" => frameworks.push("Go module".into()),
         "pyproject.toml" | "requirements.txt" => frameworks.push("Python project".into()),
+        "pom.xml" | "build.gradle" | "build.gradle.kts" => frameworks.push("Java project".into()),
         _ => {
             if name.ends_with(".tf") {
                 frameworks.push("Terraform".into());
