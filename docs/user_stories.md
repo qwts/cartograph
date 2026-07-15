@@ -158,9 +158,10 @@
 - **AC-0035** Given the full set, when exported, then it produces user stories, US-TM, flow dossiers, resource topology as Markdown with fenced Mermaid plus provenance, a data model retaining READS/WRITES/MAPS_TO relations that terminate at DataEntity, ADRs, Gap + Drift registers, and mapped security findings.
 - **AC-0057** Given a completed recovery, when the Workspace landing renders, then the outcome tally (open findings split into gaps, unsupported patterns, and no-evidence) and every provenance-health count derive from the single register summary and atlas projection all surfaces share — findings are listed explicitly, never guessed or double-counted.
 - **AC-0058** Given the artifacts grid, when an artifact was generated, then it carries two independent badges — generation ("Artifact generated") and recovery authority (authoritative/partial/inferred) — while the gap register carries exactly one completion-style badge ("N open findings") and a missing artifact is labeled "Not generated" rather than omitted.
+- **AC-0067** Given the Spec Workbench, when a Confirmed (deterministic) assertion renders, then its Accept/Reject/Annotate controls are visible but truly disabled — `disabled` plus `aria-disabled="true"`, never hidden and never exposed as enabled in the a11y tree — with an inline "Confirmed T0 — locked, read-only" explanation and a document-level note stating the R-INT-1 rule; only proposed T2/T3 assertions are curatable, Gap assertions offer no curation at all, and each doc-list entry carries a per-document count chip (US/AC/flows/ADR units, alert tone for non-empty registers).
 - **Security:** —
 - **Performance:** —
-- **Trace:** M9–M10 · `spec`, UI · — · T-0032..0035,T-0057..0058
+- **Trace:** M9–M10 · `spec`, UI · — · T-0032..0035,T-0057..0058,T-0067
 
 ### US-0013 — ADR recovery and drift detection
 - **Actor:** Engine

@@ -228,7 +228,12 @@ export const SecurityFindings: Story = {
 
 export const AcceptRejectAndAnnotate: Story = {
   play: async ({ args, canvasElement }) => {
-    const canvas = within(canvasElement);
+    // Scope to the inferred block: the confirmed block above it renders the
+    // same three controls locked (#108), so unscoped queries are ambiguous.
+    const block = within(canvasElement)
+      .getByText('ADR: asynchronous fulfillment')
+      .closest('li') as HTMLElement;
+    const canvas = within(block);
     await userEvent.click(canvas.getByRole('button', { name: 'Accept' }));
     await expect(args.onCurate).toHaveBeenCalledWith(INFERRED, 'accepted', undefined);
     const annotation = canvas.getByLabelText('Annotation');
@@ -245,6 +250,48 @@ export const AcceptRejectAndAnnotate: Story = {
       'rejected',
       'Matched to the queue declaration',
     );
+  },
+};
+
+export const ConfirmedBlocksAreLockedNotHidden: Story = {
+  // #108: T0 lock semantics — Confirmed blocks show the curation controls
+  // truly disabled (real in the a11y tree) with an inline explanation;
+  // inferred blocks stay curatable; Gap blocks offer no curation at all.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('note')).toHaveTextContent(
+      /Confirmed \(T0\/T1\) assertions are read-only/,
+    );
+
+    const locked = within(
+      canvas.getByText('Capability: Place orders').closest('li') as HTMLElement,
+    );
+    for (const name of ['Accept', 'Reject', 'Annotate']) {
+      const control = locked.getByRole('button', { name });
+      await expect(control).toBeDisabled();
+      await expect(control).toHaveAttribute('aria-disabled', 'true');
+    }
+    await expect(locked.getByText('Confirmed T0 — locked, read-only')).toBeInTheDocument();
+
+    const curatable = within(
+      canvas.getByText('ADR: asynchronous fulfillment').closest('li') as HTMLElement,
+    );
+    await expect(curatable.getByRole('button', { name: 'Accept' })).toBeEnabled();
+    await expect(curatable.queryByText(/locked, read-only/)).not.toBeInTheDocument();
+
+    const nav = canvas.getByRole('navigation', { name: 'Official spec artifacts' });
+    // Per-doc chips name their units; the gap register's count reads as an
+    // alert, never a bare accent number.
+    await expect(within(nav).getByText('2 US')).toBeInTheDocument();
+    await expect(within(nav).getByText('1 flows')).toBeInTheDocument();
+    const gapChip = within(nav).getByRole('button', { name: /Gap register/ });
+    await expect(gapChip.querySelector('.spec-doc-chip')).toHaveClass('alert');
+
+    await userEvent.click(within(nav).getByRole('button', { name: /Gap register/ }));
+    const gapBlock = within(
+      canvas.getByText('Gap: runtime-computed channel identity').closest('li') as HTMLElement,
+    );
+    await expect(gapBlock.queryByRole('button')).not.toBeInTheDocument();
   },
 };
 
