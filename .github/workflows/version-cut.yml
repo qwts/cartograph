@@ -45,7 +45,11 @@ jobs:
           commit: 'Version packages'
           title: 'Version packages'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A maintainer PAT (RELEASE_TOKEN) makes the Version packages PR
+          # authored by a real user instead of github-actions[bot], so its
+          # PR workflows run without the "approve and run" gate. Falls back
+          # to GITHUB_TOKEN when the secret is absent — a no-op until set.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Run required checks on the version branch
         if: steps.changesets.outputs.hasChangesets == 'true'
