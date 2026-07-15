@@ -9,7 +9,11 @@ test('version-cut preserves review, token-trigger, and immutable-tag gates', () 
   const workflow = readFileSync(path.join(root, '.github/workflows/version-cut.yml'), 'utf8');
   assert.match(workflow, /changesets\/action@d94a5c301145045a0960133674e003b265942a22/u);
   assert.match(workflow, /version: npm run changeset:version/u);
-  assert.match(workflow, /gh workflow run ci\.yml --ref changeset-release\/main/u);
+  // The version PR must not self-dispatch a gated CI run on its own branch
+  // (GitHub parks bot-dispatched runs in action_required, forcing a
+  // redundant approval on every refresh — main is not branch-protected, so
+  // it gated nothing). Feature-PR CI still guards everything reaching main.
+  assert.doesNotMatch(workflow, /gh workflow run ci\.yml/u);
   assert.match(workflow, /Manual recovery requires an existing \$tag tag/u);
   assert.match(workflow, /commits\/\$cut_commit\/pulls/u);
   assert.match(workflow, /\.head\.ref == "changeset-release\/main"/u);
@@ -18,7 +22,7 @@ test('version-cut preserves review, token-trigger, and immutable-tag gates', () 
   assert.match(workflow, /gh workflow run release\.yml --ref main -f tag="\$tag"/u);
 });
 
-test('CI accepts explicit dispatches for bot-refreshed version branches', () => {
+test('CI remains manually dispatchable for on-demand branch checks', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
   assert.match(workflow, /^\s{2}workflow_dispatch:/mu);
 });
