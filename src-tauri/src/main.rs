@@ -131,9 +131,9 @@ fn clear_graph(state: State<'_, AppState>) -> Result<GraphStats, String> {
 }
 
 #[tauri::command]
-fn enqueue_job(kind: String, state: State<'_, AppState>) -> Result<Job, String> {
+fn clear_finished_jobs(state: State<'_, AppState>) -> Result<usize, String> {
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    jobs.enqueue(&kind).map_err(|e| e.to_string())
+    jobs.clear_finished().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2019,7 +2019,7 @@ fn main() {
             ping,
             graph_stats,
             clear_graph,
-            enqueue_job,
+            clear_finished_jobs,
             list_jobs,
             list_evals,
             record_agent_decision,
@@ -3116,6 +3116,47 @@ resource "aws_sqs_queue" "orders" {
         assert_eq!(stats.nodes, 0);
         assert_eq!(stats.edges, 0);
         assert_eq!(jobs.list().unwrap()[0].id, job.id);
+    }
+
+    #[test]
+    fn clear_finished_jobs_removes_terminal_rows_only() {
+        // AC-0076: clearing finished jobs deletes done/failed/cancelled rows
+        // while queued, running, and interrupted (resumable) jobs survive —
+        // and graph facts are untouched (jobs live on their own spine).
+        let dir = tempfile::tempdir().unwrap();
+        let mut graph = SqliteGraphStore::open(dir.path().join("graph.db")).unwrap();
+        graph
+            .put_node(&Node {
+                id: "a".into(),
+                label: "Resource".into(),
+                props: serde_json::json!({}),
+            })
+            .unwrap();
+        let mut jobs = crate::jobs::JobStore::open(dir.path().join("state.db")).unwrap();
+        let mut with_status = |status: &str| {
+            let job = jobs.enqueue(&format!("ingest:{status}")).unwrap();
+            if status != "queued" {
+                jobs.set_status(job.id, status).unwrap();
+            }
+            job.id
+        };
+        for status in ["done", "failed", "cancelled"] {
+            with_status(status);
+        }
+        let kept: Vec<i64> = ["queued", "running", "interrupted"]
+            .into_iter()
+            .map(&mut with_status)
+            .collect();
+
+        assert_eq!(jobs.clear_finished().unwrap(), 3);
+        let remaining: Vec<i64> = jobs.list().unwrap().into_iter().map(|j| j.id).collect();
+        assert_eq!(remaining.len(), 3);
+        for id in kept {
+            assert!(remaining.contains(&id));
+        }
+        // A second clear is a no-op, and the graph never lost its fact.
+        assert_eq!(jobs.clear_finished().unwrap(), 0);
+        assert_eq!(graph.node_count().unwrap(), 1);
     }
 
     #[test]

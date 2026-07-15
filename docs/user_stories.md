@@ -18,9 +18,11 @@
 - **AC-0003** Given an unauthorized repo, when I add it, then I get a clear auth-failure with remediation and no partial clone.
 - **AC-0049** Given any completed ingest, when its summary is shown, then TypeScript and Terraform each report source-file, node, and edge counts including explicit zeros.
 - **AC-0050** Given a non-empty graph, when I request a clear and confirm the warning, then all graph facts are removed while durable job history remains intact.
+- **AC-0076** Given accumulated terminal jobs, when I clear finished jobs and confirm the warning, then done/failed/cancelled rows are removed while queued/running/interrupted jobs and all graph facts remain intact.
+- **AC-0077** Given the production Jobs surface, when it renders, then it offers only lifecycle verbs on existing work (Cancel/Retry/Resume and Clear finished) — no job-creation control.
 - **Security:** Tokens stored in OS keychain; never logged; least-privilege App scopes.
 - **Performance:** Shallow/sparse clone; 1 GB repo clones within bounded progress feedback.
-- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050
+- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0077
 
 ### US-0002 — Deterministic extraction of server-side facts (TS/Python/Go)
 - **Actor:** Engine

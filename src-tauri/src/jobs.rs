@@ -218,6 +218,16 @@ impl JobStore {
         Ok(self.get(id)?.status == "cancelled")
     }
 
+    /// Delete terminal jobs (`done` / `failed` / `cancelled`) from the
+    /// spine. Queued, running, and interrupted (resumable) work is never
+    /// discarded. Returns the number of rows removed.
+    pub fn clear_finished(&mut self) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "DELETE FROM jobs WHERE status IN ('done', 'failed', 'cancelled')",
+            [],
+        )
+    }
+
     /// All jobs, newest first.
     pub fn list(&self) -> rusqlite::Result<Vec<Job>> {
         let mut stmt = self.conn.prepare(

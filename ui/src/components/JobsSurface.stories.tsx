@@ -13,7 +13,7 @@ function job(overrides: Partial<Job> & Pick<Job, 'id' | 'kind' | 'status'>): Job
 
 const ALL_STATES: Job[] = [
   job({ id: 5, kind: 'ingest:/repo', status: 'running', stage: 'extract', progress: 40 }),
-  job({ id: 4, kind: 'noop', status: 'queued' }),
+  job({ id: 4, kind: 'ingest:/queued', status: 'queued' }),
   job({
     id: 3,
     kind: 'ingest:/repo',
@@ -30,8 +30,8 @@ const meta = {
   component: JobsSurface,
   args: {
     jobs: ALL_STATES,
-    canEnqueue: true,
-    onEnqueue: fn(),
+    canClear: true,
+    onClearFinished: fn(),
     onCancel: fn(),
     onRetry: fn(),
   },
@@ -66,13 +66,63 @@ export const EveryLifecycleState: Story = {
   },
 };
 
-export const Empty: Story = {
-  args: { jobs: [] },
+export const LifecycleVerbsOnly: Story = {
+  // AC-0077: the production surface manages existing work — no
+  // job-creation control ships; Clear finished is the only header action.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole('button', { name: /enqueue/i })).not.toBeInTheDocument();
+    await expect(canvas.getByRole('button', { name: 'Clear finished' })).toBeEnabled();
+    const verbs = canvas
+      .getAllByRole('button')
+      .map((b) => b.textContent)
+      .filter((label) => label !== 'Clear finished');
+    await expect(new Set(verbs)).toEqual(new Set(['Cancel', 'Retry', 'Resume']));
+  },
+};
+
+export const ClearFinishedConfirms: Story = {
+  // AC-0076: clearing is confirm-gated, counts only terminal jobs, and
+  // states that resumable work is kept.
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear finished' }));
+    // 2 of the 5 fixture jobs are terminal (done + failed); the queued,
+    // running, and interrupted rows never count toward the clear.
+    const alert = within(canvas.getByRole('alert'));
+    await expect(
+      alert.getByText(/Remove 2 finished jobs\? Queued, running, and resumable work is kept\./),
+    ).toBeInTheDocument();
+    // Declining changes nothing.
+    await userEvent.click(alert.getByRole('button', { name: 'Keep history' }));
+    await expect(args.onClearFinished).not.toHaveBeenCalled();
+    // Confirming fires exactly once.
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear finished' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'Confirm clear' }));
+    await expect(args.onClearFinished).toHaveBeenCalledTimes(1);
+  },
+};
+
+export const NothingToClear: Story = {
+  // With no terminal jobs the clear control is disabled, not hidden.
+  args: {
+    jobs: [
+      job({ id: 2, kind: 'ingest:/repo', status: 'running', stage: 'extract', progress: 10 }),
+      job({ id: 1, kind: 'ingest:/big', status: 'interrupted' }),
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('button', { name: 'Clear finished' })).toBeDisabled();
+  },
+};
+
+export const Empty: Story = {
+  args: { jobs: [] },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
     await expect(canvas.getByText('No jobs yet.')).toBeInTheDocument();
-    await userEvent.click(canvas.getByRole('button', { name: /enqueue test job/i }));
-    await expect(args.onEnqueue).toHaveBeenCalledWith('noop');
+    await expect(canvas.getByRole('button', { name: 'Clear finished' })).toBeDisabled();
   },
 };
 
