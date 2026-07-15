@@ -2890,6 +2890,80 @@ resource "aws_sqs_queue" "orders" {
     }
 
     #[test]
+    #[ignore = "manual dogfood (MT-DF-01): set CARTOGRAPH_DOGFOOD_ROOT to an image-trail checkout"]
+    fn dogfood_extraction_against_local_image_trail_checkout() {
+        let root = std::env::var("CARTOGRAPH_DOGFOOD_ROOT").expect("checkout path");
+        let root = std::path::Path::new(&root);
+        let compile = || {
+            let (extraction, summary) = crate::extract_tree_with_summary(
+                root,
+                "qwts/image-trail",
+                "workdir",
+                &[],
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
+            (
+                spec::compile_spec(
+                    &extraction.nodes,
+                    &extraction.edges,
+                    &[],
+                    spec::ExportMode::VerifiedOnly,
+                    &std::collections::BTreeSet::new(),
+                ),
+                extraction,
+                summary,
+            )
+        };
+        let (bundle, extraction, summary) = compile();
+        let count = |label: &str| {
+            extraction
+                .nodes
+                .iter()
+                .filter(|node| node.label == label)
+                .count()
+        };
+        println!(
+            "layers: ts {} files / webext {} manifests · nodes {} edges {}",
+            summary.ts.files,
+            summary.webext.files,
+            extraction.nodes.len(),
+            extraction.edges.len()
+        );
+        println!(
+            "extension {} · contexts {} · commands {} · permissions {} · channels {} · data entities {} · gaps {}",
+            count("Extension"),
+            count("ExtensionContext"),
+            count("Command"),
+            count("Permission"),
+            count("Channel"),
+            count("DataEntity"),
+            count("Gap"),
+        );
+        for artifact in &bundle.artifacts {
+            println!(
+                "{}: {} assertions",
+                artifact.file_name,
+                artifact.assertions.len()
+            );
+        }
+        assert!(summary.webext.files >= 1, "manifest recognized");
+        assert!(count("Extension") >= 1);
+        assert!(count("ExtensionContext") >= 1);
+        assert!(count("Permission") >= 1);
+        assert!(count("DataEntity") >= 1, "IndexedDB stores recovered");
+        // Determinism against the real tree, not only the fixture.
+        let (again, _, _) = compile();
+        assert_eq!(
+            serde_json::to_string(&bundle).unwrap(),
+            serde_json::to_string(&again).unwrap(),
+        );
+    }
+
+    #[test]
     fn python_server_ingest_reports_layer_and_endpoints() {
         // AC-0053/T-0053: the app runs the import-proven Python pass for the
         // server layer and reports it independently from TypeScript.
