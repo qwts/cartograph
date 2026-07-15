@@ -280,10 +280,11 @@ export const ConfirmedBlocksAreLockedNotHidden: Story = {
     await expect(curatable.queryByText(/locked, read-only/)).not.toBeInTheDocument();
 
     const nav = canvas.getByRole('navigation', { name: 'Official spec artifacts' });
-    // Per-doc chips name their units; the gap register's count reads as an
-    // alert, never a bare accent number.
+    // Per-doc chips name what the assertions actually are (#145 review):
+    // recovered stories are one-per-US, but the dossier's assertions are
+    // hops — never relabeled as flows. Registers read as alerts.
     await expect(within(nav).getByText('2 US')).toBeInTheDocument();
-    await expect(within(nav).getByText('1 flows')).toBeInTheDocument();
+    await expect(within(nav).getByText('1 hops')).toBeInTheDocument();
     const gapChip = within(nav).getByRole('button', { name: /Gap register/ });
     await expect(gapChip.querySelector('.spec-doc-chip')).toHaveClass('alert');
 

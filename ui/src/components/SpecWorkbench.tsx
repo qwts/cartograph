@@ -43,21 +43,23 @@ function producerLabel(tier: string): string {
 }
 
 /** Doc-list count chip (handoff 04): unit named per document, alert tone for
- * the registers whose counts demand attention. */
+ * the registers whose counts demand attention. Units match what the
+ * assertions actually are (#145 review): one per recovered US/ADR, but the
+ * matrix's are relation links and the dossier's are hops — never relabeled
+ * as ACs or flows the compiler did not count. */
 export function docChip(artifact: SpecArtifact): { text: string; tone: 'default' | 'alert' } {
   const count = artifact.assertions.length;
   switch (artifact.file_name) {
     case 'user_stories.md':
       return { text: `${count} US`, tone: 'default' };
     case 'US-TM.md':
-      return { text: `${count} AC`, tone: 'default' };
+      return { text: `${count} links`, tone: 'default' };
     case 'flow_dossiers.md':
-      return { text: `${count} flows`, tone: 'default' };
+      return { text: `${count} hops`, tone: 'default' };
     case 'adrs.md':
       return { text: `${count} ADR`, tone: 'default' };
     case 'gap_register.md':
     case 'drift_register.md':
-      return { text: `${count}`, tone: count > 0 ? 'alert' : 'default' };
     case 'security.md':
       return { text: `${count}`, tone: count > 0 ? 'alert' : 'default' };
     default:
