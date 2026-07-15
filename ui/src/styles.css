@@ -680,8 +680,8 @@ button:disabled {
 }
 
 .flow-projection-note.best-effort {
-  border-color: color-mix(in srgb, var(--tier-inferredstrong) 35%, var(--border));
-  background: color-mix(in srgb, var(--tier-inferredstrong) 7%, transparent);
+  border-color: color-mix(in srgb, var(--tier-inferred-strong) 35%, var(--border));
+  background: color-mix(in srgb, var(--tier-inferred-strong) 7%, transparent);
 }
 
 /* Wrapping hop sequence (#107): real layout widths driven by --hop-scale —
@@ -791,7 +791,7 @@ button.flow-hop-card:hover {
 
 .flow-hop-excluded-note {
   margin: 0;
-  color: var(--tier-inferredweak);
+  color: var(--tier-inferred-weak);
   font-size: 0.65rem;
 }
 
