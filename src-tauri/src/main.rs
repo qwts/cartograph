@@ -1311,7 +1311,10 @@ fn job_cancelled(state: &AppState, job_id: i64) -> bool {
         .lock()
         .ok()
         .and_then(|jobs| jobs.is_cancelled(job_id).ok())
-        .unwrap_or(false)
+        // Fail closed: an unreadable spine stops the worker too (#157
+        // review) — a cancellation guard that defaults to "keep going"
+        // is no guard at all.
+        .unwrap_or(true)
 }
 
 /// The staged ingest pipeline behind `ingest_path` and `retry_job`: extract →
@@ -3157,6 +3160,22 @@ resource "aws_sqs_queue" "orders" {
         // A second clear is a no-op, and the graph never lost its fact.
         assert_eq!(jobs.clear_finished().unwrap(), 0);
         assert_eq!(graph.node_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn clearing_a_live_cancelled_job_still_stops_the_worker() {
+        // #157 review (P1): a cancelled job can be cleared while its worker
+        // is still between cancellation checks. The guard must fail closed —
+        // a missing row reads as cancelled, so the worker stops instead of
+        // continuing to write graph facts after cancellation.
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = crate::jobs::JobStore::open(dir.path().join("state.db")).unwrap();
+        let job = jobs.enqueue("ingest:/big").unwrap();
+        jobs.set_status(job.id, "running").unwrap();
+        jobs.cancel(job.id).unwrap();
+        assert_eq!(jobs.clear_finished().unwrap(), 1);
+        // The worker's next boundary check on the vanished row: cancelled.
+        assert!(jobs.is_cancelled(job.id).unwrap());
     }
 
     #[test]
