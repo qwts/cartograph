@@ -1,17 +1,4 @@
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  Handle,
-  MarkerType,
-  Position,
-  ReactFlow,
-  type Edge,
-  type Node,
-  type NodeProps,
-  type NodeTypes,
-} from '@xyflow/react';
-import { useMemo, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Flow, FlowHop, Tier } from '../store';
 
 export type FlowExportMode = 'verified-only' | 'best-effort';
@@ -21,6 +8,10 @@ export interface FlowsCardProps {
   flows: Flow[];
   /** Flow-dossier Markdown from the spec compiler, or null with no backend. */
   dossier: string | null;
+  /** Open the evidence drawer for a hop's own provenance. */
+  onSelectHop?: (hop: FlowHop) => void;
+  /** Open the Resolution Strategy modal for a gap hop's Gap node. */
+  onOpenResolution?: (gapId: string) => void;
 }
 
 const STATUS_CLASS: Record<Flow['status'], string> = {
@@ -36,13 +27,6 @@ const CONFIDENCE_CLASS: Record<Tier, string> = {
   Gap: 'tier-gap',
 };
 
-const CONFIDENCE_COLOR: Record<Tier, string> = {
-  Confirmed: '#27c93f',
-  InferredStrong: '#2d9cdb',
-  InferredWeak: '#f2c94c',
-  Gap: '#eb5757',
-};
-
 /** Backend facts with absent/future confidence values fail closed as Gap. */
 function hopConfidence(hop: FlowHop): Tier {
   return hop.confidence === 'Confirmed' ||
@@ -51,6 +35,10 @@ function hopConfidence(hop: FlowHop): Tier {
     hop.confidence === 'Gap'
     ? hop.confidence
     : 'Gap';
+}
+
+function isGapHop(hop: FlowHop): boolean {
+  return hopConfidence(hop) === 'Gap' || hop.gap_reason !== null;
 }
 
 /** R-INT-5 projection: verified-only excludes agentic/weak hops, while
@@ -91,162 +79,33 @@ function attemptedEscalation(hop: FlowHop): string {
   return hop.attempted_tiers.length > 0 ? hop.attempted_tiers.join(' → ') : 'not recorded';
 }
 
-function EntityNode({ entityId, name, gapHop }: { entityId: string; name: string; gapHop: FlowHop | null }) {
-  return (
-    <div className={`flow-node-content ${gapHop ? 'unresolved' : ''}`}>
-      <div className="flow-node-head">
-        <span>{gapHop ? 'Unresolved target' : 'Flow node'}</span>
-      </div>
-      <strong>{name}</strong>
-      {gapHop ? (
-        <dl className="flow-gap-details">
-          <div>
-            <dt>Reason</dt>
-            <dd>{gapReason(gapHop)}</dd>
-          </div>
-          <div>
-            <dt>Attempted escalation</dt>
-            <dd>{attemptedEscalation(gapHop)}</dd>
-          </div>
-        </dl>
-      ) : (
-        <span className="muted">{entityId}</span>
-      )}
-    </div>
-  );
+/** Kind kicker for a hop card, from the destination's recorded identity —
+ * never guessed from array position. */
+export function hopKind(hop: FlowHop): string {
+  if (isGapHop(hop)) return 'GAP';
+  const prefix = hop.dst.split(':', 1)[0];
+  switch (prefix) {
+    case 'ep':
+      return 'ENDPOINT';
+    case 'sym':
+      return 'FUNCTION';
+    case 'chan':
+    case 'channel':
+      return 'CHANNEL';
+    case 'res':
+      return 'RESOURCE';
+    case 'component':
+      return 'COMPONENT';
+    default:
+      return hop.label.toUpperCase();
+  }
 }
 
-type InspectorNodeData =
-  | { kind: 'trigger'; triggerKind: string; name: string }
-  | { kind: 'entity'; entityId: string; name: string; gapHop: FlowHop | null };
-type InspectorNode = Node<InspectorNodeData, 'inspector'>;
-
-function InspectorNodeCard({ data }: NodeProps<InspectorNode>) {
-  return (
-    <>
-      {data.kind === 'entity' && <Handle type="target" position={Position.Left} />}
-      {data.kind === 'trigger' ? (
-        <div className="flow-node-content trigger">
-          <span>Trigger · {data.triggerKind}</span>
-          <strong>{data.name}</strong>
-        </div>
-      ) : (
-        <EntityNode entityId={data.entityId} name={data.name} gapHop={data.gapHop} />
-      )}
-      <Handle type="source" position={Position.Right} />
-    </>
-  );
-}
-
-const NODE_TYPES: NodeTypes = { inspector: InspectorNodeCard };
-
-interface FlowEntity {
-  id: string;
-  name: string;
-  gapHop: FlowHop | null;
-}
-
-function flowEntities(flow: Flow): FlowEntity[] {
-  const entities = new Map<string, FlowEntity>();
-  entities.set(flow.trigger, { id: flow.trigger, name: flow.trigger_name, gapHop: null });
-  const add = (id: string, name: string, gapHop: FlowHop | null) => {
-    const existing = entities.get(id);
-    if (existing) {
-      if (gapHop && !existing.gapHop) existing.gapHop = gapHop;
-      return;
-    }
-    entities.set(id, { id, name, gapHop });
-  };
-  for (const hop of flow.hops) {
-    add(hop.src, hop.src_name, null);
-    const confidence = hopConfidence(hop);
-    add(hop.dst, hop.dst_name, confidence === 'Gap' || hop.gap_reason !== null ? hop : null);
-  }
-  return [...entities.values()];
-}
-
-function entityDepths(flow: Flow): Map<string, number> {
-  const outgoing = new Map<string, string[]>();
-  for (const hop of flow.hops) {
-    const destinations = outgoing.get(hop.src) ?? [];
-    destinations.push(hop.dst);
-    outgoing.set(hop.src, destinations);
-  }
-  const depths = new Map([[flow.trigger, 0]]);
-  const queue = [flow.trigger];
-  while (queue.length > 0) {
-    const source = queue.shift();
-    if (!source) break;
-    const nextDepth = (depths.get(source) ?? 0) + 1;
-    for (const destination of outgoing.get(source) ?? []) {
-      if (depths.has(destination)) continue;
-      depths.set(destination, nextDepth);
-      queue.push(destination);
-    }
-  }
-  return depths;
-}
-
-/** Build one card per recorded endpoint and connect every hop by its actual
- * src/dst ids. This must not infer sequence edges from array position. */
-export function flowElements(flow: Flow): { nodes: InspectorNode[]; edges: Edge[] } {
-  const entities = flowEntities(flow);
-  const aliases = new Map(entities.map((entity, index) => [entity.id, `entity-${index}`]));
-  const depths = entityDepths(flow);
-  let fallbackDepth = Math.max(...depths.values(), 0) + 1;
-  for (const entity of entities) {
-    if (!depths.has(entity.id)) depths.set(entity.id, fallbackDepth++);
-  }
-  const columns = new Map<number, FlowEntity[]>();
-  for (const entity of entities) {
-    const depth = depths.get(entity.id) ?? 0;
-    columns.set(depth, [...(columns.get(depth) ?? []), entity]);
-  }
-  const nodes: InspectorNode[] = entities.map((entity) => {
-    const depth = depths.get(entity.id) ?? 0;
-    const column = columns.get(depth) ?? [entity];
-    const row = column.findIndex((candidate) => candidate.id === entity.id);
-    const y = (row - (column.length - 1) / 2) * 190;
-    const base = {
-      id: aliases.get(entity.id) ?? entity.id,
-      type: 'inspector',
-      position: { x: depth * 470, y },
-      draggable: false,
-      connectable: false,
-    } as const;
-    if (entity.id === flow.trigger) {
-      return {
-        ...base,
-        data: { kind: 'trigger', triggerKind: flow.trigger_kind, name: flow.trigger_name },
-        className: 'flow-inspector-node trigger',
-      };
-    }
-    return {
-      ...base,
-      data: { kind: 'entity', entityId: entity.id, name: entity.name, gapHop: entity.gapHop },
-      className: `flow-inspector-node ${entity.gapHop ? 'unresolved' : ''}`,
-    };
-  });
-  const edges: Edge[] = flow.hops.map((hop, index) => {
-    const confidence = hopConfidence(hop);
-    const gap = confidence === 'Gap' || hop.gap_reason !== null;
-    return {
-      id: `edge-${index}`,
-      source: aliases.get(hop.src) ?? hop.src,
-      target: aliases.get(hop.dst) ?? hop.dst,
-      label: `${hop.label} · ${tierLabel(hop.tier)} · ${confidence}`,
-      markerEnd: { type: MarkerType.ArrowClosed, color: CONFIDENCE_COLOR[confidence] },
-      style: {
-        stroke: CONFIDENCE_COLOR[confidence],
-        strokeDasharray: gap ? '6 5' : undefined,
-      },
-      labelStyle: { fill: '#c1c6d5', fontSize: 10 },
-      labelBgStyle: { fill: '#0e0e0e', fillOpacity: 0.92 },
-      labelBgPadding: [6, 4],
-      labelBgBorderRadius: 4,
-    };
-  });
-  return { nodes, edges };
+/** Header status chip text: gap counts are named, never implied by color. */
+export function statusBadge(flow: Flow): string {
+  if (flow.status !== 'Partial') return flow.status.toUpperCase();
+  const gaps = flow.hops.filter(isGapHop).length;
+  return `PARTIAL (${gaps} gap${gaps === 1 ? '' : 's'})`;
 }
 
 function mermaidSafe(value: string): string {
@@ -293,46 +152,186 @@ export function projectedDossier(flows: Flow[], mode: FlowExportMode): string {
   return lines.join('\n');
 }
 
-/** M9 Flow Inspector: a selectable, read-only React Flow sequence backed by
- * the same deterministic hops as the compiler's Mermaid dossier. */
-export function FlowsCard({ flows, dossier }: FlowsCardProps) {
+/** Card zoom bounds: real layout width, never a CSS transform, so the
+ * wrapping row can shrink without leaving intrinsic scroll width behind. */
+const ZOOM_MIN = 0.7;
+const ZOOM_MAX = 1.6;
+const ZOOM_STEP = 0.15;
+/** Base hop-card width at zoom 1 (design: ~168px minimum). */
+const CARD_BASE_PX = 168;
+/** Arrow + gap allowance per card when fitting. */
+const CARD_CHROME_PX = 34;
+
+function clampZoom(value: number): number {
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+}
+
+interface HopCardProps {
+  hop: FlowHop;
+  index: number;
+  excluded: boolean;
+  onSelectHop?: (hop: FlowHop) => void;
+  onOpenResolution?: (gapId: string) => void;
+}
+
+function HopCard({ hop, index, excluded, onSelectHop, onOpenResolution }: HopCardProps) {
+  const confidence = hopConfidence(hop);
+  const gap = isGapHop(hop);
+  const title = gap ? hop.dst_name.replace(/^GAP:\s*/i, '') || hop.label : hop.dst_name;
+  const body = (
+    <>
+      <div className="flow-hop-head">
+        <span className="flow-hop-kind">{hopKind(hop)}</span>
+        <span className={`tier-badge ${CONFIDENCE_CLASS[confidence]}`}>
+          {gap ? 'GAP' : tierLabel(hop.tier)}
+        </span>
+      </div>
+      <strong className="flow-hop-title">{title}</strong>
+      <span className="flow-hop-route">
+        {hop.src_name} → {hop.dst_name}
+      </span>
+      {hop.evidence && <code className="flow-hop-evidence">{hop.evidence}</code>}
+      {gap && (
+        <p className="flow-hop-gap-note">
+          Unresolved — {gapReason(hop)}. Attempted {attemptedEscalation(hop)}.
+        </p>
+      )}
+      {excluded && (
+        <p className="flow-hop-excluded-note">Excluded in verified-only — InferredWeak</p>
+      )}
+    </>
+  );
+  const className = `flow-hop-card${gap ? ' unresolved' : ''}${excluded ? ' excluded' : ''}`;
+  return (
+    <li className="flow-hop-step">
+      {index > 0 && (
+        <span className="flow-hop-arrow" aria-hidden="true">
+          →
+        </span>
+      )}
+      {excluded ? (
+        // Excluded means excluded: the card stays visible so the projection
+        // difference is explicit, but it is not an interactive fact here.
+        <div className={className} aria-disabled="true">
+          {body}
+        </div>
+      ) : (
+        <button
+          type="button"
+          className={className}
+          aria-label={`${gap ? 'Unresolved hop' : hop.label}: ${hop.src_name} to ${hop.dst_name}`}
+          onClick={() => {
+            // Only a real Gap node can escalate; a fail-closed hop (e.g.
+            // unrecognized confidence) has no strategy — show its evidence.
+            if (gap && hop.dst.startsWith('gap:')) onOpenResolution?.(hop.dst);
+            else onSelectHop?.(hop);
+          }}
+        >
+          {body}
+        </button>
+      )}
+    </li>
+  );
+}
+
+/** Flow Inspector surface (#107, handoff 03): header with id/status/score,
+ * R-INT-5 projection toggle with an explicit hidden count, and a wrapping
+ * hop-card sequence that never scrolls horizontally. Gap hops open the
+ * Resolution Strategy; every other hop opens the evidence drawer. */
+export function FlowsCard({ flows, dossier, onSelectHop, onOpenResolution }: FlowsCardProps) {
   const [selectedTrigger, setSelectedTrigger] = useState(flows[0]?.trigger ?? '');
   const [mode, setMode] = useState<FlowExportMode>('best-effort');
+  const [zoom, setZoom] = useState(1);
   const [copied, setCopied] = useState(false);
-  const selected = flows.find((flow) => flow.trigger === selectedTrigger) ?? flows[0];
-  const projected = selected ? projectFlow(selected, mode) : null;
-  const elements = useMemo(
-    () => (projected ? flowElements(projected) : { nodes: [], edges: [] }),
-    [projected],
+  const rowRef = useRef<HTMLOListElement>(null);
+  const selectedIndex = Math.max(
+    0,
+    flows.findIndex((flow) => flow.trigger === selectedTrigger),
   );
+  const selected: Flow | undefined = flows[selectedIndex];
+  const projected = selected ? projectFlow(selected, mode) : null;
   const dossierText =
-    mode === 'best-effort' && dossier?.includes('## ')
-      ? dossier
-      : projectedDossier(flows, mode);
+    mode === 'best-effort' && dossier?.includes('## ') ? dossier : projectedDossier(flows, mode);
+
+  const fit = () => {
+    const row = rowRef.current;
+    if (!row || !selected) return;
+    const cards = selected.hops.length + 1; // + trigger card
+    setZoom(clampZoom((row.clientWidth / cards - CARD_CHROME_PX) / CARD_BASE_PX));
+  };
+
+  const hiddenCount = selected
+    ? selected.hops.length - (projected?.hops.length ?? 0)
+    : 0;
+  const confirmedCount =
+    projected?.hops.filter((hop) => hopConfidence(hop) === 'Confirmed').length ?? 0;
+  const weakCount = selected
+    ? selected.hops.filter((hop) => hopConfidence(hop) === 'InferredWeak').length
+    : 0;
 
   return (
     <section className="card flow-inspector-card" aria-labelledby="flow-inspector-title">
       <div className="flow-inspector-heading">
         <div>
-          <h2 id="flow-inspector-title">Flow Inspector</h2>
-          <p className="muted">Trace each business flow hop with its tier, evidence, and explicit unresolved boundary.</p>
+          <h2 id="flow-inspector-title">
+            {selected ? (
+              <>
+                F-{String(selectedIndex + 1).padStart(4, '0')} · {selected.trigger_name}{' '}
+                <span className={`tier-badge ${STATUS_CLASS[selected.status]}`}>
+                  {statusBadge(selected)}
+                </span>
+              </>
+            ) : (
+              'Flow Inspector'
+            )}
+          </h2>
+          <p className="muted">
+            {selected
+              ? `Trigger: ${selected.trigger_kind} ${selected.trigger_name}` +
+                (selected.hops.length > 0
+                  ? ` → ${selected.hops.map((hop) => hop.dst_name).join(' → ')}`
+                  : '') +
+                `. Flow score ${selected.score.toFixed(2)}.`
+              : 'Trace each business flow hop with its tier, evidence, and explicit unresolved boundary.'}
+          </p>
         </div>
-        <div className="flow-mode-toggle" aria-label="Flow export mode">
-          {(['verified-only', 'best-effort'] as const).map((item) => (
+        <div className="flow-inspector-controls">
+          <div className="flow-mode-toggle" aria-label="Flow export mode">
+            {(['verified-only', 'best-effort'] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={mode === item ? 'active' : ''}
+                aria-pressed={mode === item}
+                onClick={() => setMode(item)}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+          <div className="flow-zoom" aria-label="Hop card zoom">
             <button
-              key={item}
               type="button"
-              className={mode === item ? 'active' : ''}
-              aria-pressed={mode === item}
-              onClick={() => setMode(item)}
+              aria-label="Zoom out"
+              onClick={() => setZoom((value) => clampZoom(value - ZOOM_STEP))}
             >
-              {item}
+              −
             </button>
-          ))}
+            <button type="button" aria-label="Fit hops to view" onClick={fit}>
+              Fit
+            </button>
+            <button
+              type="button"
+              aria-label="Zoom in"
+              onClick={() => setZoom((value) => clampZoom(value + ZOOM_STEP))}
+            >
+              +
+            </button>
+          </div>
         </div>
       </div>
 
-      {flows.length === 0 || !projected ? (
+      {flows.length === 0 || !selected || !projected ? (
         <p className="muted flow-inspector-empty">
           No flows traced yet — ingest a repo with endpoints or event channels.
         </p>
@@ -351,55 +350,47 @@ export function FlowsCard({ flows, dossier }: FlowsCardProps) {
                 </option>
               ))}
             </select>
-            <span className={`tier-badge ${STATUS_CLASS[selected.status]}`}>{selected.status}</span>
-            <span className="flow-score" title="mean source-flow hop weight (SPEC-00 §5.3)">
-              score {selected.score.toFixed(2)}
-            </span>
             <span className="muted" role="status">
               {projected.hops.length} of {selected.hops.length} hops shown
             </span>
           </div>
 
-          <div className="flow-inspector-canvas" data-testid="flow-inspector-canvas">
-            <ReactFlow
-              key={`${selected.trigger}-${mode}`}
-              nodes={elements.nodes}
-              edges={elements.edges}
-              nodeTypes={NODE_TYPES}
-              fitView
-              fitViewOptions={{ padding: 0.18 }}
-              minZoom={0.2}
-              maxZoom={1.8}
-              nodesDraggable={false}
-              nodesConnectable={false}
-              deleteKeyCode={null}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Controls showInteractive={false} />
-              <Background variant={BackgroundVariant.Lines} gap={32} color="#414753" />
-            </ReactFlow>
-          </div>
+          <p className={`flow-projection-note ${mode}`} role="note">
+            {mode === 'verified-only'
+              ? `Verified-only: InferredWeak hops are excluded (${hiddenCount} hidden), but the ` +
+                `Gap node is retained (R-INT-4). Projected coverage ${confirmedCount}/${projected.hops.length} confirmed hops.`
+              : weakCount > 0
+                ? `Best-effort: includes ${weakCount} InferredWeak hop${weakCount === 1 ? '' : 's'}, ` +
+                  'annotated — excluded from verified-only exports (R-INT-5).'
+                : 'Best-effort: no InferredWeak hops in this flow — both projections are identical.'}
+          </p>
 
-          <ol className="flow-sequence" aria-label="Flow sequence">
-            {projected.hops.map((hop, index) => {
-              const confidence = hopConfidence(hop);
-              const gap = confidence === 'Gap' || hop.gap_reason !== null;
+          <ol
+            className="flow-hop-row"
+            aria-label="Flow sequence"
+            ref={rowRef}
+            style={{ ['--hop-scale' as string]: zoom }}
+          >
+            <li className="flow-hop-step">
+              <div className="flow-hop-card trigger">
+                <div className="flow-hop-head">
+                  <span className="flow-hop-kind">TRIGGER · {selected.trigger_kind}</span>
+                </div>
+                <strong className="flow-hop-title">{selected.trigger_name}</strong>
+                <code className="flow-hop-evidence">{selected.trigger}</code>
+              </div>
+            </li>
+            {selected.hops.map((hop, index) => {
+              const excluded = mode === 'verified-only' && hopConfidence(hop) === 'InferredWeak';
               return (
-                <li key={`${hop.src}-${hop.label}-${hop.dst}-${index}`} className={gap ? 'unresolved' : ''}>
-                  <div className="flow-sequence-head">
-                    <strong>{index + 1}. {gap ? 'Unresolved hop' : hop.label}</strong>
-                    <span className={`tier-badge ${CONFIDENCE_CLASS[confidence]}`}>
-                      {tierLabel(hop.tier)} · {confidence}
-                    </span>
-                  </div>
-                  <span>{hop.src_name} → {hop.dst_name}</span>
-                  {gap && (
-                    <dl className="flow-gap-details">
-                      <div><dt>Reason</dt><dd>{gapReason(hop)}</dd></div>
-                      <div><dt>Attempted escalation</dt><dd>{attemptedEscalation(hop)}</dd></div>
-                    </dl>
-                  )}
-                </li>
+                <HopCard
+                  key={`${hop.src}-${hop.label}-${hop.dst}-${index}`}
+                  hop={hop}
+                  index={index + 1}
+                  excluded={excluded}
+                  onSelectHop={onSelectHop}
+                  onOpenResolution={onOpenResolution}
+                />
               );
             })}
           </ol>

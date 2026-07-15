@@ -253,7 +253,23 @@ export default function App() {
           <Suspense
             fallback={<section className="card flow-inspector-card">Loading Flow Inspector…</section>}
           >
-            <FlowsCard flows={flowList} dossier={flows} />
+            <FlowsCard
+              flows={flowList}
+              dossier={flows}
+              onSelectHop={(hop) =>
+                // Hops are evidence subjects like edges: the drawer reads the
+                // hop's own provenance via a synthetic subject.
+                void select({
+                  id: `${hop.src} ${hop.label} ${hop.dst}`,
+                  label: hop.label,
+                  props: {
+                    name: `${hop.src_name} ${hop.label} ${hop.dst_name}`,
+                    prov: hop.provenance,
+                  },
+                })
+              }
+              onOpenResolution={(gapId) => void openResolution(gapId)}
+            />
           </Suspense>
         );
       case 'spec':

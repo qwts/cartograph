@@ -17,7 +17,6 @@
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@tauri-apps/api": "^2.11.1",
-    "@xyflow/react": "^12.11.2",
     "cytoscape": "^3.34.0",
     "material-symbols": "^0.45.8",
     "react": "^19.2.7",

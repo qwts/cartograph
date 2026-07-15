@@ -636,147 +636,163 @@ button:disabled {
   margin-left: auto;
 }
 
-.flow-score {
+.flow-inspector-heading h2 .tier-badge {
+  margin-left: 0.4rem;
+  vertical-align: middle;
+}
+
+.flow-inspector-controls {
+  display: flex;
   flex-shrink: 0;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.flow-zoom {
+  display: flex;
+  padding: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.flow-zoom button {
+  min-width: 2rem;
+  padding: 0.35rem 0.5rem;
+  border-color: transparent;
+  background: transparent;
   color: var(--text-body);
-  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
 }
 
-.flow-inspector-canvas {
-  height: 31rem;
-  background: #0e0e0e;
+.flow-zoom button:hover {
+  color: var(--accent);
 }
 
-.flow-inspector-canvas .react-flow__node {
-  width: 290px;
-  padding: 0;
-  overflow: hidden;
+.flow-projection-note {
+  margin: 0.8rem 1.25rem 0;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--tier-confirmed) 35%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--tier-confirmed) 7%, transparent);
+  color: var(--text-body);
+  font-size: 0.75rem;
+}
+
+.flow-projection-note.best-effort {
+  border-color: color-mix(in srgb, var(--tier-inferredstrong) 35%, var(--border));
+  background: color-mix(in srgb, var(--tier-inferredstrong) 7%, transparent);
+}
+
+/* Wrapping hop sequence (#107): real layout widths driven by --hop-scale —
+ * never a CSS transform, so shrinking cards can't leave intrinsic scroll
+ * width behind, and the row wraps instead of scrolling horizontally. */
+.flow-hop-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.75rem 0.4rem;
+  margin: 0;
+  padding: 0.9rem 1.25rem;
+  list-style: none;
+}
+
+.flow-hop-step {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+.flow-hop-arrow {
+  align-self: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.flow-hop-card {
+  display: flex;
+  width: calc(var(--hop-scale, 1) * 168px);
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.65rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--control);
   color: var(--text);
-  box-shadow: 0 10px 30px rgb(0 0 0 / 24%);
+  font-size: 0.7rem;
   text-align: left;
 }
 
-.flow-inspector-canvas .react-flow__node.unresolved {
-  border: 2px dashed var(--tier-gap);
+button.flow-hop-card:hover {
+  border-color: var(--accent);
 }
 
-.flow-inspector-canvas .react-flow__handle {
-  width: 7px;
-  height: 7px;
-  border-color: var(--bg);
-  background: var(--border);
-}
-
-.flow-inspector-canvas .react-flow__controls {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: none;
-}
-
-.flow-inspector-canvas .react-flow__controls-button {
-  border-color: var(--border);
-  background: var(--control);
-  fill: var(--text);
-}
-
-.flow-node-content {
-  display: flex;
-  min-height: 7.25rem;
-  flex-direction: column;
-  gap: 0.6rem;
-  padding: 0.85rem;
-  font-size: 0.72rem;
-}
-
-.flow-node-content.trigger {
-  justify-content: center;
+.flow-hop-card.trigger {
   border-top: 3px solid var(--accent);
 }
 
-.flow-node-content.unresolved {
-  border-top: 3px solid var(--tier-gap);
+.flow-hop-card.unresolved {
+  border: 2px dashed var(--tier-gap);
 }
 
-.flow-node-content > strong {
-  font: 600 0.78rem var(--font-mono);
-  overflow-wrap: anywhere;
+.flow-hop-card.excluded {
+  border-style: dashed;
+  opacity: 0.55;
 }
 
-.flow-node-head,
-.flow-sequence-head {
+.flow-hop-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
-.flow-node-head > span:first-child {
+.flow-hop-kind {
   color: var(--text-muted);
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.flow-gap-details {
-  display: grid;
-  gap: 0.45rem;
-  margin: 0;
+.flow-hop-title {
+  overflow: hidden;
+  font: 600 0.76rem var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.flow-gap-details > div {
+.flow-hop-route {
+  color: var(--text-body);
+  overflow-wrap: anywhere;
+}
+
+.flow-hop-evidence {
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 0.65rem var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-hop-gap-note {
+  margin: 0;
   padding: 0.4rem 0.5rem;
   border: 1px solid color-mix(in srgb, var(--tier-gap) 30%, var(--border));
   border-radius: 5px;
   background: color-mix(in srgb, var(--tier-gap) 7%, transparent);
-}
-
-.flow-gap-details dt {
   color: var(--tier-gap);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.flow-gap-details dd {
-  margin-top: 0.15rem;
-  color: var(--text-body);
   overflow-wrap: anywhere;
 }
 
-.flow-sequence {
-  display: grid;
-  gap: 0.5rem;
-  max-height: 22rem;
+.flow-hop-excluded-note {
   margin: 0;
-  padding: 0.8rem 1.25rem;
-  overflow-y: auto;
-  list-style: none;
-  border-top: 1px solid var(--border);
-}
-
-.flow-sequence li {
-  display: grid;
-  gap: 0.4rem;
-  padding: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--control);
-  font: 0.72rem var(--font-mono);
-}
-
-.flow-sequence li.unresolved {
-  border: 2px dashed var(--tier-gap);
-}
-
-.flow-sequence li > span {
-  color: var(--text-body);
-  overflow-wrap: anywhere;
+  color: var(--tier-inferredweak);
+  font-size: 0.65rem;
 }
 
 .flow-dossier-details {
@@ -823,8 +839,8 @@ button:disabled {
     margin-left: 0;
   }
 
-  .flow-inspector-canvas {
-    height: 26rem;
+  .flow-inspector-controls {
+    justify-content: space-between;
   }
 }
 

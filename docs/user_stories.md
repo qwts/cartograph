@@ -139,12 +139,14 @@
 - **Actor:** Engineer
 - **As a** engineer **I want** to view a traced flow as a sequence with per-hop tier badges and explicit gap cards **so that** I trust the flow.
 - **Priority:** Must · **Status:** Done
-- **AC-0029** Given a trigger, when I open Flow Inspector, then the flow renders as a sequence (React Flow + Mermaid) with tier badges.
+- **AC-0029** Given a trigger, when I open Flow Inspector, then the flow renders as a hop-card sequence (plus the Mermaid dossier) with tier badges, ordered by the hops' recorded src/dst ids — never by array position.
 - **AC-0030** Given a Gap hop, when shown, then it appears as an "unresolved" card with reason and attempted escalation.
 - **AC-0031** Given the export toggle, when set to `verified-only`, then InferredWeak hops are excluded.
+- **AC-0065** Given the Flow Inspector surface, when it renders, then the header names the flow (stable id, status badge with the gap count spelled out, trigger summary, flow score), the projection note makes the verified-only/best-effort difference explicit (hidden count; excluded InferredWeak hops stay visible as annotated non-interactive cards; the Gap node is always retained per R-INT-4), and the hop sequence wraps responsively with Fit/zoom driving real layout widths — never a CSS transform — so the row never scrolls horizontally.
+- **AC-0066** Given a hop card, when clicked, then a hop ending at a Gap node opens the Resolution Strategy modal for that gap, and every other hop — including fail-closed hops with unrecognized confidence, which have no strategy to run — opens the read-only evidence drawer from the hop's own provenance.
 - **Security:** —
 - **Performance:** —
-- **Trace:** M9 · `app`, `flowtracer`, UI · F-* · T-0029..0031
+- **Trace:** M9 · `app`, `flowtracer`, UI · F-* · T-0029..0031, T-0065..0066
 
 ### US-0012 — Spec Workbench, curation, and export
 - **Actor:** Engineer

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, fn, userEvent, within } from 'storybook/test';
 import type { Flow, FlowHop, Tier } from '../store';
-import { FlowsCard, flowElements, projectedDossier } from './FlowsCard';
+import { FlowsCard, hopKind, projectedDossier, statusBadge } from './FlowsCard';
 
 function hop(
   label: string,
@@ -121,7 +121,7 @@ const UNKNOWN_CONFIDENCE: Flow = {
 const meta = {
   title: 'Atlas/FlowInspector',
   component: FlowsCard,
-  args: { flows: FLOWS, dossier: SAMPLE },
+  args: { flows: FLOWS, dossier: SAMPLE, onSelectHop: fn(), onOpenResolution: fn() },
 } satisfies Meta<typeof FlowsCard>;
 
 export default meta;
@@ -137,16 +137,25 @@ export const Empty: Story = {
 export const SequenceAndTriggerSelection: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // #107 header: flow id, status badge with named gap count, trigger
+    // summary and score in prose.
+    await expect(canvas.getByRole('heading', { level: 2 })).toHaveTextContent(
+      'F-0001 · POST /orders',
+    );
+    await expect(canvas.getByText('VERIFIED')).toHaveClass('tier-confirmed');
+    await expect(canvas.getByText(/Flow score 1\.00/)).toBeInTheDocument();
     await expect(canvas.getByRole('status')).toHaveTextContent('2 of 2 hops shown');
-    await expect(canvas.getByText('Verified')).toHaveClass('tier-confirmed');
-    await expect(canvas.getByText('score 1.00')).toBeInTheDocument();
     await expect(canvas.getByLabelText('Flow sequence')).toHaveTextContent('createOrder');
+
     await userEvent.selectOptions(canvas.getByLabelText('Trigger source'), PARTIAL.trigger);
+    await expect(canvas.getByRole('heading', { level: 2 })).toHaveTextContent(
+      'F-0002 · POST /notify',
+    );
+    await expect(canvas.getByText('PARTIAL (1 gap)')).toHaveClass('tier-gap');
+    await expect(canvas.getByText(/Flow score 0\.43/)).toBeInTheDocument();
     await expect(canvas.getByRole('status')).toHaveTextContent('3 of 3 hops shown');
-    await expect(canvas.getByText('Partial')).toHaveClass('tier-gap');
-    await expect(canvas.getByText('score 0.43')).toBeInTheDocument();
     await expect(canvas.getByLabelText('Flow sequence')).toHaveTextContent('sendNotification');
-    await expect(canvas.getByTestId('flow-inspector-canvas')).toBeInTheDocument();
+    await expect(statusBadge(PARTIAL)).toBe('PARTIAL (1 gap)');
   },
 };
 
@@ -154,34 +163,30 @@ export const ExplicitGap: Story = {
   args: { flows: [PARTIAL], dossier: projectedDossier([PARTIAL], 'best-effort') },
   play: async ({ canvasElement }) => {
     const sequence = within(canvasElement).getByLabelText('Flow sequence');
-    const gap = within(sequence).getByText(/Unresolved hop/).closest('li');
+    const gap = within(sequence)
+      .getByRole('button', { name: /Unresolved hop/ });
     await expect(gap).toHaveClass('unresolved');
     await expect(gap).toHaveTextContent('runtime-computed channel identity');
     await expect(gap).toHaveTextContent('T0 → T1 → T2 → T3');
-    await expect(gap).toHaveTextContent('T0 · Gap');
+    await expect(within(gap).getByText('GAP', { selector: '.tier-badge' })).toBeInTheDocument();
+    await expect(hopKind(PARTIAL.hops[2])).toBe('GAP');
   },
 };
 
 export const BranchedTraceUsesRecordedEndpoints: Story = {
   args: { flows: [BRANCHED], dossier: projectedDossier([BRANCHED], 'best-effort') },
   play: async ({ canvasElement }) => {
-    const graph = flowElements(BRANCHED);
-    const handler = graph.nodes.find(
-      (node) => node.data.kind === 'entity' && node.data.entityId === 'sym:branch#handle',
-    );
-    const channel = graph.nodes.find(
-      (node) => node.data.kind === 'entity' && node.data.entityId === 'channel:orders',
-    );
-    const publishes = graph.edges.find((edge) => edge.label?.toString().startsWith('PUBLISHES'));
-    await expect(publishes).toMatchObject({ source: handler?.id, target: channel?.id });
+    // Every card and dossier arrow uses the hop's recorded src/dst ids —
+    // sequence is never inferred from array position.
+    const sequence = within(canvasElement).getByLabelText('Flow sequence');
+    const publishes = within(sequence).getByRole('button', { name: /^PUBLISHES:/ });
+    await expect(publishes).toHaveTextContent('branchHandler → orders.created');
+    await expect(hopKind(BRANCHED.hops[2])).toBe('CHANNEL');
 
     const dossier = projectedDossier([BRANCHED], 'best-effort');
     await expect(dossier).toContain('p1->>p2: CALLS [Confirmed]');
     await expect(dossier).toContain('p1->>p3: PUBLISHES [Confirmed]');
     await expect(dossier).not.toContain('p2->>p3: PUBLISHES [Confirmed]');
-    await expect(within(canvasElement).getByLabelText('Flow sequence')).toHaveTextContent(
-      'branchHandler → orders.created',
-    );
   },
 };
 
@@ -189,11 +194,29 @@ export const VerifiedOnlyProjection: Story = {
   args: { flows: [PARTIAL], dossier: projectedDossier([PARTIAL], 'best-effort') },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByLabelText('Flow sequence')).toHaveTextContent('guessedTarget');
+    // Best-effort names its weak hops instead of hiding the difference.
+    await expect(canvas.getByRole('note')).toHaveTextContent(
+      /Best-effort: includes 1 InferredWeak hop/,
+    );
+
     await userEvent.click(canvas.getByRole('button', { name: 'verified-only' }));
+    // #107: the excluded hop stays visible as an annotated, non-interactive
+    // card; the count and the note make the projection difference explicit,
+    // and the Gap node is retained (R-INT-4).
     await expect(canvas.getByRole('status')).toHaveTextContent('2 of 3 hops shown');
-    await expect(canvas.getByLabelText('Flow sequence')).not.toHaveTextContent('guessedTarget');
-    await expect(canvas.getByLabelText('Flow sequence')).toHaveTextContent('runtime-computed channel identity');
+    await expect(canvas.getByRole('note')).toHaveTextContent(
+      /Verified-only: InferredWeak hops are excluded \(1 hidden\), but the Gap node is retained/,
+    );
+    const excluded = canvas
+      .getByText('Excluded in verified-only — InferredWeak')
+      .closest('.flow-hop-card');
+    await expect(excluded).toHaveClass('excluded');
+    await expect(excluded).toHaveAttribute('aria-disabled', 'true');
+    await expect(excluded?.tagName).not.toBe('BUTTON');
+    await expect(
+      canvas.getByRole('button', { name: /Unresolved hop/ }),
+    ).toBeInTheDocument();
+
     await userEvent.click(canvas.getByText(/Mermaid \+ provenance dossier/));
     const dossier = canvas.getByTestId('flows-dossier');
     await expect(dossier).not.toHaveTextContent('guessedTarget');
@@ -201,12 +224,53 @@ export const VerifiedOnlyProjection: Story = {
   },
 };
 
+export const GapHopOpensResolutionStrategy: Story = {
+  args: { flows: [PARTIAL], dossier: projectedDossier([PARTIAL], 'best-effort') },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    // Gap hop → Resolution Strategy with the Gap node id; a confirmed hop →
+    // evidence drawer with the hop itself (#107).
+    await userEvent.click(canvas.getByRole('button', { name: /Unresolved hop/ }));
+    await expect(args.onOpenResolution).toHaveBeenCalledWith('gap:channel:notify');
+    await expect(args.onSelectHop).not.toHaveBeenCalled();
+
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'HANDLES: POST /notify to sendNotification' }),
+    );
+    await expect(args.onSelectHop).toHaveBeenCalledWith(PARTIAL.hops[0]);
+  },
+};
+
+export const FitAndZoomNeverScrollHorizontally: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = canvas.getByLabelText('Flow sequence');
+    const noOverflow = () => row.scrollWidth <= row.clientWidth + 1;
+    await expect(noOverflow()).toBe(true);
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Zoom in' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'Zoom in' }));
+    await expect(noOverflow()).toBe(true);
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Fit hops to view' }));
+    await expect(noOverflow()).toBe(true);
+    await userEvent.click(canvas.getByRole('button', { name: 'Zoom out' }));
+    await expect(noOverflow()).toBe(true);
+  },
+};
+
 export const UnknownConfidenceFailsClosed: Story = {
   args: { flows: [UNKNOWN_CONFIDENCE], dossier: null },
-  play: async ({ canvasElement }) => {
-    const sequence = within(canvasElement).getByLabelText('Flow sequence');
-    await expect(sequence).toHaveTextContent('T0 · Gap');
-    await expect(sequence).toHaveTextContent('confidence metadata missing or unrecognized');
-    await expect(sequence.querySelector('li')).toHaveClass('unresolved');
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const sequence = canvas.getByLabelText('Flow sequence');
+    const card = within(sequence).getByRole('button', { name: /Unresolved hop/ });
+    await expect(card).toHaveClass('unresolved');
+    await expect(card).toHaveTextContent('confidence metadata missing or unrecognized');
+    // Fail-closed is not escalatable: the destination is not a Gap node, so
+    // the click shows evidence instead of a Resolution Strategy.
+    await userEvent.click(card);
+    await expect(args.onOpenResolution).not.toHaveBeenCalled();
+    await expect(args.onSelectHop).toHaveBeenCalled();
   },
 };

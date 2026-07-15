@@ -11,7 +11,6 @@ import '@fontsource/jetbrains-mono/500.css';
 import '@fontsource/jetbrains-mono/600.css';
 import '@fontsource/jetbrains-mono/700.css';
 import 'material-symbols/outlined.css';
-import '@xyflow/react/dist/style.css';
 import './styles.css';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(

@@ -227,9 +227,22 @@ function installFakeCore() {
                 gap_reason: null,
                 attempted_tiers: [],
               },
+              {
+                label: 'CALLS',
+                src: 'sym:app.ts#listUsers',
+                dst: 'gap:sync',
+                src_name: 'listUsers',
+                dst_name: 'GAP: remote sync target computed at runtime',
+                tier: 'Deterministic',
+                confidence: 'Gap',
+                evidence: 'src/app.ts bytes 92..120',
+                provenance: { ...FAKE_PROVENANCE, confidence_tier: 'Gap' },
+                gap_reason: 'remote sync target computed at runtime',
+                attempted_tiers: ['T0', 'T1'],
+              },
             ],
-            status: 'Verified',
-            score: 1.0,
+            status: 'Partial',
+            score: 0.5,
             depth_limited: false,
           },
         ];
@@ -708,6 +721,36 @@ export const EscalationRoundTrip: Story = {
       expect(canvas.getByTestId('decision-recorded')).toHaveTextContent(
         'Decision recorded: accepted',
       ),
+    );
+  },
+};
+
+export const FlowHopsRouteByKind: Story = {
+  // #107 end to end: on the Flows surface a confirmed hop card opens the
+  // evidence drawer from the hop's own provenance, while a Gap hop card
+  // opens the Resolution Strategy modal for its Gap node.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: 'Flows' }));
+    await waitFor(() =>
+      expect(canvas.getByText('PARTIAL (1 gap)')).toBeInTheDocument(),
+    );
+
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'HANDLES: GET /users to listUsers' }),
+    );
+    await waitFor(() => {
+      const mark = canvasElement.querySelector('.evidence-source mark');
+      expect(mark?.textContent).toBe(SPAN_TEXT);
+    });
+    await userEvent.keyboard('{Escape}');
+
+    await userEvent.click(canvas.getByRole('button', { name: /Unresolved hop/ }));
+    await waitFor(() =>
+      expect(
+        canvas.getByRole('dialog', { name: /remote sync target/i }),
+      ).toBeInTheDocument(),
     );
   },
 };

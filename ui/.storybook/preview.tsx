@@ -9,7 +9,6 @@ import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/600.css'
 import '@fontsource/jetbrains-mono/700.css'
 import 'material-symbols/outlined.css'
-import '@xyflow/react/dist/style.css'
 import '../src/styles.css' // design tokens (docs/design/production-ui/README.md) for every story
 
 const preview: Preview = {
