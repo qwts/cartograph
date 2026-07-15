@@ -141,13 +141,16 @@ fn extract_file(
     collect_imports(&cx, root, &language, &mut index.consts);
     collect_const_objects(&cx, root, &language, &mut index.consts);
 
-    // `const store = tx.objectStore(X)` binds a handle for later ops.
+    // `const store = tx.objectStore(X)` binds a handle for later ops. The
+    // binding is scoped to its enclosing function (#150 review): two
+    // sibling functions each using a local `store` for different object
+    // stores must never share one file-wide binding.
     let q_decls = Query::new(
         &language,
         r#"(variable_declarator name: (identifier) @name value: (_) @value)"#,
     )
     .expect("static query");
-    let mut store_vars: BTreeMap<String, StoreName> = BTreeMap::new();
+    let mut store_vars: BTreeMap<(Option<String>, String), StoreName> = BTreeMap::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&q_decls, root, source);
     while let Some(m) = matches.next() {
@@ -164,7 +167,8 @@ fn extract_file(
         };
         let value = unwrap_assertions(value);
         if let Some(store) = object_store_arg(&cx, value, "objectStore") {
-            store_vars.insert(cx.text(&name).to_string(), store);
+            let scope = enclosing_symbol(&cx, name);
+            store_vars.insert((scope, cx.text(&name).to_string()), store);
         }
     }
 
@@ -217,9 +221,12 @@ fn extract_file(
         let Some(object) = callee.child_by_field_name("object") else {
             continue;
         };
+        let symbol = enclosing_symbol(&cx, call);
         // Chained: `tx.objectStore(X).put(…)` (also through `.index(…)`).
         let store = object_store_arg(&cx, object, "objectStore").or_else(|| {
-            // Bound handle: `store.put(…)` / `store.index(…).getAll(…)`.
+            // Bound handle: `store.put(…)` / `store.index(…).getAll(…)` —
+            // resolved in the op's own function scope first, then the
+            // module scope for top-level handles (#150 review).
             let base = cx.text(&object);
             let base = base.split('.').next().unwrap_or(base);
             let handle = object
@@ -227,15 +234,17 @@ fn extract_file(
                 .eq("identifier")
                 .then(|| cx.text(&object))
                 .or_else(|| (object.kind() == "call_expression").then_some(base))?;
+            let handle = handle.split('(').next().unwrap_or(handle).to_string();
             store_vars
-                .get(handle.split('(').next().unwrap_or(handle))
+                .get(&(symbol.clone(), handle.clone()))
+                .or_else(|| store_vars.get(&(None, handle)))
                 .cloned()
         });
         if let Some(store) = store {
             index.ops.push(PendingOp {
                 label: op_label,
                 store,
-                symbol: enclosing_symbol(&cx, call),
+                symbol,
                 path: path.into(),
                 byte_start: call.start_byte() as u64,
                 byte_end: call.end_byte() as u64,
@@ -488,6 +497,41 @@ mod tests {
         assert_eq!(prov.confidence_tier, ConfidenceTier::Confirmed);
         assert_eq!(prov.extractor_id, EXTRACTOR_ID);
         assert!(prov.evidence[0].byte_end > prov.evidence[0].byte_start);
+    }
+
+    #[test]
+    fn same_named_handles_stay_in_their_own_function_scope() {
+        // #150 review: two sibling functions each bind a local `store` to a
+        // different object store — ops must attribute to their own store,
+        // never to a file-wide winner. A module-level handle still serves
+        // functions that use it.
+        let out = extract(&[(
+            "src/repo.ts",
+            "const shared = db.transaction('settings').objectStore('settings');\n\
+             export function saveHistory(tx: IDBTransaction, record: unknown) {\n\
+             \x20 const store = tx.objectStore('history');\n\
+             \x20 store.put(record);\n\
+             }\n\
+             export function listBlobs(tx: IDBTransaction) {\n\
+             \x20 const store = tx.objectStore('blobs');\n\
+             \x20 return store.getAll();\n\
+             }\n\
+             export function readSetting() {\n\
+             \x20 return shared.get('theme');\n\
+             }\n",
+        )]);
+        let edge = |label: &str, src: &str| {
+            out.edges
+                .iter()
+                .find(|edge| edge.label == label && edge.src.ends_with(src))
+                .unwrap_or_else(|| panic!("{label} from {src}"))
+                .dst
+                .clone()
+        };
+        assert_eq!(edge("WRITES", "#saveHistory"), "data:local/ext@idb:history");
+        assert_eq!(edge("READS", "#listBlobs"), "data:local/ext@idb:blobs");
+        // Module-level binding is visible from the using function.
+        assert_eq!(edge("READS", "#readSetting"), "data:local/ext@idb:settings");
     }
 
     #[test]
