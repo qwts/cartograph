@@ -20,9 +20,10 @@
 - **AC-0050** Given a non-empty graph, when I request a clear and confirm the warning, then all graph facts are removed while durable job history remains intact.
 - **AC-0076** Given accumulated terminal jobs, when I clear finished jobs and confirm the warning, then done/failed/cancelled rows are removed while queued/running/interrupted jobs and all graph facts remain intact.
 - **AC-0077** Given the production Jobs surface, when it renders, then it offers only lifecycle verbs on existing work (Cancel/Retry/Resume and Clear finished) — no job-creation control.
+- **AC-0078** Given any recovery command (ingest, add-repo, add-system, or an ingest retry/resume), when it runs, then extraction executes on a blocking worker thread — the webview/main thread never blocks, the UI stays interactive, and job progress renders throughout.
 - **Security:** Tokens stored in OS keychain; never logged; least-privilege App scopes.
 - **Performance:** Shallow/sparse clone; 1 GB repo clones within bounded progress feedback.
-- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0077
+- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0078
 
 ### US-0002 — Deterministic extraction of server-side facts (TS/Python/Go)
 - **Actor:** Engine

@@ -1414,12 +1414,25 @@ fn run_ingest(
 
 /// Run T0 extraction over a local directory and load the facts into the
 /// graph (US-0002 local path; GitHub clone ingest is `add_repo`).
+/// Run `work` on a blocking worker thread. Recovery pipelines must never
+/// execute on the invoking thread: synchronous Tauri commands run on the
+/// main thread, so an inline ingest freezes the whole app for its duration
+/// (AC-0078, #158 — the macOS beachball on large repos).
+async fn off_ui_thread<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
-fn ingest_path(
-    path: String,
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<IngestSummary, String> {
+async fn ingest_path(path: String, app: tauri::AppHandle) -> Result<IngestSummary, String> {
+    off_ui_thread(move || ingest_path_blocking(path, app)).await
+}
+
+fn ingest_path_blocking(path: String, app: tauri::AppHandle) -> Result<IngestSummary, String> {
+    let state = app.state::<AppState>();
     let job_id = {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         let job = jobs
@@ -1449,7 +1462,12 @@ fn cancel_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 /// (`ingest:*` reuses the content-addressed cache, so a resume recomputes
 /// only what the interrupted run didn't finish — ADR-0014).
 #[tauri::command]
-fn retry_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Job, String> {
+async fn retry_job(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
+    off_ui_thread(move || retry_job_blocking(id, app)).await
+}
+
+fn retry_job_blocking(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
+    let state = app.state::<AppState>();
     let kind = {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         let job = jobs.retry(id).map_err(|e| e.to_string())?;
@@ -1500,11 +1518,12 @@ struct AddRepoSummary {
 /// AC-0001). Auth per the ADR-0009 ladder; failures carry remediation and
 /// leave no partial clone (AC-0003).
 #[tauri::command]
-fn add_repo(
-    url: String,
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<AddRepoSummary, String> {
+async fn add_repo(url: String, app: tauri::AppHandle) -> Result<AddRepoSummary, String> {
+    off_ui_thread(move || add_repo_blocking(url, app)).await
+}
+
+fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummary, String> {
+    let state = app.state::<AppState>();
     let job_id = {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         let job = jobs
@@ -1625,11 +1644,12 @@ fn manifest_dir(path: &std::path::Path) -> &std::path::Path {
 /// clone/read every declared repo, apply its layer hints and the
 /// manifest's known channel identities at ingest.
 #[tauri::command]
-fn add_system(
-    path: String,
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<AddSystemSummary, String> {
+async fn add_system(path: String, app: tauri::AppHandle) -> Result<AddSystemSummary, String> {
+    off_ui_thread(move || add_system_blocking(path, app)).await
+}
+
+fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemSummary, String> {
+    let state = app.state::<AppState>();
     let job_id = {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         let job = jobs
@@ -3176,6 +3196,24 @@ resource "aws_sqs_queue" "orders" {
         assert_eq!(jobs.clear_finished().unwrap(), 1);
         // The worker's next boundary check on the vanished row: cancelled.
         assert!(jobs.is_cancelled(job.id).unwrap());
+    }
+
+    #[test]
+    fn heavy_ingest_commands_run_off_the_calling_thread() {
+        // AC-0078: every recovery command hops through off_ui_thread before
+        // touching the pipeline — the invoking (webview/main) thread never
+        // executes extraction, so a large repo cannot freeze the app.
+        let caller = std::thread::current().id();
+        let worker = tauri::async_runtime::block_on(crate::off_ui_thread(move || {
+            Ok(std::thread::current().id())
+        }))
+        .unwrap();
+        assert_ne!(caller, worker);
+        // Errors from the pipeline pass through unchanged.
+        let err = tauri::async_runtime::block_on(crate::off_ui_thread(|| {
+            Err::<(), String>("boom".into())
+        }));
+        assert_eq!(err, Err("boom".into()));
     }
 
     #[test]

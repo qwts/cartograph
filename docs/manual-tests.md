@@ -350,3 +350,16 @@ PR — per-PR verification is CI's job.
 5. Re-ingest the same commit; open **Provenance & Eval** → history.
 6. **Pass:** the two ingest rows show identical whole-graph content hashes
    and the determinism footer reads verified (AC-0074, US-0016).
+
+## MT-BB-01 — Large-repo recovery keeps the app interactive
+
+1. `npm run tauri dev`; **Connect** → a local clone of a large real repo
+   (thousands of source files — e.g. a production Next.js monorepo).
+2. Preflight → **Run full recovery**. While the Recover stage line is
+   visible, immediately: switch surfaces via `⌘1`…`⌘8`, open the command
+   palette, and click **Run in background** → the Jobs surface.
+3. Throughout the run: the pointer never becomes the macOS beachball, the
+   stage label and progress advance, and every surface stays clickable.
+4. From Jobs, **Cancel** the run; it stops at the next stage boundary.
+5. **Pass:** no "application not responding" episode at any point during a
+   multi-minute recovery (AC-0078, #158).
