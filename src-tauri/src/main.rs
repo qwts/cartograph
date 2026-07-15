@@ -328,6 +328,12 @@ fn extract_tree_incremental(
         };
         extraction.nodes.extend(webext.nodes);
         extraction.edges.extend(webext.edges);
+        // Chrome runtime messaging sites join the same channel stitch as
+        // SDK event sites: literals confirm, computed identities gap.
+        extraction.event_sites.extend(
+            adapters_lang_ts::chrome_messaging::extract_dir(root, &ts_id)
+                .map_err(|e| e.to_string())?,
+        );
     }
     if wants_server {
         let python_id = adapters_lang_python::SourceId { repo, commit };
@@ -2648,6 +2654,74 @@ resource "aws_sqs_queue" "orders" {
             .find(|edge| edge.label == "GRANTS" && edge.dst.ends_with("host:http://*/*"))
             .expect("host grant");
         assert_eq!(grant.props["resource_scopes"][0], "http://*/*");
+    }
+
+    #[test]
+    fn chrome_messaging_stitches_channels_across_extension_contexts() {
+        // US-0016/AC-0072: literal + const-map message identities become
+        // Confirmed chrome-message channels with PUBLISHES/SUBSCRIBES edges
+        // connecting content script and service worker; a runtime-computed
+        // identity stays an explicit Gap.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/protocol.ts"),
+            "export const MessageType = { Capture: 'ext.capture' } as const;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/content.ts"),
+            "import { MessageType } from './protocol.js';\n\
+             export function capture(kind: string) {\n\
+               void chrome.runtime.sendMessage({ type: MessageType.Capture });\n\
+               void chrome.runtime.sendMessage({ type: `ext.${kind}` });\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/worker.ts"),
+            "import { MessageType } from './protocol.js';\n\
+             export const handlers = {\n\
+               [MessageType.Capture]: () => 'ok',\n\
+             };\n\
+             chrome.runtime.onMessage.addListener(() => true);\n",
+        )
+        .unwrap();
+
+        let (extraction, _) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/ext",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let channel = extraction
+            .nodes
+            .iter()
+            .find(|node| node.id == "chan:chrome-message:ext.capture")
+            .expect("confirmed chrome-message channel");
+        assert_eq!(channel.props["prov"]["confidence_tier"], "Confirmed");
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.label == "PUBLISHES"
+                && edge.src == "sym:local/ext@src/content.ts#capture"
+                && edge.dst == channel.id
+        }));
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.label == "SUBSCRIBES"
+                && edge.src == "file:local/ext@src/worker.ts"
+                && edge.dst == channel.id
+        }));
+        // The template-string identity bottoms out as an explicit Gap.
+        assert!(extraction.nodes.iter().any(|node| {
+            node.label == "Gap"
+                && node.props["kind"] == "chrome-message"
+                && node.props["reason"] == "runtime-computed channel identity"
+        }));
     }
 
     #[test]
