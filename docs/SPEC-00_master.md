@@ -269,7 +269,14 @@ pub trait LlmProvider: Send + Sync {
     fn complete(&self, req: CompletionReq) -> Result<Completion>;
 }
 ```
-A new language/cloud/event system = a new adapter crate implementing the SPI. No core changes (open/closed).
+A new language/cloud/event system = a new adapter implementing the SPI. No core changes (open/closed).
+First-class languages ship as compiled-in adapter crates; the long tail ships as **runtime-loadable
+WASM adapter plugins** (ADR-0017): discovered from project-local `.cartograph/adapters/` then a
+user-level directory, executed sandboxed under wasmtime (no network, no writes, host-mediated
+read-only source, fuel/memory bounds, fail closed), activated only after a durable conformance-gate
+job (SPI contract tests + generator-supplied golden corpus + double-run determinism), and pinning
+the plugin artifact's content hash in every emitted fact's provenance alongside
+`extractor_id@version` so the §5 determinism invariant extends to plugin facts.
 
 ### 8.3 Data stores
 - **Graph:** Kuzu (fallback SQLite recursive-CTE).
