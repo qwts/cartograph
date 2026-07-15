@@ -1305,6 +1305,24 @@ fn report_failure(app: &tauri::AppHandle, state: &AppState, job_id: i64, error: 
 /// True when the user cancelled the job — long work checks this between
 /// stages and stops at the next safe boundary (content-addressed delta
 /// ingest keeps the graph consistent, ADR-0014).
+/// Complete `job_id` unless a concurrent cancel already won: `finish` only
+/// transitions queued/running rows, so a cancelled job stays cancelled and
+/// the pipeline reports it instead of returning a success summary (#166
+/// review — with the UI responsive during adds, Cancel can race the worker).
+fn finish_or_cancelled(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    job_id: i64,
+) -> Result<(), String> {
+    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+    let done = jobs.finish(job_id, &[]).map_err(|e| e.to_string())?;
+    if done.status != "done" {
+        return Err("cancelled".to_string());
+    }
+    emit_job(app, &done);
+    Ok(())
+}
+
 fn job_cancelled(state: &AppState, job_id: i64) -> bool {
     state
         .jobs
@@ -1548,6 +1566,9 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
     let token = ingest::discover_token();
     let cloned = ingest::clone_repo(&url, &repos_dir, token.as_deref())
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
+    if job_cancelled(&state, job_id) {
+        return Err("cancelled".to_string());
+    }
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
@@ -1567,6 +1588,9 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         )
         .map_err(|e| fail(e, &state, job_id))?
     };
+    if job_cancelled(&state, job_id) {
+        return Err("cancelled".to_string());
+    }
     {
         let mut graph = state
             .graph
@@ -1592,10 +1616,7 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         &std::collections::BTreeSet::from([cloned.repo.clone()]),
     )
     .map_err(|e| fail(e, &state, job_id))?;
-    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
-    let done = jobs.get(job_id).map_err(|e| e.to_string())?;
-    emit_job(&app, &done);
+    finish_or_cancelled(&state, &app, job_id)?;
     Ok(AddRepoSummary {
         job_id,
         repo: cloned.repo,
@@ -1684,6 +1705,9 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
     let mut layers = LayerBreakdown::default();
     let mut delta = DeltaSummary::default();
     for entry in &manifest.repos {
+        if job_cancelled(&state, job_id) {
+            return Err("cancelled".to_string());
+        }
         let is_remote = manifest_entry_is_remote(&entry.url, base);
         let (root, repo, commit) = if is_remote {
             let cloned = ingest::clone_repo(&entry.url, &repos_dir, token.as_deref())
@@ -1765,10 +1789,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
         &repo_identities,
     )
     .map_err(|e| fail(e, &state, job_id))?;
-    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    jobs.set_status(job_id, "done").map_err(|e| e.to_string())?;
-    let done = jobs.get(job_id).map_err(|e| e.to_string())?;
-    emit_job(&app, &done);
+    finish_or_cancelled(&state, &app, job_id)?;
     Ok(AddSystemSummary {
         job_id,
         repos,
@@ -3196,6 +3217,26 @@ resource "aws_sqs_queue" "orders" {
         assert_eq!(jobs.clear_finished().unwrap(), 1);
         // The worker's next boundary check on the vanished row: cancelled.
         assert!(jobs.is_cancelled(job.id).unwrap());
+    }
+
+    #[test]
+    fn cancelled_add_jobs_never_flip_back_to_done() {
+        // #166 review: with the UI responsive during an add, Cancel can race
+        // the worker. The terminal transition must be atomic — a cancelled
+        // job stays cancelled and the pipeline reports it, never a success.
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = crate::jobs::JobStore::open(dir.path().join("state.db")).unwrap();
+        let job = jobs.enqueue("add-repo:https://example.test/a").unwrap();
+        jobs.set_status(job.id, "running").unwrap();
+        jobs.cancel(job.id).unwrap();
+        // The worker's completion attempt must not overwrite the cancel.
+        let after = jobs.finish(job.id, &[]).unwrap();
+        assert_eq!(after.status, "cancelled");
+
+        // And an uncancelled run completes normally through the same path.
+        let ok = jobs.enqueue("add-repo:https://example.test/b").unwrap();
+        jobs.set_status(ok.id, "running").unwrap();
+        assert_eq!(jobs.finish(ok.id, &[]).unwrap().status, "done");
     }
 
     #[test]
