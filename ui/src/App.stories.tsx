@@ -475,7 +475,7 @@ function installFakeCore() {
             python: { files: 0, nodes: 0, edges: 0 },
             go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 1, nodes: 4, edges: 6 },
-            webext: { files: 0, nodes: 0, edges: 0 },
+            java: { files: 0, nodes: 0, edges: 0 },            webext: { files: 0, nodes: 0, edges: 0 },
           },
           delta: { recomputed_files: 2, reused_files: 0, deleted_files: 0 },
         };
@@ -491,7 +491,7 @@ function installFakeCore() {
             python: { files: 0, nodes: 0, edges: 0 },
             go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 2, nodes: 15, edges: 22 },
-            webext: { files: 0, nodes: 0, edges: 0 },
+            java: { files: 0, nodes: 0, edges: 0 },            webext: { files: 0, nodes: 0, edges: 0 },
           },
           delta: { recomputed_files: 5, reused_files: 0, deleted_files: 0 },
         };
@@ -508,7 +508,7 @@ function installFakeCore() {
             python: { files: 0, nodes: 0, edges: 0 },
             go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 0, nodes: 0, edges: 0 },
-            webext: { files: 0, nodes: 0, edges: 0 },
+            java: { files: 0, nodes: 0, edges: 0 },            webext: { files: 0, nodes: 0, edges: 0 },
           },
           delta: { recomputed_files: 3, reused_files: 0, deleted_files: 0 },
         };

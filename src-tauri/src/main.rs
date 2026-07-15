@@ -37,6 +37,7 @@ struct RepoExtractionCache {
     ts: adapters_lang_ts::IncrementalCache,
     python: adapters_lang_python::IncrementalCache,
     go: adapters_lang_go::IncrementalCache,
+    java: adapters_lang_java::IncrementalCache,
     tf: iac::IncrementalCache,
 }
 
@@ -71,6 +72,7 @@ struct LayerBreakdown {
     ts: LayerSummary,
     python: LayerSummary,
     go: LayerSummary,
+    java: LayerSummary,
     tf: LayerSummary,
     webext: LayerSummary,
 }
@@ -80,12 +82,13 @@ impl LayerBreakdown {
         self.ts.add(other.ts);
         self.python.add(other.python);
         self.go.add(other.go);
+        self.java.add(other.java);
         self.tf.add(other.tf);
         self.webext.add(other.webext);
     }
 
     fn files(self) -> u64 {
-        self.ts.files + self.python.files + self.go.files + self.tf.files
+        self.ts.files + self.python.files + self.go.files + self.java.files + self.tf.files
     }
 }
 
@@ -384,6 +387,27 @@ fn extract_tree_incremental(
         };
         extraction.nodes.extend(go.nodes);
         extraction.edges.extend(go.edges);
+
+        let java_id = adapters_lang_java::SourceId { repo, commit };
+        let (java, stats) =
+            adapters_lang_java::extract_dir_incremental(root, &java_id, &mut cache.java)
+                .map_err(|error| error.to_string())?;
+        delta.add(
+            stats.recomputed_files,
+            stats.reused_files,
+            stats.deleted_files,
+        );
+        layers.java = LayerSummary {
+            files: java
+                .nodes
+                .iter()
+                .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
+                .count() as u64,
+            nodes: java.nodes.len() as u64,
+            edges: java.edges.len() as u64,
+        };
+        extraction.nodes.extend(java.nodes);
+        extraction.edges.extend(java.edges);
     }
     if wants_infra {
         let tf_id = iac::SourceId { repo, commit };
@@ -980,6 +1004,7 @@ fn record_ingest_metrics(
         ("t0.adapter-ts", layers.ts.files),
         ("t0.adapter-python", layers.python.files),
         ("t0.adapter-go", layers.go.files),
+        ("t0.adapter-java", layers.java.files),
         ("t0.iac-terraform", layers.tf.files),
         ("t0.webextension", layers.webext.files),
     ]
@@ -3122,6 +3147,67 @@ resource "aws_sqs_queue" "orders" {
                 .nodes
                 .iter()
                 .all(|node| node.props["language"] != "go")
+        );
+    }
+
+    #[test]
+    fn java_server_ingest_reports_layer_and_endpoints() {
+        // AC-0079/AC-0080: the app runs the annotation-proven Java pass for
+        // the server layer and reports it independently.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/com/demo")).unwrap();
+        std::fs::write(
+            dir.path().join("src/com/demo/UserController.java"),
+            "package com.demo;\n\nimport org.springframework.web.bind.annotation.*;\n\n@RestController\n@RequestMapping(\"/api\")\npublic class UserController {\n    @GetMapping(\"/users\")\n    public String users() { return \"[]\"; }\n}\n",
+        )
+        .unwrap();
+
+        let (extraction, summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/java-app",
+            "workdir",
+            &["server".into()],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(summary.java.files, 1);
+        assert!(summary.java.nodes > 0);
+        assert_eq!(summary.ts, crate::LayerSummary::default());
+        let endpoint = extraction
+            .nodes
+            .iter()
+            .find(|node| node.id == "ep:local/java-app@GET:/api/users")
+            .expect("Spring endpoint");
+        assert_eq!(endpoint.props["language"], "java");
+        assert_eq!(endpoint.props["framework"], "spring");
+        assert_eq!(endpoint.props["prov"]["extractor_id"], "t0.adapter-java");
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.label == "HANDLES"
+                && edge.src == endpoint.id
+                && edge.dst
+                    == "sym:local/java-app@src/com/demo/UserController.java#UserController.users"
+        }));
+
+        let (client_only, client_summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/java-app",
+            "workdir",
+            &["client".into()],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(client_summary.java, crate::LayerSummary::default());
+        assert!(
+            client_only
+                .nodes
+                .iter()
+                .all(|node| node.props["language"] != "java")
         );
     }
 
