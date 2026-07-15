@@ -6,9 +6,11 @@
 //! come from method calls on store handles — either chained directly
 //! (`tx.objectStore(X).put(…)`) or through a same-file `const store =
 //! tx.objectStore(X)` binding. Store identities resolve through string
-//! literals or a repo-wide const-string map (`DataStore.History`), the same
-//! deterministic rule as chrome messaging; a store identity that stays
-//! runtime-computed becomes an explicit Gap (R-INT-4), never a guess.
+//! literals or a **binding-proven** const-string map (`DataStore.History`
+//! declared in the same file or import-proven to the repo file exporting
+//! it) — the same rule as chrome messaging (#149 review); a store identity
+//! that stays unproven or runtime-computed becomes an explicit Gap
+//! (R-INT-4), never a same-name coincidence elsewhere in the repo.
 
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
@@ -18,9 +20,8 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node as TsNode, Parser, Query, QueryCursor};
 
 use crate::chrome_messaging::unwrap_assertions;
-use crate::{
-    ExtractError, Extraction, FileCx, SourceId, enclosing_symbol, literal_string, object_entries,
-};
+use crate::const_resolution::{ConstIndex, collect_const_objects, collect_imports};
+use crate::{ExtractError, Extraction, FileCx, SourceId, enclosing_symbol, literal_string};
 
 const EXTRACTOR_ID: &str = "t0.webextension";
 
@@ -63,7 +64,7 @@ struct PendingDecl {
 
 #[derive(Default)]
 struct RepoIndex {
-    const_members: BTreeMap<String, Option<String>>,
+    consts: ConstIndex,
     decls: Vec<PendingDecl>,
     ops: Vec<PendingOp>,
 }
@@ -79,13 +80,14 @@ fn classify_store(cx: &FileCx, arg: TsNode) -> StoreName {
     StoreName::Computed(cx.text(&arg).to_string())
 }
 
-fn resolve(index: &BTreeMap<String, Option<String>>, name: &StoreName) -> Result<String, String> {
+/// Resolve a store name as seen from `file` — same-file or import-proven
+/// const members only (#149 review); anything else is the Gap's raw text.
+fn resolve(consts: &ConstIndex, file: &str, name: &StoreName) -> Result<String, String> {
     match name {
         StoreName::Literal(value) => Ok(value.clone()),
-        StoreName::Member(member) => match index.get(member) {
-            Some(Some(value)) => Ok(value.clone()),
-            _ => Err(member.clone()),
-        },
+        StoreName::Member(member) => consts
+            .resolve_member(file, member)
+            .ok_or_else(|| member.clone()),
         StoreName::Computed(raw) => Err(raw.clone()),
     }
 }
@@ -134,10 +136,12 @@ fn extract_file(
     let root = tree.root_node();
     let cx = FileCx { source, path, id };
 
-    // Const-string maps (`export const DataStore = { History: 'history' }`)
-    // feed the same member-resolution rule as chrome messaging. The small
-    // query is duplicated on purpose: the messaging pass mixes this with
-    // creator/shadow tracking it alone needs.
+    // Imports and const-string maps go through the shared binding-proven
+    // index (#149 review) — same rule as chrome messaging.
+    collect_imports(&cx, root, &language, &mut index.consts);
+    collect_const_objects(&cx, root, &language, &mut index.consts);
+
+    // `const store = tx.objectStore(X)` binds a handle for later ops.
     let q_decls = Query::new(
         &language,
         r#"(variable_declarator name: (identifier) @name value: (_) @value)"#,
@@ -158,27 +162,9 @@ fn extract_file(
         let (Some(name), Some(value)) = (name, value) else {
             continue;
         };
-        let name_text = cx.text(&name).to_string();
         let value = unwrap_assertions(value);
-        if value.kind() == "object" {
-            for (key, entry) in object_entries(&cx, value) {
-                if let Some(lit) = literal_string(&cx, entry) {
-                    let member = format!("{name_text}.{key}");
-                    match index.const_members.get(&member) {
-                        None => {
-                            index.const_members.insert(member, Some(lit));
-                        }
-                        Some(Some(existing)) if *existing == lit => {}
-                        _ => {
-                            index.const_members.insert(member, None);
-                        }
-                    }
-                }
-            }
-        }
-        // `const store = tx.objectStore(X)` binds a handle for later ops.
         if let Some(store) = object_store_arg(&cx, value, "objectStore") {
-            store_vars.insert(name_text, store);
+            store_vars.insert(cx.text(&name).to_string(), store);
         }
     }
 
@@ -323,7 +309,7 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
 
     // Declarations first: the schema is the entity's defining evidence.
     for decl in &index.decls {
-        match resolve(&index.const_members, &decl.store) {
+        match resolve(&index.consts, &decl.path, &decl.store) {
             Ok(store) => {
                 entity(
                     &store,
@@ -355,7 +341,7 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
     }
 
     for op in &index.ops {
-        match resolve(&index.const_members, &op.store) {
+        match resolve(&index.consts, &op.path, &op.store) {
             Ok(store) => {
                 let entity_id = entity(
                     &store,
@@ -502,6 +488,31 @@ mod tests {
         assert_eq!(prov.confidence_tier, ConfidenceTier::Confirmed);
         assert_eq!(prov.extractor_id, EXTRACTOR_ID);
         assert!(prov.evidence[0].byte_end > prov.evidence[0].byte_start);
+    }
+
+    #[test]
+    fn unproven_store_bindings_fail_closed() {
+        // #149 review parity: a bare-package import cannot be proven, even
+        // when a same-named exported map exists elsewhere in the repo.
+        let out = extract(&[
+            (
+                "other/schema.ts",
+                "export const DataStore = { History: 'other-history' };\n",
+            ),
+            (
+                "src/repo.ts",
+                "import { DataStore } from 'some-lib';\n\
+                 export function save(tx: IDBTransaction, record: unknown) {\n\
+                 \x20 tx.objectStore(DataStore.History).put(record);\n\
+                 }\n",
+            ),
+        ]);
+        assert!(out.nodes.iter().all(|node| node.label != "DataEntity"));
+        assert!(
+            out.nodes
+                .iter()
+                .any(|node| { node.label == "Gap" && node.props["raw"] == "DataStore.History" })
+        );
     }
 
     #[test]
