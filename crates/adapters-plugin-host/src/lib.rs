@@ -19,7 +19,10 @@ use std::time::Duration;
 use core_graph::{Edge, Node};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{
+    Deterministic, HostMonotonicClock, HostWallClock, WasiCtx, WasiCtxBuilder, WasiCtxView,
+    WasiView,
+};
 
 #[allow(missing_docs, reason = "generated bindings")]
 mod bindings {
@@ -67,6 +70,11 @@ pub struct PluginLimits {
     pub max_fuel: u64,
     /// Maximum linear-memory bytes the guest instance may grow to.
     pub max_memory_bytes: usize,
+    /// Maximum element count any single wasm table may grow to. Table
+    /// elements consume host memory too (e.g. `funcref`/`externref`
+    /// entries), so this bounds the same host-memory-exhaustion risk as
+    /// `max_memory_bytes` for a resource that isn't linear memory.
+    pub max_table_elements: usize,
     /// Wall-clock deadline for one call.
     pub deadline: Duration,
 }
@@ -76,6 +84,7 @@ impl Default for PluginLimits {
         Self {
             max_fuel: 10_000_000_000,
             max_memory_bytes: 64 * 1024 * 1024,
+            max_table_elements: 10_000,
             deadline: Duration::from_secs(5),
         }
     }
@@ -97,6 +106,9 @@ pub enum HostError {
     /// The plugin tried to grow linear memory past its cap.
     #[error("plugin exceeded its memory bound ({0} bytes)")]
     MemoryLimitExceeded(usize),
+    /// The plugin tried to grow a wasm table past its element cap.
+    #[error("plugin exceeded its table bound ({0} elements)")]
+    TableLimitExceeded(usize),
     /// The plugin did not finish within its wall-clock deadline.
     #[error("plugin exceeded its deadline ({0:?})")]
     DeadlineExceeded(Duration),
@@ -126,10 +138,55 @@ impl std::fmt::Display for MemoryCapExceeded {
 
 impl std::error::Error for MemoryCapExceeded {}
 
+/// Marker error returned by the table [`wasmtime::ResourceLimiter`], for
+/// the same reason as [`MemoryCapExceeded`].
+#[derive(Debug)]
+struct TableCapExceeded {
+    max_elements: usize,
+}
+
+impl std::fmt::Display for TableCapExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "table cap of {} elements exceeded", self.max_elements)
+    }
+}
+
+impl std::error::Error for TableCapExceeded {}
+
+/// A wall clock fixed at the Unix epoch. Plugins get no ambient clock
+/// (ADR-0017 §2, sandboxed determinism): every read returns the same
+/// value, so a plugin that reads the clock still produces byte-identical
+/// facts run to run.
+struct FixedWallClock;
+
+impl HostWallClock for FixedWallClock {
+    fn resolution(&self) -> Duration {
+        Duration::from_secs(1)
+    }
+
+    fn now(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
+/// A monotonic clock fixed at zero, for the same reason as [`FixedWallClock`].
+struct FixedMonotonicClock;
+
+impl HostMonotonicClock for FixedMonotonicClock {
+    fn resolution(&self) -> u64 {
+        1
+    }
+
+    fn now(&self) -> u64 {
+        0
+    }
+}
+
 struct HostState {
     wasi: WasiCtx,
     table: ResourceTable,
     max_memory_bytes: usize,
+    max_table_elements: usize,
 }
 
 impl WasiView for HostState {
@@ -209,13 +266,20 @@ impl PluginHost {
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|e| HostError::Instantiation(e.to_string()))?;
 
-        let wasi = WasiCtxBuilder::new().build();
+        let wasi = WasiCtxBuilder::new()
+            .wall_clock(FixedWallClock)
+            .monotonic_clock(FixedMonotonicClock)
+            .secure_random(Deterministic::new(vec![0u8; 32]))
+            .insecure_random(Deterministic::new(vec![0u8; 32]))
+            .insecure_random_seed(0)
+            .build();
         let mut store = Store::new(
             &self.engine,
             HostState {
                 wasi,
                 table: ResourceTable::new(),
                 max_memory_bytes: limits.max_memory_bytes,
+                max_table_elements: limits.max_table_elements,
             },
         );
         store.limiter(|state| state);
@@ -264,6 +328,9 @@ fn classify_call_error(
 ) -> HostError {
     if err.downcast_ref::<MemoryCapExceeded>().is_some() {
         return HostError::MemoryLimitExceeded(limits.max_memory_bytes);
+    }
+    if err.downcast_ref::<TableCapExceeded>().is_some() {
+        return HostError::TableLimitExceeded(limits.max_table_elements);
     }
     if let Some(trap) = err.downcast_ref::<wasmtime::Trap>() {
         return match trap {
@@ -334,9 +401,57 @@ impl wasmtime::ResourceLimiter for HostState {
     fn table_growing(
         &mut self,
         _current: usize,
-        _desired: usize,
+        desired: usize,
         _maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
+        if desired > self.max_table_elements {
+            return Err(TableCapExceeded {
+                max_elements: self.max_table_elements,
+            }
+            .into());
+        }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host_state(max_memory_bytes: usize, max_table_elements: usize) -> HostState {
+        HostState {
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+            max_memory_bytes,
+            max_table_elements,
+        }
+    }
+
+    /// Regression test for a Codex review finding on PR #202: the
+    /// ResourceLimiter used to allow unbounded table growth even though
+    /// table elements consume host memory, letting a plugin bypass the
+    /// advertised memory cap.
+    #[test]
+    fn table_growth_within_cap_is_allowed() {
+        let mut state = host_state(1024, 10);
+        let allowed = wasmtime::ResourceLimiter::table_growing(&mut state, 0, 10, None)
+            .expect("within cap does not error");
+        assert!(allowed);
+    }
+
+    #[test]
+    fn table_growth_past_cap_fails_closed() {
+        let mut state = host_state(1024, 10);
+        let err = wasmtime::ResourceLimiter::table_growing(&mut state, 0, 11, None)
+            .expect_err("past cap must be denied");
+        assert!(err.downcast_ref::<TableCapExceeded>().is_some());
+    }
+
+    #[test]
+    fn memory_growth_past_cap_fails_closed() {
+        let mut state = host_state(1024, 10);
+        let err = wasmtime::ResourceLimiter::memory_growing(&mut state, 0, 2048, None)
+            .expect_err("past cap must be denied");
+        assert!(err.downcast_ref::<MemoryCapExceeded>().is_some());
     }
 }

@@ -12,6 +12,7 @@ const OK_ADAPTER: &[u8] = include_bytes!("fixtures/compiled/ok-adapter.wasm");
 const BUSY_LOOP: &[u8] = include_bytes!("fixtures/compiled/busy-loop.wasm");
 const MEMORY_HOG: &[u8] = include_bytes!("fixtures/compiled/memory-hog.wasm");
 const NET_PROBE: &[u8] = include_bytes!("fixtures/compiled/net-probe.wasm");
+const CLOCK_PROBE: &[u8] = include_bytes!("fixtures/compiled/clock-probe.wasm");
 
 fn source_id() -> SourceId {
     SourceId {
@@ -55,6 +56,7 @@ fn fuel_exhaustion_fails_closed() {
     let limits = PluginLimits {
         max_fuel: 100_000,
         max_memory_bytes: 16 * 1024 * 1024,
+        max_table_elements: 10_000,
         deadline: Duration::from_secs(30),
     };
     let err = host
@@ -77,6 +79,7 @@ fn deadline_exceeded_fails_closed() {
     let limits = PluginLimits {
         max_fuel: u64::MAX,
         max_memory_bytes: 16 * 1024 * 1024,
+        max_table_elements: 10_000,
         deadline: Duration::from_millis(60),
     };
     let err = host
@@ -100,6 +103,7 @@ fn memory_limit_exceeded_fails_closed() {
     let limits = PluginLimits {
         max_fuel: u64::MAX,
         max_memory_bytes: 2 * 1024 * 1024,
+        max_table_elements: 10_000,
         deadline: Duration::from_secs(30),
     };
     let err = host
@@ -137,5 +141,46 @@ fn no_ambient_network_capability() {
     assert!(
         outcome.starts_with("denied:"),
         "expected the connect attempt to be denied, got outcome={outcome:?}"
+    );
+}
+
+/// T-0070 (AC-0070): the host grants no ambient wall/monotonic clock —
+/// ADR-0017's sandboxed determinism requires that a plugin reading the
+/// clock still produces byte-identical facts run to run. Two calls
+/// separated by a real sleep must report identical fixed clock readings,
+/// not the host's actual elapsed wall-clock time.
+#[test]
+fn no_ambient_clock() {
+    let host = PluginHost::new().expect("engine");
+    let plugin = host.load(CLOCK_PROBE).expect("compiles");
+
+    let read = |host: &PluginHost| {
+        let extraction = host
+            .call_extract(
+                &plugin,
+                b"x",
+                "clock.rs",
+                &source_id(),
+                PluginLimits::default(),
+            )
+            .expect("clock probe completes");
+        extraction.nodes[0].props.clone()
+    };
+
+    let first = read(&host);
+    std::thread::sleep(Duration::from_millis(50));
+    let second = read(&host);
+
+    assert_eq!(
+        first, second,
+        "clock readings must be fixed, not ambient (first call vs. after a real sleep)"
+    );
+    assert_eq!(
+        first["wall_millis"], 0,
+        "wall clock must be fixed at the epoch"
+    );
+    assert_eq!(
+        first["elapsed_nanos"], 0,
+        "monotonic clock must be fixed, so elapsed-within-a-call is always zero"
     );
 }
