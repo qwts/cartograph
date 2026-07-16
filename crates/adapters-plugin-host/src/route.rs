@@ -8,8 +8,18 @@
 use crate::{HostError, LoadedPlugin, PluginExtraction, PluginHost, PluginLimits, SourceId};
 use std::path::{Path, PathBuf};
 
-/// Directories never routed to plugins — mirrors preflight's skip list.
-const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "dist", "build", ".venv"];
+/// Directories never routed to plugins — preflight's skip list plus
+/// `.cartograph` itself, so a plugin claiming `wasm`/`json` is never handed
+/// its own artifact or golden corpus as project source (#208 review).
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    ".venv",
+    ".cartograph",
+];
 
 /// A routing failure: IO while walking/reading, or the plugin failing
 /// closed on one named file.

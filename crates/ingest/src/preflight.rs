@@ -20,8 +20,18 @@ use std::path::Path;
 /// Versioned identity of this detector registry, recorded on every finding.
 pub const DETECTOR_ID: &str = "preflight@1";
 
-/// Directories that are never part of the recovered system.
-const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "dist", "build", ".venv"];
+/// Directories that are never part of the recovered system. `.cartograph`
+/// holds Cartograph's own plugin artifacts/corpora — never project source
+/// (a dropped-in `.wasm` plugin must not surface as an uncovered language).
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    ".venv",
+    ".cartograph",
+];
 
 /// One detected language with its adapter coverage.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

@@ -191,8 +191,25 @@ fn active_plugins_for_root<R: tauri::Runtime>(
     state: &AppState,
     root: &std::path::Path,
 ) -> Result<Vec<ActivePlugin>, String> {
+    let user_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("adapters");
+    active_plugins_in(state, root, &user_dir)
+}
+
+/// The scan behind [`active_plugins_for_root`], with the user directory
+/// injected. Discovery runs for *this root only* (#208 review): a project
+/// copy in some other session root must not shadow the user-level copy
+/// this root's coverage relies on.
+fn active_plugins_in(
+    state: &AppState,
+    root: &std::path::Path,
+    user_dir: &std::path::Path,
+) -> Result<Vec<ActivePlugin>, String> {
     let root_key = root.display().to_string();
-    let discovered = discover_session_plugins(app, state)?;
+    let discovered = adapters_plugin_host::discovery::discover(&[root.to_path_buf()], user_dir);
     let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
     let mut active = Vec::new();
     for plugin in discovered {
@@ -5386,6 +5403,16 @@ export function App() {
             plugin_node.props["plugin_artifact_hash"],
             serde_json::json!(hash)
         );
+        // Host-filled provenance (#208 review): the routed fact satisfies
+        // the tier/confidence invariant and cites its mediated source.
+        assert_eq!(
+            plugin_node.props["prov"]["tier"],
+            serde_json::json!("Deterministic")
+        );
+        assert_eq!(
+            plugin_node.props["prov"]["evidence"][0]["path"],
+            serde_json::json!("app.rb")
+        );
         assert_eq!(
             serde_json::to_string(&first.nodes).unwrap(),
             serde_json::to_string(&second.nodes).unwrap()
@@ -5393,6 +5420,81 @@ export function App() {
         assert_eq!(
             serde_json::to_string(&first.edges).unwrap(),
             serde_json::to_string(&second.edges).unwrap()
+        );
+    }
+
+    #[test]
+    fn user_plugin_covers_roots_that_do_not_own_the_project_copy() {
+        // #208 review: in a multi-root session, a project copy of an id in
+        // root A must not shadow the gated+enabled user-level copy that
+        // root B's coverage relies on — the active scan discovers per root.
+        const OK_ADAPTER: &[u8] = include_bytes!(
+            "../../crates/adapters-plugin-host/tests/fixtures/compiled/ok-adapter.wasm"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let user_dir = dir.path().join("user-adapters");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::write(user_dir.join("t0.plugin-fixture.wasm"), OK_ADAPTER).unwrap();
+        std::fs::write(
+            user_dir.join("t0.plugin-fixture.golden.json"),
+            serde_json::json!({ "extensions": ["rb"], "cases": [] }).to_string(),
+        )
+        .unwrap();
+        // Root A owns a *different* project artifact under the same id;
+        // root B has no project copy at all.
+        let root_a = dir.path().join("a");
+        let a_adapters = root_a.join(".cartograph/adapters");
+        std::fs::create_dir_all(&a_adapters).unwrap();
+        std::fs::write(a_adapters.join("t0.plugin-fixture.wasm"), b"other bytes").unwrap();
+        let root_b = dir.path().join("b");
+        std::fs::create_dir_all(&root_b).unwrap();
+
+        let state_path = dir.path().join("state.db");
+        let state = super::AppState {
+            graph: std::sync::Mutex::new(
+                SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
+            ),
+            jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
+            settings: std::sync::Mutex::new(
+                super::settings::SettingsStore::open(&state_path).unwrap(),
+            ),
+            decisions: std::sync::Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
+            extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
+            project_roots: std::sync::Mutex::new(std::collections::BTreeSet::from([
+                root_a.display().to_string(),
+                root_b.display().to_string(),
+            ])),
+            metrics: std::sync::Mutex::new(
+                super::metrics::MetricsStore::open(&state_path).unwrap(),
+            ),
+        };
+        // Only the user copy is gated and enabled (user-scoped).
+        let user_hash = core_prov::content_hash(OK_ADAPTER);
+        {
+            let mut settings = state.settings.lock().unwrap();
+            settings
+                .record_plugin_gate("t0.plugin-fixture", &user_hash, true, "{}")
+                .unwrap();
+            settings
+                .set_plugin_enabled("user", "t0.plugin-fixture", &user_hash, true)
+                .unwrap();
+        }
+
+        // Root B relies on the user copy — and gets it, even though root A
+        // owns a project copy of the same id elsewhere in the session.
+        let for_b = super::active_plugins_in(&state, &root_b, &user_dir).unwrap();
+        assert_eq!(for_b.len(), 1);
+        assert_eq!(for_b[0].content_hash, user_hash);
+        assert!(for_b[0].path.starts_with(&user_dir));
+
+        // Root A's own project copy shadows the id there, and that copy is
+        // neither gated nor enabled: nothing extracts for root A.
+        assert!(
+            super::active_plugins_in(&state, &root_a, &user_dir)
+                .unwrap()
+                .is_empty()
         );
     }
 }

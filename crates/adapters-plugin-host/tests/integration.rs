@@ -395,10 +395,14 @@ fn routing_extracts_only_claimed_files_and_is_deterministic() {
     let root = dir.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("node_modules/dep")).unwrap();
+    std::fs::create_dir_all(root.join(".cartograph/adapters")).unwrap();
     std::fs::write(root.join("src/b.foo"), "beta").unwrap();
     std::fs::write(root.join("a.foo"), "alpha").unwrap();
     std::fs::write(root.join("readme.md"), "docs").unwrap();
     std::fs::write(root.join("node_modules/dep/c.foo"), "vendored").unwrap();
+    // Cartograph's own plugin directory is never project source (#208
+    // review): a plugin claiming this extension must not see it.
+    std::fs::write(root.join(".cartograph/adapters/plugin.foo"), "artifact").unwrap();
 
     let claims = vec!["foo".to_string()];
     let files = claimed_files(root, &claims).expect("walk");
@@ -428,6 +432,7 @@ fn routing_extracts_only_claimed_files_and_is_deterministic() {
     assert!(first.nodes.iter().any(|n| n.id == "owner/repo:a.foo"));
     assert!(first.nodes.iter().any(|n| n.id == "owner/repo:src/b.foo"));
     assert!(!first.nodes.iter().any(|n| n.id.contains("c.foo")));
+    assert!(!first.nodes.iter().any(|n| n.id.contains("plugin.foo")));
     let hash = core_prov::content_hash(OK_ADAPTER);
     assert!(
         first
@@ -437,6 +442,26 @@ fn routing_extracts_only_claimed_files_and_is_deterministic() {
             .chain(first.edges.iter().map(|e| &e.props))
             .all(|props| props["plugin_artifact_hash"] == serde_json::json!(hash))
     );
+    // Host-filled provenance (#208 review): the fixture emits no prov, so
+    // every fact carries the host's T0 baseline — pinned extractor id and
+    // the mediated source file as the evidence span.
+    let short = &hash[..12];
+    for props in first
+        .nodes
+        .iter()
+        .map(|n| &n.props)
+        .chain(first.edges.iter().map(|e| &e.props))
+    {
+        let prov = props.get("prov").expect("prov filled");
+        assert_eq!(prov["tier"], serde_json::json!("Deterministic"));
+        assert_eq!(prov["confidence_tier"], serde_json::json!("Confirmed"));
+        assert_eq!(
+            prov["extractor_id"],
+            serde_json::json!(format!("t0.plugin-fixture@{short}"))
+        );
+        assert_eq!(prov["evidence"][0]["repo"], serde_json::json!("owner/repo"));
+        assert!(prov["content_hash"].is_string());
+    }
 
     let second = extract_claimed(
         &host,

@@ -332,6 +332,19 @@ impl PluginHost {
                 // host carries the pinned extractor identity and artifact
                 // hash — there is no unpinned production path.
                 pin_extraction(&mut extraction, &plugin.plugin_id, &plugin.artifact_hash);
+                // Non-optional attribution (#208 review): a fact without its
+                // own prov gets host-filled T0 provenance citing the mediated
+                // source, so the tier/confidence invariant holds for every
+                // plugin fact and re-ingest can attribute (and clean up)
+                // plugin facts like any other.
+                fill_missing_provenance(
+                    &mut extraction,
+                    &plugin.plugin_id,
+                    &plugin.artifact_hash,
+                    source,
+                    path,
+                    id,
+                );
                 Ok(extraction)
             }
             Ok(Err(WitExtractError { message })) => Err(HostError::GuestError(message)),
@@ -468,6 +481,58 @@ pub fn pin_extraction(extraction: &mut PluginExtraction, plugin_id: &str, artifa
                 "plugin_artifact_hash".to_string(),
                 serde_json::Value::String(artifact_hash.to_string()),
             );
+        }
+    }
+}
+
+/// Host-filled baseline provenance (#208 review). The guest may emit rich
+/// `prov` objects with fine-grained evidence spans; when it doesn't, the
+/// host fills one — T0 Deterministic/Confirmed with the mediated source
+/// file as the whole-file evidence span and the pinned plugin identity as
+/// the extractor. Deterministic per fact (content hash over the fact's
+/// canonical bytes, never timestamps), so double runs stay byte-identical.
+pub fn fill_missing_provenance(
+    extraction: &mut PluginExtraction,
+    plugin_id: &str,
+    artifact_hash: &str,
+    source: &[u8],
+    path: &str,
+    id: &SourceId,
+) {
+    let short = &artifact_hash[..artifact_hash.len().min(12)];
+    let pinned_id = format!("{plugin_id}@{short}");
+    let evidence = core_prov::EvidenceRef {
+        repo: id.repo.clone(),
+        path: path.to_string(),
+        byte_start: 0,
+        byte_end: source.len() as u64,
+        commit_sha: id.commit.clone(),
+    };
+    let filled = |fact_bytes: String| -> serde_json::Value {
+        let prov = core_prov::Provenance::new(
+            core_prov::Tier::Deterministic,
+            core_prov::ConfidenceTier::Confirmed,
+            vec![evidence.clone()],
+            pinned_id.clone(),
+            fact_bytes.as_bytes(),
+        )
+        .expect("T0 may assert Confirmed");
+        serde_json::to_value(prov).expect("provenance serializes")
+    };
+    for node in &mut extraction.nodes {
+        if node.props.get("prov").is_none_or(|prov| !prov.is_object()) {
+            let bytes = format!("{}:{}:{}", node.id, node.label, node.props);
+            if let Some(object) = node.props.as_object_mut() {
+                object.insert("prov".to_string(), filled(bytes));
+            }
+        }
+    }
+    for edge in &mut extraction.edges {
+        if edge.props.get("prov").is_none_or(|prov| !prov.is_object()) {
+            let bytes = format!("{}:{}:{}:{}", edge.src, edge.dst, edge.label, edge.props);
+            if let Some(object) = edge.props.as_object_mut() {
+                object.insert("prov".to_string(), filled(bytes));
+            }
         }
     }
 }

@@ -99,10 +99,15 @@ fn canonical(extraction: &PluginExtraction) -> Vec<String> {
 }
 
 /// Expected facts, expressed exactly as the host will return them: built
-/// into a `PluginExtraction` and pinned with the same identity, so golden
-/// authors never hand-write `plugin_artifact_hash` or the pinned
-/// extractor id.
-fn expected_canonical(case: &GoldenCase, plugin_id: &str, artifact_hash: &str) -> Vec<String> {
+/// into a `PluginExtraction`, pinned with the same identity, and given the
+/// same host-filled provenance — golden authors never hand-write
+/// `plugin_artifact_hash`, the pinned extractor id, or baseline `prov`.
+fn expected_canonical(
+    case: &GoldenCase,
+    plugin_id: &str,
+    artifact_hash: &str,
+    source_id: &SourceId,
+) -> Vec<String> {
     let mut expected = PluginExtraction {
         nodes: case
             .nodes
@@ -125,6 +130,14 @@ fn expected_canonical(case: &GoldenCase, plugin_id: &str, artifact_hash: &str) -
             .collect(),
     };
     crate::pin_extraction(&mut expected, plugin_id, artifact_hash);
+    crate::fill_missing_provenance(
+        &mut expected,
+        plugin_id,
+        artifact_hash,
+        case.source.as_bytes(),
+        &case.path,
+        source_id,
+    );
     canonical(&expected)
 }
 
@@ -191,7 +204,7 @@ pub fn run_gate(
                     "extract-source honored the SPI within bounds".into(),
                 );
                 let got = canonical(&extraction);
-                let want = expected_canonical(case, plugin_id, plugin.artifact_hash());
+                let want = expected_canonical(case, plugin_id, plugin.artifact_hash(), source_id);
                 let matched = got == want;
                 check(
                     &format!("golden:{}", case.path),
