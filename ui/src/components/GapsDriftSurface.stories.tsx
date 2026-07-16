@@ -355,6 +355,14 @@ export const ClassEscalatesAsOneBatch: Story = {
     await waitFor(() =>
       expect(within(status).getAllByRole('button', { name: 'Accept' })).toHaveLength(1),
     );
+
+    // An edge-gap class cannot batch-escalate — the runner assembles tasks
+    // from real Gap nodes only, so the button never renders there.
+    const edgeHead = classes.getByRole('button', { name: /unresolved CALLS edge/ });
+    await userEvent.click(edgeHead);
+    await expect(
+      classes.queryByRole('button', { name: /Escalate class locally \(5 instances\)/ }),
+    ).not.toBeInTheDocument();
     await expect(within(status).getByRole('list', { name: 'Failed instances' })).toHaveTextContent(
       'gap:call-10: no candidates',
     );

@@ -107,6 +107,10 @@ function GapClassRow({
     }
   };
   const undecided = outcome?.proposals.filter((proposal) => !decided.has(proposal.gap_id)) ?? [];
+  // Only Gap-node classes can batch-escalate: the runner assembles tasks
+  // from real Gap nodes, while an edge gap resolves per instance from its
+  // own evidence (#194 review).
+  const escalatable = gapClass.members.every((member) => member.subject_kind === 'Gap');
 
   return (
     <li className="register-class">
@@ -131,7 +135,7 @@ function GapClassRow({
       </button>
       {open && (
         <>
-          {onEscalateClass && (
+          {onEscalateClass && escalatable && (
             <div className="class-escalation">
               <button type="button" disabled={running} onClick={() => void escalate()}>
                 {running

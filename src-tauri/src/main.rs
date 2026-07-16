@@ -1465,9 +1465,9 @@ async fn run_class_escalation(
         )
         .map_err(|e| e.to_string())?;
     emit_job(&app, &job);
-    if job.status != "done" || outcome.cancelled {
-        return Err("cancelled".to_string());
-    }
+    // A cancelled batch still returns its partial outcome (#194 review):
+    // completed instances are real staged proposals the user can triage,
+    // and `cancelled: true` tells the register the run stopped early.
     Ok(outcome)
 }
 
