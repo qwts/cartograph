@@ -177,9 +177,10 @@
 - **AC-0037** Given evidence-backed channel architecture, when recovered ADRs are drafted, then they are marked recovered/inferred, cite the producing graph evidence, remain curatable, and cannot survive rejection of their supporting facts.
 - **AC-0038** Given a found ADR with an explicit `Forbids:` edge constraint, when governed code conflicts, then a confidence-preserving finding appears in the Drift register mapped to the offending edge and any containing flow, unless that supporting edge was rejected.
 - **AC-0059** Given the Gaps & Drift register surface, when it renders, then System Gaps, unsupported patterns, and no-evidence findings appear in three distinct lanes that never conflate (an unsupported item is a tool limitation, never a Gap), the header tally quotes the same register summary Workspace quotes, gaps group by their next escalation tier, and drift findings list under their own tab — all wired from the spec compiler's registers, never re-derived in the UI.
+- **AC-0082** Given a register with more gaps than a screenful, when the System-gaps lane renders, then gaps group into cause classes (stop reason × extractor) ordered deterministically by instance count, each class expands on demand to paged instance rows that stay responsive at thousands of gaps, and every instance keeps its Resolution Strategy path — the lane reads as a ranked handful of causes, never a wall of rows.
 - **Security:** —
 - **Performance:** —
-- **Trace:** M9 · `spec`, `app` · — · T-0036..0038,T-0059
+- **Trace:** M9 · `spec`, `app` · — · T-0036..0038,T-0059,T-0082
 
 ### US-0014 — Determinism and re-ingest idempotency
 - **Actor:** Engine

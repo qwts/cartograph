@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { GROUP_THRESHOLD, groupGapClasses, nextTier, type GapClass } from '../gapClasses';
 import type { FindingsSummary, RegisterFinding, SpecAssertion } from '../store';
 
 export interface GapsDriftSurfaceProps {
@@ -17,20 +18,6 @@ export interface GapsDriftSurfaceProps {
 }
 
 type Tab = 'lanes' | 'tiers' | 'drift';
-
-/** The next rung of the escalation ladder after the tier that established
- *  the gap — T2/T3 propose only, they never overwrite (R-INT-1). */
-function nextTier(assertion: SpecAssertion): 'T1' | 'T2' | 'T3' {
-  switch (assertion.provenance.tier) {
-    case 'Dynamic':
-      return 'T2';
-    case 'Semantic':
-    case 'Agentic':
-      return 'T3';
-    default:
-      return 'T1';
-  }
-}
 
 /** Stable presentational gap ids (G-01…) over the register's sorted order. */
 function gapId(index: number): string {
@@ -62,6 +49,71 @@ function GapRows({
   );
 }
 
+/** Instances render in pages so a thousand-member class stays responsive. */
+const CLASS_PAGE = 50;
+
+function GapClassRow({
+  gapClass,
+  onOpenGap,
+}: {
+  gapClass: GapClass;
+  onOpenGap: (assertion: SpecAssertion) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [shown, setShown] = useState(CLASS_PAGE);
+  return (
+    <li className="register-class">
+      <button
+        type="button"
+        className="register-row gap-row register-class-head"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <code className="register-id">×{gapClass.members.length}</code>
+        <span className="register-text">{gapClass.label}</span>
+        <code className="register-tail">{gapClass.extractor}</code>
+        <span className="register-tail">{gapClass.tier} next</span>
+        <span className="material-symbols-outlined" aria-hidden="true">
+          {open ? 'expand_less' : 'expand_more'}
+        </span>
+      </button>
+      {open && (
+        <>
+          <GapRows gaps={gapClass.members.slice(0, shown)} onOpenGap={onOpenGap} />
+          {gapClass.members.length > shown && (
+            <button
+              type="button"
+              className="register-show-more"
+              onClick={() => setShown((value) => value + CLASS_PAGE * 4)}
+            >
+              Show more ({gapClass.members.length - shown} remaining)
+            </button>
+          )}
+        </>
+      )}
+    </li>
+  );
+}
+
+/** Classes, not instances, are the unit of triage at scale (#167): each
+ *  class is one cause (stop-reason × extractor) with its count — “8,352
+ *  gaps” reads as a ranked handful of causes. */
+function GapClassRows({
+  classes,
+  onOpenGap,
+}: {
+  classes: GapClass[];
+  onOpenGap: (assertion: SpecAssertion) => void;
+}) {
+  return (
+    <ul className="register-rows" aria-label="Gap classes">
+      {classes.map((gapClass) => (
+        <GapClassRow key={gapClass.key} gapClass={gapClass} onOpenGap={onOpenGap} />
+      ))}
+    </ul>
+  );
+}
+
 /** Gaps & Drift register (handoff screenshot 05): the honest slice the
  *  deterministic core could not confirm. The three lanes never conflate —
  *  a System Gap gets a Resolution Strategy; unsupported and no-evidence
@@ -79,6 +131,8 @@ export function GapsDriftSurface({
   // flows), and the drift headline counts drift nodes (CONFLICTS/DRIFTS_FROM
   // edges are supporting assertions of the same finding, not new findings).
   const gapFindings = gaps.filter((assertion) => !assertion.id.startsWith('flow:'));
+  // At scale the lane triages by cause class, never row-by-row (#167).
+  const gapClasses = gapFindings.length > GROUP_THRESHOLD ? groupGapClasses(gapFindings) : null;
   const driftFindings = drift.filter((assertion) => assertion.id.startsWith('node:'));
   const unsupported = registerFindings.filter((finding) => finding.kind === 'unsupported');
   const noEvidence = registerFindings.filter((finding) => finding.kind === 'no-evidence');
@@ -131,13 +185,18 @@ export function GapsDriftSurface({
                 link_off
               </span>
               System gaps · {gapFindings.length}
+              {gapClasses && ` — ${gapClasses.length} ${gapClasses.length === 1 ? 'cause' : 'causes'}`}
             </h3>
             <p className="muted">
-              Hops the deterministic tier could not resolve. Each has a Resolution Strategy.
+              {gapClasses
+                ? 'Grouped by cause (stop reason × extractor), largest first — expand a class for its instances. Each gap has a Resolution Strategy.'
+                : 'Hops the deterministic tier could not resolve. Each has a Resolution Strategy.'}
             </p>
           </div>
           {gapFindings.length === 0 ? (
             <p className="muted">No unresolved facts.</p>
+          ) : gapClasses ? (
+            <GapClassRows classes={gapClasses} onOpenGap={onOpenGap} />
           ) : (
             <GapRows gaps={gapFindings} onOpenGap={onOpenGap} />
           )}
