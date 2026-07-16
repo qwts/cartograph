@@ -48,6 +48,10 @@ pub struct PatternFinding {
     pub message: String,
     /// Detector registry version that produced this finding.
     pub detector: String,
+    /// For uncovered-language findings: the language to request an adapter
+    /// for — the UI's "request adapter" lane (#201). `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_adapter: Option<String>,
 }
 
 /// The full local detection report for one tree.
@@ -200,9 +204,32 @@ pub fn planned_adapter_for(language: &str) -> bool {
         .any(|planned| planned.language == language)
 }
 
+/// A gated, enabled plugin adapter's coverage claim (#201): the extensions
+/// its golden corpus declares. Only plugins that passed the conformance
+/// gate for their exact bytes may claim coverage — the caller enforces
+/// that; this type just carries the claim.
+#[derive(Debug, Clone)]
+pub struct PluginCoverage {
+    /// The plugin id, reported as the covering adapter.
+    pub plugin_id: String,
+    /// Extensions the corpus declares, without the leading dot.
+    pub extensions: Vec<String>,
+}
+
 /// Run the preflight scan over `root`. Purely local; deterministic for a
 /// given tree (files walked in sorted order).
 pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
+    preflight_with_plugins(root, &[])
+}
+
+/// Preflight with gated plugin adapters in the coverage set (#201): an
+/// extension a plugin claims counts as covered (the plugin id is the
+/// adapter), so the uncovered-language finding for it closes on the next
+/// scan instead of dead-ending. Compiled-in adapters win over plugins.
+pub fn preflight_with_plugins(
+    root: &Path,
+    plugins: &[PluginCoverage],
+) -> std::io::Result<PreflightReport> {
     let mut languages: BTreeMap<String, LanguageDetection> = BTreeMap::new();
     let mut frameworks: Vec<String> = Vec::new();
     let mut unsupported = Vec::new();
@@ -245,6 +272,9 @@ pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
             ) {
                 scan_source(&path, &rel, &mut unsupported, &mut potential_gaps)?;
             }
+            let plugin_claim = plugins
+                .iter()
+                .find(|plugin| plugin.extensions.iter().any(|ext| *ext == extension));
             if let Some((language, adapter)) = adapter_for(&extension) {
                 let entry = languages
                     .entry(language.to_string())
@@ -253,6 +283,18 @@ pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
                         files: 0,
                         adapter: Some(adapter.to_string()),
                     });
+                entry.files += 1;
+            } else if let Some(plugin) = plugin_claim {
+                // A gated plugin covers this extension (#201): report it as
+                // covered under the plugin id — no unsupported finding.
+                let language = uncovered_language(&extension)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!(".{extension}"));
+                let entry = languages.entry(language.clone()).or_insert(LanguageDetection {
+                    language,
+                    files: 0,
+                    adapter: Some(plugin.plugin_id.clone()),
+                });
                 entry.files += 1;
             } else if let Some(language) = uncovered_language(&extension) {
                 let entry = languages
@@ -284,6 +326,7 @@ pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
                         line: 1,
                         message,
                         detector: DETECTOR_ID.into(),
+                        request_adapter: Some(language.to_string()),
                     });
                 }
             }
@@ -399,6 +442,7 @@ fn finding(kind: &str, path: &str, line: u64, message: &str) -> PatternFinding {
         line,
         message: message.into(),
         detector: DETECTOR_ID.into(),
+        request_adapter: None,
     }
 }
 
@@ -548,5 +592,56 @@ mod tests {
                 .message
                 .contains("request it from Settings → Adapters")
         );
+    }
+
+    #[test]
+    fn gated_plugin_coverage_closes_the_uncovered_finding() {
+        // AC-0093 (#201): the same tree, rescanned with a gated plugin
+        // claiming the extension, reports the language covered under the
+        // plugin id — the uncovered-language finding closes — and the
+        // finding it replaces carried the request-adapter action.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "app.rb", "puts 'hi'\n");
+
+        let before = preflight(dir.path()).unwrap();
+        let finding = before
+            .unsupported
+            .iter()
+            .find(|f| f.kind == "uncovered-language" && f.message.contains("Ruby"))
+            .expect("Ruby surfaces as uncovered");
+        assert_eq!(finding.request_adapter.as_deref(), Some("Ruby"));
+
+        let plugins = [PluginCoverage {
+            plugin_id: "t0.plugin-ruby".into(),
+            extensions: vec!["rb".into()],
+        }];
+        let after = preflight_with_plugins(dir.path(), &plugins).unwrap();
+        let ruby = after
+            .languages
+            .iter()
+            .find(|l| l.language == "Ruby")
+            .expect("Ruby still detected");
+        assert_eq!(ruby.adapter.as_deref(), Some("t0.plugin-ruby"));
+        assert!(
+            !after
+                .unsupported
+                .iter()
+                .any(|f| f.kind == "uncovered-language" && f.message.contains("Ruby"))
+        );
+
+        // Compiled-in adapters always win over a plugin claiming the same
+        // extension — first-class languages stay compiled in.
+        write(dir.path(), "main.ts", "export const x = 1;\n");
+        let contested = [PluginCoverage {
+            plugin_id: "t0.plugin-rogue".into(),
+            extensions: vec!["ts".into()],
+        }];
+        let report = preflight_with_plugins(dir.path(), &contested).unwrap();
+        let ts = report
+            .languages
+            .iter()
+            .find(|l| l.language == "TypeScript")
+            .expect("TypeScript detected");
+        assert_eq!(ts.adapter.as_deref(), Some("t0.adapter-ts"));
     }
 }

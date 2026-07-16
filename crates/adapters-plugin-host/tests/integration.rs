@@ -383,3 +383,76 @@ fn conformance_gate_passes_golden_corpus_and_fails_closed() {
             .any(|c| c.name == "contract:src/lib.rs" && !c.passed)
     );
 }
+
+#[test]
+fn routing_extracts_only_claimed_files_and_is_deterministic() {
+    // #201 (AC-0069 extension): a gated plugin covers exactly the files
+    // its corpus claims, in sorted order, skipping vendored dirs; the
+    // merged facts are pinned and identical across runs.
+    use adapters_plugin_host::route::{claimed_files, extract_claimed};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("node_modules/dep")).unwrap();
+    std::fs::write(root.join("src/b.foo"), "beta").unwrap();
+    std::fs::write(root.join("a.foo"), "alpha").unwrap();
+    std::fs::write(root.join("readme.md"), "docs").unwrap();
+    std::fs::write(root.join("node_modules/dep/c.foo"), "vendored").unwrap();
+
+    let claims = vec!["foo".to_string()];
+    let files = claimed_files(root, &claims).expect("walk");
+    let rels: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    // Sorted, claimed extensions only, vendored dirs skipped.
+    assert_eq!(rels, ["a.foo", "src/b.foo"]);
+
+    let host = PluginHost::new().expect("engine");
+    let plugin = host
+        .load(OK_ADAPTER, "t0.plugin-fixture")
+        .expect("well-behaved plugin loads");
+    let first = extract_claimed(
+        &host,
+        &plugin,
+        root,
+        &claims,
+        &source_id(),
+        PluginLimits::default(),
+    )
+    .expect("routing succeeds");
+    // One node + one SELF edge per claimed file, every fact pinned.
+    assert_eq!(first.nodes.len(), 2);
+    assert_eq!(first.edges.len(), 2);
+    assert!(first.nodes.iter().any(|n| n.id == "owner/repo:a.foo"));
+    assert!(first.nodes.iter().any(|n| n.id == "owner/repo:src/b.foo"));
+    assert!(!first.nodes.iter().any(|n| n.id.contains("c.foo")));
+    let hash = core_prov::content_hash(OK_ADAPTER);
+    assert!(
+        first
+            .nodes
+            .iter()
+            .map(|n| &n.props)
+            .chain(first.edges.iter().map(|e| &e.props))
+            .all(|props| props["plugin_artifact_hash"] == serde_json::json!(hash))
+    );
+
+    let second = extract_claimed(
+        &host,
+        &plugin,
+        root,
+        &claims,
+        &source_id(),
+        PluginLimits::default(),
+    )
+    .expect("routing succeeds again");
+    assert_eq!(
+        serde_json::to_string(&first.nodes).unwrap(),
+        serde_json::to_string(&second.nodes).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_string(&first.edges).unwrap(),
+        serde_json::to_string(&second.edges).unwrap()
+    );
+}
