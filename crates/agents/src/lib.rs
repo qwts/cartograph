@@ -42,6 +42,27 @@ pub struct AgentCandidate {
     pub evidence_ids: Vec<String>,
 }
 
+/// Result of a class-level batch run (#167): per-instance proposals and
+/// failures, plus whether a cancel stopped the batch early.
+#[derive(Debug, Serialize)]
+pub struct BatchOutcome {
+    /// Staged proposals, one per successfully escalated instance.
+    pub proposals: Vec<AgentProposal>,
+    /// Instances that could not escalate, with the reason.
+    pub failures: Vec<BatchFailure>,
+    /// True when a cancel stopped the batch before every instance ran.
+    pub cancelled: bool,
+}
+
+/// One instance that failed to escalate within a batch.
+#[derive(Debug, Serialize)]
+pub struct BatchFailure {
+    /// Gap the instance belongs to.
+    pub gap_id: String,
+    /// Why it failed (assembly or proposal error).
+    pub error: String,
+}
+
 /// Explicit unresolved slot submitted to T3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTask {
@@ -190,6 +211,45 @@ impl AgentBroker {
         let raw: RawProposal = serde_json::from_str(&completion.text)
             .map_err(|error| AgentError::InvalidResponse(error.to_string()))?;
         self.validate_response(task, raw)
+    }
+
+    /// Run one class of gap instances in order (#167): each instance gets
+    /// its own proposal through the same bounded path as `propose`; one bad
+    /// instance records a failure and never aborts the class. `cancelled`
+    /// is consulted before every instance (a durable-job cancel stops the
+    /// batch at the next boundary); `progress` reports before each run.
+    /// Local-tier only by contract: a cloud consent grant binds to one
+    /// exact payload hash and is never amortized across a class.
+    pub fn propose_batch(
+        &self,
+        provider: &dyn LlmProvider,
+        firewall: &EgressFirewall,
+        tasks: Vec<(String, Result<AgentTask, String>)>,
+        mut cancelled: impl FnMut() -> bool,
+        mut progress: impl FnMut(usize, usize),
+    ) -> BatchOutcome {
+        let total = tasks.len();
+        let mut outcome = BatchOutcome {
+            proposals: Vec::new(),
+            failures: Vec::new(),
+            cancelled: false,
+        };
+        for (index, (gap_id, task)) in tasks.into_iter().enumerate() {
+            if cancelled() {
+                outcome.cancelled = true;
+                break;
+            }
+            progress(index, total);
+            let result = task.and_then(|task| {
+                self.propose(provider, firewall, &task, None)
+                    .map_err(|error| error.to_string())
+            });
+            match result {
+                Ok(proposal) => outcome.proposals.push(proposal),
+                Err(error) => outcome.failures.push(BatchFailure { gap_id, error }),
+            }
+        }
+        outcome
     }
 
     fn prepare(&self, task: &AgentTask) -> Result<CompletionAction, AgentError> {
@@ -899,6 +959,62 @@ mod tests {
                 None,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn batch_escalation_collects_per_instance_outcomes_and_honors_cancel() {
+        // AC-0089 (#167): a class runs as one batch — every instance gets
+        // its own proposal, a bad instance records a failure without
+        // aborting the class, and a cancel stops at the next boundary.
+        let provider = FixedProvider {
+            calls: AtomicUsize::new(0),
+            response: r#"{"target_id":"res:orders_queue","annotation":"names and config align","citations":["source","target"]}"#,
+        };
+        let broker = AgentBroker::bounded_default();
+        let firewall = EgressFirewall::new(EgressPolicy::local_only());
+        let tasks = vec![
+            ("gap:a".to_string(), Ok(task(ConfidenceTier::Gap))),
+            (
+                "gap:broken".to_string(),
+                Err("no gap named 'gap:broken'".to_string()),
+            ),
+            ("gap:b".to_string(), Ok(task(ConfidenceTier::Gap))),
+        ];
+        let mut seen = Vec::new();
+        let outcome = broker.propose_batch(
+            &provider,
+            &firewall,
+            tasks,
+            || false,
+            |index, total| seen.push((index, total)),
+        );
+        assert_eq!(outcome.proposals.len(), 2);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].gap_id, "gap:broken");
+        assert!(!outcome.cancelled);
+        assert_eq!(seen, vec![(0, 3), (1, 3), (2, 3)]);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+
+        // Cancel after the first instance: exactly one proposal, flagged.
+        let provider = FixedProvider {
+            calls: AtomicUsize::new(0),
+            response: r#"{"target_id":"res:orders_queue","annotation":"names and config align","citations":["source","target"]}"#,
+        };
+        let tasks = vec![
+            ("gap:a".to_string(), Ok(task(ConfidenceTier::Gap))),
+            ("gap:b".to_string(), Ok(task(ConfidenceTier::Gap))),
+        ];
+        let ran = std::cell::Cell::new(0usize);
+        let outcome = broker.propose_batch(
+            &provider,
+            &firewall,
+            tasks,
+            || ran.get() >= 1,
+            |_, _| ran.set(ran.get() + 1),
+        );
+        assert_eq!(outcome.proposals.len(), 1);
+        assert!(outcome.cancelled);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

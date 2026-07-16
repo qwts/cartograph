@@ -1349,6 +1349,128 @@ async fn run_escalation(
     Ok(proposal)
 }
 
+/// Escalate every instance of a gap class as one durable job (#167).
+/// Local-tier only: a cloud consent grant binds to one exact payload hash
+/// (AC-0063) and is never amortized across a class — cloud stays
+/// per-instance. Each instance yields its own staged proposal through the
+/// same propose-only path; one bad instance records a failure, never an
+/// abort; cancel stops at the next instance boundary.
+#[tauri::command]
+async fn run_class_escalation(
+    gap_ids: Vec<String>,
+    mode: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<agents::BatchOutcome, String> {
+    if mode != "local" {
+        return Err(
+            "class escalation runs local-only: a cloud consent grant binds to one exact \
+             payload hash and cannot cover a whole class — escalate cloud per instance"
+                .to_string(),
+        );
+    }
+    if gap_ids.is_empty() {
+        return Err("no gap instances to escalate".to_string());
+    }
+    let job_id = {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        let job = jobs
+            .enqueue(&format!("escalate-class:{}:{mode}", gap_ids.len()))
+            .map_err(|e| e.to_string())?;
+        jobs.set_status(job.id, "running")
+            .map_err(|e| e.to_string())?;
+        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
+        emit_job(&app, &running);
+        job.id
+    };
+    let fail = |error: String| -> String {
+        report_failure(&app, &state, job_id, &error);
+        error
+    };
+
+    report_progress(&app, &state, job_id, "context", 5.0).map_err(&fail)?;
+    // Assemble every instance's task up front (the span reader borrows the
+    // graph snapshot); per-instance assembly errors join the outcome as
+    // failures instead of aborting the class.
+    let (tasks, facts_before) = {
+        let (nodes, edges, reader) = graph_and_reader(&state).map_err(&fail)?;
+        let facts = nodes.len() + edges.len();
+        let tasks: Vec<(String, Result<agents::AgentTask, String>)> = gap_ids
+            .iter()
+            .map(|gap_id| {
+                let task = escalation::assemble_task(
+                    &nodes,
+                    &edges,
+                    gap_id,
+                    &format!("escalate:{gap_id}"),
+                    &reader,
+                );
+                (gap_id.clone(), task)
+            })
+            .collect();
+        (tasks, facts)
+    };
+
+    let policy = {
+        let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
+        settings_store.egress_policy().map_err(|e| e.to_string())?
+    };
+    let provider = escalation_provider(&mode).map_err(&fail)?;
+    let firewall = llm::EgressFirewall::new(policy);
+    let broker = agents::AgentBroker::bounded_default();
+
+    let batch_app = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let state = batch_app.state::<AppState>();
+        let total = tasks.len();
+        broker.propose_batch(
+            provider.as_ref(),
+            &firewall,
+            tasks,
+            || job_cancelled(&state, job_id),
+            |index, _| {
+                let _ = report_progress(
+                    &batch_app,
+                    &state,
+                    job_id,
+                    &format!("escalate {}/{total}", index + 1),
+                    5.0 + (index as f64 / total as f64) * 90.0,
+                );
+            },
+        )
+    })
+    .await
+    .map_err(|e| fail(e.to_string()))?;
+
+    // Propose-only, provably: the graph projection is unchanged.
+    {
+        let graph = state.graph.lock().map_err(|e| e.to_string())?;
+        let after = graph.all_nodes().map_err(|e| e.to_string())?.len()
+            + graph.all_edges().map_err(|e| e.to_string())?.len();
+        debug_assert_eq!(
+            facts_before, after,
+            "class escalation must never mutate the graph"
+        );
+    }
+
+    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+    let job = jobs
+        .finish(
+            job_id,
+            &[format!(
+                "proposals:{} failures:{}",
+                outcome.proposals.len(),
+                outcome.failures.len()
+            )],
+        )
+        .map_err(|e| e.to_string())?;
+    emit_job(&app, &job);
+    // A cancelled batch still returns its partial outcome (#194 review):
+    // completed instances are real staged proposals the user can triage,
+    // and `cancelled: true` tells the register the run stopped early.
+    Ok(outcome)
+}
+
 /// Notify the shell of a job transition (`job://changed`); the Jobs surface
 /// and the global progress bar stay live without polling (#117).
 fn emit_job(app: &tauri::AppHandle, job: &Job) {
@@ -2185,6 +2307,7 @@ fn main() {
             gap_strategies,
             escalation_preview,
             run_escalation,
+            run_class_escalation,
             list_nodes,
             atlas_snapshot,
             read_evidence,

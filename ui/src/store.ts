@@ -181,6 +181,14 @@ export interface PlannedAdapter {
   extensions: string[];
 }
 
+/** One class-level batch escalation outcome (#167): per-instance staged
+ * proposals and failures — nothing joins the graph unaccepted. */
+export interface ClassEscalationOutcome {
+  proposals: AgentProposal[];
+  failures: { gap_id: string; error: string }[];
+  cancelled: boolean;
+}
+
 export interface AdapterInventory {
   installed: AdapterInfo[];
   planned: PlannedAdapter[];
@@ -564,6 +572,13 @@ export interface AppStore {
   dismissPreview: () => void;
   /** Record the human verdict on a staged proposal (R-INT-3). */
   decideProposal: (decision: 'accepted' | 'rejected') => Promise<void>;
+  /** Batch-escalate one gap class locally (#167); one durable job. */
+  runClassEscalation: (gapIds: string[]) => Promise<ClassEscalationOutcome | null>;
+  /** Record accept/reject for one staged proposal (batch triage path). */
+  recordProposalDecision: (
+    proposal: AgentProposal,
+    decision: 'accepted' | 'rejected',
+  ) => Promise<boolean>;
 }
 
 async function loadEndpoints(): Promise<GraphNode[]> {
@@ -1022,6 +1037,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set((state) =>
       state.escalation ? { escalation: { ...state.escalation, preview: null } } : {},
     ),
+
+  runClassEscalation: async (gapIds: string[]) => {
+    const outcome = await invokeOr<ClassEscalationOutcome | null>('run_class_escalation', null, {
+      gapIds,
+      mode: 'local',
+    });
+    return outcome;
+  },
+
+  recordProposalDecision: async (proposal: AgentProposal, decision: 'accepted' | 'rejected') => {
+    const result = await invokeOr<unknown>('record_agent_decision', null, {
+      proposal,
+      decision,
+      note: null,
+    });
+    if (result === null) return false;
+    // Accepted proposals change best-effort exports — refresh them.
+    await get().refresh();
+    return true;
+  },
 
   decideProposal: async (decision) => {
     const current = get().escalation;

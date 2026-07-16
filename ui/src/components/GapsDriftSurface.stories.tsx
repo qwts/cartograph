@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, fn, userEvent, within } from 'storybook/test';
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { groupGapClasses } from '../gapClasses';
 import { GapsDriftSurface } from './GapsDriftSurface';
 import type { Provenance, RegisterFinding, SpecAssertion } from '../store';
@@ -288,6 +288,84 @@ export const ClassesGroupAtScale: Story = {
     await expect(classes.getByRole('button', { name: /Show more \(250 remaining\)/ })).toBeInTheDocument();
     await userEvent.click(shown[1]);
     await expect(args.onOpenGap).toHaveBeenCalled();
+  },
+};
+
+export const ClassEscalatesAsOneBatch: Story = {
+  // AC-0089 (#167): a whole class escalates locally in one run producing
+  // per-instance staged proposals with accept/reject; flow-blocking
+  // classes rank above larger classes that block nothing.
+  args: {
+    summary: {
+      gaps: 345,
+      unsupported: 0,
+      no_evidence: 0,
+      drift: 0,
+      open_findings: 345,
+      graph_facts: 40_000,
+    },
+    gaps: SCALE_GAPS,
+    drift: [],
+    registerFindings: [],
+    // Every Java-import gap truncates a flow; the 300-member class blocks
+    // nothing — the 40-member class must rank first.
+    flowGapIds: Array.from({ length: 40 }, (_, index) => `gap:call-${index}`),
+    onEscalateClass: fn(async (gapIds: string[]) => ({
+      proposals: gapIds.slice(0, 2).map((gapId) => ({
+        gap_id: gapId,
+        source_id: 'sym:App#import',
+        target_id: 'sym:util#helper',
+        edge_label: 'CALLS',
+        annotation: 'names align',
+        basis_hash: `basis-${gapId}`,
+        provenance: gapProvenance('Agentic'),
+      })),
+      failures: [{ gap_id: gapIds[2] ?? 'gap:none', error: 'no candidates' }],
+      cancelled: false,
+    })),
+    onDecideProposal: fn(async () => true),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const classes = within(canvas.getByLabelText('Gap classes'));
+    const heads = classes.getAllByRole('button', { expanded: false });
+    // Flow impact outranks raw count (slice 3).
+    await expect(heads[0]).toHaveTextContent('×40');
+    await expect(heads[0]).toHaveTextContent('blocks 40 flow hops');
+    await expect(heads[1]).toHaveTextContent('×300');
+
+    await userEvent.click(heads[0]);
+    await userEvent.click(
+      classes.getByRole('button', { name: /Escalate class locally \(40 instances\)/ }),
+    );
+    await expect(args.onEscalateClass).toHaveBeenCalledTimes(1);
+    const status = await canvas.findByRole('status');
+    await expect(status).toHaveTextContent('2 staged proposals · 1 failed');
+
+    // Per-instance accept goes through the decision-record path and the
+    // row leaves the undecided list.
+    const proposals = within(status).getByRole('list', { name: 'Staged class proposals' });
+    const accepts = within(proposals).getAllByRole('button', { name: 'Accept' });
+    await expect(accepts).toHaveLength(2);
+    await userEvent.click(accepts[0]);
+    await expect(args.onDecideProposal).toHaveBeenCalledWith(
+      expect.objectContaining({ gap_id: 'gap:call-0' }),
+      'accepted',
+    );
+    await waitFor(() =>
+      expect(within(status).getAllByRole('button', { name: 'Accept' })).toHaveLength(1),
+    );
+
+    // An edge-gap class cannot batch-escalate — the runner assembles tasks
+    // from real Gap nodes only, so the button never renders there.
+    const edgeHead = classes.getByRole('button', { name: /unresolved CALLS edge/ });
+    await userEvent.click(edgeHead);
+    await expect(
+      classes.queryByRole('button', { name: /Escalate class locally \(5 instances\)/ }),
+    ).not.toBeInTheDocument();
+    await expect(within(status).getByRole('list', { name: 'Failed instances' })).toHaveTextContent(
+      'gap:call-10: no candidates',
+    );
   },
 };
 

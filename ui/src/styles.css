@@ -3278,6 +3278,70 @@ button.flow-hop-card:hover {
   margin: 0.35rem 0 0.6rem 1.4rem;
 }
 
+/* #167: class-level batch escalation controls and outcome. */
+.class-escalation {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 0.4rem 0 0 2.2rem;
+}
+
+.class-escalation button {
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-body);
+  font-size: 0.72rem;
+  padding: 0.25rem 0.6rem;
+}
+
+.class-escalation .muted {
+  font-size: 0.72rem;
+  max-width: 40rem;
+}
+
+.class-escalation-outcome {
+  border-left: 2px solid var(--border);
+  font-size: 0.78rem;
+  margin: 0.4rem 0 0.4rem 2.2rem;
+  padding-left: 0.8rem;
+}
+
+.class-escalation-outcome p {
+  font-weight: 600;
+  margin: 0 0 0.3rem;
+}
+
+.class-proposals,
+.class-failures {
+  display: grid;
+  gap: 0.3rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.class-proposals li {
+  align-items: baseline;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.class-proposals button {
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-body);
+  font-size: 0.68rem;
+  padding: 0.15rem 0.5rem;
+}
+
+.register-tail.flow-impact {
+  color: var(--tier-gap);
+  font-weight: 600;
+}
+
 .register-show-more {
   margin: 0.2rem 0 0.8rem 1.4rem;
   padding: 0.3rem 0.7rem;
