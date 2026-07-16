@@ -2322,7 +2322,11 @@ button.flow-hop-card:hover {
 /* ── Ingest flow: Connect → Preflight → Recover (#104, handoff §Screens 1–3) ── */
 
 .ingest-flow {
-  max-width: 720px;
+  /* A form column stays narrow for readability but centers in the window
+     instead of hugging the left edge (#161). */
+  width: 100%;
+  max-width: min(860px, 100%);
+  margin-inline: auto;
   display: grid;
   gap: 1rem;
   align-content: start;
@@ -2768,7 +2772,11 @@ button.flow-hop-card:hover {
   display: grid;
   gap: 1rem;
   align-content: start;
-  max-width: 980px;
+  /* Fluid with the window (#161): a readable cap that grows on wide
+     screens, centered so a stretched window never reads as half-used. */
+  width: 100%;
+  max-width: min(1280px, 100%);
+  margin-inline: auto;
 }
 
 .workspace-title-row {
