@@ -47,6 +47,13 @@ jobs:
       - name: Version tooling tests
         run: npm run test:version
 
+      # Help single-sourcing (#155): docs/help/ and the wiki must be
+      # identical; the wiki is public so the clone needs no token.
+      - name: Help mirror drift check
+        run: |
+          git clone --depth 1 https://github.com/qwts/cartograph.wiki.git /tmp/wiki
+          node scripts/check-help-mirror.mjs /tmp/wiki
+
   # Rust core: format, lint-as-error, tests. The pinned toolchain comes from
   # rust-toolchain.toml (rustup auto-installs it on first cargo call), so CI
   # and local always agree — bump the pin deliberately.

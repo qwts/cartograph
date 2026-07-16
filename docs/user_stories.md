@@ -234,3 +234,14 @@
 - **Security:** AI-authored code runs sandboxed (no network, no writes, bounded resources) per ADR-0017; fail closed.
 - **Performance:** Plugin extraction may trail native adapters; first-class languages stay compiled in.
 - **Trace:** post-M10 · `adapters-*`, `ingest`, `app`, UI · — · T-0068..0070
+
+### US-0018 — In-app Help, single-sourced with the wiki
+- **Actor:** Engineer
+- **As a** engineer **I want** help inside the app — a native Help menu, an in-app Help view, and contextual per-surface topics — **so that** guidance is reachable without leaving the work, and never drifts from the published wiki.
+- **Priority:** Should · **Status:** Done
+- **AC-0090** Given the native app menu, when it renders, then a Help submenu offers Cartograph Help (opens the in-app Help view), User guide — wiki (opens the wiki in the system browser, never the webview), Report an issue (the tracker's new-issue page, system browser), and About Cartograph with the app version.
+- **AC-0091** Given the in-app Help view, when opened — from the menu, the command palette, or the `?`/F1 shortcut — then it renders a keyboard-navigable topic TOC (concepts plus every surface) and the selected topic's content entirely from markdown bundled at build time, offline, with no network dependency.
+- **AC-0092** Given any surface, when its contextual help entry (the header's Help action) is used, then the Help view opens on that surface's topic; topics are authored once under `docs/help/` and mirrored to the wiki, and the CI drift check fails when repo content and wiki diverge.
+- **Security:** External links open via the system browser; help content ships in the bundle (no runtime fetch).
+- **Performance:** Topics render from pre-bundled strings; no I/O on open.
+- **Trace:** post-M10 · `app`, UI, `scripts` · — · T-0090..0092

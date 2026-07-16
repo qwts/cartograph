@@ -14,7 +14,9 @@ export type SurfaceView =
   // The ingest flow (handoff §Screens 1–3): routed views, not rail surfaces.
   | 'connect'
   | 'preflight'
-  | 'recover';
+  | 'recover'
+  // In-app Help (#154): reachable from menu, palette, header, and '?'.
+  | 'help';
 
 export interface SurfaceDef {
   id: SurfaceView;
@@ -59,6 +61,7 @@ const INGEST_LABELS: Partial<Record<SurfaceView, string>> = {
 };
 
 export function surfaceLabel(view: SurfaceView): string {
+  if (view === 'help') return 'Help';
   return (
     INGEST_LABELS[view] ?? SURFACES.find((surface) => surface.id === view)?.label ?? view
   );

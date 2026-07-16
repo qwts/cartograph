@@ -13,6 +13,8 @@ export interface ShellHeaderProps {
   /** Context chip: whole system / single evidence trail / atlas layer. */
   scope: Scope;
   onShowLegend: () => void;
+  /** Contextual help (#155): opens the Help view on this surface's topic. */
+  onShowHelp?: () => void;
 }
 
 const SCOPE_ICON: Record<ScopeKind, string> = {
@@ -22,7 +24,7 @@ const SCOPE_ICON: Record<ScopeKind, string> = {
 };
 
 /** Header (50px): breadcrumb, Legend, and the scope chip (handoff §App Shell). */
-export function ShellHeader({ system, surface, scope, onShowLegend }: ShellHeaderProps) {
+export function ShellHeader({ system, surface, scope, onShowLegend, onShowHelp }: ShellHeaderProps) {
   return (
     <header className="shell-header">
       <nav className="breadcrumb" aria-label="Breadcrumb">
@@ -35,6 +37,19 @@ export function ShellHeader({ system, surface, scope, onShowLegend }: ShellHeade
         </span>
       </nav>
       <div className="shell-header-actions">
+        {onShowHelp && (
+          <button
+            type="button"
+            className="legend-button"
+            aria-label="Help for this view"
+            onClick={onShowHelp}
+          >
+            <span className="material-symbols-outlined" aria-hidden="true">
+              help
+            </span>
+            Help
+          </button>
+        )}
         <button type="button" className="legend-button" onClick={onShowLegend}>
           <span className="material-symbols-outlined" aria-hidden="true">
             style

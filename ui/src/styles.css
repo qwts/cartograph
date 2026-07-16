@@ -3672,3 +3672,88 @@ button.register-row:hover {
   color: var(--text);
   filter: none;
 }
+
+/* #154: in-app Help — sidebar TOC + rendered topic content. */
+.help-surface {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: 240px minmax(0, 1fr);
+  margin-inline: auto;
+  max-width: min(1100px, 100%);
+  padding: 1.25rem;
+  width: 100%;
+}
+
+.help-toc {
+  border-right: 1px solid var(--border);
+  padding-right: 1rem;
+}
+
+.help-toc h2 {
+  font-size: 0.9rem;
+  margin: 0 0 0.6rem;
+}
+
+.help-toc ul {
+  display: grid;
+  gap: 0.15rem;
+  list-style: none;
+  margin: 0 0 0.8rem;
+  padding: 0;
+}
+
+.help-toc button {
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-body);
+  display: block;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  width: 100%;
+}
+
+.help-toc button.active {
+  background: var(--control);
+  font-weight: 600;
+}
+
+.help-toc a {
+  font-size: 0.78rem;
+}
+
+.help-content {
+  font-size: 0.88rem;
+  line-height: 1.55;
+  max-width: 46rem;
+}
+
+.help-content h2 {
+  margin: 0 0 0.6rem;
+}
+
+.help-content h3 {
+  margin: 1rem 0 0.3rem;
+}
+
+.help-content ul,
+.help-content ol {
+  margin: 0.4rem 0;
+  padding-left: 1.3rem;
+}
+
+.help-content li {
+  margin: 0.25rem 0;
+}
+
+@media (max-width: 860px) {
+  .help-surface {
+    grid-template-columns: 1fr;
+  }
+
+  .help-toc {
+    border-right: 0;
+    padding-right: 0;
+  }
+}

@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { SURFACES, type SurfaceView } from '../views';
+import { SURFACES, type SurfaceDef, type SurfaceView } from '../views';
+
+/** Palette rows: the eight surfaces plus Help actions (#154). */
+const PALETTE_ROWS: readonly SurfaceDef[] = [
+  ...SURFACES,
+  { id: 'help', label: 'Help', icon: 'help', hint: 'In-app help — also ? or F1' },
+];
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -38,13 +44,13 @@ function PaletteContent({ onClose, onNavigate }: Omit<CommandPaletteProps, 'open
       onClose();
     } else if (event.key === 'ArrowDown') {
       event.preventDefault();
-      setCursor((c) => (c + 1) % SURFACES.length);
+      setCursor((c) => (c + 1) % PALETTE_ROWS.length);
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
-      setCursor((c) => (c + SURFACES.length - 1) % SURFACES.length);
+      setCursor((c) => (c + PALETTE_ROWS.length - 1) % PALETTE_ROWS.length);
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      go(SURFACES[cursor].id);
+      go(PALETTE_ROWS[cursor].id);
     }
   };
 
@@ -63,11 +69,11 @@ function PaletteContent({ onClose, onNavigate }: Omit<CommandPaletteProps, 'open
           className="cmdk-list"
           role="listbox"
           aria-label="Surfaces"
-          aria-activedescendant={`cmdk-${SURFACES[cursor].id}`}
+          aria-activedescendant={`cmdk-${PALETTE_ROWS[cursor].id}`}
           tabIndex={0}
           onKeyDown={onKeyDown}
         >
-          {SURFACES.map((surface, index) => (
+          {PALETTE_ROWS.map((surface, index) => (
             <div
               key={surface.id}
               id={`cmdk-${surface.id}`}
@@ -82,7 +88,7 @@ function PaletteContent({ onClose, onNavigate }: Omit<CommandPaletteProps, 'open
               </span>
               <span className="cmdk-label">{surface.label}</span>
               <span className="cmdk-hint">{surface.hint}</span>
-              <kbd>{`${MOD}${index + 1}`}</kbd>
+              <kbd>{surface.id === 'help' ? '?' : `${MOD}${index + 1}`}</kbd>
             </div>
           ))}
         </div>

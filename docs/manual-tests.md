@@ -363,3 +363,15 @@ PR — per-PR verification is CI's job.
 4. From Jobs, **Cancel** the run; it stops at the next stage boundary.
 5. **Pass:** no "application not responding" episode at any point during a
    multi-minute recovery (AC-0078, #158).
+
+## MT-HELP-01 — Native Help menu (AC-0090, T-0090)
+
+1. Launch the packaged app (`npm run tauri build` artifact or dev shell).
+2. Open the **Help** menu in the native menu bar: it lists **Cartograph
+   Help**, **User guide (wiki)**, **Report an issue**, and **About
+   Cartograph**.
+3. **Cartograph Help** switches the app to the in-app Help view.
+4. **User guide (wiki)** and **Report an issue** open in the system
+   browser — never inside the webview.
+5. **About Cartograph** shows the app name and the version from
+   `tauri.conf.json`.

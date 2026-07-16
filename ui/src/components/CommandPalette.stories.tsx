@@ -19,7 +19,9 @@ export const Open: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     const dialog = canvas.getByRole('dialog', { name: 'Command palette' });
-    await expect(within(dialog).getAllByRole('option')).toHaveLength(8);
+    // Eight surfaces plus the Help action (#154).
+    await expect(within(dialog).getAllByRole('option')).toHaveLength(9);
+    await expect(within(dialog).getByText('Help')).toBeInTheDocument();
 
     // Click navigates and closes.
     await userEvent.click(within(dialog).getByRole('option', { name: /Gaps & Drift/ }));

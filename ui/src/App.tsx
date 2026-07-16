@@ -6,6 +6,8 @@ import { ShellHeader, type Scope } from './components/ShellHeader';
 import { StatusBar } from './components/StatusBar';
 import { GlobalProgress } from './components/GlobalProgress';
 import { CommandPalette } from './components/CommandPalette';
+import { HelpSurface } from './components/HelpSurface';
+import { topicForView } from './helpTopics';
 import { LegendPopover } from './components/LegendPopover';
 import { RouteErrorBoundary } from './components/RouteErrorBoundary';
 import { StatusBadge } from './components/StatusBadge';
@@ -130,6 +132,7 @@ export default function App() {
   } = useAppStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpTopic, setHelpTopic] = useState('concepts');
   const [legendOpen, setLegendOpen] = useState(false);
   const [atlasLayer, setAtlasLayer] = useState('All layers');
 
@@ -170,9 +173,18 @@ export default function App() {
     [setView],
   );
 
-  // ⌘K / Ctrl+K toggles the palette; ⌘1–⌘8 jump straight to a surface.
+  // ⌘K / Ctrl+K toggles the palette; ⌘1–⌘8 jump straight to a surface;
+  // '?' or F1 opens Help on the current surface's topic (#154).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing = target?.closest('input, textarea, select, [contenteditable]');
+      if ((event.key === '?' || event.key === 'F1') && !typing && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault();
+        setHelpTopic(topicForView(view));
+        navigate('help');
+        return;
+      }
       if (!(event.metaKey || event.ctrlKey)) return;
       if (event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -184,7 +196,30 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [navigate]);
+  }, [navigate, view]);
+
+  // Native Help menu (#154): the Rust shell emits help://open.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const stop = await listen('help://open', () => {
+          setHelpTopic(topicForView(view));
+          navigate('help');
+        });
+        if (cancelled) stop();
+        else unlisten = stop;
+      } catch {
+        // No event bridge outside Tauri.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [navigate, view]);
 
   const busy =
     ingestBusy || specBusy || clearBusy || jobs.some((job) => job.status === 'running');
@@ -393,6 +428,8 @@ export default function App() {
             onBackground={() => navigate('jobs')}
           />
         );
+      case 'help':
+        return <HelpSurface topic={helpTopic} onTopicChange={setHelpTopic} />;
       case 'settings':
         return (
           <SettingsSurface
@@ -425,6 +462,10 @@ export default function App() {
           surface={surfaceLabel(view)}
           scope={scope}
           onShowLegend={() => setLegendOpen(true)}
+          onShowHelp={() => {
+            setHelpTopic(topicForView(view));
+            navigate('help');
+          }}
         />
         <main className="shell-content">
           <RouteErrorBoundary view={view}>{surface}</RouteErrorBoundary>

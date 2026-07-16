@@ -2249,9 +2249,67 @@ fn read_evidence(
     })
 }
 
+/// Open a URL in the system browser — never inside the webview (#154).
+fn open_external(url: &str) {
+    #[cfg(target_os = "macos")]
+    let launcher = "open";
+    #[cfg(target_os = "linux")]
+    let launcher = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let launcher = "explorer";
+    let _ = std::process::Command::new(launcher).arg(url).spawn();
+}
+
+/// Native Help submenu (#154): in-app Help, the wiki user guide, issue
+/// reporting, and About — appended to the platform-default menu so the
+/// standard Edit/Window items survive.
+fn install_help_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let handle = app.handle();
+    let help = Submenu::with_items(
+        handle,
+        "Help",
+        true,
+        &[
+            &MenuItem::with_id(handle, "help:open", "Cartograph Help", true, None::<&str>)?,
+            &MenuItem::with_id(
+                handle,
+                "help:guide",
+                "User guide (wiki)",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(handle, "help:issue", "Report an issue", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::about(
+                handle,
+                Some("About Cartograph"),
+                Some(AboutMetadata {
+                    name: Some("Cartograph".into()),
+                    version: Some(app.package_info().version.to_string()),
+                    ..Default::default()
+                }),
+            )?,
+        ],
+    )?;
+    let menu = Menu::default(handle)?;
+    menu.append(&help)?;
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| match event.id().0.as_str() {
+        "help:open" => {
+            let _ = app.emit("help://open", ());
+        }
+        "help:guide" => open_external("https://github.com/qwts/cartograph/wiki"),
+        "help:issue" => open_external("https://github.com/qwts/cartograph/issues/new"),
+        _ => {}
+    });
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
+            install_help_menu(app)?;
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let graph = SqliteGraphStore::open(data_dir.join("graph.db"))?;
