@@ -1,5 +1,15 @@
 # cartograph
 
+## 0.7.0
+
+### Minor Changes
+
+- 68190e2: Settings now answers "what can Cartograph read?": an Adapters section lists every installed adapter with what it extracts and which files it claims — the same registry Preflight consults, so the two can never disagree — explains in plain language what an adapter is, and lists known adapter types not yet installed (JavaScript, C, C++, Kotlin, Swift, Objective-C) with a request link. Preflight findings for those languages now name the missing adapter instead of dead-ending.
+- 619c113: Atlas gains a keyboard-first focus mode: select a node and press Enter (or use the breadcrumb control) to re-root the view on that node and its direct connections, with the layout reflowing deterministically. Each focus stacks a navigable level; Esc or the breadcrumb backs out one level at a time to the full graph, and every transition is announced for screen readers.
+- bbc41fc: Gap triage now works at the class level end to end: a whole cause class escalates locally in one durable, cancellable job — one staged proposal per instance, failures recorded without aborting — with per-instance accept/reject through the standard decision records (nothing joins the graph unaccepted). Classes that truncate traced flows rank first, in the cause lane and the by-tier tab alike, so the top of the register is the highest-value hour of triage. Cloud escalation stays per-instance: a consent grant binds to one exact payload.
+- b59f5e3: Help now lives in the app: a native Help menu (Cartograph Help, the wiki user guide and issue reporting in the system browser, About with the version), an in-app Help view with a topic for every surface plus a concepts page — rendered offline from bundled markdown, reachable from the menu, the command palette, the header's Help action on every surface, or ? / F1 — and single-sourced content: docs/help/ mirrors to the wiki with a CI gate that fails when they drift.
+- 13eba95: The app now answers its own jargon in place: small keyboard-accessible "?" affordances explain System gaps, unsupported patterns, no-evidence questions, confidence tiers, verified-only vs best-effort, and recovery authority right where those terms appear — one interaction to open, Esc to dismiss, with a Learn-more link. All notes come from one shared source, so no surface can drift from another.
+
 ## 0.6.0
 
 ### Minor Changes
