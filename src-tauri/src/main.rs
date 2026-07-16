@@ -122,32 +122,28 @@ struct SystemRepo {
     commit: String,
 }
 
-/// What the current system contains, derived from the graph's own File
-/// facts (never from history logs, which survive a clear): each distinct
-/// repo with the commit identity its evidence records. Deterministic:
-/// sorted by repo.
+/// What the current system contains, derived from the graph's own facts
+/// (never from history logs, which survive a clear): each distinct repo
+/// any node's evidence cites, with its recorded commit identity. Evidence
+/// is the source so infra-only (Resource) and manifest-only (Extension)
+/// repos count too, not just ones with File nodes (#187 review).
+/// Deterministic: sorted by repo.
 #[tauri::command]
 fn system_contents(state: State<'_, AppState>) -> Result<Vec<SystemRepo>, String> {
     let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    let files = graph.nodes_with_label("File").map_err(|e| e.to_string())?;
-    Ok(system_contents_of(&files))
+    let nodes = graph.all_nodes().map_err(|e| e.to_string())?;
+    Ok(system_contents_of(&nodes))
 }
 
-fn system_contents_of(files: &[Node]) -> Vec<SystemRepo> {
+fn system_contents_of(nodes: &[Node]) -> Vec<SystemRepo> {
     let mut repos: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    for node in files {
-        let Some(repo) = node
-            .id
-            .strip_prefix("file:")
-            .and_then(|rest| rest.split('@').next())
-        else {
+    for node in nodes {
+        let evidence = &node.props["prov"]["evidence"][0];
+        let Some(repo) = evidence["repo"].as_str().filter(|repo| !repo.is_empty()) else {
             continue;
         };
-        let commit = node.props["prov"]["evidence"][0]["commit_sha"]
-            .as_str()
-            .unwrap_or("workdir")
-            .to_string();
-        repos.entry(repo.to_string()).or_insert(commit);
+        let commit = evidence["commit_sha"].as_str().unwrap_or("workdir");
+        repos.entry(repo.to_string()).or_insert(commit.to_string());
     }
     repos
         .into_iter()
@@ -3270,21 +3266,46 @@ resource "aws_sqs_queue" "orders" {
 
     #[test]
     fn system_contents_lists_each_repo_from_graph_facts() {
-        // AC-0085: composition comes from the graph's own File facts —
-        // distinct repos with their evidence commit identity, sorted, one
-        // entry per repo no matter how many files it contributed.
-        let file = |repo: &str, path: &str, commit: &str| Node {
-            id: format!("file:{repo}@{path}"),
-            label: "File".into(),
+        // AC-0085: composition comes from the graph's own evidence —
+        // distinct repos with their recorded commit identity, sorted, one
+        // entry per repo no matter how many facts it contributed. Evidence
+        // (not File ids) is the source, so an infra-only repo whose
+        // extractor emits Resource nodes still counts (#187 review).
+        let fact = |id: &str, label: &str, repo: &str, path: &str, commit: &str| Node {
+            id: id.into(),
+            label: label.into(),
             props: serde_json::json!({
-                "path": path,
                 "prov": { "evidence": [{ "repo": repo, "path": path, "commit_sha": commit }] },
             }),
         };
         let files = vec![
-            file("local/infra", "main.tf", "workdir"),
-            file("acme/shop", "src/app.ts", "a1b2c3d"),
-            file("acme/shop", "src/db.ts", "a1b2c3d"),
+            fact(
+                "res:aws_sqs_queue.orders",
+                "Resource",
+                "local/infra",
+                "main.tf",
+                "workdir",
+            ),
+            fact(
+                "file:acme/shop@src/app.ts",
+                "File",
+                "acme/shop",
+                "src/app.ts",
+                "a1b2c3d",
+            ),
+            fact(
+                "sym:app.ts#main",
+                "Symbol",
+                "acme/shop",
+                "src/app.ts",
+                "a1b2c3d",
+            ),
+            // Synthetic nodes without evidence assert nothing about repos.
+            Node {
+                id: "gap:x".into(),
+                label: "Gap".into(),
+                props: serde_json::json!({ "reason": "r" }),
+            },
         ];
         let contents = crate::system_contents_of(&files);
         assert_eq!(
