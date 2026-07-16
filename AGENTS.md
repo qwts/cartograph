@@ -112,4 +112,6 @@ Storybook itself: `npm run storybook` (from `ui/`).
 - `docs/VISION.md` — post-v1 direction (SDLC-in-core); not license to build it
 - `docs/design/production-ui/` — production UI design handoff (authoritative)
 - `docs/design/` — earlier design tokens (`DESIGN.md`) + Stitch mockups per view
+- `docs/adapters/AUTHORING_GUIDE.md` — how to add language-adapter coverage
+  (sandboxed WASM plugin, or extending a compiled-in `adapters-lang-*` crate)
 - GitHub wiki — narrative contributor/process docs (`CONTRIBUTING.md` is a stub)

@@ -275,7 +275,7 @@ export function SettingsSurface({
         <>
           <ul className="adapter-list" aria-label="Installed adapters">
             {adapters.installed.map((adapter) => (
-              <li key={adapter.id} className="adapter-row">
+              <li key={adapter.language} className="adapter-row">
                 <div className="adapter-head">
                   <strong>{adapter.language}</strong>
                   <code>{adapter.id}</code>

@@ -33,8 +33,11 @@ export const StreamingCoreProgress: Story = {
     const canvas = within(canvasElement);
     // Real job events drive the view: friendly stage label, mono %, bar.
     await expect(canvas.getByTestId('recover-spinner')).toBeInTheDocument();
+    await expect(
+      canvas.getByText(/reconstruct endpoints, call graphs/i),
+    ).toBeInTheDocument();
     await expect(canvas.getByRole('status')).toHaveTextContent(
-      'T0 parse — call graph & endpoints',
+      'Parsing source — building the import & call graph',
     );
     await expect(canvas.getByText('15%')).toBeInTheDocument();
     await expect(
@@ -44,6 +47,21 @@ export const StreamingCoreProgress: Story = {
     // Run in background frees the UI.
     await userEvent.click(canvas.getByRole('button', { name: 'Run in background' }));
     await expect(args.onBackground).toHaveBeenCalled();
+  },
+};
+
+export const LiveDetailPing: Story = {
+  // AC-0094: the current adapter/file, streamed over job://detail and
+  // rendered as a secondary line — best-effort, so it's fine to be absent
+  // (see StreamingCoreProgress, which has no detail set).
+  args: {
+    job: { ...RUNNING, detail: 'Reading application code — src/api/routes.ts' },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByText('Reading application code — src/api/routes.ts'),
+    ).toBeInTheDocument();
   },
 };
 

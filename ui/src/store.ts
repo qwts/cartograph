@@ -23,6 +23,10 @@ export interface Job {
   error?: string | null;
   /** Artifact identifiers produced by a completed job. */
   artifacts?: string[];
+  /** Best-effort "what it's doing right now" (current adapter/file), streamed
+   *  over `job://detail` (#209) — transient, not persisted, so it's absent
+   *  until the next live ping (e.g. right after a restart or `refresh()`). */
+  detail?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -568,6 +572,10 @@ export interface AppStore {
   retryJob: (id: number) => Promise<void>;
   /** Apply one job transition pushed by the core (`job://changed`). */
   applyJobEvent: (job: Job) => void;
+  /** Apply one live "what it's doing right now" ping (`job://detail`, #209)
+   *  — merges into the matching job only; a no-op if the job isn't known yet
+   *  (its `job://changed` row hasn't landed). */
+  applyJobDetail: (id: number, detail: string) => void;
   setIngestSource: (source: IngestSource) => void;
   setIngestTarget: (target: string) => void;
   /** Navigate to Preflight and run local detection (#116). Local targets get
@@ -905,6 +913,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         : [job, ...state.jobs];
       return { jobs };
     }),
+
+  applyJobDetail: (id, detail) =>
+    set((state) => ({
+      jobs: state.jobs.map((existing) => (existing.id === id ? { ...existing, detail } : existing)),
+    })),
 
   setIngestSource: (ingestSource) => set({ ingestSource }),
 

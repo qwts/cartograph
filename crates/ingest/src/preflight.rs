@@ -106,6 +106,14 @@ pub const INSTALLED_ADAPTERS: &[AdapterInfo] = &[
                  chrome messaging channels, IndexedDB",
     },
     AdapterInfo {
+        id: "t0.adapter-ts",
+        language: "JavaScript",
+        extensions: &["js", "jsx", "mjs", "cjs"],
+        covers: "imports, call graph, endpoints (Express/Next/React Router), \
+                 chrome messaging channels, IndexedDB — the TypeScript \
+                 crate's own grammar parses plain JS/JSX directly",
+    },
+    AdapterInfo {
         id: "t0.webextension",
         language: "WebExtension",
         extensions: &[],
@@ -153,10 +161,6 @@ pub struct PlannedAdapter {
 /// The recommendation catalog (#163): languages Preflight can detect and
 /// name as installable-later adapter types.
 pub const PLANNED_ADAPTERS: &[PlannedAdapter] = &[
-    PlannedAdapter {
-        language: "JavaScript",
-        extensions: &["js", "jsx", "mjs", "cjs"],
-    },
     PlannedAdapter {
         language: "C",
         extensions: &["c", "h"],
@@ -274,8 +278,8 @@ pub fn preflight_with_plugins(
                 .to_string_lossy()
                 .into_owned();
             // Risky-construct scanning is per-syntax, not per-coverage: a
-            // .js file still gets eval/WASM findings even though JavaScript
-            // extraction is a planned adapter (#192 review).
+            // .ts file gets the same eval/WASM findings as .js (#192
+            // review) — both extensions are covered by the same adapter.
             if matches!(
                 extension.as_str(),
                 "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
@@ -566,6 +570,38 @@ mod tests {
                 .iter()
                 .any(|f| f.path.contains("node_modules"))
         );
+    }
+
+    #[test]
+    fn javascript_is_covered_not_unsupported() {
+        // AC-0095: JavaScript used to be a PLANNED_ADAPTERS recommendation
+        // ("request it from Settings → Adapters"); the TypeScript crate's
+        // grammar now parses it directly, so a JS-only tree is covered like
+        // any other installed adapter — no uncovered-language finding, no
+        // adapter-request message.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "src/index.js", "export function run() {}\n");
+        write(root, "src/Widget.jsx", "export function Widget() {}\n");
+
+        let report = preflight(root).unwrap();
+        let by_language: BTreeMap<_, _> = report
+            .languages
+            .iter()
+            .map(|l| (l.language.as_str(), l))
+            .collect();
+        assert_eq!(
+            by_language["JavaScript"].adapter.as_deref(),
+            Some("t0.adapter-ts")
+        );
+        assert_eq!(by_language["JavaScript"].files, 2);
+        assert!(
+            !report
+                .unsupported
+                .iter()
+                .any(|f| f.message.contains("JavaScript"))
+        );
+        assert!(!planned_adapter_for("JavaScript"));
     }
 
     #[test]

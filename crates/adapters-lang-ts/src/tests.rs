@@ -408,6 +408,111 @@ fn delta_reingest_reuses_unchanged_files_and_recomputes_only_changes() {
 }
 
 #[test]
+fn progress_hook_fires_once_per_file_in_deterministic_order() {
+    // AC-0094 (T-0094): the shell's live "what it's doing right now" ping
+    // rides this callback, one call per file, in the same sorted order
+    // extraction itself uses (US-0014's determinism).
+    let dir = fixture_dir();
+    let mut cache = IncrementalCache::default();
+    let mut seen = Vec::new();
+    let (_, stats) =
+        extract_dir_incremental_with_progress(dir.path(), &id(), &mut cache, &mut |path| {
+            seen.push(path.to_string())
+        })
+        .unwrap();
+    assert_eq!(stats.recomputed_files, 2);
+    assert_eq!(
+        seen,
+        vec!["src/app.ts".to_string(), "src/users.ts".to_string()]
+    );
+
+    // The plain entry point (used everywhere that doesn't care) stays silent.
+    let mut cache = IncrementalCache::default();
+    extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+}
+
+#[test]
+fn plain_javascript_and_jsx_files_are_collected_and_parsed() {
+    // AC-0095: no separate JS adapter exists — this crate's grammar parses
+    // plain JS/JSX directly, so .js/.jsx/.mjs/.cjs are collected right
+    // alongside .ts/.tsx.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("index.js"),
+        "export function add(a, b) { return a + b; }\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("util.mjs"), "export const x = 1;\n").unwrap();
+    std::fs::write(dir.path().join("legacy.cjs"), "module.exports = {};\n").unwrap();
+    std::fs::write(
+        dir.path().join("Widget.jsx"),
+        "export function Widget() { return <div>hi</div>; }\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let files: std::collections::BTreeSet<&str> = out
+        .nodes
+        .iter()
+        .filter(|n| n.label == "File" && n.props.get("placeholder").is_none())
+        .map(|n| n.id.as_str())
+        .collect();
+    assert_eq!(
+        files,
+        std::collections::BTreeSet::from([
+            "file:qwtm/example@Widget.jsx",
+            "file:qwtm/example@index.js",
+            "file:qwtm/example@legacy.cjs",
+            "file:qwtm/example@util.mjs",
+        ])
+    );
+    // .jsx gets the same JSX-aware Component treatment as .tsx (capitalized,
+    // parsed under the TSX grammar).
+    let widget = out
+        .nodes
+        .iter()
+        .find(|n| n.id == "sym:qwtm/example@Widget.jsx#Widget")
+        .expect("Widget symbol");
+    assert_eq!(widget.label, "Component");
+}
+
+#[test]
+fn extensionless_import_reconciles_to_the_real_non_ts_extension() {
+    // The real extension of an extensionless relative import isn't knowable
+    // per file (`resolve_relative` guesses `.ts`); once the whole directory
+    // is known, both the IMPORTS edge and the cross-file CALLS edge must
+    // join the real `.jsx` file's nodes instead of a phantom `.ts`
+    // placeholder next to an orphaned real File/Symbol.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("app.js"),
+        "import { helper } from './helper';\nexport function run() { helper(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("helper.jsx"),
+        "export function helper() { return null; }\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let real_file = "file:qwtm/example@helper.jsx";
+    let real_symbol = "sym:qwtm/example@helper.jsx#helper";
+    let guessed_file = "file:qwtm/example@helper.ts";
+    let guessed_symbol = "sym:qwtm/example@helper.ts#helper";
+
+    assert!(out.nodes.iter().any(|n| n.id == real_file));
+    assert!(!out.nodes.iter().any(|n| n.id == guessed_file));
+    assert!(edge_pairs(&out, "IMPORTS").contains(&("file:qwtm/example@app.js", real_file)));
+
+    assert!(out.nodes.iter().any(|n| n.id == real_symbol));
+    assert!(!out.nodes.iter().any(|n| n.id == guessed_symbol));
+    assert!(edge_pairs(&out, "CALLS").contains(&("sym:qwtm/example@app.js#run", real_symbol)));
+    // No Gap: the call resolved for real, not by falling through to one.
+    assert!(!out.nodes.iter().any(|n| n.label == "Gap"));
+}
+
+#[test]
 fn close_over_creates_placeholders_for_unresolved_targets() {
     let src = "import { helper } from './missing';\nexport function run() { helper(); }";
     let mut ex = extract_source(src.as_bytes(), "src/run.ts", &id()).unwrap();

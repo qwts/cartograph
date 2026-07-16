@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Job } from '../store';
+import { stageLabel } from '../stageLabels';
 
 export interface JobsSurfaceProps {
   jobs: Job[];
@@ -8,6 +9,19 @@ export interface JobsSurfaceProps {
   onClearFinished: () => void;
   onCancel: (id: number) => void;
   onRetry: (id: number) => void;
+  /** Jump to the live Recovering screen for a running/queued recovery job
+   *  (#209) — the id isn't threaded further since the Recover surface finds
+   *  its job by status, but it's passed through for future kind-specific use. */
+  onViewLive?: (id: number) => void;
+}
+
+/** Recovery-flow job kinds (`store.ts`'s `ingest()` dispatches one of these
+ *  three backend commands) — only these have a Recover surface to jump back
+ *  to; other job kinds (plugin gates, escalations) do not. */
+const RECOVERY_KIND_PREFIXES = ['ingest:', 'add-repo:', 'add-system:'];
+
+function isRecoveryJob(kind: string): boolean {
+  return RECOVERY_KIND_PREFIXES.some((prefix) => kind.startsWith(prefix));
 }
 
 /** Terminal statuses removed by Clear finished; resumable work never is. */
@@ -42,7 +56,14 @@ function actionFor(status: string): { label: string; kind: 'cancel' | 'retry' } 
 /** Durable job management (handoff §Jobs, interaction #5): every state with
  *  progress, stage, timestamps, failure detail, and artifact links. Long
  *  work stays non-blocking — this surface observes, never blocks. */
-export function JobsSurface({ jobs, canClear, onClearFinished, onCancel, onRetry }: JobsSurfaceProps) {
+export function JobsSurface({
+  jobs,
+  canClear,
+  onClearFinished,
+  onCancel,
+  onRetry,
+  onViewLive,
+}: JobsSurfaceProps) {
   const [confirming, setConfirming] = useState(false);
   const finished = jobs.filter((job) => FINISHED.has(job.status)).length;
   return (
@@ -112,9 +133,14 @@ export function JobsSurface({ jobs, canClear, onClearFinished, onCancel, onRetry
                     <code>#{job.id}</code> {job.kind}
                     <span className={`job-status job-status-${job.status}`}>{job.status}</span>
                     {job.stage && job.status === 'running' && (
-                      <span className="job-stage">{job.stage}</span>
+                      <span className="job-stage">{stageLabel(job.stage)}</span>
                     )}
                   </div>
+                  {job.status === 'running' && job.detail && (
+                    <p className="job-detail muted">
+                      <code>{job.detail}</code>
+                    </p>
+                  )}
                   {job.status === 'running' && typeof job.progress === 'number' && (
                     <div
                       className="job-progress"
@@ -141,6 +167,17 @@ export function JobsSurface({ jobs, canClear, onClearFinished, onCancel, onRetry
                     created {job.created_at} · updated {job.updated_at}
                   </p>
                 </div>
+                {onViewLive &&
+                  (job.status === 'running' || job.status === 'queued') &&
+                  isRecoveryJob(job.kind) && (
+                    <button
+                      type="button"
+                      className="job-action secondary-button"
+                      onClick={() => onViewLive(job.id)}
+                    >
+                      View live
+                    </button>
+                  )}
                 {action && (
                   <button
                     type="button"

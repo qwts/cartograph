@@ -2000,6 +2000,19 @@ button.flow-hop-card:hover {
   color: var(--text-body);
 }
 
+button.status-live-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.status-live-link:hover {
+  color: var(--accent-local);
+  text-decoration: underline;
+}
+
 .status-live .spinning {
   animation: carto-spin 1.3s linear infinite;
 }
@@ -2394,6 +2407,15 @@ button.flow-hop-card:hover {
   color: var(--text-body);
 }
 
+.job-detail {
+  margin: 0.15rem 0 0.35rem;
+  font-size: 0.7rem;
+}
+
+.job-detail code {
+  font-family: var(--font-mono);
+}
+
 .job-progress {
   height: 4px;
   border-radius: 2px;
@@ -2646,9 +2668,24 @@ button.flow-hop-card:hover {
   color: var(--tier-gap);
 }
 
+.recover-purpose {
+  margin: 0;
+  max-width: 420px;
+  font-size: 0.85rem;
+}
+
 .recover-stage {
   margin: 0;
   color: var(--text-muted);
+}
+
+.recover-detail {
+  margin: -0.4rem 0 0;
+  font-size: 0.75rem;
+}
+
+.recover-detail code {
+  font-family: var(--font-mono);
 }
 
 .recover-percent {

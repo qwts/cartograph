@@ -43,8 +43,11 @@ type Story = StoryObj<typeof meta>;
 export const EveryLifecycleState: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    // Running: stage + accessible progress.
-    await expect(canvas.getByText('extract')).toBeInTheDocument();
+    // Running: friendly stage label (shared with Recover, #209) + accessible
+    // progress — never the raw internal stage string.
+    await expect(
+      canvas.getByText('Parsing source — building the import & call graph'),
+    ).toBeInTheDocument();
     await expect(canvas.getByRole('progressbar', { name: 'Job 5 progress' })).toHaveAttribute(
       'aria-valuenow',
       '40',
@@ -123,6 +126,39 @@ export const Empty: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText('No jobs yet.')).toBeInTheDocument();
     await expect(canvas.getByRole('button', { name: 'Clear finished' })).toBeDisabled();
+  },
+};
+
+export const ViewLiveOnRecoveryJobs: Story = {
+  // AC-0094: only recovery-flow jobs (ingest/add-repo/add-system) that are
+  // still running/queued get a way back to the Recovering screen; other
+  // kinds (and terminal recovery jobs) don't offer a live view that no
+  // longer exists. Running jobs also surface the live detail ping.
+  args: {
+    jobs: [
+      job({
+        id: 6,
+        kind: 'ingest:/repo',
+        status: 'running',
+        stage: 'extract',
+        progress: 40,
+        detail: 'Reading application code — src/api/routes.ts',
+      }),
+      job({ id: 4, kind: 'add-system:/repo/cartograph.system.toml', status: 'queued' }),
+      job({ id: 3, kind: 'plugin-gate:t0.plugin-fixture', status: 'running', progress: 10 }),
+      job({ id: 2, kind: 'ingest:/repo', status: 'done', progress: 100 }),
+    ],
+    onViewLive: fn(),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByText('Reading application code — src/api/routes.ts'),
+    ).toBeInTheDocument();
+    const viewLive = canvas.getAllByRole('button', { name: 'View live' });
+    await expect(viewLive).toHaveLength(2); // running ingest + queued add-system only
+    await userEvent.click(viewLive[0]);
+    await expect(args.onViewLive).toHaveBeenCalledWith(6);
   },
 };
 

@@ -22,11 +22,12 @@
 - **AC-0077** Given the production Jobs surface, when it renders, then it offers only lifecycle verbs on existing work (Cancel/Retry/Resume and Clear finished) — no job-creation control.
 - **AC-0078** Given any recovery command (ingest, add-repo, add-system, or an ingest retry/resume), when it runs, then extraction executes on a blocking worker thread — the webview/main thread never blocks, the UI stays interactive, and job progress renders throughout.
 - **AC-0085** Given one or more ingested targets, when the Workspace renders, then it states what the current system contains — each repo with its commit identity, derived from the graph's own facts (never from history logs, which survive a clear) — and that further ingests merge into the same system; the destructive action is labeled in system terms (Clear system) and its confirmation names exactly what is removed (every recovered fact) and what survives (job history and settings).
+- **AC-0094** Given a running recovery job (ingest, add-repo, or add-system), when I navigate away from the Recovering screen or run it in background, then it stays reachable from the status bar ("Ingesting…") and from a "View live" action on its row in the Jobs surface; while it runs, both surfaces show a best-effort, non-persisted live detail of the file and layer (application/infra/language) currently being read, throttled so it never floods the event bridge.
 - **Security:** Tokens stored in OS keychain; never logged; least-privilege App scopes.
 - **Performance:** Shallow/sparse clone; 1 GB repo clones within bounded progress feedback.
-- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0078,T-0085
+- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0078,T-0085,T-0094
 
-### US-0002 — Deterministic extraction of server-side facts (TS/Python/Go/Java)
+### US-0002 — Deterministic extraction of server-side facts (TS/JS/Python/Go/Java)
 - **Actor:** Engine
 - **As a** engineer **I want** import/call graphs, endpoints, and data access extracted statically **so that** server facts are Confirmed without inference.
 - **Priority:** Must · **Status:** In-Progress
@@ -37,9 +38,10 @@
 - **AC-0054** Given Go that import-proves `net/http`, chi, or gin, when the repo is ingested, then Confirmed T0 File/Symbol/IMPORTS/CALLS facts plus literal Endpoint registrations are recovered with exact evidence, local-package calls and handlers are joined deterministically, unresolved handler expressions retain the Endpoint with an explicit HANDLES Gap, dynamic routes and lookalike registrations are ignored, files requiring an undeclared build target are excluded, server-only layer hints are honored, and the ingest summary reports Go separately.
 - **AC-0079** Given a Java repository, when it is ingested, then classes/interfaces/enums/records and methods become Confirmed T0 Symbols with exact evidence spans, same-class and import-proven cross-file calls are joined deterministically repo-wide, a declared-package import whose target cannot be proven fails closed to an explicit Gap, foreign-package imports assert nothing, and the ingest summary reports Java separately.
 - **AC-0080** Given Java that import-proves Spring Web annotations (named or wildcard `org.springframework.*` imports), when a `@RestController`/`@Controller` class is parsed, then `@{Get,Post,Put,Delete,Patch}Mapping` methods become Confirmed Endpoints with class-level `@RequestMapping` path composition and HANDLES edges to their handler methods; lookalike annotations without the proving import produce no endpoints.
+- **AC-0095** Given a `.js`/`.jsx`/`.mjs`/`.cjs` repo, when ingested, then the same TypeScript-crate grammar recovers Confirmed T0 File/Symbol/IMPORTS/CALLS facts and Express/Next/React-Router endpoints and screens as it does for `.ts`/`.tsx` (no separate JS adapter, and Preflight/Settings report JavaScript as installed rather than a requestable planned adapter); an extensionless relative import resolves to the real file and symbol regardless of its actual source extension once the whole directory is known, rather than a phantom `.ts`-guessed placeholder.
 - **Security:** No code leaves device at T0.
 - **Performance:** Incremental tree-sitter parse; re-parse only changed files by `content_hash`.
-- **Trace:** M1,M10 · `adapters-lang-ts`, `adapters-lang-python`, `adapters-lang-go`, `adapters-lang-java`, `adapters-fw`, `core-prov`, `app`, `ui` · — · T-0004..0006,T-0053..0054,T-0079..0080
+- **Trace:** M1,M10 · `adapters-lang-ts`, `adapters-lang-python`, `adapters-lang-go`, `adapters-lang-java`, `adapters-fw`, `core-prov`, `app`, `ui` · — · T-0004..0006,T-0053..0054,T-0079..0080,T-0095
 
 ### US-0003 — IaC resource graph + cloud capability resolution (Terraform/Pulumi/AWS)
 - **Actor:** Engine

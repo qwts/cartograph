@@ -800,6 +800,17 @@ pub fn extract_dir_incremental(
     id: &SourceId,
     cache: &mut IncrementalCache,
 ) -> Result<(Extraction, IncrementalStats), ExtractError> {
+    extract_dir_incremental_with_progress(root, id, cache, &mut |_| {})
+}
+
+/// Same as [`extract_dir_incremental`], calling `on_file` with each file's
+/// repo-relative path as it's read (#209 live progress hook).
+pub fn extract_dir_incremental_with_progress(
+    root: &Path,
+    id: &SourceId,
+    cache: &mut IncrementalCache,
+    on_file: &mut dyn FnMut(&str),
+) -> Result<(Extraction, IncrementalStats), ExtractError> {
     let root = std::fs::canonicalize(root)?;
     let mut files = Vec::new();
     collect_tf_files(&root, &root, &mut files)?;
@@ -812,6 +823,7 @@ pub fn extract_dir_incremental(
     };
     let mut out = Extraction::default();
     for rel in &files {
+        on_file(rel);
         out.absorb(extract_file_incremental(
             &root,
             rel,

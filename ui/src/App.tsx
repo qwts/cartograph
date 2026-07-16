@@ -115,6 +115,7 @@ export default function App() {
     cancelJob,
     retryJob,
     applyJobEvent,
+    applyJobDetail,
     setIngestSource,
     setIngestTarget,
     runPreflight,
@@ -164,6 +165,30 @@ export default function App() {
       unlisten?.();
     };
   }, [applyJobEvent]);
+
+  // Live "what it's doing right now" pings (#209): a separate, non-durable
+  // event from job://changed — best-effort, so a missed one just means the
+  // detail line is stale for a moment, never a stuck/incorrect job state.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const stop = await listen<{ id: number; detail: string }>('job://detail', (event) =>
+          applyJobDetail(event.payload.id, event.payload.detail),
+        );
+        if (disposed) stop();
+        else unlisten = stop;
+      } catch {
+        // No event bridge available.
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [applyJobDetail]);
 
   const navigate = useCallback(
     (next: SurfaceView) => {
@@ -394,6 +419,7 @@ export default function App() {
             onClearFinished={() => void clearFinishedJobs()}
             onCancel={(id) => void cancelJob(id)}
             onRetry={(id) => void retryJob(id)}
+            onViewLive={() => navigate('recover')}
           />
         );
       case 'connect':
@@ -476,7 +502,12 @@ export default function App() {
         <main className="shell-content">
           <RouteErrorBoundary view={view}>{surface}</RouteErrorBoundary>
         </main>
-        <StatusBar status={status} busy={busy} egress={egressLine}>
+        <StatusBar
+          status={status}
+          busy={busy}
+          egress={egressLine}
+          onOpenRecovery={ingestBusy ? () => navigate('recover') : undefined}
+        >
           <StatusBadge backend={backend} version={version} />
         </StatusBar>
       </div>

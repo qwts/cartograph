@@ -652,6 +652,7 @@ fn extract_tree_with_summary(
         otel_jsonl,
         &mut cache,
         &[],
+        &mut |_| {},
     )
     .map(|(extraction, layers, _)| (extraction, layers))
 }
@@ -668,6 +669,7 @@ fn extract_tree_incremental(
     otel_jsonl: &[std::path::PathBuf],
     cache: &mut RepoExtractionCache,
     plugins: &[ActivePlugin],
+    on_file: &mut dyn FnMut(&str),
 ) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown, DeltaSummary), String> {
     // Layer hints gate extractors (AC-0002): empty means everything; the
     // The TS pass covers server/events/client plus Pulumi infra/cloud; the HCL
@@ -681,9 +683,22 @@ fn extract_tree_incremental(
     let mut layers = LayerBreakdown::default();
     let mut delta = DeltaSummary::default();
     let mut extraction = if wants_application || wants_infra {
-        let (mut extraction, stats) =
-            adapters_lang_ts::extract_dir_incremental(root, &ts_id, &mut cache.ts)
-                .map_err(|e| e.to_string())?;
+        // #209 live detail: the TS pass covers application code when that
+        // layer is wanted, otherwise it's only running for Pulumi infra
+        // bindings — say which one is actually happening.
+        let ts_phase = if wants_application {
+            "Reading application code"
+        } else {
+            "Reading infrastructure (Pulumi)"
+        };
+        let mut ts_progress = |path: &str| on_file(&format!("{ts_phase} — {path}"));
+        let (mut extraction, stats) = adapters_lang_ts::extract_dir_incremental_with_progress(
+            root,
+            &ts_id,
+            &mut cache.ts,
+            &mut ts_progress,
+        )
+        .map_err(|e| e.to_string())?;
         delta.add(
             stats.recomputed_files,
             stats.reused_files,
@@ -741,9 +756,14 @@ fn extract_tree_incremental(
     }
     if wants_server {
         let python_id = adapters_lang_python::SourceId { repo, commit };
-        let (python, stats) =
-            adapters_lang_python::extract_dir_incremental(root, &python_id, &mut cache.python)
-                .map_err(|error| error.to_string())?;
+        let mut python_progress = |path: &str| on_file(&format!("Reading Python sources — {path}"));
+        let (python, stats) = adapters_lang_python::extract_dir_incremental_with_progress(
+            root,
+            &python_id,
+            &mut cache.python,
+            &mut python_progress,
+        )
+        .map_err(|error| error.to_string())?;
         delta.add(
             stats.recomputed_files,
             stats.reused_files,
@@ -762,8 +782,14 @@ fn extract_tree_incremental(
         extraction.edges.extend(python.edges);
 
         let go_id = adapters_lang_go::SourceId { repo, commit };
-        let (go, stats) = adapters_lang_go::extract_dir_incremental(root, &go_id, &mut cache.go)
-            .map_err(|error| error.to_string())?;
+        let mut go_progress = |path: &str| on_file(&format!("Reading Go sources — {path}"));
+        let (go, stats) = adapters_lang_go::extract_dir_incremental_with_progress(
+            root,
+            &go_id,
+            &mut cache.go,
+            &mut go_progress,
+        )
+        .map_err(|error| error.to_string())?;
         delta.add(
             stats.recomputed_files,
             stats.reused_files,
@@ -782,9 +808,14 @@ fn extract_tree_incremental(
         extraction.edges.extend(go.edges);
 
         let java_id = adapters_lang_java::SourceId { repo, commit };
-        let (java, stats) =
-            adapters_lang_java::extract_dir_incremental(root, &java_id, &mut cache.java)
-                .map_err(|error| error.to_string())?;
+        let mut java_progress = |path: &str| on_file(&format!("Reading Java sources — {path}"));
+        let (java, stats) = adapters_lang_java::extract_dir_incremental_with_progress(
+            root,
+            &java_id,
+            &mut cache.java,
+            &mut java_progress,
+        )
+        .map_err(|error| error.to_string())?;
         delta.add(
             stats.recomputed_files,
             stats.reused_files,
@@ -804,8 +835,15 @@ fn extract_tree_incremental(
     }
     if wants_infra {
         let tf_id = iac::SourceId { repo, commit };
-        let (tf, stats) =
-            iac::extract_dir_incremental(root, &tf_id, &mut cache.tf).map_err(|e| e.to_string())?;
+        let mut tf_progress =
+            |path: &str| on_file(&format!("Reading infrastructure (Terraform) — {path}"));
+        let (tf, stats) = iac::extract_dir_incremental_with_progress(
+            root,
+            &tf_id,
+            &mut cache.tf,
+            &mut tf_progress,
+        )
+        .map_err(|e| e.to_string())?;
         delta.add(
             stats.recomputed_files,
             stats.reused_files,
@@ -1880,6 +1918,39 @@ fn emit_job<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job: &Job) {
     let _ = app.emit("job://changed", job);
 }
 
+/// A live "what it's doing right now" ping (#209) — current adapter/file
+/// being read. Deliberately not part of the durable `Job` row: it's
+/// best-effort and streamed far more often than a SQLite write per file
+/// would tolerate, so it rides its own event instead of `job://changed`.
+#[derive(Clone, Serialize)]
+struct JobDetail<'a> {
+    id: i64,
+    detail: &'a str,
+}
+
+fn emit_detail<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: i64, detail: &str) {
+    let _ = app.emit("job://detail", JobDetail { id: job_id, detail });
+}
+
+/// A throttled sink for `extract_tree_incremental`'s per-file detail pings:
+/// at most one `job://detail` event every ~120ms, so a repo with thousands
+/// of files can't flood the Tauri IPC bridge. The first call always fires.
+fn detail_throttle<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    job_id: i64,
+) -> impl FnMut(&str) + '_ {
+    let mut last: Option<std::time::Instant> = None;
+    move |detail: &str| {
+        let now = std::time::Instant::now();
+        let due =
+            last.is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(120));
+        if due {
+            emit_detail(app, job_id, detail);
+            last = Some(now);
+        }
+    }
+}
+
 /// Record stage + percent for a running job and notify the shell.
 fn report_progress<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1982,6 +2053,7 @@ fn run_ingest(
     cancelled()?;
     report_progress(app, state, job_id, "extract", 15.0)?;
     let active_plugins = active_plugins_for_root(app, state, &root).map_err(&fail)?;
+    let mut on_file = detail_throttle(app, job_id);
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
@@ -1999,6 +2071,7 @@ fn run_ingest(
             &[],
             cache,
             &active_plugins,
+            &mut on_file,
         )
         .map_err(fail)?
     };
@@ -2202,6 +2275,7 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
     }
     let active_plugins =
         active_plugins_for_root(&app, &state, &cloned.path).map_err(|e| fail(e, &state, job_id))?;
+    let mut on_file = detail_throttle(&app, job_id);
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
@@ -2219,6 +2293,7 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
             &[],
             cache,
             &active_plugins,
+            &mut on_file,
         )
         .map_err(|e| fail(e, &state, job_id))?
     };
@@ -2338,6 +2413,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
     let (mut files, mut nodes, mut edges) = (0u64, 0u64, 0u64);
     let mut layers = LayerBreakdown::default();
     let mut delta = DeltaSummary::default();
+    let mut on_file = detail_throttle(&app, job_id);
     for entry in &manifest.repos {
         if job_cancelled(&state, job_id) {
             return Err("cancelled".to_string());
@@ -2386,6 +2462,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
                 &trace_paths,
                 cache,
                 &active_plugins,
+                &mut on_file,
             )
             .map_err(|e| fail(e, &state, job_id))?
         };
@@ -4420,6 +4497,7 @@ export function beat() { bus.emit('heartbeat'); }
             &[],
             &mut cache,
             &[],
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(initial_delta.recomputed_files, 2);
@@ -4437,6 +4515,7 @@ export function beat() { bus.emit('heartbeat'); }
             &[],
             &mut cache,
             &[],
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(same_delta.recomputed_files, 0);
@@ -4465,6 +4544,7 @@ export function beat() { bus.emit('heartbeat'); }
             &[],
             &mut cache,
             &[],
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(changed_delta.recomputed_files, 1);
@@ -4495,6 +4575,7 @@ export function beat() { bus.emit('heartbeat'); }
             &[],
             &mut cache,
             &[],
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(deleted_delta.deleted_files, 1);
@@ -5388,6 +5469,7 @@ export function App() {
                 &[],
                 cache,
                 &active,
+                &mut |_| {},
             )
             .unwrap()
             .0

@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, within } from 'storybook/test';
+import { expect, fn, userEvent, within } from 'storybook/test';
 import { StatusBar } from './StatusBar';
 
 const meta = {
@@ -30,5 +30,19 @@ export const Ingesting: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole('status')).toHaveTextContent('Ingesting…');
     await expect(canvasElement.querySelector('.spinning')).toBeInTheDocument();
+    // No onOpenRecovery: nothing to jump back to, so it's not a button.
+    await expect(canvas.queryByRole('button')).not.toBeInTheDocument();
+  },
+};
+
+export const IngestingIsClickableBackToRecover: Story = {
+  // AC-0094: while a real ingest is running, "Ingesting…" is the way back
+  // to the Recovering screen after navigating away or backgrounding it.
+  args: { status: 'Ingesting…', busy: true, onOpenRecovery: fn() },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const link = canvas.getByRole('button', { name: /Ingesting…/ });
+    await userEvent.click(link);
+    await expect(args.onOpenRecovery).toHaveBeenCalledTimes(1);
   },
 };

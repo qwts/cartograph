@@ -1,4 +1,5 @@
 import type { Job } from '../store';
+import { stageLabel } from '../stageLabels';
 
 export interface RecoverSurfaceProps {
   /** The pipeline job driving this recovery, once its first event lands. */
@@ -11,21 +12,12 @@ export interface RecoverSurfaceProps {
   onBackground: () => void;
 }
 
-/** Human labels for the core's pipeline stages (`run_ingest` in the app
- *  crate); unknown stages fall through verbatim so a newer core still reads. */
-const STAGE_LABELS: Record<string, string> = {
-  scan: 'Scanning sources',
-  extract: 'T0 parse — call graph & endpoints',
-  load: 'Loading the graph',
-  stitch: 'Adapters, channel identity & flow tracer',
-};
-
 /** Step 3 of the ingest flow (handoff §Recover): progress streamed from real
  *  core job events (`job://changed`), never a timed simulation. Run in
  *  background moves the work to Jobs and returns a usable UI. */
 export function RecoverSurface({ job, busy, error, onBack, onBackground }: RecoverSurfaceProps) {
   const failed = !busy && error !== null;
-  const stage = job?.stage ? (STAGE_LABELS[job.stage] ?? job.stage) : 'Preparing…';
+  const stage = stageLabel(job?.stage);
   const progress = typeof job?.progress === 'number' ? Math.round(job.progress) : null;
 
   if (failed) {
@@ -58,9 +50,18 @@ export function RecoverSurface({ job, busy, error, onBack, onBackground }: Recov
         progress_activity
       </span>
       <h2>Recovering</h2>
+      <p className="recover-purpose muted">
+        Reading the code to reconstruct endpoints, call graphs, and how services
+        connect — not just following imports.
+      </p>
       <p className="recover-stage" role="status">
         {stage}
       </p>
+      {job?.detail && (
+        <p className="recover-detail muted">
+          <code>{job.detail}</code>
+        </p>
+      )}
       {progress !== null && (
         <>
           <code className="recover-percent">{progress}%</code>

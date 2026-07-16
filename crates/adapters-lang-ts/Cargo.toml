@@ -1,6 +1,6 @@
 [package]
 name = "adapters-lang-ts"
-description = "TypeScript language adapter: tree-sitter T0 extraction (SPEC-00 §3.3, M1)"
+description = "TypeScript/JavaScript language adapter: tree-sitter T0 extraction (SPEC-00 §3.3, M1)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

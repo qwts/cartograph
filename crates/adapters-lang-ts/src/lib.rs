@@ -1,5 +1,9 @@
-//! TypeScript language adapter — deterministic (T0) extraction via
-//! tree-sitter (SPEC-00 §3.3, US-0002).
+//! TypeScript/JavaScript language adapter — deterministic (T0) extraction via
+//! tree-sitter (SPEC-00 §3.3, US-0002, AC-0095). `.ts`/`.tsx` and
+//! `.js`/`.jsx`/`.mjs`/`.cjs` share this one crate and grammar family: plain
+//! JavaScript parses cleanly under the TypeScript grammar (a syntactic
+//! superset), and `.jsx`/`.tsx` share the JSX-aware grammar — no separate
+//! JS-only adapter exists or is needed.
 //!
 //! Extracts, per file: the `File` node, `Symbol` nodes (functions, arrow
 //! consts, anonymous route handlers), `IMPORTS` edges, intra- and cross-file
@@ -423,8 +427,17 @@ fn joined_route(prefix: &str, route: &str) -> String {
     }
 }
 
+/// Every extension this crate collects/parses (`collect_ts_files`); shared
+/// with `resolve_relative`'s extensionless-import guess and
+/// `reconcile_guessed_extension`'s directory-wide correction of it.
+const SOURCE_EXTENSIONS: [&str; 6] = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+
 /// Resolve a relative import specifier against the importing file's path.
-/// Returns `None` for bare (package) specifiers.
+/// Returns `None` for bare (package) specifiers. An explicit known extension
+/// in `spec` is kept as-is; an extensionless spec guesses `.ts` (corrected
+/// directory-wide later by `reconcile_guessed_extension` if the real file
+/// turns out to be `.tsx`/`.js`/`.jsx`/`.mjs`/`.cjs` — the real extension
+/// isn't knowable from one file in isolation).
 fn resolve_relative(from: &str, spec: &str) -> Option<String> {
     if !spec.starts_with('.') {
         return None;
@@ -441,10 +454,58 @@ fn resolve_relative(from: &str, spec: &str) -> Option<String> {
         }
     }
     let mut s = out.to_string_lossy().replace('\\', "/");
-    if !s.ends_with(".ts") && !s.ends_with(".tsx") {
+    if !SOURCE_EXTENSIONS.iter().any(|ext| s.ends_with(ext)) {
         s.push_str(".ts");
     }
     Some(s)
+}
+
+/// Correct one id built on `resolve_relative`'s extensionless-import guess,
+/// once every real file/symbol in the directory is known. `id` is either a
+/// `file:{repo}@{path}` (an IMPORTS edge target) or a `sym:{repo}@{path}#{name}`
+/// (an imported call's candidate target, via the `imported` map) — in both
+/// shapes the guessed `.ts` sits right before the end or the `#`. Tried
+/// against every other source extension in turn; the first real match wins.
+/// Returns `None` when `id` is already correct (or genuinely has nothing
+/// behind it) — the caller leaves those alone.
+fn reconcile_guessed_extension(
+    id: &str,
+    known: &std::collections::HashSet<String>,
+) -> Option<String> {
+    if known.contains(id) {
+        return None;
+    }
+    let (head, tail) = id.split_once('#').unzip();
+    let head = head.unwrap_or(id);
+    let stem = head.strip_suffix(".ts")?;
+    SOURCE_EXTENSIONS
+        .iter()
+        .filter(|ext| **ext != ".ts")
+        .map(|ext| match tail {
+            Some(tail) => format!("{stem}{ext}#{tail}"),
+            None => format!("{stem}{ext}"),
+        })
+        .find(|candidate| known.contains(candidate))
+}
+
+/// Apply [`reconcile_guessed_extension`] to every `IMPORTS` edge — the file
+/// import resolution counterpart of the `pending_calls` fixup applied to
+/// cross-file `CALLS` targets built from the same guess (see
+/// `extract_dir_incremental_with_progress`). Left alone (and later turned
+/// into an explicit placeholder by `close_over_endpoints`) only when the
+/// import genuinely has no file behind it.
+fn reconcile_guessed_file_targets(
+    edges: &mut [Edge],
+    known_files: &std::collections::HashSet<String>,
+) {
+    for edge in edges {
+        if edge.label != "IMPORTS" {
+            continue;
+        }
+        if let Some(real) = reconcile_guessed_extension(&edge.dst, known_files) {
+            edge.dst = real;
+        }
+    }
 }
 
 /// Walk ancestors to the enclosing named function (or anonymous handler)
@@ -778,9 +839,12 @@ pub fn extract_source(
     path: &str,
     id: &SourceId,
 ) -> Result<Extraction, ExtractError> {
-    // TSX needs its own grammar (JSX node kinds); plain TS keeps the
-    // TypeScript grammar. The queries below are valid against both.
-    let is_tsx = path.ends_with(".tsx");
+    // TSX/JSX need the JSX-aware grammar; plain TS/JS keep the TypeScript
+    // grammar, which parses plain JavaScript fine (a syntactic subset — no
+    // JS-only adapter is needed, per PLANNED_ADAPTERS in `ingest::preflight`
+    // this crate now covers it directly). The queries below are valid
+    // against both grammars.
+    let is_tsx = path.ends_with(".tsx") || path.ends_with(".jsx");
     let language: tree_sitter::Language = if is_tsx {
         tree_sitter_typescript::LANGUAGE_TSX.into()
     } else {
@@ -2215,6 +2279,19 @@ pub fn extract_dir_incremental(
     id: &SourceId,
     cache: &mut IncrementalCache,
 ) -> Result<(Extraction, IncrementalStats), ExtractError> {
+    extract_dir_incremental_with_progress(root, id, cache, &mut |_| {})
+}
+
+/// Same as [`extract_dir_incremental`], calling `on_file` with each file's
+/// repo-relative path as it's read — a live "what's happening right now"
+/// hook for the shell's progress UI (#209); callers that don't need it use
+/// [`extract_dir_incremental`], which passes a no-op.
+pub fn extract_dir_incremental_with_progress(
+    root: &Path,
+    id: &SourceId,
+    cache: &mut IncrementalCache,
+    on_file: &mut dyn FnMut(&str),
+) -> Result<(Extraction, IncrementalStats), ExtractError> {
     let mut files = Vec::new();
     collect_ts_files(root, root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
@@ -2228,6 +2305,7 @@ pub fn extract_dir_incremental(
         .count() as u64;
     cache.files.retain(|path, _| active.contains(path));
     for rel in &files {
+        on_file(rel);
         let source = std::fs::read(root.join(rel))?;
         let source_hash = core_prov::content_hash(&source);
         let ex = if let Some(cached) = cache
@@ -2261,7 +2339,18 @@ pub fn extract_dir_incremental(
     }
     let known_symbols: std::collections::HashSet<String> =
         out.nodes.iter().map(|node| node.id.clone()).collect();
-    for pending in std::mem::take(&mut out.pending_calls) {
+    let known_files: std::collections::HashSet<String> = out
+        .nodes
+        .iter()
+        .filter(|node| node.label == "File")
+        .map(|node| node.id.clone())
+        .collect();
+    reconcile_guessed_file_targets(&mut out.edges, &known_files);
+    for mut pending in std::mem::take(&mut out.pending_calls) {
+        if let Some(real) = reconcile_guessed_extension(&pending.resolved_edge.dst, &known_symbols)
+        {
+            pending.resolved_edge.dst = real;
+        }
         if known_symbols.contains(&pending.resolved_edge.dst) {
             out.edges.push(pending.resolved_edge);
         } else {
@@ -2325,10 +2414,16 @@ fn next_pages_screens(out: &mut Extraction, id: &SourceId) {
             continue;
         };
         let (_, rel) = idx;
-        if !path.ends_with(".tsx") || rel.starts_with('_') {
+        // A page is a component file — needs JSX, so `.tsx`/`.jsx` only
+        // (plain `.ts`/`.js` under pages/ are API routes or helpers, not
+        // screens).
+        let Some(ext) = [".tsx", ".jsx"].into_iter().find(|ext| path.ends_with(ext)) else {
+            continue;
+        };
+        if rel.starts_with('_') {
             continue; // _app.tsx/_document.tsx are chrome, not screens.
         }
-        let mut route = format!("/{}", rel.trim_end_matches(".tsx"));
+        let mut route = format!("/{}", rel.trim_end_matches(ext));
         if route.ends_with("/index") || route == "/index" {
             route = route
                 .trim_end_matches("index")
@@ -2402,7 +2497,14 @@ fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::
                 continue;
             }
             collect_ts_files(root, &path, out)?;
-        } else if (name.ends_with(".ts") || name.ends_with(".tsx")) && !name.ends_with(".d.ts") {
+        } else if (name.ends_with(".ts")
+            || name.ends_with(".tsx")
+            || name.ends_with(".js")
+            || name.ends_with(".jsx")
+            || name.ends_with(".mjs")
+            || name.ends_with(".cjs"))
+            && !name.ends_with(".d.ts")
+        {
             let rel = path
                 .strip_prefix(root)
                 .expect("entry under root")
