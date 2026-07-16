@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Cartograph",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "identifier": "com.qwtm.cartograph",
   "build": {
     "beforeDevCommand": "npm --prefix ui run dev",

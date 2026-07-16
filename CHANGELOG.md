@@ -1,5 +1,26 @@
 # cartograph
 
+## 0.9.0
+
+### Minor Changes
+
+- b48ae60: Conformance gate for WASM adapter plugins (#200): a durable `plugin-gate` job
+  proves the SPI contract under the standard bounds, the plugin's own golden
+  corpus (expected facts pinned with the host identity), and double-run
+  determinism. The verdict persists per (plugin id, content hash) — replaced
+  bytes are ungated again — and Settings shows a per-artifact gate chip with the
+  failing check named, plus a run-gate action. A failed or ungated plugin stays
+  proposed and never joins extraction.
+- b29c16c: The unsupported lane resolves (#201): Preflight's uncovered-language findings
+  carry a request-adapter action; a plugin that lands in a discovery directory,
+  passes the conformance gate, and is enabled for the project counts as
+  coverage on the next scan — the originating finding closes — and extraction
+  routes the files its golden corpus claims through the plugin with host-pinned
+  facts. Compiled-in adapters always win a contested extension, routing is
+  deterministic and all-or-nothing per plugin, and bytes swapped after gating
+  fail the ingest closed. Manifest-ingested repos now register as discovery
+  roots too.
+
 ## 0.8.0
 
 ### Minor Changes
