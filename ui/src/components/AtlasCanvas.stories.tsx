@@ -193,6 +193,14 @@ export const BandedLayoutIsDeterministic: Story = {
 
     await expect(clusterKeyFor(atlasNodes[0])).toBe('local/shop · aws_sqs_queue');
     await expect(clusterKeyFor(atlasNodes[1])).toBe('sqs-queue');
+    // Routed screen ids carry a leading slash — the first real segment
+    // names the cluster, and the root route stays legible (#173 review).
+    await expect(
+      clusterKeyFor({ id: 'screen:local/shop@/users/[id]', label: 'Screen', props: {} }),
+    ).toBe('local/shop · users');
+    await expect(
+      clusterKeyFor({ id: 'screen:local/shop@/', label: 'Screen', props: {} }),
+    ).toBe('local/shop · /');
 
     const shuffled: AtlasSnapshot = {
       nodes: [...atlasFixture.nodes].reverse(),

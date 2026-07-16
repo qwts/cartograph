@@ -101,9 +101,12 @@ export function clusterKeyFor(node: GraphNode): string {
   const scoped = node.id.match(/^[a-z-]+:([^@]+)@(.+)$/u);
   if (scoped) {
     const [, repo, tail] = scoped;
-    const path = tail.split('#')[0];
+    // Routed ids (screens) carry a leading slash — strip it so the first
+    // real segment names the cluster, and a root route stays `/` (#173
+    // review: `repo ·  · N` labels).
+    const path = tail.split('#')[0].replace(/^\/+/u, '');
     const segment = path.includes('/') ? path.split('/')[0] : path.split('.')[0];
-    return `${repo} · ${segment}`;
+    return `${repo} · ${segment || '/'}`;
   }
   return node.label;
 }
