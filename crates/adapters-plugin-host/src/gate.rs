@@ -26,8 +26,11 @@ pub struct GoldenCase {
 /// Expected node shape; `props` compares exactly (JSON equality).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExpectedNode {
+    /// Expected node id.
     pub id: String,
+    /// Expected node label.
     pub label: String,
+    /// Expected props, compared by exact JSON equality.
     #[serde(default)]
     pub props: serde_json::Value,
 }
@@ -35,9 +38,13 @@ pub struct ExpectedNode {
 /// Expected edge shape; `props` compares exactly (JSON equality).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExpectedEdge {
+    /// Expected source node id.
     pub src: String,
+    /// Expected target node id.
     pub dst: String,
+    /// Expected edge label.
     pub label: String,
+    /// Expected props, compared by exact JSON equality.
     #[serde(default)]
     pub props: serde_json::Value,
 }
@@ -47,16 +54,21 @@ pub struct ExpectedEdge {
 /// adapter claims once gated (#201 routing).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoldenCorpus {
+    /// Source-file extensions the adapter claims once gated (#201).
     #[serde(default)]
     pub extensions: Vec<String>,
+    /// The golden cases; an empty corpus fails the gate closed.
     pub cases: Vec<GoldenCase>,
 }
 
 /// One named gate check with its verdict and a human-readable detail.
 #[derive(Debug, Clone, Serialize)]
 pub struct GateCheck {
+    /// Stable check name, e.g. `spi-compiles`, `golden:src/lib.rs`.
     pub name: String,
+    /// Whether this check passed.
     pub passed: bool,
+    /// Human-readable evidence or failure reason.
     pub detail: String,
 }
 
@@ -64,7 +76,9 @@ pub struct GateCheck {
 /// one failure keeps the adapter proposed.
 #[derive(Debug, Clone, Serialize)]
 pub struct GateReport {
+    /// Conjunction of every check.
     pub passed: bool,
+    /// Every check run, pass or fail, in execution order.
     pub checks: Vec<GateCheck>,
 }
 

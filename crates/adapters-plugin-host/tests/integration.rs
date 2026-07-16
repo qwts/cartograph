@@ -275,3 +275,111 @@ fn plugin_provenance_pins_artifact_and_repeats_deterministically() {
         expected_id
     );
 }
+
+/// T-0068 (AC-0068, #200): the conformance gate passes a well-behaved
+/// adapter with a correct golden corpus, and fails closed — with the
+/// failing check named — on golden mismatch, an empty corpus, and a
+/// bound-violating artifact. Double-run determinism is part of the gate.
+#[test]
+fn conformance_gate_passes_golden_corpus_and_fails_closed() {
+    use adapters_plugin_host::gate::{
+        ExpectedEdge, ExpectedNode, GoldenCase, GoldenCorpus, run_gate,
+    };
+
+    let host = PluginHost::new().expect("engine");
+    let corpus = GoldenCorpus {
+        extensions: vec!["rs".to_string()],
+        cases: vec![GoldenCase {
+            path: "src/lib.rs".to_string(),
+            source: "hello world".to_string(),
+            nodes: vec![ExpectedNode {
+                id: "owner/repo:src/lib.rs".to_string(),
+                label: "TestNode".to_string(),
+                props: serde_json::json!({ "len": 11 }),
+            }],
+            edges: vec![ExpectedEdge {
+                src: "owner/repo:src/lib.rs".to_string(),
+                dst: "owner/repo:src/lib.rs".to_string(),
+                label: "SELF".to_string(),
+                props: serde_json::json!({}),
+            }],
+        }],
+    };
+
+    let report = run_gate(
+        &host,
+        "t0.plugin-fixture",
+        OK_ADAPTER,
+        &corpus,
+        PluginLimits::default(),
+        &source_id(),
+    );
+    assert!(report.passed, "checks: {:?}", report.checks);
+    let names: Vec<&str> = report.checks.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains(&"spi-compiles"));
+    assert!(names.contains(&"golden:src/lib.rs"));
+    assert!(names.contains(&"determinism-double-run"));
+
+    // A wrong expectation fails the golden check, not the whole harness.
+    let mut wrong = corpus.clone();
+    wrong.cases[0].nodes[0].props = serde_json::json!({ "len": 999 });
+    let report = run_gate(
+        &host,
+        "t0.plugin-fixture",
+        OK_ADAPTER,
+        &wrong,
+        PluginLimits::default(),
+        &source_id(),
+    );
+    assert!(!report.passed);
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.name == "golden:src/lib.rs" && !c.passed)
+    );
+
+    // An empty corpus proves nothing and fails closed.
+    let empty = GoldenCorpus {
+        extensions: vec![],
+        cases: vec![],
+    };
+    let report = run_gate(
+        &host,
+        "t0.plugin-fixture",
+        OK_ADAPTER,
+        &empty,
+        PluginLimits::default(),
+        &source_id(),
+    );
+    assert!(!report.passed);
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.name == "corpus-nonempty" && !c.passed)
+    );
+
+    // A bound-violating artifact fails the contract check by name.
+    let tight = PluginLimits {
+        max_fuel: 100_000,
+        max_memory_bytes: 16 * 1024 * 1024,
+        max_table_elements: 10_000,
+        deadline: Duration::from_secs(30),
+    };
+    let report = run_gate(
+        &host,
+        "t0.plugin-busy",
+        BUSY_LOOP,
+        &corpus,
+        tight,
+        &source_id(),
+    );
+    assert!(!report.passed);
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.name == "contract:src/lib.rs" && !c.passed)
+    );
+}

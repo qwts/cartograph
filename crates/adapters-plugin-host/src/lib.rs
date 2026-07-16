@@ -26,6 +26,7 @@ use wasmtime_wasi::{
 
 #[allow(missing_docs, reason = "generated bindings")]
 pub mod discovery;
+pub mod gate;
 
 mod bindings {
     wasmtime::component::bindgen!({
