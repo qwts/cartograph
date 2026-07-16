@@ -1,0 +1,16 @@
+[package]
+name = "adapters-plugin-host"
+description = "WASM component host runtime for runtime-loadable adapter plugins (SPEC-00 §8.1, ADR-0017)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+core-graph = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
