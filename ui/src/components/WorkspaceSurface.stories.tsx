@@ -218,6 +218,16 @@ export const NoRecoveryYet: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText('No recovery yet')).toBeInTheDocument();
     await expect(canvas.queryByTestId('prov-health')).not.toBeInTheDocument();
+
+    // #161: the empty landing flows with the window — a fluid, centered
+    // column (auto inline margins under a wide cap), never a fixed block
+    // pinned to the left half of a stretched window.
+    const landing = canvasElement.querySelector('.workspace-landing') as HTMLElement;
+    const style = getComputedStyle(landing);
+    await expect(style.maxWidth).toContain('1280px');
+    // margin-inline: auto — equal margins on both sides at any width.
+    await expect(style.marginLeft).toBe(style.marginRight);
+
     await userEvent.click(canvas.getByRole('button', { name: 'Connect a target' }));
     await expect(args.onReingest).toHaveBeenCalled();
   },

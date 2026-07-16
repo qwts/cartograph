@@ -50,6 +50,14 @@ export const ReadyToPreflight: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole('textbox')).toHaveValue('/repos/image-trail');
+
+    // #161: the ingest column centers in the window (auto inline margins
+    // under a readable cap) instead of hugging the left edge.
+    const flow = canvasElement.querySelector('.ingest-flow') as HTMLElement;
+    const style = getComputedStyle(flow);
+    await expect(style.maxWidth).toContain('860px');
+    await expect(style.marginLeft).toBe(style.marginRight);
+
     await userEvent.click(canvas.getByRole('button', { name: /preflight/i }));
     await expect(args.onPreflight).toHaveBeenCalled();
   },
