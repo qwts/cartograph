@@ -107,6 +107,7 @@ impl SettingsStore {
              CREATE TABLE IF NOT EXISTS plugin_settings (
                  project_root TEXT NOT NULL,
                  plugin_id    TEXT NOT NULL,
+                 content_hash TEXT NOT NULL,
                  enabled      INTEGER NOT NULL CHECK (enabled IN (0, 1)),
                  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                  PRIMARY KEY (project_root, plugin_id)
@@ -170,32 +171,37 @@ impl SettingsStore {
     /// from cloud always revokes any standing consent (fail closed).
     /// Enable/disable one discovered plugin for one project (#198).
     /// Discovery never activates anything by itself: a plugin is off until
-    /// this records an explicit opt-in, per project.
+    /// this records an explicit opt-in, per project — and the opt-in binds
+    /// to the exact artifact hash, so replaced bytes are disabled again
+    /// (#203 review).
     pub fn set_plugin_enabled(
         &mut self,
         project_root: &str,
         plugin_id: &str,
+        content_hash: &str,
         enabled: bool,
     ) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO plugin_settings (project_root, plugin_id, enabled)
-             VALUES (?1, ?2, ?3)
+            "INSERT INTO plugin_settings (project_root, plugin_id, content_hash, enabled)
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (project_root, plugin_id)
-             DO UPDATE SET enabled = ?3,
+             DO UPDATE SET content_hash = ?3,
+                           enabled = ?4,
                            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
-            params![project_root, plugin_id, enabled as i64],
+            params![project_root, plugin_id, content_hash, enabled as i64],
         )?;
         Ok(())
     }
 
-    /// Plugin ids explicitly enabled for `project_root`. Absent rows are
-    /// disabled — the fail-closed default.
-    pub fn enabled_plugins(&self, project_root: &str) -> rusqlite::Result<Vec<String>> {
+    /// `(plugin_id, content_hash)` pairs explicitly enabled for
+    /// `project_root`. Absent rows — and rows recorded for different
+    /// artifact bytes — are disabled: the fail-closed default.
+    pub fn enabled_plugins(&self, project_root: &str) -> rusqlite::Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT plugin_id FROM plugin_settings
+            "SELECT plugin_id, content_hash FROM plugin_settings
              WHERE project_root = ?1 AND enabled = 1 ORDER BY plugin_id",
         )?;
-        let rows = stmt.query_map(params![project_root], |row| row.get(0))?;
+        let rows = stmt.query_map(params![project_root], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect()
     }
 
@@ -318,47 +324,57 @@ impl SettingsStore {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn plugin_enablement_is_per_project_and_fails_closed() {
-        // AC-0068 (#198): enable/disable persists per project; a plugin
-        // unknown to the table is disabled by default.
+    fn plugin_enablement_is_per_project_per_artifact_and_fails_closed() {
+        // AC-0068 (#198): enable/disable persists per project AND binds to
+        // the exact artifact hash — unknown rows and changed bytes are
+        // disabled by default (#203 review).
         let dir = tempfile::tempdir().unwrap();
         let mut store = super::SettingsStore::open(dir.path().join("state.db")).unwrap();
         assert!(store.enabled_plugins("/proj/a").unwrap().is_empty());
 
         store
-            .set_plugin_enabled("/proj/a", "t0.adapter-ruby", true)
+            .set_plugin_enabled("/proj/a", "t0.adapter-ruby", "hash-1", true)
             .unwrap();
         store
-            .set_plugin_enabled("/proj/a", "t0.adapter-swift", true)
+            .set_plugin_enabled("/proj/a", "t0.adapter-swift", "hash-2", true)
             .unwrap();
         store
-            .set_plugin_enabled("/proj/b", "t0.adapter-ruby", true)
+            .set_plugin_enabled("/proj/b", "t0.adapter-ruby", "hash-3", true)
             .unwrap();
         assert_eq!(
             store.enabled_plugins("/proj/a").unwrap(),
-            ["t0.adapter-ruby", "t0.adapter-swift"]
-        );
-        assert_eq!(
-            store.enabled_plugins("/proj/b").unwrap(),
-            ["t0.adapter-ruby"]
+            [
+                ("t0.adapter-ruby".to_string(), "hash-1".to_string()),
+                ("t0.adapter-swift".to_string(), "hash-2".to_string()),
+            ]
         );
 
         // Disable persists too, and only for that project.
         store
-            .set_plugin_enabled("/proj/a", "t0.adapter-ruby", false)
+            .set_plugin_enabled("/proj/a", "t0.adapter-ruby", "hash-1", false)
             .unwrap();
         assert_eq!(
             store.enabled_plugins("/proj/a").unwrap(),
-            ["t0.adapter-swift"]
+            [("t0.adapter-swift".to_string(), "hash-2".to_string())]
         );
         assert_eq!(
             store.enabled_plugins("/proj/b").unwrap(),
-            ["t0.adapter-ruby"]
+            [("t0.adapter-ruby".to_string(), "hash-3".to_string())]
+        );
+
+        // Re-enabling under new bytes replaces the bound hash — the old
+        // opt-in never silently covers a different artifact.
+        store
+            .set_plugin_enabled("/proj/b", "t0.adapter-ruby", "hash-4", true)
+            .unwrap();
+        assert_eq!(
+            store.enabled_plugins("/proj/b").unwrap(),
+            [("t0.adapter-ruby".to_string(), "hash-4".to_string())]
         );
     }
-
-    use super::*;
 
     #[test]
     fn defaults_are_local_only_and_durable() {

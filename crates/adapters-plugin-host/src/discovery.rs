@@ -32,6 +32,9 @@ pub struct DiscoveredPlugin {
     pub content_hash: String,
     /// Which root supplied the winning artifact.
     pub scope: PluginScope,
+    /// The resolved project root that supplied a project-scoped artifact;
+    /// `None` for user-level copies. Lifecycle state keys on this.
+    pub project_root: Option<PathBuf>,
     /// True when a user-level artifact with the same id was shadowed.
     pub shadowed_user_copy: bool,
 }
@@ -60,27 +63,41 @@ fn scan(dir: &Path, scope: PluginScope) -> Vec<DiscoveredPlugin> {
             path,
             content_hash: content_hash(&bytes),
             scope,
+            project_root: None,
             shadowed_user_copy: false,
         });
     }
     found
 }
 
-/// Discover plugin artifacts under `project_root/.cartograph/adapters/`
-/// and `user_dir`, project winning on id conflict. Deterministic: sorted
-/// by id; a shadowed user copy is recorded on the winner, never dropped
-/// silently.
-pub fn discover(project_root: Option<&Path>, user_dir: &Path) -> Vec<DiscoveredPlugin> {
+/// Discover plugin artifacts under each resolved project root's
+/// `.cartograph/adapters/` and under `user_dir`. Project copies win on id
+/// conflict; across multiple roots the (sorted) first root wins,
+/// deterministically. A shadowed user copy is recorded on the winner,
+/// never dropped silently.
+pub fn discover(project_roots: &[PathBuf], user_dir: &Path) -> Vec<DiscoveredPlugin> {
     let mut by_id: BTreeMap<String, DiscoveredPlugin> = BTreeMap::new();
     for plugin in scan(user_dir, PluginScope::User) {
         by_id.insert(plugin.id.clone(), plugin);
     }
-    if let Some(root) = project_root {
+    let mut roots: Vec<&PathBuf> = project_roots.iter().collect();
+    roots.sort();
+    for root in roots {
         for plugin in scan(&root.join(PROJECT_ADAPTER_DIR), PluginScope::Project) {
-            let shadowed = by_id.contains_key(&plugin.id);
+            let shadowed = by_id
+                .get(&plugin.id)
+                .is_some_and(|existing| existing.scope == PluginScope::User);
+            // First (sorted) project root wins; later roots never override.
+            if by_id
+                .get(&plugin.id)
+                .is_some_and(|existing| existing.scope == PluginScope::Project)
+            {
+                continue;
+            }
             by_id.insert(
                 plugin.id.clone(),
                 DiscoveredPlugin {
+                    project_root: Some(root.clone()),
                     shadowed_user_copy: shadowed,
                     ..plugin
                 },
@@ -112,7 +129,7 @@ mod tests {
         write(user.path(), "t0.adapter-kotlin.wasm", b"kotlin build");
         write(user.path(), "notes.txt", b"not a plugin");
 
-        let plugins = discover(Some(project.path()), user.path());
+        let plugins = discover(&[project.path().to_path_buf()], user.path());
         let ids: Vec<&str> = plugins.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -129,13 +146,30 @@ mod tests {
         assert_eq!(kotlin.scope, PluginScope::User);
         assert!(!kotlin.shadowed_user_copy);
 
+        // Project copies record which root supplied them.
+        assert_eq!(ruby.project_root.as_deref(), Some(project.path()));
+        assert_eq!(kotlin.project_root, None);
+
         // No project root: user artifacts stand alone.
-        let user_only = discover(None, user.path());
+        let user_only = discover(&[], user.path());
         assert_eq!(user_only.len(), 2);
 
         // Missing directories are empty discoveries, never errors.
-        let no_user = discover(Some(project.path()), Path::new("/nonexistent"));
+        let no_user = discover(&[project.path().to_path_buf()], Path::new("/nonexistent"));
         assert_eq!(no_user.len(), 2);
         assert!(no_user.iter().all(|p| p.scope == PluginScope::Project));
+
+        // Across multiple roots the sorted-first root wins on conflict.
+        let second = tempfile::tempdir().unwrap();
+        write(
+            &second.path().join(PROJECT_ADAPTER_DIR),
+            "t0.adapter-ruby.wasm",
+            b"second ruby build",
+        );
+        let mut roots = vec![project.path().to_path_buf(), second.path().to_path_buf()];
+        roots.sort();
+        let multi = discover(&roots, user.path());
+        let winner = multi.iter().find(|p| p.id == "t0.adapter-ruby").unwrap();
+        assert_eq!(winner.project_root.as_deref(), Some(roots[0].as_path()));
     }
 }

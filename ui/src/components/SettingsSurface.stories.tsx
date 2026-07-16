@@ -246,6 +246,7 @@ export const DiscoveredPluginsToggle: Story = {
         path: '/repo/.cartograph/adapters/t0.adapter-ruby.wasm',
         content_hash: 'abcdef0123456789abcdef',
         scope: 'project',
+        project_root: '/repo',
         shadowed_user_copy: true,
         enabled: false,
       },
@@ -254,6 +255,7 @@ export const DiscoveredPluginsToggle: Story = {
         path: '/home/u/adapters/t0.adapter-swift.wasm',
         content_hash: '9876543210fedcba987654',
         scope: 'user',
+        project_root: null,
         shadowed_user_copy: false,
         enabled: true,
       },
@@ -272,7 +274,10 @@ export const DiscoveredPluginsToggle: Story = {
     const ruby = list.getByRole('switch', { name: 't0.adapter-ruby enabled for this project' });
     await expect(ruby).toHaveAttribute('aria-checked', 'false');
     await userEvent.click(ruby);
-    await expect(args.onTogglePlugin).toHaveBeenCalledWith('t0.adapter-ruby', true);
+    await expect(args.onTogglePlugin).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 't0.adapter-ruby', content_hash: 'abcdef0123456789abcdef' }),
+      true,
+    );
 
     const swift = list.getByRole('switch', { name: 't0.adapter-swift enabled for this project' });
     await expect(swift).toHaveAttribute('aria-checked', 'true');
