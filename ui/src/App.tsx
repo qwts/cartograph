@@ -125,6 +125,8 @@ export default function App() {
     consentAndRun,
     dismissPreview,
     decideProposal,
+    runClassEscalation,
+    recordProposalDecision,
   } = useAppStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -309,6 +311,13 @@ export default function App() {
             gaps={registerArtifact('gap_register.md')}
             drift={registerArtifact('drift_register.md')}
             registerFindings={registerFindings}
+            flowGapIds={flowList.flatMap((flow) =>
+              flow.hops
+                .filter((hop) => hop.gap_reason !== null || hop.confidence === 'Gap')
+                .map((hop) => hop.dst),
+            )}
+            onEscalateClass={(gapIds) => runClassEscalation(gapIds)}
+            onDecideProposal={(proposal, decision) => recordProposalDecision(proposal, decision)}
             onOpenGap={(assertion) => {
               // A gap node opens its Resolution Strategy (#120 runner); an
               // edge/flow gap has no node to escalate, so its row opens the

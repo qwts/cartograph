@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { GROUP_THRESHOLD, groupGapClasses, nextTier, type GapClass } from '../gapClasses';
 import { HelpTip } from './HelpTip';
-import type { FindingsSummary, RegisterFinding, SpecAssertion } from '../store';
+import type {
+  AgentProposal,
+  ClassEscalationOutcome,
+  FindingsSummary,
+  RegisterFinding,
+  SpecAssertion,
+} from '../store';
 
 export interface GapsDriftSurfaceProps {
   /** Header tally — the same register summary Workspace quotes. */
@@ -16,6 +22,16 @@ export interface GapsDriftSurfaceProps {
   /** Open a gap's evidence/resolution view (the Resolution Strategy modal
    *  takes over this seam with #113). */
   onOpenGap: (assertion: SpecAssertion) => void;
+  /** Gap ids that truncate traced flows (#167): flow-blocking classes rank
+   *  first. */
+  flowGapIds?: string[];
+  /** Batch-escalate a whole class locally as one durable job (#167). */
+  onEscalateClass?: (gapIds: string[]) => Promise<ClassEscalationOutcome | null>;
+  /** Record accept/reject for one staged proposal from a batch run. */
+  onDecideProposal?: (
+    proposal: AgentProposal,
+    decision: 'accepted' | 'rejected',
+  ) => Promise<boolean>;
 }
 
 type Tab = 'lanes' | 'tiers' | 'drift';
@@ -56,12 +72,42 @@ const CLASS_PAGE = 50;
 function GapClassRow({
   gapClass,
   onOpenGap,
+  onEscalateClass,
+  onDecideProposal,
 }: {
   gapClass: GapClass;
   onOpenGap: (assertion: SpecAssertion) => void;
+  onEscalateClass?: (gapIds: string[]) => Promise<ClassEscalationOutcome | null>;
+  onDecideProposal?: (
+    proposal: AgentProposal,
+    decision: 'accepted' | 'rejected',
+  ) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState(CLASS_PAGE);
+  const [running, setRunning] = useState(false);
+  const [outcome, setOutcome] = useState<ClassEscalationOutcome | null>(null);
+  const [decided, setDecided] = useState<ReadonlyMap<string, 'accepted' | 'rejected'>>(new Map());
+
+  const escalate = async () => {
+    if (!onEscalateClass || running) return;
+    setRunning(true);
+    setOutcome(null);
+    setDecided(new Map());
+    try {
+      setOutcome(await onEscalateClass(gapClass.members.map((member) => member.subject_id)));
+    } finally {
+      setRunning(false);
+    }
+  };
+  const decide = async (proposal: AgentProposal, decision: 'accepted' | 'rejected') => {
+    if (!onDecideProposal) return;
+    if (await onDecideProposal(proposal, decision)) {
+      setDecided((map) => new Map([...map, [proposal.gap_id, decision]]));
+    }
+  };
+  const undecided = outcome?.proposals.filter((proposal) => !decided.has(proposal.gap_id)) ?? [];
+
   return (
     <li className="register-class">
       <button
@@ -72,6 +118,11 @@ function GapClassRow({
       >
         <code className="register-id">×{gapClass.members.length}</code>
         <span className="register-text">{gapClass.label}</span>
+        {gapClass.flowImpact > 0 && (
+          <span className="register-tail flow-impact">
+            blocks {gapClass.flowImpact} flow hop{gapClass.flowImpact === 1 ? '' : 's'}
+          </span>
+        )}
         <code className="register-tail">{gapClass.extractor}</code>
         <span className="register-tail">{gapClass.tier} next</span>
         <span className="material-symbols-outlined" aria-hidden="true">
@@ -80,6 +131,55 @@ function GapClassRow({
       </button>
       {open && (
         <>
+          {onEscalateClass && (
+            <div className="class-escalation">
+              <button type="button" disabled={running} onClick={() => void escalate()}>
+                {running
+                  ? 'Escalating class…'
+                  : `Escalate class locally (${gapClass.members.length} instances)`}
+              </button>
+              <span className="muted">
+                One durable job, one proposal per instance — staged only, nothing joins the
+                graph unaccepted. Cloud escalation stays per-instance (consent binds to one
+                exact payload).
+              </span>
+            </div>
+          )}
+          {outcome && (
+            <div className="class-escalation-outcome" role="status">
+              <p>
+                {outcome.proposals.length} staged proposal
+                {outcome.proposals.length === 1 ? '' : 's'} · {outcome.failures.length} failed
+                {outcome.cancelled ? ' · cancelled early' : ''}
+              </p>
+              {undecided.length > 0 && (
+                <ul className="class-proposals" aria-label="Staged class proposals">
+                  {undecided.map((proposal) => (
+                    <li key={proposal.gap_id}>
+                      <span className="register-text">
+                        {proposal.source_id} —{proposal.edge_label}→ {proposal.target_id}
+                      </span>
+                      <button type="button" onClick={() => void decide(proposal, 'accepted')}>
+                        Accept
+                      </button>
+                      <button type="button" onClick={() => void decide(proposal, 'rejected')}>
+                        Reject
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {outcome.failures.length > 0 && (
+                <ul className="class-failures" aria-label="Failed instances">
+                  {outcome.failures.slice(0, 10).map((failure) => (
+                    <li key={failure.gap_id} className="muted">
+                      {failure.gap_id}: {failure.error}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
           <GapRows gaps={gapClass.members.slice(0, shown)} onOpenGap={onOpenGap} />
           {gapClass.members.length > shown && (
             <button
@@ -102,14 +202,27 @@ function GapClassRow({
 function GapClassRows({
   classes,
   onOpenGap,
+  onEscalateClass,
+  onDecideProposal,
 }: {
   classes: GapClass[];
   onOpenGap: (assertion: SpecAssertion) => void;
+  onEscalateClass?: (gapIds: string[]) => Promise<ClassEscalationOutcome | null>;
+  onDecideProposal?: (
+    proposal: AgentProposal,
+    decision: 'accepted' | 'rejected',
+  ) => Promise<boolean>;
 }) {
   return (
     <ul className="register-rows" aria-label="Gap classes">
       {classes.map((gapClass) => (
-        <GapClassRow key={gapClass.key} gapClass={gapClass} onOpenGap={onOpenGap} />
+        <GapClassRow
+          key={gapClass.key}
+          gapClass={gapClass}
+          onOpenGap={onOpenGap}
+          onEscalateClass={onEscalateClass}
+          onDecideProposal={onDecideProposal}
+        />
       ))}
     </ul>
   );
@@ -125,6 +238,9 @@ export function GapsDriftSurface({
   drift,
   registerFindings,
   onOpenGap,
+  flowGapIds,
+  onEscalateClass,
+  onDecideProposal,
 }: GapsDriftSurfaceProps) {
   const [tab, setTab] = useState<Tab>('lanes');
   // Reconcile with findings_summary's own definitions: the gap tally counts
@@ -133,7 +249,9 @@ export function GapsDriftSurface({
   // edges are supporting assertions of the same finding, not new findings).
   const gapFindings = gaps.filter((assertion) => !assertion.id.startsWith('flow:'));
   // At scale the lane triages by cause class, never row-by-row (#167).
-  const gapClasses = gapFindings.length > GROUP_THRESHOLD ? groupGapClasses(gapFindings) : null;
+  const flowGapSet = new Set(flowGapIds ?? []);
+  const gapClasses =
+    gapFindings.length > GROUP_THRESHOLD ? groupGapClasses(gapFindings, flowGapSet) : null;
   const driftFindings = drift.filter((assertion) => assertion.id.startsWith('node:'));
   const unsupported = registerFindings.filter((finding) => finding.kind === 'unsupported');
   const noEvidence = registerFindings.filter((finding) => finding.kind === 'no-evidence');
@@ -198,7 +316,12 @@ export function GapsDriftSurface({
           {gapFindings.length === 0 ? (
             <p className="muted">No unresolved facts.</p>
           ) : gapClasses ? (
-            <GapClassRows classes={gapClasses} onOpenGap={onOpenGap} />
+            <GapClassRows
+              classes={gapClasses}
+              onOpenGap={onOpenGap}
+              onEscalateClass={onEscalateClass}
+              onDecideProposal={onDecideProposal}
+            />
           ) : (
             <GapRows gaps={gapFindings} onOpenGap={onOpenGap} />
           )}
@@ -275,6 +398,13 @@ export function GapsDriftSurface({
                 </div>
                 {tierGaps.length === 0 ? (
                   <p className="muted">No gaps waiting on {tier}.</p>
+                ) : tierGaps.length > GROUP_THRESHOLD ? (
+                  <GapClassRows
+                    classes={groupGapClasses(tierGaps, flowGapSet)}
+                    onOpenGap={onOpenGap}
+                    onEscalateClass={onEscalateClass}
+                    onDecideProposal={onDecideProposal}
+                  />
                 ) : (
                   <GapRows gaps={tierGaps} onOpenGap={onOpenGap} />
                 )}
