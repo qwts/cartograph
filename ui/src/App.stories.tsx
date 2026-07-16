@@ -266,6 +266,19 @@ function installFakeCore() {
         ];
       case 'system_contents':
         return [{ repo: 'local/image-trail', commit: 'workdir' }];
+      case 'adapter_inventory':
+        return {
+          installed: [
+            {
+              id: 't0.adapter-ts',
+              language: 'TypeScript/JavaScript',
+              extensions: ['ts', 'tsx'],
+              covers: 'imports, call graph, endpoints',
+            },
+          ],
+          planned: [{ language: 'Kotlin', extensions: ['kt', 'kts'] }],
+          detector: 'preflight@1',
+        };
       case 'export_topology':
         return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
       case 'export_spec':

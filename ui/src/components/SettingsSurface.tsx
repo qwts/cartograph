@@ -1,4 +1,4 @@
-import type { CloudDisclosure, TierSettings } from '../store';
+import type { AdapterInventory, CloudDisclosure, TierSettings } from '../store';
 
 export interface SettingsSurfaceProps {
   tiers: TierSettings[];
@@ -6,6 +6,8 @@ export interface SettingsSurfaceProps {
   egressLabel: string;
   /** Per-tier consent disclosures; a missing one blocks consent (fail closed). */
   disclosures: Partial<Record<string, CloudDisclosure>>;
+  /** Installed + planned adapters (#163) — the registry Preflight uses. */
+  adapters: AdapterInventory | null;
   error: string | null;
   /** Disabled controls when there is no live backend to persist into. */
   canEdit: boolean;
@@ -13,6 +15,12 @@ export interface SettingsSurfaceProps {
   onProviderChange: (tier: string, provider: 'local' | 'cloud') => void;
   onGrantConsent: (tier: string) => void;
   onRevokeConsent: (tier: string) => void;
+}
+
+/** Request-adapter lane (epic #147): a prefilled issue names the adapter. */
+function requestAdapterUrl(language: string): string {
+  const title = encodeURIComponent(`Adapter request: ${language}`);
+  return `https://github.com/qwts/cartograph/issues/new?title=${title}&labels=adapter-request`;
 }
 
 /** Copy per configurable tier (handoff §Settings). */
@@ -123,6 +131,7 @@ export function SettingsSurface({
   tiers,
   egressLabel,
   disclosures,
+  adapters,
   error,
   canEdit,
   onToggleTier,
@@ -243,6 +252,62 @@ export function SettingsSurface({
         <p className="muted">
           Tier configuration lives in the core — connect a backend to manage it. Everything runs
           local-only until then.
+        </p>
+      )}
+
+      <h3 className="settings-section-title">Adapters</h3>
+      <p className="muted adapter-explainer">
+        An adapter is the per-language (or per-format) extractor that turns source into Confirmed
+        facts — one per language, not per tool or toolchain version: ESLint, Babel, or React are
+        framework markers Preflight detects, not adapters, and a JDK bump never needs a new
+        adapter — version-specific constructs degrade to explicit Unsupported findings, never
+        guesses.
+      </p>
+      {adapters ? (
+        <>
+          <ul className="adapter-list" aria-label="Installed adapters">
+            {adapters.installed.map((adapter) => (
+              <li key={adapter.id} className="adapter-row">
+                <div className="adapter-head">
+                  <strong>{adapter.language}</strong>
+                  <code>{adapter.id}</code>
+                </div>
+                <p className="muted">
+                  {adapter.covers}. Files: {adapter.extensions.map((ext) => `.${ext}`).join(' ')}
+                </p>
+              </li>
+            ))}
+          </ul>
+          <p className="muted">
+            This list is the same registry Preflight consults (detector{' '}
+            <code>{adapters.detector}</code>) — coverage and inventory cannot disagree.
+          </p>
+          <h4 className="settings-subsection-title">Known adapter types, not yet installed</h4>
+          <ul className="adapter-list planned" aria-label="Planned adapters">
+            {adapters.planned.map((planned) => (
+              <li key={planned.language} className="adapter-row">
+                <div className="adapter-head">
+                  <strong>{planned.language}</strong>
+                  <a
+                    href={requestAdapterUrl(planned.language)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="adapter-request-link"
+                  >
+                    Request this adapter
+                  </a>
+                </div>
+                <p className="muted">
+                  Detected via {planned.extensions.map((ext) => `.${ext}`).join(' ')} — Preflight
+                  names it as uncovered until an adapter ships.
+                </p>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="muted">
+          Adapter inventory lives in the core — connect a backend to list installed adapters.
         </p>
       )}
     </section>

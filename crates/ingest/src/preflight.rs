@@ -66,32 +66,138 @@ pub struct PreflightReport {
     pub detector: String,
 }
 
+/// One installed deterministic adapter — the per-language/per-format
+/// extractor that turns source into Confirmed facts. This single registry
+/// drives Preflight coverage AND the Settings inventory (#163), so the two
+/// can never disagree.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdapterInfo {
+    /// Extractor id as recorded in provenance (`extractor_id`).
+    pub id: &'static str,
+    /// Language or format the adapter covers.
+    pub language: &'static str,
+    /// Source-file extensions the adapter claims.
+    pub extensions: &'static [&'static str],
+    /// What the adapter actually extracts, in plain language.
+    pub covers: &'static str,
+}
+
+/// Every adapter shipped in this build.
+pub const INSTALLED_ADAPTERS: &[AdapterInfo] = &[
+    AdapterInfo {
+        id: "t0.adapter-ts",
+        language: "TypeScript",
+        extensions: &["ts", "tsx"],
+        covers: "imports, call graph, endpoints (Express/Next/React Router), \
+                 chrome messaging channels, IndexedDB",
+    },
+    AdapterInfo {
+        id: "t0.webextension",
+        language: "WebExtension",
+        extensions: &[],
+        covers: "manifest.json execution contexts (background, content scripts, \
+                 popups), keyboard commands, permissions as grants, entry binding",
+    },
+    AdapterInfo {
+        id: "t0.adapter-python",
+        language: "Python",
+        extensions: &["py"],
+        covers: "imports, call graph, FastAPI/Flask endpoint registrations",
+    },
+    AdapterInfo {
+        id: "t0.adapter-go",
+        language: "Go",
+        extensions: &["go"],
+        covers: "imports, call graph, net/http, chi and gin endpoint registrations",
+    },
+    AdapterInfo {
+        id: "t0.adapter-java",
+        language: "Java",
+        extensions: &["java"],
+        covers: "types, methods, call graph, Spring Web endpoint annotations",
+    },
+    AdapterInfo {
+        id: "t0.iac-terraform",
+        language: "Terraform",
+        extensions: &["tf"],
+        covers: "resource DAG, AWS capability edges (TRIGGERS/ROUTES/GRANTS)",
+    },
+];
+
+/// A named adapter that does not exist yet. Adapters are per *language*,
+/// never per toolchain version (a JDK bump is not a new adapter): the
+/// grammar covers syntax across versions and version-specific constructs
+/// degrade to explicit Unsupported findings.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannedAdapter {
+    /// Language the future adapter would cover.
+    pub language: &'static str,
+    /// Extensions Preflight uses to detect (and name) the language today.
+    pub extensions: &'static [&'static str],
+}
+
+/// The recommendation catalog (#163): languages Preflight can detect and
+/// name as installable-later adapter types.
+pub const PLANNED_ADAPTERS: &[PlannedAdapter] = &[
+    PlannedAdapter {
+        language: "JavaScript",
+        extensions: &["js", "jsx", "mjs", "cjs"],
+    },
+    PlannedAdapter {
+        language: "C",
+        extensions: &["c", "h"],
+    },
+    PlannedAdapter {
+        language: "C++",
+        extensions: &["cc", "cpp", "cxx", "hpp", "hh"],
+    },
+    PlannedAdapter {
+        language: "Kotlin",
+        extensions: &["kt", "kts"],
+    },
+    PlannedAdapter {
+        language: "Swift",
+        extensions: &["swift"],
+    },
+    PlannedAdapter {
+        language: "Objective-C",
+        extensions: &["m", "mm"],
+    },
+];
+
 /// Languages the deterministic tier covers today, keyed by extension.
 fn adapter_for(extension: &str) -> Option<(&'static str, &'static str)> {
-    match extension {
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
-            Some(("TypeScript/JavaScript", "t0.adapter-ts"))
-        }
-        "py" => Some(("Python", "t0.adapter-python")),
-        "go" => Some(("Go", "t0.adapter-go")),
-        "java" => Some(("Java", "t0.adapter-java")),
-        "tf" => Some(("Terraform", "t0.iac-tf")),
-        _ => None,
-    }
+    INSTALLED_ADAPTERS
+        .iter()
+        .find(|adapter| adapter.extensions.contains(&extension))
+        .map(|adapter| (adapter.language, adapter.id))
 }
 
 /// Source languages we can *name* but not extract — surfaced honestly as
-/// uncovered rather than silently ignored.
+/// uncovered rather than silently ignored. Planned adapter types come from
+/// the recommendation catalog; the rest are named-only.
 fn uncovered_language(extension: &str) -> Option<&'static str> {
+    if let Some(planned) = PLANNED_ADAPTERS
+        .iter()
+        .find(|planned| planned.extensions.contains(&extension))
+    {
+        return Some(planned.language);
+    }
     match extension {
         "rb" => Some("Ruby"),
-        "kt" => Some("Kotlin"),
         "cs" => Some("C#"),
         "php" => Some("PHP"),
         "rs" => Some("Rust"),
         "wasm" => Some("WebAssembly"),
         _ => None,
     }
+}
+
+/// True when a `language` has a planned adapter in the catalog.
+pub fn planned_adapter_for(language: &str) -> bool {
+    PLANNED_ADAPTERS
+        .iter()
+        .any(|planned| planned.language == language)
 }
 
 /// Run the preflight scan over `root`. Purely local; deterministic for a
@@ -130,6 +236,15 @@ pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
+            // Risky-construct scanning is per-syntax, not per-coverage: a
+            // .js file still gets eval/WASM findings even though JavaScript
+            // extraction is a planned adapter (#192 review).
+            if matches!(
+                extension.as_str(),
+                "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+            ) {
+                scan_source(&path, &rel, &mut unsupported, &mut potential_gaps)?;
+            }
             if let Some((language, adapter)) = adapter_for(&extension) {
                 let entry = languages
                     .entry(language.to_string())
@@ -139,12 +254,6 @@ pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
                         adapter: Some(adapter.to_string()),
                     });
                 entry.files += 1;
-                if matches!(
-                    extension.as_str(),
-                    "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
-                ) {
-                    scan_source(&path, &rel, &mut unsupported, &mut potential_gaps)?;
-                }
             } else if let Some(language) = uncovered_language(&extension) {
                 let entry = languages
                     .entry(language.to_string())
@@ -155,14 +264,25 @@ pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
                     });
                 entry.files += 1;
                 if entry.files == 1 {
+                    // A planned adapter type is a recommendation, not a dead
+                    // end (#163): name the missing adapter and where to ask.
+                    let message = if planned_adapter_for(language) {
+                        format!(
+                            "{language} sources present but no adapter covers them — \
+                             a tool limitation, not a System Gap. A {language} adapter \
+                             is a known adapter type: request it from Settings → Adapters"
+                        )
+                    } else {
+                        format!(
+                            "{language} sources present but no adapter covers them — \
+                             a tool limitation, not a System Gap"
+                        )
+                    };
                     unsupported.push(PatternFinding {
                         kind: "uncovered-language".into(),
                         path: rel,
                         line: 1,
-                        message: format!(
-                            "{language} sources present but no adapter covers them — \
-                             a tool limitation, not a System Gap"
-                        ),
+                        message,
                         detector: DETECTOR_ID.into(),
                     });
                 }
@@ -365,13 +485,13 @@ mod tests {
             .map(|l| (l.language.as_str(), l))
             .collect();
         assert_eq!(
-            by_language["TypeScript/JavaScript"].adapter.as_deref(),
+            by_language["TypeScript"].adapter.as_deref(),
             Some("t0.adapter-ts")
         );
         assert_eq!(by_language["Go"].adapter.as_deref(), Some("t0.adapter-go"));
         assert_eq!(
             by_language["Terraform"].adapter.as_deref(),
-            Some("t0.iac-tf")
+            Some("t0.iac-terraform")
         );
         // Ruby is named but uncovered — and surfaces as an unsupported finding.
         assert_eq!(by_language["Ruby"].adapter, None);
@@ -389,6 +509,44 @@ mod tests {
                 .unsupported
                 .iter()
                 .any(|f| f.path.contains("node_modules"))
+        );
+    }
+
+    #[test]
+    fn adapter_registry_drives_coverage_and_recommendations() {
+        // AC-0087 (#163): one registry serves Preflight and Settings — every
+        // installed adapter's extensions resolve back to exactly that
+        // adapter, so the inventory can never disagree with coverage.
+        for adapter in INSTALLED_ADAPTERS {
+            for extension in adapter.extensions {
+                assert_eq!(adapter_for(extension), Some((adapter.language, adapter.id)));
+            }
+        }
+        // Planned adapter types are detectable and marked requestable.
+        for planned in PLANNED_ADAPTERS {
+            assert!(planned_adapter_for(planned.language));
+            for extension in planned.extensions {
+                assert_eq!(uncovered_language(extension), Some(planned.language));
+                assert_eq!(adapter_for(extension), None);
+            }
+        }
+        // Named-only languages are honest but not in the request catalog.
+        assert_eq!(uncovered_language("rb"), Some("Ruby"));
+        assert!(!planned_adapter_for("Ruby"));
+
+        // A detected planned language recommends the adapter in place.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "App.kt", "fun main() {}\n");
+        let report = preflight(dir.path()).unwrap();
+        let finding = report
+            .unsupported
+            .iter()
+            .find(|f| f.kind == "uncovered-language" && f.message.contains("Kotlin"))
+            .expect("Kotlin surfaces as uncovered");
+        assert!(
+            finding
+                .message
+                .contains("request it from Settings → Adapters")
         );
     }
 }

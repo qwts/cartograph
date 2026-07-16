@@ -73,6 +73,7 @@ export default function App() {
     flowList,
     flowAnchors,
     systemContents,
+    adapters,
     specBundle,
     specMode,
     curation,
@@ -389,6 +390,7 @@ export default function App() {
             tiers={tierSettings}
             egressLabel={egressLine}
             disclosures={disclosures}
+            adapters={adapters}
             error={settingsError}
             canEdit={backend === 'up'}
             onToggleTier={(tier, enabled) => void setTierEnabled(tier, enabled)}

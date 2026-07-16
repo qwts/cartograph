@@ -2647,6 +2647,56 @@ button.flow-hop-card:hover {
   color: var(--text-muted);
 }
 
+/* #163: adapter inventory — installed coverage and the request catalog. */
+.settings-subsection-title {
+  margin: 0.6rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.adapter-explainer {
+  max-width: 62rem;
+}
+
+.adapter-list {
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.adapter-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.8rem;
+}
+
+.adapter-list.planned .adapter-row {
+  border-style: dashed;
+}
+
+.adapter-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.adapter-head code {
+  font-size: 0.72rem;
+}
+
+.adapter-request-link {
+  font-size: 0.78rem;
+}
+
+.adapter-row p {
+  margin: 0.25rem 0 0;
+}
+
 .tier-cards {
   margin: 0;
   padding: 0;

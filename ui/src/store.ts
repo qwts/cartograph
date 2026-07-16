@@ -166,6 +166,27 @@ export interface SystemRepo {
   commit: string;
 }
 
+/** One installed deterministic adapter, from the registry Preflight uses
+ * (#163) — Settings renders exactly what coverage consults. */
+export interface AdapterInfo {
+  id: string;
+  language: string;
+  extensions: string[];
+  covers: string;
+}
+
+/** A known-but-uninstalled adapter type in the recommendation catalog. */
+export interface PlannedAdapter {
+  language: string;
+  extensions: string[];
+}
+
+export interface AdapterInventory {
+  installed: AdapterInfo[];
+  planned: PlannedAdapter[];
+  detector: string;
+}
+
 export type SpecExportMode = 'verified-only' | 'best-effort';
 
 export interface SpecAssertion {
@@ -438,6 +459,8 @@ export interface AppStore {
   flowList: Flow[];
   /** Anchor kinds sought/found by the tracer — honest zero-flow state. */
   flowAnchors: AnchorProbe[];
+  /** Installed + planned adapters (#163), from the Preflight registry. */
+  adapters: AdapterInventory | null;
   /** Repos whose facts are in the current system graph (#162). */
   systemContents: SystemRepo[];
   /** Full official artifact set under the active R-INT-5 mode. */
@@ -569,6 +592,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   flowList: [],
   flowAnchors: [],
   systemContents: [],
+  adapters: null,
   specBundle: null,
   specMode: 'best-effort',
   curation: [],
@@ -611,6 +635,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         flowList: [],
         flowAnchors: [],
         systemContents: [],
+        adapters: null,
         specBundle: null,
         curation: [],
         findings: null,
@@ -623,7 +648,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, adapters, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -633,6 +658,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<Flow[]>('list_flows', []),
       invokeOr<AnchorProbe[]>('list_flow_anchors', []),
       invokeOr<SystemRepo[]>('system_contents', []),
+      invokeOr<AdapterInventory | null>('adapter_inventory', null),
       invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
       invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
       invokeOr<FindingsSummary | null>('findings_summary', null),
@@ -659,6 +685,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       flowList,
       flowAnchors,
       systemContents,
+      adapters,
       specBundle,
       curation,
       findings,

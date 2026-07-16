@@ -115,6 +115,24 @@ fn graph_stats(state: State<'_, AppState>) -> Result<GraphStats, String> {
     })
 }
 
+/// The adapter inventory (#163): the same registry Preflight consults, so
+/// Settings and coverage can never disagree. Static per build.
+#[derive(Serialize)]
+struct AdapterInventory {
+    installed: &'static [ingest::preflight::AdapterInfo],
+    planned: &'static [ingest::preflight::PlannedAdapter],
+    detector: &'static str,
+}
+
+#[tauri::command]
+fn adapter_inventory() -> AdapterInventory {
+    AdapterInventory {
+        installed: ingest::preflight::INSTALLED_ADAPTERS,
+        planned: ingest::preflight::PLANNED_ADAPTERS,
+        detector: ingest::preflight::DETECTOR_ID,
+    }
+}
+
 /// One repo currently contributing facts to the unified graph (#162).
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct SystemRepo {
@@ -2140,6 +2158,7 @@ fn main() {
             graph_stats,
             clear_graph,
             system_contents,
+            adapter_inventory,
             clear_finished_jobs,
             list_jobs,
             list_evals,
