@@ -416,6 +416,36 @@ impl wasmtime::ResourceLimiter for HostState {
     }
 }
 
+/// Pin a plugin extraction's provenance to the exact artifact that produced
+/// it (#199, AC-0069). Host-authoritative: whatever `extractor_id` the
+/// guest wrote is overwritten with `{plugin_id}@{hash12}` — a plugin cannot
+/// impersonate a compiled-in extractor, and a rebuilt artifact (different
+/// bytes, different hash) is a different extractor identity. The full
+/// artifact hash rides on every fact as `plugin_artifact_hash`.
+pub fn pin_extraction(extraction: &mut PluginExtraction, plugin_id: &str, artifact_hash: &str) {
+    let short = &artifact_hash[..artifact_hash.len().min(12)];
+    let pinned_id = format!("{plugin_id}@{short}");
+    let props = extraction
+        .nodes
+        .iter_mut()
+        .map(|node| &mut node.props)
+        .chain(extraction.edges.iter_mut().map(|edge| &mut edge.props));
+    for value in props {
+        if let Some(prov) = value.get_mut("prov").and_then(|prov| prov.as_object_mut()) {
+            prov.insert(
+                "extractor_id".to_string(),
+                serde_json::Value::String(pinned_id.clone()),
+            );
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "plugin_artifact_hash".to_string(),
+                serde_json::Value::String(artifact_hash.to_string()),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

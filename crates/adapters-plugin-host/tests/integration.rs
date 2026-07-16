@@ -184,3 +184,92 @@ fn no_ambient_clock() {
         "monotonic clock must be fixed, so elapsed-within-a-call is always zero"
     );
 }
+
+/// T-0069 (AC-0069, #199): plugin facts are pinned to the exact artifact —
+/// `extractor_id = "{plugin_id}@{hash12}"`, full BLAKE3 artifact hash on
+/// every fact — the guest cannot impersonate a compiled-in extractor, and
+/// repeat runs of the same artifact over the same source yield an
+/// identical whole-extraction hash set (determinism with a plugin active).
+#[test]
+fn plugin_provenance_pins_artifact_and_repeats_deterministically() {
+    use adapters_plugin_host::pin_extraction;
+    use core_prov::content_hash;
+
+    let host = PluginHost::new().expect("engine");
+    let plugin = host.load(OK_ADAPTER).expect("compiles");
+    let artifact_hash = content_hash(OK_ADAPTER);
+    let source = b"hello world";
+
+    let run = || {
+        let mut extraction = host
+            .call_extract(
+                &plugin,
+                source,
+                "src/lib.rs",
+                &source_id(),
+                PluginLimits::default(),
+            )
+            .expect("well-behaved plugin succeeds");
+        pin_extraction(&mut extraction, "t0.plugin-fixture", &artifact_hash);
+        extraction
+    };
+
+    let first = run();
+    let expected_id = format!("t0.plugin-fixture@{}", &artifact_hash[..12]);
+    // Every fact carries the full artifact hash, prov or not; a fact
+    // without provenance is the conformance gate's job to reject (#200).
+    for props in first
+        .nodes
+        .iter()
+        .map(|node| &node.props)
+        .chain(first.edges.iter().map(|edge| &edge.props))
+    {
+        assert_eq!(props["plugin_artifact_hash"], artifact_hash.as_str());
+    }
+
+    // A guest-supplied extractor_id is overwritten — a plugin cannot
+    // impersonate a compiled-in extractor.
+    let mut spoofed = adapters_plugin_host::PluginExtraction {
+        nodes: vec![core_graph::Node {
+            id: "n1".into(),
+            label: "File".into(),
+            props: serde_json::json!({ "prov": { "extractor_id": "t0.adapter-ts" } }),
+        }],
+        edges: Vec::new(),
+    };
+    pin_extraction(&mut spoofed, "t0.plugin-fixture", &artifact_hash);
+    assert_eq!(
+        spoofed.nodes[0].props["prov"]["extractor_id"],
+        expected_id.as_str()
+    );
+    assert_eq!(
+        spoofed.nodes[0].props["plugin_artifact_hash"],
+        artifact_hash.as_str()
+    );
+
+    // Order-independent whole-extraction hash: identical across runs.
+    let canonical = |extraction: &adapters_plugin_host::PluginExtraction| {
+        let mut hashes: Vec<String> = extraction
+            .nodes
+            .iter()
+            .map(|node| format!("node:{}:{}", node.id, node.props))
+            .chain(extraction.edges.iter().map(|edge| {
+                format!(
+                    "edge:{}:{}:{}:{}",
+                    edge.src, edge.dst, edge.label, edge.props
+                )
+            }))
+            .collect();
+        hashes.sort();
+        content_hash(hashes.join("\n").as_bytes())
+    };
+    assert_eq!(canonical(&first), canonical(&run()));
+
+    // A different artifact is a different extractor identity: same id,
+    // different bytes can never masquerade as the pinned adapter.
+    let other_hash = content_hash(BUSY_LOOP);
+    assert_ne!(
+        format!("t0.plugin-fixture@{}", &other_hash[..12]),
+        expected_id
+    );
+}
