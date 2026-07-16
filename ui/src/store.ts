@@ -114,6 +114,9 @@ export interface PatternFinding {
   line: number;
   message: string;
   detector: string;
+  /** For uncovered-language findings: the language to request an adapter
+   * for — the resolution lane instead of a dead end (#201). */
+  request_adapter?: string | null;
 }
 
 /** Local preflight output (#116): the three-way classification exists from

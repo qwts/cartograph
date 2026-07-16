@@ -168,6 +168,78 @@ fn discover_session_plugins<R: tauri::Runtime>(
     Ok(adapters_plugin_host::discovery::discover(&roots, &user_dir))
 }
 
+/// A plugin cleared for extraction on one project root (#201): discovered,
+/// explicitly enabled for these exact bytes, and gate-passed for these
+/// exact bytes. `extensions` is the coverage claim from its golden corpus
+/// — the gate already proved the corpus, so the claim is trusted as far as
+/// routing; the facts themselves are still bounded and pinned per call.
+struct ActivePlugin {
+    plugin_id: String,
+    path: std::path::PathBuf,
+    /// The gated hash — extraction re-verifies the bytes on disk still
+    /// match before running them (fail closed on a swap).
+    content_hash: String,
+    extensions: Vec<String>,
+}
+
+/// The plugins allowed to extract for `root` right now. Everything about
+/// this is fail-closed: no enablement row, a different artifact hash, a
+/// missing/failed gate, or an unreadable/empty corpus each drop the plugin
+/// from the active set silently — extraction never guesses.
+fn active_plugins_for_root<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    root: &std::path::Path,
+) -> Result<Vec<ActivePlugin>, String> {
+    let root_key = root.display().to_string();
+    let discovered = discover_session_plugins(app, state)?;
+    let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
+    let mut active = Vec::new();
+    for plugin in discovered {
+        let settings_root = plugin_settings_root(&plugin);
+        // A project copy only ever extracts for its own project; user-level
+        // copies apply wherever their (user-scoped) enablement says so.
+        if settings_root != root_key && settings_root != "user" {
+            continue;
+        }
+        let enabled = settings_store
+            .enabled_plugins(&settings_root)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|(id, hash)| *id == plugin.id && *hash == plugin.content_hash);
+        if !enabled {
+            continue;
+        }
+        let gate_passed = matches!(
+            settings_store
+                .plugin_gate(&plugin.id, &plugin.content_hash)
+                .map_err(|e| e.to_string())?,
+            Some((true, _))
+        );
+        if !gate_passed {
+            continue;
+        }
+        let corpus_path = plugin.path.with_extension("golden.json");
+        let Ok(text) = std::fs::read_to_string(&corpus_path) else {
+            continue;
+        };
+        let Ok(corpus) = serde_json::from_str::<adapters_plugin_host::gate::GoldenCorpus>(&text)
+        else {
+            continue;
+        };
+        if corpus.extensions.is_empty() {
+            continue;
+        }
+        active.push(ActivePlugin {
+            plugin_id: plugin.id,
+            path: plugin.path,
+            content_hash: plugin.content_hash,
+            extensions: corpus.extensions,
+        });
+    }
+    Ok(active)
+}
+
 #[tauri::command]
 fn list_plugins(
     app: tauri::AppHandle,
@@ -562,6 +634,7 @@ fn extract_tree_with_summary(
         pulumi_json,
         otel_jsonl,
         &mut cache,
+        &[],
     )
     .map(|(extraction, layers, _)| (extraction, layers))
 }
@@ -577,6 +650,7 @@ fn extract_tree_incremental(
     pulumi_json: Option<&std::path::Path>,
     otel_jsonl: &[std::path::PathBuf],
     cache: &mut RepoExtractionCache,
+    plugins: &[ActivePlugin],
 ) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown, DeltaSummary), String> {
     // Layer hints gate extractors (AC-0002): empty means everything; the
     // The TS pass covers server/events/client plus Pulumi infra/cloud; the HCL
@@ -789,6 +863,43 @@ fn extract_tree_incremental(
         .map_err(|error| error.to_string())?;
     extraction.nodes.extend(adr_facts.nodes);
     extraction.edges.extend(adr_facts.edges);
+    // Gated plugin adapters (#201): route the files each active plugin
+    // claims via its golden-corpus extensions. Every fact arrives pinned to
+    // the exact artifact by the host; a failure fails the whole plugin pass
+    // closed (zero partial facts, AC-0070).
+    if !plugins.is_empty() {
+        let host = adapters_plugin_host::PluginHost::new().map_err(|e| e.to_string())?;
+        let plugin_source = adapters_plugin_host::SourceId {
+            repo: repo.to_string(),
+            commit: commit.to_string(),
+        };
+        for plugin in plugins {
+            let wasm_bytes = std::fs::read(&plugin.path).map_err(|e| e.to_string())?;
+            // The gate verdict binds to exact bytes: a swap since gating
+            // fails closed rather than running ungated code.
+            if core_prov::content_hash(&wasm_bytes) != plugin.content_hash {
+                return Err(format!(
+                    "plugin {} changed on disk since its gate passed — re-run the \
+                     conformance gate",
+                    plugin.plugin_id
+                ));
+            }
+            let loaded = host
+                .load(&wasm_bytes, &plugin.plugin_id)
+                .map_err(|e| e.to_string())?;
+            let facts = adapters_plugin_host::route::extract_claimed(
+                &host,
+                &loaded,
+                root,
+                &plugin.extensions,
+                &plugin_source,
+                adapters_plugin_host::PluginLimits::default(),
+            )
+            .map_err(|e| e.to_string())?;
+            extraction.nodes.extend(facts.nodes);
+            extraction.edges.extend(facts.edges);
+        }
+    }
     extraction.close_over_endpoints();
     Ok((extraction, layers, delta))
 }
@@ -1169,16 +1280,43 @@ fn list_findings(state: State<'_, AppState>) -> Result<Vec<Finding>, String> {
 #[tauri::command]
 fn preflight(
     path: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ingest::preflight::PreflightReport, String> {
-    let root = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    preflight_blocking(&path, &app, &state)
+}
+
+/// The preflight pipeline behind the command, generic over the runtime so
+/// the request → gate → accept → re-scan lane is testable end to end. The
+/// scanned directory registers as a resolved ingest root (it *is* one — a
+/// canonicalized directory), so its `.cartograph/adapters/` is discoverable
+/// before the first ingest; gated+enabled plugins then count as coverage
+/// and their uncovered-language findings close on the re-scan (#201).
+fn preflight_blocking<R: tauri::Runtime>(
+    path: &str,
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+) -> Result<ingest::preflight::PreflightReport, String> {
+    let root = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if let Ok(mut roots) = state.project_roots.lock() {
+        roots.insert(root.display().to_string());
+    }
     let repo = format!(
         "local/{}",
         root.file_name()
             .map(|n| n.to_string_lossy())
             .unwrap_or_default()
     );
-    let report = ingest::preflight::preflight(&root).map_err(|e| e.to_string())?;
+    let claims: Vec<ingest::preflight::PluginCoverage> =
+        active_plugins_for_root(app, state, &root)?
+            .into_iter()
+            .map(|plugin| ingest::preflight::PluginCoverage {
+                plugin_id: plugin.plugin_id,
+                extensions: plugin.extensions,
+            })
+            .collect();
+    let report =
+        ingest::preflight::preflight_with_plugins(&root, &claims).map_err(|e| e.to_string())?;
     let batch: Vec<NewFinding<'_>> = report
         .unsupported
         .iter()
@@ -1826,6 +1964,7 @@ fn run_ingest(
 
     cancelled()?;
     report_progress(app, state, job_id, "extract", 15.0)?;
+    let active_plugins = active_plugins_for_root(app, state, &root).map_err(&fail)?;
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
@@ -1842,6 +1981,7 @@ fn run_ingest(
             None,
             &[],
             cache,
+            &active_plugins,
         )
         .map_err(fail)?
     };
@@ -2043,6 +2183,8 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
     if let Ok(mut roots) = state.project_roots.lock() {
         roots.insert(cloned.path.display().to_string());
     }
+    let active_plugins =
+        active_plugins_for_root(&app, &state, &cloned.path).map_err(|e| fail(e, &state, job_id))?;
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
@@ -2059,6 +2201,7 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
             None,
             &[],
             cache,
+            &active_plugins,
         )
         .map_err(|e| fail(e, &state, job_id))?
     };
@@ -2207,6 +2350,8 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
         let pulumi_path = entry.pulumi_json.as_ref().map(|p| base.join(p));
         let trace_paths: Vec<std::path::PathBuf> =
             entry.otel_jsonl.iter().map(|p| base.join(p)).collect();
+        let active_plugins =
+            active_plugins_for_root(&app, &state, &root).map_err(|e| fail(e, &state, job_id))?;
         let (extraction, repo_layers, repo_delta) = {
             let mut caches = state
                 .extraction_caches
@@ -2223,6 +2368,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
                 pulumi_path.as_deref(),
                 &trace_paths,
                 cache,
+                &active_plugins,
             )
             .map_err(|e| fail(e, &state, job_id))?
         };
@@ -4256,6 +4402,7 @@ export function beat() { bus.emit('heartbeat'); }
             None,
             &[],
             &mut cache,
+            &[],
         )
         .unwrap();
         assert_eq!(initial_delta.recomputed_files, 2);
@@ -4272,6 +4419,7 @@ export function beat() { bus.emit('heartbeat'); }
             None,
             &[],
             &mut cache,
+            &[],
         )
         .unwrap();
         assert_eq!(same_delta.recomputed_files, 0);
@@ -4299,6 +4447,7 @@ export function beat() { bus.emit('heartbeat'); }
             None,
             &[],
             &mut cache,
+            &[],
         )
         .unwrap();
         assert_eq!(changed_delta.recomputed_files, 1);
@@ -4328,6 +4477,7 @@ export function beat() { bus.emit('heartbeat'); }
             None,
             &[],
             &mut cache,
+            &[],
         )
         .unwrap();
         assert_eq!(deleted_delta.deleted_files, 1);
@@ -5065,5 +5215,184 @@ export function App() {
             .unwrap()
             .expect("retried gate persists its verdict");
         assert!(passed, "gate report: {report_json}");
+    }
+
+    #[test]
+    fn plugin_lane_end_to_end_gate_accept_reingest_closes_finding() {
+        // AC-0093 (#201): request → gate pass → accept → re-scan. An
+        // uncovered language surfaces with the request-adapter action; a
+        // gated + enabled plugin then counts as coverage (the finding
+        // closes) and routes its claimed files during extraction, with
+        // pinned facts identical across runs (AC-0069 extension).
+        use tauri::Manager;
+        const OK_ADAPTER: &[u8] = include_bytes!(
+            "../../crates/adapters-plugin-host/tests/fixtures/compiled/ok-adapter.wasm"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        let adapters = project.join(".cartograph/adapters");
+        std::fs::create_dir_all(&adapters).unwrap();
+        std::fs::write(project.join("app.rb"), "puts 'hi'\n").unwrap();
+        std::fs::write(adapters.join("t0.plugin-fixture.wasm"), OK_ADAPTER).unwrap();
+        std::fs::write(
+            adapters.join("t0.plugin-fixture.golden.json"),
+            serde_json::json!({
+                "extensions": ["rb"],
+                "cases": [{
+                    "path": "src/lib.rs",
+                    "source": "hello world",
+                    "nodes": [
+                        {"id": "golden:src/lib.rs", "label": "TestNode", "props": {"len": 11}}
+                    ],
+                    "edges": [{
+                        "src": "golden:src/lib.rs",
+                        "dst": "golden:src/lib.rs",
+                        "label": "SELF",
+                        "props": {}
+                    }],
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let state_path = dir.path().join("state.db");
+        app.manage(super::AppState {
+            graph: std::sync::Mutex::new(
+                SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
+            ),
+            jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
+            settings: std::sync::Mutex::new(
+                super::settings::SettingsStore::open(&state_path).unwrap(),
+            ),
+            decisions: std::sync::Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
+            extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
+            project_roots: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            metrics: std::sync::Mutex::new(
+                super::metrics::MetricsStore::open(&state_path).unwrap(),
+            ),
+        });
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let root = std::fs::canonicalize(&project).unwrap();
+        let root_key = root.display().to_string();
+        let path_arg = project.to_string_lossy().into_owned();
+
+        // Before: Ruby is uncovered, with the request-adapter action, and
+        // the finding persists to the register.
+        let before = super::preflight_blocking(&path_arg, &handle, &state).unwrap();
+        let finding = before
+            .unsupported
+            .iter()
+            .find(|f| f.kind == "uncovered-language" && f.message.contains("Ruby"))
+            .expect("Ruby surfaces as uncovered");
+        assert_eq!(finding.request_adapter.as_deref(), Some("Ruby"));
+        let repo = format!(
+            "local/{}",
+            root.file_name().map(|n| n.to_string_lossy()).unwrap()
+        );
+        assert!(
+            state
+                .findings
+                .lock()
+                .unwrap()
+                .list_for(&repo)
+                .unwrap()
+                .iter()
+                .any(|f| f.message.contains("Ruby"))
+        );
+        // Discovery alone never activates: nothing extracts yet.
+        assert!(
+            super::active_plugins_for_root(&handle, &state, &root)
+                .unwrap()
+                .is_empty()
+        );
+
+        // Gate the artifact (the request lane lands it here), then accept.
+        let job_id = {
+            let mut jobs = state.jobs.lock().unwrap();
+            let job = jobs.enqueue("plugin-gate:t0.plugin-fixture").unwrap();
+            jobs.set_status(job.id, "running").unwrap();
+            job.id
+        };
+        let report = super::plugin_gate_blocking("t0.plugin-fixture", job_id, &handle).unwrap();
+        assert_eq!(report["passed"], serde_json::json!(true));
+        let hash = core_prov::content_hash(OK_ADAPTER);
+        state
+            .settings
+            .lock()
+            .unwrap()
+            .set_plugin_enabled(&root_key, "t0.plugin-fixture", &hash, true)
+            .unwrap();
+
+        // Re-scan: the plugin counts as coverage and the finding closes.
+        let after = super::preflight_blocking(&path_arg, &handle, &state).unwrap();
+        let ruby = after
+            .languages
+            .iter()
+            .find(|l| l.language == "Ruby")
+            .expect("Ruby still detected");
+        assert_eq!(ruby.adapter.as_deref(), Some("t0.plugin-fixture"));
+        assert!(
+            !after
+                .unsupported
+                .iter()
+                .any(|f| f.kind == "uncovered-language" && f.message.contains("Ruby"))
+        );
+        assert!(
+            !state
+                .findings
+                .lock()
+                .unwrap()
+                .list_for(&repo)
+                .unwrap()
+                .iter()
+                .any(|f| f.message.contains("Ruby"))
+        );
+
+        // Re-ingest routes the claimed file through the plugin: pinned
+        // facts, identical across runs (plugin-active determinism).
+        let active = super::active_plugins_for_root(&handle, &state, &root).unwrap();
+        assert_eq!(active.len(), 1);
+        let run = |cache: &mut super::RepoExtractionCache| {
+            super::extract_tree_incremental(
+                &root,
+                &repo,
+                "workdir",
+                &[],
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                &[],
+                cache,
+                &active,
+            )
+            .unwrap()
+            .0
+        };
+        let first = run(&mut super::RepoExtractionCache::default());
+        let second = run(&mut super::RepoExtractionCache::default());
+        let plugin_node = first
+            .nodes
+            .iter()
+            .find(|n| n.id == format!("{repo}:app.rb"))
+            .expect("plugin fact joins the extraction");
+        assert_eq!(
+            plugin_node.props["plugin_artifact_hash"],
+            serde_json::json!(hash)
+        );
+        assert_eq!(
+            serde_json::to_string(&first.nodes).unwrap(),
+            serde_json::to_string(&second.nodes).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string(&first.edges).unwrap(),
+            serde_json::to_string(&second.edges).unwrap()
+        );
     }
 }

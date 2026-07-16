@@ -227,13 +227,14 @@
 ### US-0017 — Runtime-loadable adapter plugins
 - **Actor:** Engineer
 - **As a** engineer **I want** to install a gated adapter plugin while Cartograph is running **so that** an unsupported language or event system becomes a recovered layer instead of a permanent finding.
-- **Priority:** Should · **Status:** Draft
+- **Priority:** Should · **Status:** Done
 - **AC-0068** Given a WASM adapter artifact in a discovery directory (project-local `.cartograph/adapters/` beating user-level on id conflict), when Cartograph loads it, then it activates only after a durable conformance-gate job passes SPI contract tests, the generator-supplied golden corpus (expected facts with exact evidence spans), and a double-run determinism check; a failed or ungated adapter stays in the proposed state under the standard propose/accept curation semantics.
 - **AC-0069** Given facts emitted by a plugin adapter, when inspected, then their provenance carries `extractor_id@version` plus the plugin artifact's content hash, and re-ingesting the same commit with the same adapter set yields an identical whole-graph content hash (the US-0014 determinism invariant extends to plugin facts).
 - **AC-0070** Given a plugin at extraction time, when it attempts network access, a filesystem write, or exceeds its fuel/memory bounds, then the run fails closed with an explicit finding and no partial facts join the graph; source access is read-only and host-mediated, and no LLM is ever invoked inside a T0 plugin.
+- **AC-0093** Given a Preflight unsupported finding for an uncovered language, when the engineer follows its request-adapter action and a generated artifact lands in a discovery directory, passes the conformance gate, and is enabled for the project, then the next scan reports the language covered by the plugin (the originating unsupported finding closes), extraction routes the files the plugin's golden corpus claims through the plugin with host-pinned facts, and compiled-in adapters always win a contested extension.
 - **Security:** AI-authored code runs sandboxed (no network, no writes, bounded resources) per ADR-0017; fail closed.
 - **Performance:** Plugin extraction may trail native adapters; first-class languages stay compiled in.
-- **Trace:** post-M10 · `adapters-*`, `ingest`, `app`, UI · — · T-0068..0070
+- **Trace:** post-M10 · `adapters-*`, `ingest`, `app`, UI · — · T-0068..0070, T-0093
 
 ### US-0018 — In-app Help, single-sourced with the wiki
 - **Actor:** Engineer

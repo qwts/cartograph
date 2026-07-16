@@ -274,7 +274,7 @@ pub fn preflight_with_plugins(
             }
             let plugin_claim = plugins
                 .iter()
-                .find(|plugin| plugin.extensions.iter().any(|ext| *ext == extension));
+                .find(|plugin| plugin.extensions.contains(&extension));
             if let Some((language, adapter)) = adapter_for(&extension) {
                 let entry = languages
                     .entry(language.to_string())
@@ -290,11 +290,13 @@ pub fn preflight_with_plugins(
                 let language = uncovered_language(&extension)
                     .map(str::to_string)
                     .unwrap_or_else(|| format!(".{extension}"));
-                let entry = languages.entry(language.clone()).or_insert(LanguageDetection {
-                    language,
-                    files: 0,
-                    adapter: Some(plugin.plugin_id.clone()),
-                });
+                let entry = languages
+                    .entry(language.clone())
+                    .or_insert(LanguageDetection {
+                        language,
+                        files: 0,
+                        adapter: Some(plugin.plugin_id.clone()),
+                    });
                 entry.files += 1;
             } else if let Some(language) = uncovered_language(&extension) {
                 let entry = languages

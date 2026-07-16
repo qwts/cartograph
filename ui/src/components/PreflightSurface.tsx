@@ -13,6 +13,13 @@ export interface PreflightSurfaceProps {
   onRunRecovery: () => void;
 }
 
+/** Request-adapter lane (#201): a prefilled tracker issue names the
+ *  adapter — the unsupported finding's resolution path, not a dead end. */
+function requestAdapterUrl(language: string): string {
+  const title = encodeURIComponent(`Adapter request: ${language}`);
+  return `https://github.com/qwts/cartograph/issues/new?title=${title}&labels=adapter-request`;
+}
+
 function FindingList({ items, marker }: { items: PatternFinding[]; marker: string }) {
   return (
     <ul className="preflight-items">
@@ -22,6 +29,19 @@ function FindingList({ items, marker }: { items: PatternFinding[]; marker: strin
           <code>
             {finding.path}:{finding.line}
           </code>
+          {finding.request_adapter && (
+            <>
+              {' '}
+              <a
+                href={requestAdapterUrl(finding.request_adapter)}
+                target="_blank"
+                rel="noreferrer"
+                className="adapter-request-link"
+              >
+                Request this adapter
+              </a>
+            </>
+          )}
         </li>
       ))}
     </ul>

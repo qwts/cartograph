@@ -68,11 +68,10 @@ pub fn claimed_files(root: &Path, extensions: &[String]) -> std::io::Result<Vec<
                 }
                 continue;
             }
-            let Some(extension) = path.extension().map(|e| e.to_string_lossy().into_owned())
-            else {
+            let Some(extension) = path.extension().map(|e| e.to_string_lossy().into_owned()) else {
                 continue;
             };
-            if extensions.iter().any(|claimed| *claimed == extension) {
+            if extensions.contains(&extension) {
                 files.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
             }
         }

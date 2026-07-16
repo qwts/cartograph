@@ -35,6 +35,14 @@ const REPORT: PreflightReport = {
       detector: 'preflight@1',
     },
     {
+      kind: 'uncovered-language',
+      path: 'native/lib.rs',
+      line: 1,
+      message: 'Rust sources present but no adapter covers them',
+      detector: 'preflight@1',
+      request_adapter: 'Rust',
+    },
+    {
       kind: 'wasm-module',
       path: 'src/filters.wasm',
       line: 1,
@@ -93,6 +101,13 @@ export const ThreeWayClassification: Story = {
       canvas.getByText(/a tool limitation, not a System Gap/),
     ).toBeInTheDocument();
     await expect(canvas.getByText('WASM module', { exact: false })).toBeInTheDocument();
+    // An uncovered language carries the resolution lane in place (#201):
+    // request the adapter instead of dead-ending until the next release.
+    const request = canvas.getByRole('link', { name: 'Request this adapter' });
+    await expect(request).toHaveAttribute(
+      'href',
+      expect.stringContaining('title=Adapter%20request%3A%20Rust'),
+    );
 
     // Structure only is visible but deferred to #120.
     await expect(canvas.getByRole('button', { name: 'Structure only' })).toBeDisabled();
