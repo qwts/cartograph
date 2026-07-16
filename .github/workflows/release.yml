@@ -46,7 +46,7 @@ jobs:
       - name: Validate tag, version, and reviewed cut
         id: release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEEASE_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
