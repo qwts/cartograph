@@ -251,6 +251,37 @@ body {
   letter-spacing: normal;
 }
 
+/* #160: focus-path breadcrumb — Enter roots the selection, Esc backs out. */
+.atlas-focus-path {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.35rem 1.25rem 0;
+}
+
+.atlas-focus-path button {
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-body);
+  font-size: 0.72rem;
+  padding: 0.2rem 0.65rem;
+}
+
+.atlas-focus-path button.active {
+  border-color: var(--accent, #abc7ff);
+  font-weight: 600;
+}
+
+.atlas-focus-path .atlas-focus-cta {
+  border-style: dashed;
+}
+
+.atlas-focus-status {
+  font-size: 0.72rem;
+}
+
 .atlas-legend-confirmed {
   color: var(--tier-confirmed);
 }

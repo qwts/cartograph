@@ -93,6 +93,23 @@ export function filterAtlasGraph(snapshot: AtlasSnapshot, layer: AtlasLayer): At
   };
 }
 
+/** Ego projection for focus mode (#160): the root, every node one edge
+ * away in the active projection, and the edges among that kept set — a
+ * deterministic function of (snapshot, root). A root that is not in the
+ * snapshot projects nothing away (fail open to the unfocused view). */
+export function focusAtlasGraph(snapshot: AtlasSnapshot, root: string): AtlasSnapshot {
+  if (!snapshot.nodes.some((node) => node.id === root)) return snapshot;
+  const keep = new Set([root]);
+  for (const edge of snapshot.edges) {
+    if (edge.src === root) keep.add(edge.dst);
+    if (edge.dst === root) keep.add(edge.src);
+  }
+  return {
+    nodes: snapshot.nodes.filter((node) => keep.has(node.id)),
+    edges: snapshot.edges.filter((edge) => keep.has(edge.src) && keep.has(edge.dst)),
+  };
+}
+
 /** Mono chip prefix per producing tier (handoff: `T0 TRIGGERS`, `GAP …`). */
 function tierCode(props: GraphNode['props'] | GraphEdge['props']): string {
   if (confidence(props) === 'Gap') return 'GAP';
@@ -341,9 +358,36 @@ export function AtlasCanvas({ snapshot, onSelect, onSelectEdge, onLayerChange }:
   const [layer, setLayer] = useState<AtlasLayer>('all');
   const [overlay, setOverlay] = useState(true);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const visible = useMemo(() => filterAtlasGraph(snapshot, layer), [snapshot, layer]);
+  // Focus mode (#160): a navigable stack of roots. Each level is the ego
+  // graph of its root within the level above; Esc pops one level.
+  const [focusStack, setFocusStack] = useState<string[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const layered = useMemo(() => filterAtlasGraph(snapshot, layer), [snapshot, layer]);
+  const visible = useMemo(
+    () => focusStack.reduce((snap, root) => focusAtlasGraph(snap, root), layered),
+    [layered, focusStack],
+  );
   // Deterministic banded scene (#159): same snapshot → same positions.
   const scene = useMemo(() => buildAtlasScene(visible, expanded), [visible, expanded]);
+  const namesById = useMemo(
+    () => new Map(snapshot.nodes.map((node) => [node.id, displayName(node)])),
+    [snapshot],
+  );
+
+  const focusOn = (id: string | null) => {
+    if (!id || focusStack[focusStack.length - 1] === id) return;
+    if (!visible.nodes.some((node) => node.id === id)) return;
+    setFocusStack((stack) => [...stack, id]);
+    setExpanded(new Set());
+    // Keep the keyboard on the canvas: the control just used may unmount
+    // with the new projection, and Esc must keep landing inside the card.
+    containerRef.current?.focus();
+  };
+  const backOut = (depth: number) => {
+    setFocusStack((stack) => (stack.length > depth ? stack.slice(0, depth) : stack));
+    setExpanded(new Set());
+    containerRef.current?.focus();
+  };
 
   useEffect(() => {
     onSelectRef.current = onSelect;
@@ -375,7 +419,10 @@ export function AtlasCanvas({ snapshot, onSelect, onSelectEdge, onLayerChange }:
         return;
       }
       const node = byId.get(id);
-      if (node) onSelectRef.current(node);
+      if (node) {
+        setSelectedId(node.id);
+        onSelectRef.current(node);
+      }
     });
     // Edges (and their label chips) are first-class evidence subjects; an
     // aggregated relation expands the clusters it connects.
@@ -397,8 +444,32 @@ export function AtlasCanvas({ snapshot, onSelect, onSelectEdge, onLayerChange }:
     return () => cy.destroy();
   }, [visible, scene, overlay]);
 
+  // Focus mode is keyboard-first (#160): Enter roots the selection, Esc
+  // backs out one level. Buttons and form controls keep Enter for their
+  // own activation; Esc works from anywhere inside the card.
+  const handleFocusKeys = (event: React.KeyboardEvent) => {
+    if (event.key === 'Escape' && focusStack.length > 0) {
+      event.preventDefault();
+      backOut(focusStack.length - 1);
+      return;
+    }
+    if (event.key === 'Enter' && selectedId) {
+      if ((event.target as HTMLElement).closest('button, select, input, a, textarea')) return;
+      event.preventDefault();
+      focusOn(selectedId);
+    }
+  };
+
+  const currentRoot = focusStack[focusStack.length - 1];
+  const focusStatus =
+    focusStack.length > 0
+      ? `Focused on ${namesById.get(currentRoot) ?? currentRoot} — ${visible.nodes.length} nodes at level ${focusStack.length}. Esc backs out one level.`
+      : selectedId
+        ? `${namesById.get(selectedId) ?? selectedId} selected — press Enter to focus its connections.`
+        : '';
+
   return (
-    <section className="card atlas-card" aria-labelledby="atlas-title">
+    <section className="card atlas-card" aria-labelledby="atlas-title" onKeyDown={handleFocusKeys}>
       <div className="atlas-heading">
         <div>
           <h2 id="atlas-title">Atlas · unified graph</h2>
@@ -424,6 +495,10 @@ export function AtlasCanvas({ snapshot, onSelect, onSelectEdge, onLayerChange }:
             onClick={() => {
               setLayer(item.id);
               setExpanded(new Set());
+              // A layer switch changes the projection focus was built on —
+              // reset rather than carry roots that may not exist there.
+              setFocusStack([]);
+              setSelectedId(null);
               onLayerChange?.(item.label);
             }}
           >
@@ -431,6 +506,41 @@ export function AtlasCanvas({ snapshot, onSelect, onSelectEdge, onLayerChange }:
           </button>
         ))}
       </div>
+
+      <nav className="atlas-focus-path" aria-label="Focus path">
+        <button
+          type="button"
+          className={focusStack.length === 0 ? 'active' : ''}
+          aria-current={focusStack.length === 0 ? 'true' : undefined}
+          onClick={() => backOut(0)}
+        >
+          Full graph
+        </button>
+        {focusStack.map((id, index) => (
+          <button
+            key={`${id}:${index}`}
+            type="button"
+            className={index === focusStack.length - 1 ? 'active' : ''}
+            aria-current={index === focusStack.length - 1 ? 'true' : undefined}
+            onClick={() => backOut(index + 1)}
+          >
+            ▸ {namesById.get(id) ?? id}
+          </button>
+        ))}
+        {selectedId && selectedId !== currentRoot && visible.nodes.some((n) => n.id === selectedId) && (
+          <button type="button" className="atlas-focus-cta" onClick={() => focusOn(selectedId)}>
+            Focus on {namesById.get(selectedId) ?? selectedId} (Enter)
+          </button>
+        )}
+        {focusStack.length > 0 && (
+          <button type="button" onClick={() => backOut(focusStack.length - 1)}>
+            Back out (Esc)
+          </button>
+        )}
+        <span aria-live="polite" className="muted atlas-focus-status">
+          {focusStatus}
+        </span>
+      </nav>
 
       <div className="atlas-legend" aria-label="Confidence legend">
         {TIERS.map((tier) => (
@@ -466,6 +576,7 @@ export function AtlasCanvas({ snapshot, onSelect, onSelectEdge, onLayerChange }:
             ref={containerRef}
             className="atlas-cytoscape"
             data-testid="atlas-canvas"
+            tabIndex={0}
             aria-label={`${LAYERS.find((item) => item.id === layer)?.label ?? layer} graph canvas`}
           />
         )}
@@ -496,7 +607,14 @@ export function AtlasCanvas({ snapshot, onSelect, onSelectEdge, onLayerChange }:
           <span className="muted">Visible entities</span>
           <div>
             {visible.nodes.slice(0, 24).map((node) => (
-              <button key={node.id} type="button" onClick={() => onSelect(node)}>
+              <button
+                key={node.id}
+                type="button"
+                onClick={() => {
+                  setSelectedId(node.id);
+                  onSelect(node);
+                }}
+              >
                 {displayName(node)}
               </button>
             ))}
