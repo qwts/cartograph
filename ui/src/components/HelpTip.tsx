@@ -5,7 +5,15 @@ import { HELP_NOTES, type HelpTopic } from '../helpNotes';
  * load-bearing jargon where it appears. Keyboard reachable (one Tab, one
  * Enter), hover-friendly, Esc dismisses; the note text comes from the
  * single-sourced `HELP_NOTES` so surfaces can never drift apart. */
-export function HelpTip({ topic }: { topic: HelpTopic }) {
+export function HelpTip({
+  topic,
+  align = 'start',
+}: {
+  topic: HelpTopic;
+  /** Popover alignment: 'end' hangs the note leftward from the trigger —
+   * use it when the trigger sits near a clipping right edge. */
+  align?: 'start' | 'end';
+}) {
   const { term, note, learnMoreUrl } = HELP_NOTES[topic];
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -39,7 +47,7 @@ export function HelpTip({ topic }: { topic: HelpTopic }) {
         ?
       </button>
       {open && (
-        <span role="note" id={id} className="help-tip-note">
+        <span role="note" id={id} className={`help-tip-note align-${align}`}>
           <strong>{term}.</strong> {note}{' '}
           <a href={learnMoreUrl} target="_blank" rel="noreferrer">
             Learn more

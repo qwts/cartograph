@@ -39,13 +39,17 @@ export const KeyboardReachableWithinOneInteraction: Story = {
 };
 
 export const HoverShowsTheNote: Story = {
-  args: { topic: 'projection' },
+  // align='end' hangs the note leftward for right-edge placements (#193
+  // review): the Flow Inspector toggle sits against a clipping edge.
+  args: { topic: 'projection', align: 'end' },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.hover(
       canvas.getByRole('button', { name: 'What is verified-only vs best-effort?' }),
     );
-    await expect(canvas.getByRole('note')).toHaveTextContent(HELP_NOTES.projection.note);
+    const note = canvas.getByRole('note');
+    await expect(note).toHaveTextContent(HELP_NOTES.projection.note);
+    await expect(note).toHaveClass('align-end');
     await userEvent.unhover(canvas.getByRole('button', { name: /verified-only/ }));
     await waitFor(() => expect(canvas.queryByRole('note')).not.toBeInTheDocument());
   },

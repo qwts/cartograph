@@ -277,6 +277,11 @@ body {
   width: 1.1rem;
 }
 
+.help-tip-note.align-end {
+  left: auto;
+  right: 0;
+}
+
 .help-tip-note {
   background: var(--surface, #1c1c1c);
   border: 1px solid var(--border);

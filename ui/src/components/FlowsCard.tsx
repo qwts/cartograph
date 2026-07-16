@@ -313,7 +313,7 @@ export function FlowsCard({
         </div>
         <div className="flow-inspector-controls">
           <div className="flow-mode-toggle" aria-label="Flow export mode">
-            <HelpTip topic="projection" />
+            <HelpTip topic="projection" align="end" />
             {(['verified-only', 'best-effort'] as const).map((item) => (
               <button
                 key={item}
