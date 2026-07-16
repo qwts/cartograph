@@ -229,6 +229,28 @@ body {
   background: currentcolor;
 }
 
+/* Cluster controls live in the legend row but are actions, not swatches. */
+.atlas-legend .atlas-cluster-controls {
+  display: inline-flex;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+.atlas-legend .atlas-cluster-controls::before {
+  content: none;
+}
+
+.atlas-cluster-controls button {
+  font-size: 0.68rem;
+  padding: 0.2rem 0.55rem;
+  background: var(--control);
+  color: var(--text-body);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .atlas-legend-confirmed {
   color: var(--tier-confirmed);
 }
