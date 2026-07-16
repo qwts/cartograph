@@ -1,17 +1,22 @@
 import { useState } from 'react';
-import type { GraphStats } from '../store';
+import type { GraphStats, SystemRepo } from '../store';
 
 export interface GraphStatsCardProps {
   stats: GraphStats | null;
+  /** Repos in the current system (#162) — the clear confirmation names
+   * exactly what is being thrown away. */
+  systemContents?: SystemRepo[];
   canClear: boolean;
   clearing: boolean;
   error: string | null;
   onClear: () => void;
 }
 
-/** Node/edge counts plus a confirmed clear action for disposable graph facts. */
+/** Node/edge counts plus a confirmed clear action, phrased in system terms
+ * (#162): the user thinks in projects/systems, not storage layers. */
 export function GraphStatsCard({
   stats,
+  systemContents,
   canClear,
   clearing,
   error,
@@ -21,7 +26,7 @@ export function GraphStatsCard({
 
   return (
     <section className="card">
-      <h2>Unified graph</h2>
+      <h2>System graph</h2>
       <div className="stat" data-testid="graph-node-count">
         {stats ? stats.nodes : '—'}
       </div>
@@ -37,14 +42,20 @@ export function GraphStatsCard({
           disabled={!canClear || clearing}
           onClick={() => setConfirming(true)}
         >
-          {clearing ? 'Clearing…' : 'Clear graph'}
+          {clearing ? 'Clearing…' : 'Clear system'}
         </button>
       ) : (
         <div className="clear-confirmation" role="alert">
-          <p>Clear all graph facts? Job history will be kept.</p>
+          <p>
+            Remove every recovered fact
+            {systemContents && systemContents.length > 0
+              ? ` for ${systemContents.map((entry) => entry.repo).join(', ')}`
+              : ' in this system'}
+            ? Job history and settings are kept.
+          </p>
           <div className="clear-confirmation-actions">
             <button type="button" className="secondary-button" onClick={() => setConfirming(false)}>
-              Keep graph
+              Keep system
             </button>
             <button
               type="button"

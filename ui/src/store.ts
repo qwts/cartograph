@@ -159,6 +159,13 @@ export interface AnchorProbe {
   found: number;
 }
 
+/** One repo currently contributing facts to the unified graph (#162),
+ * derived from graph facts — never from history logs. */
+export interface SystemRepo {
+  repo: string;
+  commit: string;
+}
+
 export type SpecExportMode = 'verified-only' | 'best-effort';
 
 export interface SpecAssertion {
@@ -431,6 +438,8 @@ export interface AppStore {
   flowList: Flow[];
   /** Anchor kinds sought/found by the tracer — honest zero-flow state. */
   flowAnchors: AnchorProbe[];
+  /** Repos whose facts are in the current system graph (#162). */
+  systemContents: SystemRepo[];
   /** Full official artifact set under the active R-INT-5 mode. */
   specBundle: SpecBundle | null;
   specMode: SpecExportMode;
@@ -559,6 +568,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   flows: null,
   flowList: [],
   flowAnchors: [],
+  systemContents: [],
   specBundle: null,
   specMode: 'best-effort',
   curation: [],
@@ -600,6 +610,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         flows: null,
         flowList: [],
         flowAnchors: [],
+        systemContents: [],
         specBundle: null,
         curation: [],
         findings: null,
@@ -612,7 +623,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -621,6 +632,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<string | null>('export_flows', null),
       invokeOr<Flow[]>('list_flows', []),
       invokeOr<AnchorProbe[]>('list_flow_anchors', []),
+      invokeOr<SystemRepo[]>('system_contents', []),
       invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
       invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
       invokeOr<FindingsSummary | null>('findings_summary', null),
@@ -646,6 +658,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       flows,
       flowList,
       flowAnchors,
+      systemContents,
       specBundle,
       curation,
       findings,

@@ -115,6 +115,46 @@ fn graph_stats(state: State<'_, AppState>) -> Result<GraphStats, String> {
     })
 }
 
+/// One repo currently contributing facts to the unified graph (#162).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct SystemRepo {
+    repo: String,
+    commit: String,
+}
+
+/// What the current system contains, derived from the graph's own File
+/// facts (never from history logs, which survive a clear): each distinct
+/// repo with the commit identity its evidence records. Deterministic:
+/// sorted by repo.
+#[tauri::command]
+fn system_contents(state: State<'_, AppState>) -> Result<Vec<SystemRepo>, String> {
+    let graph = state.graph.lock().map_err(|e| e.to_string())?;
+    let files = graph.nodes_with_label("File").map_err(|e| e.to_string())?;
+    Ok(system_contents_of(&files))
+}
+
+fn system_contents_of(files: &[Node]) -> Vec<SystemRepo> {
+    let mut repos: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for node in files {
+        let Some(repo) = node
+            .id
+            .strip_prefix("file:")
+            .and_then(|rest| rest.split('@').next())
+        else {
+            continue;
+        };
+        let commit = node.props["prov"]["evidence"][0]["commit_sha"]
+            .as_str()
+            .unwrap_or("workdir")
+            .to_string();
+        repos.entry(repo.to_string()).or_insert(commit);
+    }
+    repos
+        .into_iter()
+        .map(|(repo, commit)| SystemRepo { repo, commit })
+        .collect()
+}
+
 fn clear_graph_store(graph: &mut SqliteGraphStore) -> Result<GraphStats, String> {
     graph.clear().map_err(|e| e.to_string())?;
     Ok(GraphStats { nodes: 0, edges: 0 })
@@ -2103,6 +2143,7 @@ fn main() {
             ping,
             graph_stats,
             clear_graph,
+            system_contents,
             clear_finished_jobs,
             list_jobs,
             list_evals,
@@ -3225,6 +3266,43 @@ resource "aws_sqs_queue" "orders" {
                 .iter()
                 .all(|node| node.props["language"] != "java")
         );
+    }
+
+    #[test]
+    fn system_contents_lists_each_repo_from_graph_facts() {
+        // AC-0085: composition comes from the graph's own File facts —
+        // distinct repos with their evidence commit identity, sorted, one
+        // entry per repo no matter how many files it contributed.
+        let file = |repo: &str, path: &str, commit: &str| Node {
+            id: format!("file:{repo}@{path}"),
+            label: "File".into(),
+            props: serde_json::json!({
+                "path": path,
+                "prov": { "evidence": [{ "repo": repo, "path": path, "commit_sha": commit }] },
+            }),
+        };
+        let files = vec![
+            file("local/infra", "main.tf", "workdir"),
+            file("acme/shop", "src/app.ts", "a1b2c3d"),
+            file("acme/shop", "src/db.ts", "a1b2c3d"),
+        ];
+        let contents = crate::system_contents_of(&files);
+        assert_eq!(
+            contents,
+            [
+                crate::SystemRepo {
+                    repo: "acme/shop".into(),
+                    commit: "a1b2c3d".into(),
+                },
+                crate::SystemRepo {
+                    repo: "local/infra".into(),
+                    commit: "workdir".into(),
+                },
+            ]
+        );
+
+        // An empty graph names nothing — the UI states the system is empty.
+        assert!(crate::system_contents_of(&[]).is_empty());
     }
 
     #[test]

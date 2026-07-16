@@ -2,6 +2,7 @@ import type {
   FindingsSummary,
   IngestSummary,
   SpecBundle,
+  SystemRepo,
   TierDistribution,
 } from '../store';
 
@@ -10,6 +11,9 @@ export interface WorkspaceSurfaceProps {
   findings: FindingsSummary | null;
   distribution: TierDistribution;
   bundle: SpecBundle | null;
+  /** Repos whose facts are in the current graph (#162) — from graph facts,
+   * so it reflects stacking across ingests, not just the last job. */
+  systemContents?: SystemRepo[];
   onReingest: () => void;
   onTriageGaps: () => void;
   onProvenance: () => void;
@@ -51,6 +55,7 @@ export function WorkspaceSurface({
   findings,
   distribution,
   bundle,
+  systemContents,
   onReingest,
   onTriageGaps,
   onProvenance,
@@ -99,6 +104,23 @@ export function WorkspaceSurface({
           {recovered ? 'Re-ingest' : 'Connect a target'}
         </button>
       </header>
+
+      {systemContents && systemContents.length > 0 && (
+        // #162: stacking is stated, never silent — the graph's own facts
+        // name every repo currently merged into this system.
+        <p className="system-contents" data-testid="system-contents">
+          <span>
+            System contents:{' '}
+            {systemContents
+              .map((entry) => `${entry.repo} @ ${entry.commit.slice(0, 7)}`)
+              .join(' · ')}
+          </span>
+          <span className="muted">
+            {' '}
+            — new ingests merge into this system; Clear system starts over.
+          </span>
+        </p>
+      )}
 
       <div className="outcome-card" data-testid="outcome-card">
         <span className="material-symbols-outlined outcome-icon" aria-hidden="true">

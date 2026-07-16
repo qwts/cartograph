@@ -4,7 +4,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 
 | US | AC range | Crate(s) | Milestone | Flow | ADR | Tests |
 |----|----------|----------|-----------|------|-----|-------|
-| US-0001 | AC-0001..0003, AC-0049..0050, AC-0076..0078 | ingest, core-graph, app, ui | M0–M3 | — | ADR-0001, ADR-0005 | T-0001..0003, T-0049..0050, T-0076..0078 |
+| US-0001 | AC-0001..0003, AC-0049..0050, AC-0076..0078, AC-0085 | ingest, core-graph, app, ui | M0–M3 | — | ADR-0001, ADR-0005 | T-0001..0003, T-0049..0050, T-0076..0078, T-0085 |
 | US-0002 | AC-0004..0006, AC-0053..0054, AC-0079..0080 | adapters-lang-ts, adapters-lang-python, adapters-lang-go, adapters-lang-java, adapters-fw, core-prov, app, ui | M1, M10 | — | ADR-0003, ADR-0006 | T-0004..0006, T-0053..0054, T-0079..0080 |
 | US-0003 | AC-0007..0009, AC-0043..0048, AC-0051..0052 | adapters-lang-ts, iac, dynamic, spec, app | M2, M6 | — | ADR-0003 | T-0007..0009, T-0043..0048, T-0051..0052 |
 | US-0004 | AC-0010..0012 | events, dynamic, flowtracer, app | M3, M5–M6 | F-* | ADR-0002 | T-0010..0012 |

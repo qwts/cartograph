@@ -72,6 +72,7 @@ export default function App() {
     flows,
     flowList,
     flowAnchors,
+    systemContents,
     specBundle,
     specMode,
     curation,
@@ -206,6 +207,7 @@ export default function App() {
         return (
           <>
             <WorkspaceSurface
+              systemContents={systemContents}
               summary={ingestSummary}
               findings={findings}
               distribution={tierDistribution(atlas)}
@@ -218,6 +220,7 @@ export default function App() {
             <div className="card-grid utility">
               <GraphStatsCard
                 stats={stats}
+                systemContents={systemContents}
                 canClear={backend === 'up' && !ingestBusy && (stats?.nodes ?? 0) > 0}
                 clearing={clearBusy}
                 error={clearError}

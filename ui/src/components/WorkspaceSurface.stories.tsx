@@ -212,6 +212,27 @@ export const ManifestRecoveryShowsRepoIdentities: Story = {
   },
 };
 
+export const StackedSystemContentsAreStated: Story = {
+  // AC-0085 (#162): two stacked ingests are never silent — the Workspace
+  // names every repo in the system and states the merge behavior.
+  args: {
+    systemContents: [
+      { repo: 'acme/shop', commit: 'a1b2c3d4e5f6' },
+      { repo: 'local/infra', commit: 'workdir' },
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const contents = canvas.getByTestId('system-contents');
+    await expect(contents).toHaveTextContent(
+      'System contents: acme/shop @ a1b2c3d · local/infra @ workdir',
+    );
+    await expect(contents).toHaveTextContent(
+      'new ingests merge into this system; Clear system starts over',
+    );
+  },
+};
+
 export const NoRecoveryYet: Story = {
   args: { summary: null, findings: null, bundle: null },
   play: async ({ canvasElement, args }) => {

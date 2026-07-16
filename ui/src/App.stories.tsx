@@ -264,6 +264,8 @@ function installFakeCore() {
           { kind: 'HTTP endpoints', found: 1 },
           { kind: 'externally published event channels', found: 0 },
         ];
+      case 'system_contents':
+        return [{ repo: 'local/image-trail', commit: 'workdir' }];
       case 'export_topology':
         return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
       case 'export_spec':
@@ -944,7 +946,7 @@ export const ClearGraphPreservesJobs: Story = {
     await waitFor(() => expect(canvas.getByText('ingest:/seed')).toBeInTheDocument());
 
     await userEvent.click(canvas.getByRole('button', { name: 'Workspace' }));
-    await userEvent.click(canvas.getByRole('button', { name: 'Clear graph' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear system' }));
     await userEvent.click(canvas.getByRole('button', { name: 'Confirm clear' }));
     await waitFor(() => expect(canvas.getByTestId('graph-node-count')).toHaveTextContent('0'));
     await expect(canvas.getByTestId('graph-edge-count')).toHaveTextContent('0');

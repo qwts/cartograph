@@ -21,9 +21,10 @@
 - **AC-0076** Given accumulated terminal jobs, when I clear finished jobs and confirm the warning, then done/failed/cancelled rows are removed while queued/running/interrupted jobs and all graph facts remain intact.
 - **AC-0077** Given the production Jobs surface, when it renders, then it offers only lifecycle verbs on existing work (Cancel/Retry/Resume and Clear finished) — no job-creation control.
 - **AC-0078** Given any recovery command (ingest, add-repo, add-system, or an ingest retry/resume), when it runs, then extraction executes on a blocking worker thread — the webview/main thread never blocks, the UI stays interactive, and job progress renders throughout.
+- **AC-0085** Given one or more ingested targets, when the Workspace renders, then it states what the current system contains — each repo with its commit identity, derived from the graph's own facts (never from history logs, which survive a clear) — and that further ingests merge into the same system; the destructive action is labeled in system terms (Clear system) and its confirmation names exactly what is removed (every recovered fact) and what survives (job history and settings).
 - **Security:** Tokens stored in OS keychain; never logged; least-privilege App scopes.
 - **Performance:** Shallow/sparse clone; 1 GB repo clones within bounded progress feedback.
-- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0078
+- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0078,T-0085
 
 ### US-0002 — Deterministic extraction of server-side facts (TS/Python/Go/Java)
 - **Actor:** Engine

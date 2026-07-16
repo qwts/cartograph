@@ -841,6 +841,12 @@ button.flow-hop-card:hover {
   padding: 0 1.25rem 1.25rem;
 }
 
+/* #162: what the system currently contains, stated under the title row. */
+.system-contents {
+  font-size: 0.85rem;
+  margin: -0.35rem 0 0.35rem;
+}
+
 /* #165: the zero-flow state names each anchor kind sought and its count. */
 .flow-anchor-probes {
   display: grid;
