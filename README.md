@@ -45,7 +45,7 @@ npm run tauri dev   # first run compiles the Rust workspace — takes a few minu
 | [docs/design/production-ui/](docs/design/production-ui/) | Production UI design handoff (authoritative tokens + screenshots) |
 | [docs/design/](docs/design/) | Earlier design tokens + Stitch UI mockups |
 
-Work is tracked in [GitHub Issues + Project](https://github.com/qwtm/cartograph/issues);
+Work is tracked in [GitHub Issues + Project](https://github.com/qwts/cartograph/issues);
 `docs/archive/tracker.csv` is the pre-import snapshot and is not maintained.
 
 ## Stack (decided — see ADRs)
