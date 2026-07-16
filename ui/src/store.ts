@@ -195,6 +195,17 @@ export interface AdapterInventory {
   detector: string;
 }
 
+/** One discovered WASM plugin adapter with per-project state (#198).
+ * Disabled unless explicitly enabled — the fail-closed default. */
+export interface PluginStatus {
+  id: string;
+  path: string;
+  content_hash: string;
+  scope: 'project' | 'user';
+  shadowed_user_copy: boolean;
+  enabled: boolean;
+}
+
 export type SpecExportMode = 'verified-only' | 'best-effort';
 
 export interface SpecAssertion {
@@ -469,6 +480,10 @@ export interface AppStore {
   flowAnchors: AnchorProbe[];
   /** Installed + planned adapters (#163), from the Preflight registry. */
   adapters: AdapterInventory | null;
+  /** Discovered plugin adapters with per-project enablement (#198). */
+  plugins: PluginStatus[];
+  /** Toggle a plugin for the current project and refresh the list. */
+  setPluginEnabled: (pluginId: string, enabled: boolean) => Promise<void>;
   /** Repos whose facts are in the current system graph (#162). */
   systemContents: SystemRepo[];
   /** Full official artifact set under the active R-INT-5 mode. */
@@ -608,6 +623,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   flowAnchors: [],
   systemContents: [],
   adapters: null,
+  plugins: [],
   specBundle: null,
   specMode: 'best-effort',
   curation: [],
@@ -651,6 +667,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         flowAnchors: [],
         systemContents: [],
         adapters: null,
+        plugins: [],
         specBundle: null,
         curation: [],
         findings: null,
@@ -663,7 +680,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, adapters, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, adapters, plugins, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -674,6 +691,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<AnchorProbe[]>('list_flow_anchors', []),
       invokeOr<SystemRepo[]>('system_contents', []),
       invokeOr<AdapterInventory | null>('adapter_inventory', null),
+      invokeOr<PluginStatus[]>('list_plugins', [], { projectRoot: get().ingestTarget || null }),
       invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
       invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
       invokeOr<FindingsSummary | null>('findings_summary', null),
@@ -701,6 +719,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       flowAnchors,
       systemContents,
       adapters,
+      plugins,
       specBundle,
       curation,
       findings,
@@ -712,6 +731,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       egress,
       disclosures: { T2: disclosureT2 ?? undefined, T3: disclosureT3 ?? undefined },
     });
+  },
+
+  setPluginEnabled: async (pluginId: string, enabled: boolean) => {
+    await invokeOr('set_plugin_enabled', null, {
+      projectRoot: get().ingestTarget || '',
+      pluginId,
+      enabled,
+    });
+    const plugins = await invokeOr<PluginStatus[]>('list_plugins', [], {
+      projectRoot: get().ingestTarget || null,
+    });
+    set({ plugins });
   },
 
   clearFinishedJobs: async () => {

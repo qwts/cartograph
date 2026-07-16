@@ -104,6 +104,13 @@ impl SettingsStore {
                  consent_disclosure TEXT,
                  consented_at       TEXT
              ) STRICT;
+             CREATE TABLE IF NOT EXISTS plugin_settings (
+                 project_root TEXT NOT NULL,
+                 plugin_id    TEXT NOT NULL,
+                 enabled      INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                 updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                 PRIMARY KEY (project_root, plugin_id)
+             ) STRICT;
              CREATE TABLE IF NOT EXISTS egress_log (
                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
                  provider   TEXT NOT NULL,
@@ -161,6 +168,37 @@ impl SettingsStore {
 
     /// Choose `local` or `cloud` for an LLM tier (T2/T3). Switching away
     /// from cloud always revokes any standing consent (fail closed).
+    /// Enable/disable one discovered plugin for one project (#198).
+    /// Discovery never activates anything by itself: a plugin is off until
+    /// this records an explicit opt-in, per project.
+    pub fn set_plugin_enabled(
+        &mut self,
+        project_root: &str,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO plugin_settings (project_root, plugin_id, enabled)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (project_root, plugin_id)
+             DO UPDATE SET enabled = ?3,
+                           updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+            params![project_root, plugin_id, enabled as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Plugin ids explicitly enabled for `project_root`. Absent rows are
+    /// disabled — the fail-closed default.
+    pub fn enabled_plugins(&self, project_root: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT plugin_id FROM plugin_settings
+             WHERE project_root = ?1 AND enabled = 1 ORDER BY plugin_id",
+        )?;
+        let rows = stmt.query_map(params![project_root], |row| row.get(0))?;
+        rows.collect()
+    }
+
     pub fn set_provider(&mut self, tier: &str, provider: &str) -> Result<(), SettingsError> {
         self.require_tier(tier)?;
         if !LLM_TIERS.contains(&tier) {
@@ -280,6 +318,46 @@ impl SettingsStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plugin_enablement_is_per_project_and_fails_closed() {
+        // AC-0068 (#198): enable/disable persists per project; a plugin
+        // unknown to the table is disabled by default.
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = super::SettingsStore::open(dir.path().join("state.db")).unwrap();
+        assert!(store.enabled_plugins("/proj/a").unwrap().is_empty());
+
+        store
+            .set_plugin_enabled("/proj/a", "t0.adapter-ruby", true)
+            .unwrap();
+        store
+            .set_plugin_enabled("/proj/a", "t0.adapter-swift", true)
+            .unwrap();
+        store
+            .set_plugin_enabled("/proj/b", "t0.adapter-ruby", true)
+            .unwrap();
+        assert_eq!(
+            store.enabled_plugins("/proj/a").unwrap(),
+            ["t0.adapter-ruby", "t0.adapter-swift"]
+        );
+        assert_eq!(
+            store.enabled_plugins("/proj/b").unwrap(),
+            ["t0.adapter-ruby"]
+        );
+
+        // Disable persists too, and only for that project.
+        store
+            .set_plugin_enabled("/proj/a", "t0.adapter-ruby", false)
+            .unwrap();
+        assert_eq!(
+            store.enabled_plugins("/proj/a").unwrap(),
+            ["t0.adapter-swift"]
+        );
+        assert_eq!(
+            store.enabled_plugins("/proj/b").unwrap(),
+            ["t0.adapter-ruby"]
+        );
+    }
+
     use super::*;
 
     #[test]

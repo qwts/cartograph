@@ -76,6 +76,8 @@ export default function App() {
     flowAnchors,
     systemContents,
     adapters,
+    plugins,
+    setPluginEnabled,
     specBundle,
     specMode,
     curation,
@@ -437,6 +439,8 @@ export default function App() {
             egressLabel={egressLine}
             disclosures={disclosures}
             adapters={adapters}
+            plugins={plugins}
+            onTogglePlugin={(pluginId, enabled) => void setPluginEnabled(pluginId, enabled)}
             error={settingsError}
             canEdit={backend === 'up'}
             onToggleTier={(tier, enabled) => void setTierEnabled(tier, enabled)}

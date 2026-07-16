@@ -16,6 +16,7 @@ rusqlite = { workspace = true }
 core-graph = { workspace = true }
 core-prov = { workspace = true }
 adapters-lang-ts = { workspace = true }
+adapters-plugin-host = { workspace = true }
 adapters-lang-python = { workspace = true }
 adapters-lang-go = { workspace = true }
 adapters-lang-java = { workspace = true }

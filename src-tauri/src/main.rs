@@ -115,6 +115,65 @@ fn graph_stats(state: State<'_, AppState>) -> Result<GraphStats, String> {
     })
 }
 
+/// One discovered plugin with its per-project lifecycle state (#198).
+#[derive(Serialize)]
+struct PluginStatus {
+    #[serde(flatten)]
+    plugin: adapters_plugin_host::discovery::DiscoveredPlugin,
+    /// Explicit per-project opt-in; absent rows are disabled (fail closed).
+    enabled: bool,
+}
+
+/// Discover plugin artifacts for a project: `.cartograph/adapters/` inside
+/// `project_root` first, then the user-level adapters directory under app
+/// data — project wins on id conflict. Discovery never runs guest code.
+#[tauri::command]
+fn list_plugins(
+    project_root: Option<String>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<PluginStatus>, String> {
+    let user_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("adapters");
+    let discovered = adapters_plugin_host::discovery::discover(
+        project_root.as_deref().map(std::path::Path::new),
+        &user_dir,
+    );
+    let enabled: std::collections::BTreeSet<String> = {
+        let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
+        settings_store
+            .enabled_plugins(project_root.as_deref().unwrap_or(""))
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect()
+    };
+    Ok(discovered
+        .into_iter()
+        .map(|plugin| PluginStatus {
+            enabled: enabled.contains(&plugin.id),
+            plugin,
+        })
+        .collect())
+}
+
+/// Persist a per-project plugin opt-in/out (#198). Enabling never runs the
+/// plugin here — extraction happens only behind the conformance gate.
+#[tauri::command]
+fn set_plugin_enabled(
+    project_root: String,
+    plugin_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut settings_store = state.settings.lock().map_err(|e| e.to_string())?;
+    settings_store
+        .set_plugin_enabled(&project_root, &plugin_id, enabled)
+        .map_err(|e| e.to_string())
+}
+
 /// The adapter inventory (#163): the same registry Preflight consults, so
 /// Settings and coverage can never disagree. Static per build.
 #[derive(Serialize)]
@@ -2349,6 +2408,8 @@ fn main() {
             clear_graph,
             system_contents,
             adapter_inventory,
+            list_plugins,
+            set_plugin_enabled,
             clear_finished_jobs,
             list_jobs,
             list_evals,

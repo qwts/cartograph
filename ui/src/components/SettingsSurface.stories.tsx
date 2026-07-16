@@ -236,6 +236,49 @@ export const AdapterInventoryExplainsAndRecommends: Story = {
   },
 };
 
+export const DiscoveredPluginsToggle: Story = {
+  // #198 (AC-0068 slice): discovered plugins list with scope, content hash,
+  // and a per-project fail-closed toggle — off until explicitly enabled.
+  args: {
+    plugins: [
+      {
+        id: 't0.adapter-ruby',
+        path: '/repo/.cartograph/adapters/t0.adapter-ruby.wasm',
+        content_hash: 'abcdef0123456789abcdef',
+        scope: 'project',
+        shadowed_user_copy: true,
+        enabled: false,
+      },
+      {
+        id: 't0.adapter-swift',
+        path: '/home/u/adapters/t0.adapter-swift.wasm',
+        content_hash: '9876543210fedcba987654',
+        scope: 'user',
+        shadowed_user_copy: false,
+        enabled: true,
+      },
+    ],
+    onTogglePlugin: fn(),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const list = within(canvas.getByRole('list', { name: 'Discovered plugins' }));
+    await expect(list.getAllByRole('listitem')).toHaveLength(2);
+    // Fail-closed default is stated, plus discovery provenance.
+    await expect(canvas.getByText(/off until you enable it here/)).toBeInTheDocument();
+    await expect(list.getByText(/Project copy \(shadows a user-level copy\)/)).toBeInTheDocument();
+    await expect(list.getByText('abcdef012345')).toBeInTheDocument();
+
+    const ruby = list.getByRole('switch', { name: 't0.adapter-ruby enabled for this project' });
+    await expect(ruby).toHaveAttribute('aria-checked', 'false');
+    await userEvent.click(ruby);
+    await expect(args.onTogglePlugin).toHaveBeenCalledWith('t0.adapter-ruby', true);
+
+    const swift = list.getByRole('switch', { name: 't0.adapter-swift enabled for this project' });
+    await expect(swift).toHaveAttribute('aria-checked', 'true');
+  },
+};
+
 export const NoBackend: Story = {
   args: { tiers: [], canEdit: false, adapters: null },
   play: async ({ canvasElement }) => {

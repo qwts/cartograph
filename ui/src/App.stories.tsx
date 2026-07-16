@@ -266,6 +266,10 @@ function installFakeCore() {
         ];
       case 'system_contents':
         return [{ repo: 'local/image-trail', commit: 'workdir' }];
+      case 'list_plugins':
+        return [];
+      case 'set_plugin_enabled':
+        return null;
       case 'adapter_inventory':
         return {
           installed: [

@@ -1,4 +1,4 @@
-import type { AdapterInventory, CloudDisclosure, TierSettings } from '../store';
+import type { AdapterInventory, CloudDisclosure, PluginStatus, TierSettings } from '../store';
 
 export interface SettingsSurfaceProps {
   tiers: TierSettings[];
@@ -8,6 +8,9 @@ export interface SettingsSurfaceProps {
   disclosures: Partial<Record<string, CloudDisclosure>>;
   /** Installed + planned adapters (#163) — the registry Preflight uses. */
   adapters: AdapterInventory | null;
+  /** Discovered WASM plugin adapters with per-project enablement (#198). */
+  plugins?: PluginStatus[];
+  onTogglePlugin?: (pluginId: string, enabled: boolean) => void;
   error: string | null;
   /** Disabled controls when there is no live backend to persist into. */
   canEdit: boolean;
@@ -132,6 +135,8 @@ export function SettingsSurface({
   egressLabel,
   disclosures,
   adapters,
+  plugins,
+  onTogglePlugin,
   error,
   canEdit,
   onToggleTier,
@@ -309,6 +314,41 @@ export function SettingsSurface({
         <p className="muted">
           Adapter inventory lives in the core — connect a backend to list installed adapters.
         </p>
+      )}
+
+      <h4 className="settings-subsection-title">Plugin adapters (discovered)</h4>
+      <p className="muted adapter-explainer">
+        WASM adapter plugins found in the project's <code>.cartograph/adapters/</code> (which wins
+        on id conflict) and the user-level adapters directory, keyed by content hash. A plugin is
+        off until you enable it here, and it only extracts facts after passing the conformance
+        gate — never on discovery.
+      </p>
+      {plugins && plugins.length > 0 ? (
+        <ul className="adapter-list" aria-label="Discovered plugins">
+          {plugins.map((plugin) => (
+            <li key={plugin.id} className="adapter-row">
+              <div className="adapter-head">
+                <strong>{plugin.id}</strong>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={plugin.enabled}
+                  aria-label={`${plugin.id} enabled for this project`}
+                  onClick={() => onTogglePlugin?.(plugin.id, !plugin.enabled)}
+                >
+                  {plugin.enabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+              <p className="muted">
+                {plugin.scope === 'project' ? 'Project copy' : 'User-level copy'}
+                {plugin.shadowed_user_copy ? ' (shadows a user-level copy)' : ''} ·{' '}
+                <code>{plugin.content_hash.slice(0, 12)}</code>
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No plugin adapters discovered for this project.</p>
       )}
     </section>
   );
