@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { assignBands, buildAtlasScene, clusterKeyFor } from '../atlasLayout';
 import type { AtlasSnapshot, GraphNode, Provenance, Tier } from '../store';
 import { AtlasCanvas, nodeShapeClass } from './AtlasCanvas';
 
@@ -174,6 +175,84 @@ export const LayerDrivesScopeChip: Story = {
     await expect(args.onLayerChange).toHaveBeenCalledWith('Events');
     await userEvent.click(canvas.getByRole('button', { name: 'All layers' }));
     await expect(args.onLayerChange).toHaveBeenCalledWith('All layers');
+  },
+};
+
+export const BandedLayoutIsDeterministic: Story = {
+  // #159/AC-0081: bands come from kind (Gaps inherit from a neighbor),
+  // cluster keys are id-derived, and positions are identical for identical
+  // snapshots regardless of input order — layout never jitters.
+  play: async () => {
+    const bands = assignBands(atlasFixture);
+    await expect(bands.get(atlasNodes[0].id)).toBe('infra'); // Resource
+    await expect(bands.get(atlasNodes[1].id)).toBe('events'); // Channel
+    await expect(bands.get(atlasNodes[2].id)).toBe('server'); // Endpoint
+    await expect(bands.get(atlasNodes[3].id)).toBe('client'); // Component
+    // The Gap anchors to its calling Endpoint's band, never floats alone.
+    await expect(bands.get(atlasNodes[4].id)).toBe('server');
+
+    await expect(clusterKeyFor(atlasNodes[0])).toBe('local/shop · aws_sqs_queue');
+    await expect(clusterKeyFor(atlasNodes[1])).toBe('sqs-queue');
+
+    const shuffled: AtlasSnapshot = {
+      nodes: [...atlasFixture.nodes].reverse(),
+      edges: [...atlasFixture.edges].reverse(),
+    };
+    const a = buildAtlasScene(atlasFixture, new Set());
+    const b = buildAtlasScene(shuffled, new Set());
+    const positions = (scene: typeof a) =>
+      scene.nodes.map((item) => `${item.id}@${item.position.x},${item.position.y}`).sort();
+    await expect(positions(b)).toEqual(positions(a));
+    await expect(a.bands.map((band) => band.label)).toEqual([
+      'Infrastructure',
+      'Server',
+      'Events',
+      'Client',
+    ]);
+  },
+};
+
+const SCALE_NODES: GraphNode[] = [
+  ...Array.from({ length: 150 }, (_, index) => ({
+    id: `sym:local/shop@src/app_${index}.ts#fn${index}`,
+    label: 'Symbol' as const,
+    props: { name: `fn${index}`, prov: prov('Confirmed', `src/app_${index}.ts`) },
+  })),
+  ...Array.from({ length: 90 }, (_, index) => ({
+    id: `res:local/shop@aws_lambda_function.worker_${index}`,
+    label: 'Resource' as const,
+    props: { logical_id: `worker_${index}`, prov: prov('Confirmed', 'infra.tf') },
+  })),
+];
+
+export const ClustersCollapseAtScale: Story = {
+  // #159/AC-0081: past the threshold the initial view is collapsed clusters
+  // that expand on demand — reading never requires manual arrangement.
+  args: {
+    snapshot: { nodes: SCALE_NODES, edges: [] },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('status')).toHaveTextContent(
+      '240 nodes · 0 edges · 2 of 2 clusters collapsed',
+    );
+
+    // The cluster index expands one cluster in place.
+    const index = within(canvas.getByLabelText('Collapsed clusters'));
+    await userEvent.click(index.getByRole('button', { name: /Infrastructure · local\/shop · aws_lambda_function · 90/ }));
+    await waitFor(() =>
+      expect(canvas.getByRole('status')).toHaveTextContent('1 of 2 clusters collapsed'),
+    );
+
+    // Expand all, then collapse back — no manual arrangement anywhere.
+    await userEvent.click(canvas.getByRole('button', { name: 'Expand all clusters' }));
+    await waitFor(() =>
+      expect(canvas.getByRole('status')).toHaveTextContent('0 of 2 clusters collapsed'),
+    );
+    await userEvent.click(canvas.getByRole('button', { name: 'Collapse clusters' }));
+    await waitFor(() =>
+      expect(canvas.getByRole('status')).toHaveTextContent('2 of 2 clusters collapsed'),
+    );
   },
 };
 
