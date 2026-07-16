@@ -202,6 +202,8 @@ export interface PluginStatus {
   path: string;
   content_hash: string;
   scope: 'project' | 'user';
+  /** Resolved ingest root that supplied a project copy; null for user. */
+  project_root: string | null;
   shadowed_user_copy: boolean;
   enabled: boolean;
 }
@@ -482,8 +484,8 @@ export interface AppStore {
   adapters: AdapterInventory | null;
   /** Discovered plugin adapters with per-project enablement (#198). */
   plugins: PluginStatus[];
-  /** Toggle a plugin for the current project and refresh the list. */
-  setPluginEnabled: (pluginId: string, enabled: boolean) => Promise<void>;
+  /** Toggle a plugin (bound to its exact artifact hash) and refresh. */
+  setPluginEnabled: (plugin: PluginStatus, enabled: boolean) => Promise<void>;
   /** Repos whose facts are in the current system graph (#162). */
   systemContents: SystemRepo[];
   /** Full official artifact set under the active R-INT-5 mode. */
@@ -691,7 +693,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<AnchorProbe[]>('list_flow_anchors', []),
       invokeOr<SystemRepo[]>('system_contents', []),
       invokeOr<AdapterInventory | null>('adapter_inventory', null),
-      invokeOr<PluginStatus[]>('list_plugins', [], { projectRoot: get().ingestTarget || null }),
+      invokeOr<PluginStatus[]>('list_plugins', []),
       invokeOr<SpecBundle | null>('export_spec', null, { mode: get().specMode }),
       invokeOr<AssertionDecisionRecord[]>('list_assertion_decisions', []),
       invokeOr<FindingsSummary | null>('findings_summary', null),
@@ -733,15 +735,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
   },
 
-  setPluginEnabled: async (pluginId: string, enabled: boolean) => {
+  setPluginEnabled: async (plugin: PluginStatus, enabled: boolean) => {
     await invokeOr('set_plugin_enabled', null, {
-      projectRoot: get().ingestTarget || '',
-      pluginId,
+      projectRoot: plugin.project_root ?? 'user',
+      pluginId: plugin.id,
+      contentHash: plugin.content_hash,
       enabled,
     });
-    const plugins = await invokeOr<PluginStatus[]>('list_plugins', [], {
-      projectRoot: get().ingestTarget || null,
-    });
+    const plugins = await invokeOr<PluginStatus[]>('list_plugins', []);
     set({ plugins });
   },
 

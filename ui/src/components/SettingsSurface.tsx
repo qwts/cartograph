@@ -10,7 +10,7 @@ export interface SettingsSurfaceProps {
   adapters: AdapterInventory | null;
   /** Discovered WASM plugin adapters with per-project enablement (#198). */
   plugins?: PluginStatus[];
-  onTogglePlugin?: (pluginId: string, enabled: boolean) => void;
+  onTogglePlugin?: (plugin: PluginStatus, enabled: boolean) => void;
   error: string | null;
   /** Disabled controls when there is no live backend to persist into. */
   canEdit: boolean;
@@ -334,7 +334,7 @@ export function SettingsSurface({
                   role="switch"
                   aria-checked={plugin.enabled}
                   aria-label={`${plugin.id} enabled for this project`}
-                  onClick={() => onTogglePlugin?.(plugin.id, !plugin.enabled)}
+                  onClick={() => onTogglePlugin?.(plugin, !plugin.enabled)}
                 >
                   {plugin.enabled ? 'Enabled' : 'Disabled'}
                 </button>

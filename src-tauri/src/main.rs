@@ -29,6 +29,9 @@ struct AppState {
     settings: Mutex<settings::SettingsStore>,
     decisions: Mutex<agents::DecisionLog>,
     extraction_caches: Mutex<ExtractionCaches>,
+    /// Resolved filesystem roots of every ingested target this session —
+    /// plugin discovery scans these, never the raw Connect input (#203).
+    project_roots: Mutex<std::collections::BTreeSet<String>>,
     metrics: Mutex<metrics::MetricsStore>,
 }
 
@@ -124,12 +127,24 @@ struct PluginStatus {
     enabled: bool,
 }
 
-/// Discover plugin artifacts for a project: `.cartograph/adapters/` inside
-/// `project_root` first, then the user-level adapters directory under app
-/// data — project wins on id conflict. Discovery never runs guest code.
+/// The lifecycle key for a plugin's enablement rows: the resolved project
+/// root that supplied a project copy, or `"user"` for user-level copies.
+fn plugin_settings_root(plugin: &adapters_plugin_host::discovery::DiscoveredPlugin) -> String {
+    plugin
+        .project_root
+        .as_ref()
+        .map(|root| root.display().to_string())
+        .unwrap_or_else(|| "user".to_string())
+}
+
+/// Discover plugin artifacts: `.cartograph/adapters/` inside every resolved
+/// ingest root this session (never the raw Connect input — a GitHub URL or
+/// manifest path is not a directory, #203 review), then the user-level
+/// adapters directory. Project wins on id conflict. Enablement joins on the
+/// exact artifact hash, so replaced bytes are disabled again. Discovery
+/// never runs guest code.
 #[tauri::command]
 fn list_plugins(
-    project_root: Option<String>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<PluginStatus>, String> {
@@ -138,39 +153,41 @@ fn list_plugins(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("adapters");
-    let discovered = adapters_plugin_host::discovery::discover(
-        project_root.as_deref().map(std::path::Path::new),
-        &user_dir,
-    );
-    let enabled: std::collections::BTreeSet<String> = {
-        let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
-        settings_store
-            .enabled_plugins(project_root.as_deref().unwrap_or(""))
+    let roots: Vec<std::path::PathBuf> = state
+        .project_roots
+        .lock()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    let discovered = adapters_plugin_host::discovery::discover(&roots, &user_dir);
+    let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
+    let mut statuses = Vec::with_capacity(discovered.len());
+    for plugin in discovered {
+        let enabled = settings_store
+            .enabled_plugins(&plugin_settings_root(&plugin))
             .map_err(|e| e.to_string())?
-            .into_iter()
-            .collect()
-    };
-    Ok(discovered
-        .into_iter()
-        .map(|plugin| PluginStatus {
-            enabled: enabled.contains(&plugin.id),
-            plugin,
-        })
-        .collect())
+            .iter()
+            .any(|(id, hash)| *id == plugin.id && *hash == plugin.content_hash);
+        statuses.push(PluginStatus { enabled, plugin });
+    }
+    Ok(statuses)
 }
 
-/// Persist a per-project plugin opt-in/out (#198). Enabling never runs the
-/// plugin here — extraction happens only behind the conformance gate.
+/// Persist a per-project plugin opt-in/out (#198), bound to the exact
+/// artifact hash (#203 review). Enabling never runs the plugin here —
+/// extraction happens only behind the conformance gate.
 #[tauri::command]
 fn set_plugin_enabled(
     project_root: String,
     plugin_id: String,
+    content_hash: String,
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut settings_store = state.settings.lock().map_err(|e| e.to_string())?;
     settings_store
-        .set_plugin_enabled(&project_root, &plugin_id, enabled)
+        .set_plugin_enabled(&project_root, &plugin_id, &content_hash, enabled)
         .map_err(|e| e.to_string())
 }
 
@@ -1620,6 +1637,9 @@ fn run_ingest(
     // with the same basename still collide — real identity is `add_repo`).
     report_progress(app, state, job_id, "scan", 5.0)?;
     let root = std::fs::canonicalize(path).map_err(|e| fail(e.to_string()))?;
+    if let Ok(mut roots) = state.project_roots.lock() {
+        roots.insert(root.display().to_string());
+    }
     let repo = format!(
         "local/{}",
         root.file_name()
@@ -1828,6 +1848,9 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
     if job_cancelled(&state, job_id) {
         return Err("cancelled".to_string());
+    }
+    if let Ok(mut roots) = state.project_roots.lock() {
+        roots.insert(cloned.path.display().to_string());
     }
     let (extraction, layers, delta) = {
         let mut caches = state
@@ -2398,6 +2421,7 @@ fn main() {
                 settings: Mutex::new(tier_settings),
                 decisions: Mutex::new(decisions),
                 extraction_caches: Mutex::new(ExtractionCaches::default()),
+                project_roots: Mutex::new(std::collections::BTreeSet::new()),
                 metrics: Mutex::new(recovery_metrics),
             });
             Ok(())

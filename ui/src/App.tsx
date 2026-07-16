@@ -440,7 +440,7 @@ export default function App() {
             disclosures={disclosures}
             adapters={adapters}
             plugins={plugins}
-            onTogglePlugin={(pluginId, enabled) => void setPluginEnabled(pluginId, enabled)}
+            onTogglePlugin={(plugin, enabled) => void setPluginEnabled(plugin, enabled)}
             error={settingsError}
             canEdit={backend === 'up'}
             onToggleTier={(tier, enabled) => void setTierEnabled(tier, enabled)}
