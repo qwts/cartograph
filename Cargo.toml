@@ -20,11 +20,14 @@ blake3 = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"] }
 usearch = { version = "2.26", default-features = false }
 regex = "1"
+wasmtime = "46"
+wasmtime-wasi = "46"
 
 # Internal crates (SPEC-00 §8.1 crate map)
 core-graph = { path = "crates/core-graph" }
 core-prov = { path = "crates/core-prov" }
 adapters-fw = { path = "crates/adapters-fw" }
+adapters-plugin-host = { path = "crates/adapters-plugin-host" }
 adapters-lang-ts = { path = "crates/adapters-lang-ts" }
 adapters-lang-python = { path = "crates/adapters-lang-python" }
 adapters-lang-go = { path = "crates/adapters-lang-go" }

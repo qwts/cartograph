@@ -1,0 +1,45 @@
+package cartograph:adapter@0.1.0;
+
+/// The runtime-loadable adapter SPI (ADR-0017), mirroring the compiled-in
+/// LanguageAdapter convention (ADR-0003): parse source bytes, emit facts
+/// with evidence spans. `props-json` on node/edge carries the same
+/// serialized core-prov::Provenance payload the compiled-in adapters embed
+/// in core-graph::Node/Edge.props.
+interface extract {
+    record source-id {
+        repo: string,
+        commit: string,
+    }
+
+    record node {
+        id: string,
+        label: string,
+        props-json: string,
+    }
+
+    record edge {
+        src: string,
+        dst: string,
+        label: string,
+        props-json: string,
+    }
+
+    record extraction {
+        nodes: list<node>,
+        edges: list<edge>,
+    }
+
+    record extract-error {
+        message: string,
+    }
+
+    extract-source: func(
+        source: list<u8>,
+        path: string,
+        id: source-id,
+    ) -> result<extraction, extract-error>;
+}
+
+world adapter {
+    export extract;
+}
