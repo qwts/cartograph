@@ -206,6 +206,17 @@ impl WasiView for HostState {
 /// state and a bound-exceeding call can't corrupt a later one.
 pub struct LoadedPlugin {
     component: Component,
+    /// Adapter id used for provenance pinning.
+    plugin_id: String,
+    /// BLAKE3 hash of the artifact bytes — pinned onto every fact.
+    artifact_hash: String,
+}
+
+impl LoadedPlugin {
+    /// BLAKE3 hash of the exact artifact bytes this plugin compiled from.
+    pub fn artifact_hash(&self) -> &str {
+        &self.artifact_hash
+    }
 }
 
 /// Owns the wasmtime [`Engine`] and the background epoch ticker. One host
@@ -246,11 +257,17 @@ impl PluginHost {
     }
 
     /// Compile a `cartograph:adapter` component from bytes. Does not run
-    /// any guest code.
-    pub fn load(&self, wasm_bytes: &[u8]) -> Result<LoadedPlugin, HostError> {
+    /// any guest code. The `plugin_id` and the bytes' BLAKE3 hash are
+    /// carried on the handle so every extraction is provenance-pinned
+    /// automatically — no caller can forget it (#204 review).
+    pub fn load(&self, wasm_bytes: &[u8], plugin_id: &str) -> Result<LoadedPlugin, HostError> {
         let component = Component::new(&self.engine, wasm_bytes)
             .map_err(|e| HostError::InvalidComponent(e.to_string()))?;
-        Ok(LoadedPlugin { component })
+        Ok(LoadedPlugin {
+            component,
+            plugin_id: plugin_id.to_string(),
+            artifact_hash: core_prov::content_hash(wasm_bytes),
+        })
     }
 
     /// Run one `extract-source` call against a loaded plugin, under
@@ -307,7 +324,14 @@ impl PluginHost {
         let remaining_fuel = store.get_fuel().unwrap_or(0);
 
         match call_result {
-            Ok(Ok(extraction)) => convert_extraction(extraction),
+            Ok(Ok(extraction)) => {
+                let mut extraction = convert_extraction(extraction)?;
+                // Non-optional pinning (#204 review): every fact leaving the
+                // host carries the pinned extractor identity and artifact
+                // hash — there is no unpinned production path.
+                pin_extraction(&mut extraction, &plugin.plugin_id, &plugin.artifact_hash);
+                Ok(extraction)
+            }
             Ok(Err(WitExtractError { message })) => Err(HostError::GuestError(message)),
             Err(err) => Err(classify_call_error(err, limits, remaining_fuel)),
         }

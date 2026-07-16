@@ -26,7 +26,9 @@ fn source_id() -> SourceId {
 #[test]
 fn ok_adapter_round_trips_facts() {
     let host = PluginHost::new().expect("engine");
-    let plugin = host.load(OK_ADAPTER).expect("compiles");
+    let plugin = host
+        .load(OK_ADAPTER, "t0.plugin-fixture")
+        .expect("compiles");
 
     let source = b"hello world";
     let extraction = host
@@ -51,7 +53,7 @@ fn ok_adapter_round_trips_facts() {
 #[test]
 fn fuel_exhaustion_fails_closed() {
     let host = PluginHost::new().expect("engine");
-    let plugin = host.load(BUSY_LOOP).expect("compiles");
+    let plugin = host.load(BUSY_LOOP, "t0.plugin-busy").expect("compiles");
 
     let limits = PluginLimits {
         max_fuel: 100_000,
@@ -74,7 +76,7 @@ fn fuel_exhaustion_fails_closed() {
 #[test]
 fn deadline_exceeded_fails_closed() {
     let host = PluginHost::new().expect("engine");
-    let plugin = host.load(BUSY_LOOP).expect("compiles");
+    let plugin = host.load(BUSY_LOOP, "t0.plugin-busy").expect("compiles");
 
     let limits = PluginLimits {
         max_fuel: u64::MAX,
@@ -98,7 +100,7 @@ fn deadline_exceeded_fails_closed() {
 #[test]
 fn memory_limit_exceeded_fails_closed() {
     let host = PluginHost::new().expect("engine");
-    let plugin = host.load(MEMORY_HOG).expect("compiles");
+    let plugin = host.load(MEMORY_HOG, "t0.plugin-memory").expect("compiles");
 
     let limits = PluginLimits {
         max_fuel: u64::MAX,
@@ -122,7 +124,7 @@ fn memory_limit_exceeded_fails_closed() {
 #[test]
 fn no_ambient_network_capability() {
     let host = PluginHost::new().expect("engine");
-    let plugin = host.load(NET_PROBE).expect("compiles");
+    let plugin = host.load(NET_PROBE, "t0.plugin-net").expect("compiles");
 
     let extraction = host
         .call_extract(
@@ -152,7 +154,7 @@ fn no_ambient_network_capability() {
 #[test]
 fn no_ambient_clock() {
     let host = PluginHost::new().expect("engine");
-    let plugin = host.load(CLOCK_PROBE).expect("compiles");
+    let plugin = host.load(CLOCK_PROBE, "t0.plugin-clock").expect("compiles");
 
     let read = |host: &PluginHost| {
         let extraction = host
@@ -196,22 +198,22 @@ fn plugin_provenance_pins_artifact_and_repeats_deterministically() {
     use core_prov::content_hash;
 
     let host = PluginHost::new().expect("engine");
-    let plugin = host.load(OK_ADAPTER).expect("compiles");
+    let plugin = host
+        .load(OK_ADAPTER, "t0.plugin-fixture")
+        .expect("compiles");
     let artifact_hash = content_hash(OK_ADAPTER);
     let source = b"hello world";
 
+    // call_extract pins automatically (#204 review): no manual step.
     let run = || {
-        let mut extraction = host
-            .call_extract(
-                &plugin,
-                source,
-                "src/lib.rs",
-                &source_id(),
-                PluginLimits::default(),
-            )
-            .expect("well-behaved plugin succeeds");
-        pin_extraction(&mut extraction, "t0.plugin-fixture", &artifact_hash);
-        extraction
+        host.call_extract(
+            &plugin,
+            source,
+            "src/lib.rs",
+            &source_id(),
+            PluginLimits::default(),
+        )
+        .expect("well-behaved plugin succeeds")
     };
 
     let first = run();
