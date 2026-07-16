@@ -1,5 +1,12 @@
 # cartograph
 
+## 0.8.0
+
+### Minor Changes
+
+- ced9d60: Adapter plugins are now discoverable and switchable per project: Cartograph scans the project's .cartograph/adapters/ and a user-level adapters directory (the project copy wins on id conflict, shadowing stated), keys every artifact by its content hash, and lists them in Settings with a per-project enable/disable that fails closed — a plugin is off until you turn it on, and it only ever extracts facts behind the conformance gate.
+- 3966468: Plugin facts are pinned to the exact artifact that produced them: the host stamps every fact's provenance with `{plugin-id}@{hash}` and the full BLAKE3 artifact hash, overwriting anything the guest wrote — a plugin can never impersonate a built-in extractor, a rebuilt artifact is a different extractor identity, and repeat runs of the same artifact are provably identical.
+
 ## 0.7.0
 
 ### Minor Changes
