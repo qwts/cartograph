@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { assignBands, buildAtlasScene, clusterKeyFor } from '../atlasLayout';
 import type { AtlasSnapshot, GraphNode, Provenance, Tier } from '../store';
-import { AtlasCanvas, nodeShapeClass } from './AtlasCanvas';
+import { AtlasCanvas, focusAtlasGraph, nodeShapeClass } from './AtlasCanvas';
 
 function prov(confidence_tier: Tier, path: string): Provenance {
   return {
@@ -130,6 +130,72 @@ export const NodeSelection: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole('button', { name: 'POST /orders' }));
     await expect(args.onSelect).toHaveBeenCalledWith(atlasNodes[2]);
+  },
+};
+
+export const FocusModeRootsAndBacksOut: Story = {
+  // AC-0086 (#160): Enter/CTA roots the selection to its ego graph, each
+  // level stacks, Esc backs out exactly one level, ending at the full graph.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: 'POST /orders' }));
+    await userEvent.click(canvas.getByRole('button', { name: /Focus on POST \/orders/ }));
+    // Ego graph: the endpoint plus its direct connections (channel, gap,
+    // Checkout) — the SQS Resource is two hops away and disappears from
+    // the projection and the entity index.
+    await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('4 nodes · 3 edges'));
+    const path = canvas.getByRole('navigation', { name: 'Focus path' });
+    await expect(within(path).getByText('▸ POST /orders')).toBeInTheDocument();
+    await expect(canvas.queryByRole('button', { name: 'orders' })).not.toBeInTheDocument();
+
+    // A second level roots the channel within the first projection.
+    await userEvent.click(canvas.getByRole('button', { name: 'orders queue' }));
+    await userEvent.click(canvas.getByRole('button', { name: /Focus on orders queue/ }));
+    await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('2 nodes · 1 edges'));
+
+    // Esc pops one level at a time — never straight to the full graph.
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('4 nodes · 3 edges'));
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('5 nodes · 4 edges'));
+  },
+};
+
+export const FocusIsKeyboardOperableAndAnnounced: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: 'POST /orders' }));
+    await expect(
+      canvas.getByText(/POST \/orders selected — press Enter to focus/),
+    ).toBeInTheDocument();
+
+    // Selection hands the keyboard to the canvas (#190 review): the next
+    // Enter focuses immediately — no manual tabbing to the canvas needed.
+    await expect(document.activeElement?.className).toContain('atlas-cytoscape');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('4 nodes · 3 edges'));
+    await expect(
+      canvas.getByText(/Focused on POST \/orders — 4 nodes at level 1\. Esc backs out/),
+    ).toBeInTheDocument();
+
+    // The breadcrumb also backs out without a keyboard.
+    await userEvent.click(canvas.getByRole('button', { name: 'Full graph' }));
+    await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('5 nodes · 4 edges'));
+
+    // The projection is a pure function: same inputs, same ego graph,
+    // regardless of input order; an unknown root changes nothing.
+    const ego = focusAtlasGraph(atlasFixture, atlasNodes[2].id);
+    const reversed = focusAtlasGraph(
+      { nodes: [...atlasFixture.nodes].reverse(), edges: [...atlasFixture.edges].reverse() },
+      atlasNodes[2].id,
+    );
+    await expect(new Set(reversed.nodes.map((n) => n.id))).toEqual(
+      new Set(ego.nodes.map((n) => n.id)),
+    );
+    await expect(ego.nodes.map((n) => n.id).sort()).toEqual(
+      [atlasNodes[1].id, atlasNodes[2].id, atlasNodes[3].id, atlasNodes[4].id].sort(),
+    );
+    await expect(focusAtlasGraph(atlasFixture, 'missing:node')).toEqual(atlasFixture);
   },
 };
 
