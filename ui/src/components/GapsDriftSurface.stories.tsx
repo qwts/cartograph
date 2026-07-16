@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within } from 'storybook/test';
+import { groupGapClasses } from '../gapClasses';
 import { GapsDriftSurface } from './GapsDriftSurface';
 import type { Provenance, RegisterFinding, SpecAssertion } from '../store';
 
@@ -207,6 +208,78 @@ export const DriftTab: Story = {
     await expect(
       canvas.queryByText('adr:sync CONFLICTS ch:events'),
     ).not.toBeInTheDocument();
+  },
+};
+
+/** A real-scale register shape: hundreds of instances, a handful of causes. */
+const SCALE_GAPS: SpecAssertion[] = [
+  ...Array.from({ length: 300 }, (_, index) => ({
+    id: `node:gap:msg-${index}`,
+    subject_id: `gap:msg-${index}`,
+    subject_kind: 'Gap',
+    summary: 'Gap: runtime-computed message identity',
+    provenance: gapProvenance('Deterministic'),
+  })),
+  ...Array.from({ length: 40 }, (_, index) => ({
+    id: `node:gap:call-${index}`,
+    subject_id: `gap:call-${index}`,
+    subject_kind: 'Gap',
+    summary: 'Gap: unresolved Java import target',
+    provenance: { ...gapProvenance('Deterministic'), extractor_id: 't0.adapter-java' },
+  })),
+  ...Array.from({ length: 5 }, (_, index) => ({
+    id: `edge:sym:a${index} CALLS gap:x${index}`,
+    subject_id: `sym:a${index} CALLS gap:x${index}`,
+    subject_kind: 'CALLS',
+    summary: `sym:a${index} CALLS gap:x${index}`,
+    provenance: gapProvenance('Deterministic'),
+  })),
+];
+
+export const ClassesGroupAtScale: Story = {
+  // #167/AC-0082: at scale the gap lane triages by cause class — grouped
+  // deterministically (count desc), expanding to paged instances; the
+  // per-gap Resolution Strategy path is unchanged.
+  args: {
+    summary: {
+      gaps: 345,
+      unsupported: 0,
+      no_evidence: 0,
+      drift: 0,
+      open_findings: 345,
+      graph_facts: 40_000,
+    },
+    gaps: SCALE_GAPS,
+    drift: [],
+    registerFindings: [],
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    // 345 gaps read as 3 causes, largest first.
+    await expect(canvas.getByText('System gaps · 345 — 3 causes')).toBeInTheDocument();
+    const classes = within(canvas.getByLabelText('Gap classes'));
+    const heads = classes.getAllByRole('button', { expanded: false });
+    await expect(heads).toHaveLength(3);
+    await expect(heads[0]).toHaveTextContent('×300');
+    await expect(heads[0]).toHaveTextContent('runtime-computed message identity');
+    await expect(heads[1]).toHaveTextContent('×40');
+    await expect(heads[1]).toHaveTextContent('unresolved Java import target');
+    await expect(heads[1]).toHaveTextContent('t0.adapter-java');
+    await expect(heads[2]).toHaveTextContent('×5');
+    await expect(heads[2]).toHaveTextContent('unresolved CALLS edge');
+
+    // Grouping is deterministic: shuffled input yields the same class order.
+    const shuffledOrder = groupGapClasses([...SCALE_GAPS].reverse()).map((c) => c.key);
+    await expect(shuffledOrder).toEqual(groupGapClasses(SCALE_GAPS).map((c) => c.key));
+
+    // Expanding a class pages its instances and keeps the per-gap path.
+    await userEvent.click(heads[0]);
+    const shown = classes.getAllByRole('button', { name: /runtime-computed message identity/ });
+    // 1 head + 50 first-page instances.
+    await expect(shown.length).toBe(51);
+    await expect(classes.getByRole('button', { name: /Show more \(250 remaining\)/ })).toBeInTheDocument();
+    await userEvent.click(shown[1]);
+    await expect(args.onOpenGap).toHaveBeenCalled();
   },
 };
 

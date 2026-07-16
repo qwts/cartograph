@@ -3089,6 +3089,29 @@ button.flow-hop-card:hover {
   font-size: 0.87rem;
 }
 
+/* A gap class: one cause with its instance count (#167). */
+.register-class {
+  list-style: none;
+}
+
+.register-class .register-class-head {
+  font-weight: 500;
+}
+
+.register-class .register-rows {
+  margin: 0.35rem 0 0.6rem 1.4rem;
+}
+
+.register-show-more {
+  margin: 0.2rem 0 0.8rem 1.4rem;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.78rem;
+  background: var(--control);
+  color: var(--text-body);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
 button.register-row:hover {
   border-color: var(--accent);
   filter: none;
