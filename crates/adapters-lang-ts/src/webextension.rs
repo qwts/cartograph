@@ -389,7 +389,7 @@ pub fn extract_manifests(
         // contexts; remember the background and action contexts as they are
         // built so the commands section can bind handlers (#165).
         let mut background_ctx: Option<String> = None;
-        let mut action_ctx: Option<String> = None;
+        let mut action_popup_ctx: Option<String> = None;
         let background = &manifest["background"];
         if let Some(worker) = background["service_worker"].as_str() {
             let ctx = cx.context(
@@ -467,7 +467,7 @@ pub fn extract_manifests(
                     serde_json::json!({}),
                 );
                 if anchor == "action" || anchor == "browser_action" {
-                    action_ctx.get_or_insert(ctx);
+                    action_popup_ctx.get_or_insert(ctx);
                 }
             }
         }
@@ -476,7 +476,10 @@ pub fn extract_manifests(
         for anchor in ["action", "browser_action"] {
             let action = &manifest[anchor];
             if action.is_object() && action["default_popup"].is_null() {
-                let ctx = cx.context(
+                // Entry-less by design: with no popup, activating the action
+                // fires `action.onClicked` in the background context, so
+                // commands never route here (#185 review).
+                cx.context(
                     &mut out,
                     &ext_id,
                     "action",
@@ -487,7 +490,6 @@ pub fn extract_manifests(
                         "title": action["default_title"].as_str().unwrap_or_default(),
                     }),
                 );
-                action_ctx.get_or_insert(ctx);
             }
         }
 
@@ -512,12 +514,17 @@ pub fn extract_manifests(
                         "prov": cx.prov("commands", name, &format!("DECLARES {ext_id} -> {cmd_id}")),
                     }),
                 });
-                // Platform dispatch contract (#165): `_execute_*` commands
-                // open the toolbar action; every other command fires in the
-                // background context. A command with no such context cannot
-                // run — that is an explicit Gap, never a silent dead end.
+                // Platform dispatch contract (#165): `_execute_*` opens the
+                // action popup when one is declared; a popupless action
+                // fires `action.onClicked` in the background context (#185
+                // review), which is also where every other command lands. A
+                // command with no context to receive it cannot run — that
+                // is an explicit Gap, never a silent dead end.
                 let (handler, missing) = if name.starts_with("_execute_") {
-                    (action_ctx.as_deref(), "no action/browser_action context")
+                    (
+                        action_popup_ctx.as_deref().or(background_ctx.as_deref()),
+                        "no action popup or background context",
+                    )
                 } else {
                     (background_ctx.as_deref(), "no background context")
                 };
@@ -531,7 +538,10 @@ pub fn extract_manifests(
                         }),
                     }),
                     None => {
-                        let gap_id = format!("gap:webext:{}@command:{name}", cx.id.repo);
+                        // Keyed by the full manifest base — two manifests
+                        // declaring the same unroutable command must keep
+                        // distinct Gap facts (#185 review; ids upsert).
+                        let gap_id = format!("gap:webext:{base}:command:{name}");
                         let reason = format!("{missing} to receive command {name}");
                         out.nodes.push(Node {
                             id: gap_id.clone(),
@@ -777,8 +787,10 @@ mod tests {
 
     #[test]
     fn commands_bind_to_their_dispatching_context_or_gap() {
-        // #165: the platform contract routes `_execute_*` to the toolbar
-        // action and every other command to the background context.
+        // #165: `_execute_*` opens the action popup when one exists; the
+        // fixture's action is popupless, so activation fires
+        // `action.onClicked` in the background context — both commands
+        // route there (#185 review).
         let dir = fixture();
         let out = extract(&dir);
         let handles: Vec<(&str, &str)> = out
@@ -789,12 +801,13 @@ mod tests {
             .collect();
         assert!(handles.contains(&(
             "extcmd:local/image-trail@extension:_execute_action",
-            "extctx:local/image-trail@extension:action:action",
+            "extctx:local/image-trail@extension:service-worker:src/background/service-worker.js",
         )));
         assert!(handles.contains(&(
             "extcmd:local/image-trail@extension:shortcut-download",
             "extctx:local/image-trail@extension:service-worker:src/background/service-worker.js",
         )));
+
         let bound = out
             .edges
             .iter()
@@ -806,33 +819,68 @@ mod tests {
         let prov: Provenance = serde_json::from_value(bound.props["prov"].clone()).unwrap();
         assert_eq!(prov.confidence_tier, ConfidenceTier::Confirmed);
 
-        // A command with no context that could receive it fails closed.
+        // With a declared popup, `_execute_action` routes to the popup page.
+        let popup_dir = tempfile::tempdir().unwrap();
+        let manifest = r#"{
+  "manifest_version": 3,
+  "name": "popup",
+  "action": { "default_popup": "popup.html" },
+  "commands": { "_execute_action": { "description": "open" } }
+}"#;
+        std::fs::write(popup_dir.path().join("manifest.json"), manifest).unwrap();
+        std::fs::write(popup_dir.path().join("popup.html"), "<html></html>").unwrap();
+        let id = SourceId {
+            repo: "local/popup",
+            commit: "abc123",
+        };
+        let (out, _) = extract_manifests(popup_dir.path(), &id, &BTreeSet::new()).unwrap();
+        assert!(out.edges.iter().any(|edge| {
+            edge.label == "HANDLES"
+                && edge.src == "extcmd:local/popup@.:_execute_action"
+                && edge.dst == "extctx:local/popup@.:page:popup.html"
+        }));
+
+        // A command with no context that could receive it fails closed —
+        // and two manifests declaring the same unroutable command keep
+        // distinct per-manifest Gap facts (#185 review; graph ids upsert).
         let orphan_dir = tempfile::tempdir().unwrap();
         let manifest = r#"{
   "manifest_version": 3,
   "name": "orphan",
   "commands": { "do-thing": { "description": "d" } }
 }"#;
-        std::fs::write(orphan_dir.path().join("manifest.json"), manifest).unwrap();
+        std::fs::create_dir_all(orphan_dir.path().join("a")).unwrap();
+        std::fs::create_dir_all(orphan_dir.path().join("b")).unwrap();
+        std::fs::write(orphan_dir.path().join("a/manifest.json"), manifest).unwrap();
+        std::fs::write(orphan_dir.path().join("b/manifest.json"), manifest).unwrap();
         let id = SourceId {
             repo: "local/orphan",
             commit: "abc123",
         };
         let (out, _) = extract_manifests(orphan_dir.path(), &id, &BTreeSet::new()).unwrap();
-        let gap = out
+        let gaps: Vec<&Node> = out
             .nodes
             .iter()
-            .find(|node| node.label == "Gap" && node.id.contains("command:do-thing"))
-            .expect("unroutable command is an explicit gap");
+            .filter(|node| node.label == "Gap" && node.id.contains("command:do-thing"))
+            .collect();
         assert_eq!(
-            gap.props["reason"],
-            "no background context to receive command do-thing"
+            gaps.iter().map(|gap| gap.id.as_str()).collect::<Vec<_>>(),
+            [
+                "gap:webext:local/orphan@a:command:do-thing",
+                "gap:webext:local/orphan@b:command:do-thing",
+            ]
         );
-        assert!(out.edges.iter().any(|edge| {
-            edge.label == "HANDLES"
-                && edge.src == "extcmd:local/orphan@.:do-thing"
-                && edge.dst == gap.id
-        }));
+        for (base, gap) in ["a", "b"].iter().zip(&gaps) {
+            assert_eq!(
+                gap.props["reason"],
+                "no background context to receive command do-thing"
+            );
+            assert!(out.edges.iter().any(|edge| {
+                edge.label == "HANDLES"
+                    && edge.src == format!("extcmd:local/orphan@{base}:do-thing")
+                    && edge.dst == gap.id
+            }));
+        }
     }
 
     #[test]
