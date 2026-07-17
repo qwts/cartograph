@@ -6,10 +6,27 @@ members = ["crates/*", "src-tauri"]
 version = "0.10.0"
 edition = "2024"
 publish = false
+# Source-available under PolyForm Noncommercial 1.0.0 (see LICENSE.md at the
+# workspace root). Inherited path is relative to this workspace manifest.
+license-file = "LICENSE.md"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
+
+# Production release hardening (#221). Applies to every workspace binary,
+# including the packaged `app` shell:
+#   strip         — drop symbol tables/debuginfo from the shipped binary
+#   lto           — cross-crate link-time optimization (smaller, faster)
+#   codegen-units — single unit maximizes optimization (slower compile)
+#   panic=abort   — no unwinding tables; smaller binary. Safe here: the tree
+#                   has no catch_unwind/should_panic outside the test profile,
+#                   and wasmtime guest traps do not rely on host unwinding.
+[profile.release]
+strip = "symbols"
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

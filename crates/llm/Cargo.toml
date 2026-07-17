@@ -3,6 +3,7 @@ name = "llm"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
 reqwest = { workspace = true }

@@ -4,6 +4,7 @@ description = "GitHub repo ingest: auth ladder, shallow read-only clone, repo id
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [lints]
 workspace = true

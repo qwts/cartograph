@@ -4,6 +4,7 @@ description = "Provenance + confidence model, content-addressing (SPEC-00 §4.3)
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [lints]
 workspace = true

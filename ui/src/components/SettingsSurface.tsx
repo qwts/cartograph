@@ -1,4 +1,9 @@
+import { lazy, Suspense, useState } from 'react';
 import type { AdapterInventory, CloudDisclosure, PluginStatus, TierSettings } from '../store';
+
+// Code-split: the bundled third-party notices string is large, so it only
+// loads when the user opens the Open-source licenses panel (#222).
+const Acknowledgements = lazy(() => import('./Acknowledgements'));
 
 export interface SettingsSurfaceProps {
   tiers: TierSettings[];
@@ -126,6 +131,42 @@ function ConsentPanel({
         Grant revocable consent
       </button>
     </div>
+  );
+}
+
+/** About & licenses (#222): Cartograph's own license plus a lazily-loaded,
+ *  in-app copy of the generated third-party notices. Self-contained toggle so
+ *  the parent surface stays hook-free. */
+function AboutSection() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <h3 className="settings-section-title">About &amp; licenses</h3>
+      <p className="muted">
+        Cartograph is source-available under the{' '}
+        <a
+          href="https://polyformproject.org/licenses/noncommercial/1.0.0"
+          target="_blank"
+          rel="noreferrer"
+        >
+          PolyForm Noncommercial License 1.0.0
+        </a>
+        . Noncommercial use is free; commercial use requires a separate license.
+      </p>
+      <button
+        type="button"
+        className="secondary-button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? 'Hide open-source licenses' : 'View open-source licenses'}
+      </button>
+      {open && (
+        <Suspense fallback={<p className="muted">Loading licenses…</p>}>
+          <Acknowledgements />
+        </Suspense>
+      )}
+    </>
   );
 }
 
@@ -373,6 +414,8 @@ export function SettingsSurface({
       ) : (
         <p className="muted">No plugin adapters discovered for this project.</p>
       )}
+
+      <AboutSection />
     </section>
   );
 }

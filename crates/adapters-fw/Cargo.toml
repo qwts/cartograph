@@ -4,6 +4,7 @@ description = "Framework registries: HTTP/event SDK signatures (SPEC-00 §8.1, T
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [lints]
 workspace = true

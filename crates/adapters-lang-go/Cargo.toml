@@ -4,6 +4,7 @@ description = "Deterministic Go language and server-framework extraction"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
 core-graph = { workspace = true }

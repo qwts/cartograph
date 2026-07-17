@@ -95,6 +95,45 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # License compliance + supply-chain gate (#222). cargo-deny enforces the
+  # allow-listed licenses and RustSec advisories; the notices drift-check keeps
+  # THIRD-PARTY-NOTICES.md in sync with the dependency manifests. Tool versions
+  # are pinned so the drift-check output stays byte-stable across runs.
+  compliance:
+    name: License & supply-chain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install cargo-deny and cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2,cargo-about@0.9.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # cargo-deny: licenses + advisories + bans + sources.
+      - name: cargo-deny
+        run: cargo deny check
+
+      # cargo-about + `npm ls` read license files from fetched sources only
+      # (the script runs cargo-about with --offline for reproducibility).
+      - name: Fetch crate sources
+        run: cargo fetch --locked
+
+      - name: Install UI dependencies (for JS notices)
+        working-directory: ui
+        run: npm ci
+
+      - name: Third-party notices drift check
+        run: node scripts/generate-notices.mjs --check
+
   # Web UI: lint, typecheck, unit tests, production build.
   frontend:
     name: Frontend

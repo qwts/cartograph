@@ -1,0 +1,24 @@
+{{! cargo-about template -> Rust section of THIRD-PARTY-NOTICES.md (#222). }}
+{{! Triple-braces {{{ }}} emit raw text: this is Markdown, not HTML, so the }}
+{{! license bodies must NOT be entity-escaped. }}
+Cartograph bundles the following Rust crates. Each is used under the terms of
+its respective license, reproduced below. This list is generated from the
+dependency lockfile by `cargo about`; do not edit by hand.
+
+{{#each overview}}
+- {{{name}}} ({{count}} crate(s))
+{{/each}}
+
+{{#each licenses}}
+## {{{name}}}
+
+Used by:
+{{#each used_by}}
+- {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} — {{{crate.repository}}}{{/if}}
+{{/each}}
+
+```
+{{{text}}}
+```
+
+{{/each}}

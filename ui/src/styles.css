@@ -3813,3 +3813,23 @@ button.register-row:hover {
     padding-right: 0;
   }
 }
+
+/* Open-source licenses panel (#222): a scrollable, monospace notices block
+   inside Settings › About & licenses. */
+.acknowledgements {
+  margin-top: 0.75rem;
+}
+
+.acknowledgements-text {
+  max-height: 24rem;
+  overflow: auto;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

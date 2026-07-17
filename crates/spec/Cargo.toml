@@ -4,6 +4,7 @@ description = "Spec compiler: graph -> official artifacts (SPEC-00 §7)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [lints]
 workspace = true

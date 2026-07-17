@@ -9,12 +9,25 @@ import { storybookTest } from '@storybook/addon-vitest/vitest-plugin';
 import { playwright } from '@vitest/browser-playwright';
 
 // More info at: https://storybook.js.org/docs/next/writing-tests/integrations/vitest-addon
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   clearScreen: false,
   server: {
     port: 1420,
     strictPort: true
+  },
+  // Production hardening (#221): no source maps in shipped assets, and strip
+  // `console.*` + `debugger` from the bundle. Vite 8 minifies with oxc (the
+  // `esbuild` option is ignored), so this goes through the rolldown minifier.
+  // In a production Tauri build the webview devtools are disabled, so console
+  // output is invisible anyway; dropping it avoids leaking internal strings.
+  // Dev/test builds are untouched (minify defaults apply).
+  build: {
+    sourcemap: false,
+    rolldownOptions:
+      mode === 'production'
+        ? { output: { minify: { compress: { dropConsole: true, dropDebugger: true }, mangle: true } } }
+        : {}
   },
   test: {
     projects: [{
@@ -47,4 +60,4 @@ export default defineConfig({
       }
     }]
   }
-});
+}));
