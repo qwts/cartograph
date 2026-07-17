@@ -64,6 +64,7 @@ function copySpecArtifact(artifact: SpecArtifact) {
 export default function App() {
   const {
     view,
+    recoverJobId,
     backend,
     version,
     stats,
@@ -112,6 +113,7 @@ export default function App() {
     select,
     clearSelection,
     setView,
+    viewRecoveryJob,
     cancelJob,
     retryJob,
     applyJobEvent,
@@ -419,7 +421,7 @@ export default function App() {
             onClearFinished={() => void clearFinishedJobs()}
             onCancel={(id) => void cancelJob(id)}
             onRetry={(id) => void retryJob(id)}
-            onViewLive={() => navigate('recover')}
+            onViewLive={(id) => viewRecoveryJob(id)}
           />
         );
       case 'connect':
@@ -450,7 +452,11 @@ export default function App() {
       case 'recover':
         return (
           <RecoverSurface
-            job={jobs.find((job) => job.status === 'running' || job.status === 'queued') ?? null}
+            job={
+              (recoverJobId != null
+                ? jobs.find((job) => job.id === recoverJobId)
+                : jobs.find((job) => job.status === 'running' || job.status === 'queued')) ?? null
+            }
             busy={ingestBusy}
             error={ingestError}
             onBack={() => navigate('connect')}

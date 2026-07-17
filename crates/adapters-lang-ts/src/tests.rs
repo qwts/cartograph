@@ -513,6 +513,37 @@ fn extensionless_import_reconciles_to_the_real_non_ts_extension() {
 }
 
 #[test]
+fn imported_jsx_component_reconciles_to_the_real_non_ts_extension() {
+    // RENDERS edges for an imported component are built eagerly from the
+    // same `imported` map as cross-file CALLS (both direct JSX usage and a
+    // React Router `element={<Comp/>}`) — they need the same directory-wide
+    // extension correction, not just IMPORTS/CALLS.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("App.jsx"),
+        r#"
+import { Header } from './Header';
+export function App() {
+  return <Header />;
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Header.jsx"),
+        "export function Header() { return null; }\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let real_symbol = "sym:qwtm/example@Header.jsx#Header";
+    let guessed_symbol = "sym:qwtm/example@Header.ts#Header";
+    assert!(!out.nodes.iter().any(|n| n.id == guessed_symbol));
+    assert!(edge_pairs(&out, "RENDERS").contains(&("sym:qwtm/example@App.jsx#App", real_symbol)));
+    assert!(!out.nodes.iter().any(|n| n.label == "Gap"));
+}
+
+#[test]
 fn close_over_creates_placeholders_for_unresolved_targets() {
     let src = "import { helper } from './missing';\nexport function run() { helper(); }";
     let mut ex = extract_source(src.as_bytes(), "src/run.ts", &id()).unwrap();
@@ -833,6 +864,38 @@ fn next_pages_convention_yields_screens() {
     assert!(out.edges.iter().any(|e| e.label == "RENDERS"
         && e.src == "screen:qwtm/example@/users/[id]"
         && e.dst == "sym:qwtm/example@pages/users/[id].tsx#UserDetail"));
+}
+
+#[test]
+fn next_pages_convention_covers_plain_js_and_excludes_api_routes() {
+    // Real-world Next.js apps commonly write JSX pages in plain .js without
+    // renaming to .jsx (AC-0095) — a page under pages/ qualifies the same as
+    // .tsx/.jsx. pages/api/* shares the extension but is never a screen.
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    std::fs::create_dir_all(pages.join("api")).unwrap();
+    std::fs::write(
+        pages.join("about.js"),
+        "export default function About() { return <div/>; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pages.join("api").join("hello.js"),
+        "export default function handler(req, res) { res.status(200).end(); }\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let screens: Vec<&str> = out
+        .nodes
+        .iter()
+        .filter(|n| n.label == "Screen")
+        .map(|n| n.id.as_str())
+        .collect();
+    assert_eq!(screens, vec!["screen:qwtm/example@/about"]);
+    assert!(out.edges.iter().any(|e| e.label == "RENDERS"
+        && e.src == "screen:qwtm/example@/about"
+        && e.dst == "sym:qwtm/example@pages/about.js#About"));
 }
 
 // Fetch sites classify their URL like channel identities: literal, env
