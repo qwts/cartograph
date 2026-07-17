@@ -488,21 +488,29 @@ fn reconcile_guessed_extension(
         .find(|candidate| known.contains(candidate))
 }
 
-/// Apply [`reconcile_guessed_extension`] to every `IMPORTS` edge — the file
-/// import resolution counterpart of the `pending_calls` fixup applied to
-/// cross-file `CALLS` targets built from the same guess (see
-/// `extract_dir_incremental_with_progress`). Left alone (and later turned
-/// into an explicit placeholder by `close_over_endpoints`) only when the
-/// import genuinely has no file behind it.
-fn reconcile_guessed_file_targets(
+/// Apply [`reconcile_guessed_extension`] to every edge already in `edges`
+/// whose target was built from the same guess: `IMPORTS` (`file:` targets),
+/// and every `RENDERS` edge to an imported JSX component — both the direct
+/// `<Comp/>` usage and a React Router `element={<Comp/>}` — since both read
+/// the same `imported` map as the cross-file `CALLS` targets fixed up
+/// separately in `pending_calls` (see `extract_dir_incremental_with_progress`).
+/// Any other edge kind's target is never built this way and is left alone,
+/// as is a target with genuinely nothing behind it (later turned into an
+/// explicit placeholder by `close_over_endpoints`).
+fn reconcile_guessed_edge_targets(
     edges: &mut [Edge],
     known_files: &std::collections::HashSet<String>,
+    known_symbols: &std::collections::HashSet<String>,
 ) {
     for edge in edges {
-        if edge.label != "IMPORTS" {
+        let known = if edge.dst.starts_with("file:") {
+            known_files
+        } else if edge.dst.starts_with("sym:") {
+            known_symbols
+        } else {
             continue;
-        }
-        if let Some(real) = reconcile_guessed_extension(&edge.dst, known_files) {
+        };
+        if let Some(real) = reconcile_guessed_extension(&edge.dst, known) {
             edge.dst = real;
         }
     }
@@ -839,12 +847,17 @@ pub fn extract_source(
     path: &str,
     id: &SourceId,
 ) -> Result<Extraction, ExtractError> {
-    // TSX/JSX need the JSX-aware grammar; plain TS/JS keep the TypeScript
-    // grammar, which parses plain JavaScript fine (a syntactic subset — no
-    // JS-only adapter is needed, per PLANNED_ADAPTERS in `ingest::preflight`
-    // this crate now covers it directly). The queries below are valid
-    // against both grammars.
-    let is_tsx = path.ends_with(".tsx") || path.ends_with(".jsx");
+    // Only bare `.ts` keeps the non-JSX grammar — it's the sole extension
+    // that can carry the old-style `<Type>expr` cast syntax the two
+    // grammars exist to disambiguate, and TypeScript itself refuses JSX
+    // there. Every other extension this crate collects — `.tsx`, `.jsx`,
+    // and plain `.js`/`.mjs`/`.cjs` (which, being plain JavaScript, can
+    // never contain that cast syntax) — safely takes the JSX-aware grammar,
+    // since real-world `.js` files commonly contain JSX without being
+    // renamed `.jsx` (no JS-only adapter is needed at all here, per
+    // PLANNED_ADAPTERS in `ingest::preflight` — this crate covers it
+    // directly). The queries below are valid against both grammars.
+    let is_tsx = !path.ends_with(".ts");
     let language: tree_sitter::Language = if is_tsx {
         tree_sitter_typescript::LANGUAGE_TSX.into()
     } else {
@@ -2345,7 +2358,7 @@ pub fn extract_dir_incremental_with_progress(
         .filter(|node| node.label == "File")
         .map(|node| node.id.clone())
         .collect();
-    reconcile_guessed_file_targets(&mut out.edges, &known_files);
+    reconcile_guessed_edge_targets(&mut out.edges, &known_files, &known_symbols);
     for mut pending in std::mem::take(&mut out.pending_calls) {
         if let Some(real) = reconcile_guessed_extension(&pending.resolved_edge.dst, &known_symbols)
         {
@@ -2414,14 +2427,20 @@ fn next_pages_screens(out: &mut Extraction, id: &SourceId) {
             continue;
         };
         let (_, rel) = idx;
-        // A page is a component file — needs JSX, so `.tsx`/`.jsx` only
-        // (plain `.ts`/`.js` under pages/ are API routes or helpers, not
-        // screens).
-        let Some(ext) = [".tsx", ".jsx"].into_iter().find(|ext| path.ends_with(ext)) else {
+        // A page is a component file: `.tsx`/`.jsx` always qualify, and so
+        // does plain `.js` — real-world Next.js apps commonly write JSX
+        // pages without renaming to `.jsx`. Bare `.ts` never does (it can't
+        // contain JSX at all — see `extract_source`'s grammar selection).
+        let Some(ext) = [".tsx", ".jsx", ".js"]
+            .into_iter()
+            .find(|ext| path.ends_with(ext))
+        else {
             continue;
         };
-        if rel.starts_with('_') {
-            continue; // _app.tsx/_document.tsx are chrome, not screens.
+        if rel.starts_with('_') || rel.starts_with("api/") {
+            // _app/_document are chrome, not screens; pages/api/* are API
+            // routes — same extensions as a page, but never client screens.
+            continue;
         }
         let mut route = format!("/{}", rel.trim_end_matches(ext));
         if route.ends_with("/index") || route == "/index" {

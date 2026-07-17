@@ -476,6 +476,13 @@ export interface CloudDisclosure {
 export interface AppStore {
   /** Active shell surface (handoff: the router is a single `view` value). */
   view: SurfaceView;
+  /** When set, the Recover surface shows exactly this job (#211 review) —
+   *  set by a specific "View live" click so it can't show a different
+   *  running/queued job (a concurrent plugin gate, another recovery) by
+   *  coincidence. `null` means the generic fallback: whichever recovery job
+   *  is currently running/queued (the only kind `startRecovery` itself can
+   *  reach, since the id isn't known until the first `job://changed` lands). */
+  recoverJobId: number | null;
   /** Backend liveness: unknown until the first ping resolves. */
   backend: 'unknown' | 'up' | 'browser';
   version: string | null;
@@ -565,6 +572,10 @@ export interface AppStore {
   clearSelection: () => void;
   /** Navigate the shell; clears the evidence selection (handoff §Interactions). */
   setView: (view: SurfaceView) => void;
+  /** Navigate to Recover pinned to exactly this job (#211 review) — the
+   *  "View live" action on a specific Jobs row, so it can't show a
+   *  different running/queued job by coincidence. */
+  viewRecoveryJob: (id: number) => void;
   /** Cancel a queued/running job (#117); running work stops at its next
    *  stage boundary. */
   cancelJob: (id: number) => Promise<void>;
@@ -631,6 +642,7 @@ async function repoRoot(repo: string): Promise<string | null> {
 
 export const useAppStore = create<AppStore>((set, get) => ({
   view: 'workspace',
+  recoverJobId: null,
   backend: 'unknown',
   version: null,
   stats: null,
@@ -891,7 +903,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   clearSelection: () => set({ selected: null }),
 
-  setView: (view) => set({ view, selected: null }),
+  // Generic navigation always forgets any pinned recovery job (#211 review)
+  // — only `viewRecoveryJob` pins one, so a stale pin from a prior click
+  // never leaks into an unrelated later visit to Recover.
+  setView: (view) => set({ view, selected: null, recoverJobId: null }),
+
+  viewRecoveryJob: (id) => set({ view: 'recover', recoverJobId: id, selected: null }),
 
   cancelJob: async (id) => {
     const job = await invokeOr<Job | null>('cancel_job', null, { id });
@@ -945,7 +962,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   startRecovery: async () => {
     const target = get().ingestTarget.trim();
-    set({ view: 'recover', selected: null });
+    // A fresh recovery's job id isn't known yet (job://changed hasn't
+    // landed) — always the generic fallback, never a stale pin left over
+    // from a previous "View live" click (#211 review).
+    set({ view: 'recover', recoverJobId: null, selected: null });
     await get().ingest(target, get().ingestSource);
     if (get().view === 'recover' && !get().ingestError) set({ view: 'workspace' });
   },
