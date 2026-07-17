@@ -84,6 +84,13 @@ export function IngestCard({ busy, summary, error, canIngest, onConnect }: Inges
                 {summary.layers.webext.edges} edges
               </dd>
             </div>
+            <div>
+              <dt>Toolchain</dt>
+              <dd data-testid="tools-layer-summary">
+                {summary.layers.tools.files} configs · {summary.layers.tools.nodes} nodes ·{' '}
+                {summary.layers.tools.edges} edges
+              </dd>
+            </div>
           </dl>
           {summary.delta && (
             <p className="muted" data-testid="delta-summary">

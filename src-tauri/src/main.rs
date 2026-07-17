@@ -78,6 +78,7 @@ struct LayerBreakdown {
     java: LayerSummary,
     tf: LayerSummary,
     webext: LayerSummary,
+    tools: LayerSummary,
 }
 
 impl LayerBreakdown {
@@ -88,6 +89,7 @@ impl LayerBreakdown {
         self.java.add(other.java);
         self.tf.add(other.tf);
         self.webext.add(other.webext);
+        self.tools.add(other.tools);
     }
 
     fn files(self) -> u64 {
@@ -918,6 +920,36 @@ fn extract_tree_incremental(
         .map_err(|error| error.to_string())?;
     extraction.nodes.extend(adr_facts.nodes);
     extraction.edges.extend(adr_facts.edges);
+    // Toolchain facts (#215): config files become Tool nodes with cited
+    // settings, DEFINED_IN the config File that proves them. Runs for every
+    // layer selection — the toolchain is cross-cutting evidence.
+    {
+        let tool_id = ingest::toolchain::SourceId { repo, commit };
+        let mut tool_progress = |path: &str| on_file(&format!("Reading configuration — {path}"));
+        let tool_facts = ingest::toolchain::extract_dir(root, &tool_id, &mut tool_progress)
+            .map_err(|e| e.to_string())?;
+        layers.tools = LayerSummary {
+            files: tool_facts.files,
+            nodes: tool_facts.nodes.len() as u64,
+            edges: tool_facts.edges.len() as u64,
+        };
+        // Config files an adapter already owns (a `.ts`-authored vite
+        // config, a webext manifest) keep the adapter's richer File node;
+        // the DEFINED_IN edge targets the same id either way.
+        let known_files: std::collections::BTreeSet<String> = extraction
+            .nodes
+            .iter()
+            .filter(|node| node.label == "File")
+            .map(|node| node.id.clone())
+            .collect();
+        extraction.nodes.extend(
+            tool_facts
+                .nodes
+                .into_iter()
+                .filter(|node| node.label != "File" || !known_files.contains(&node.id)),
+        );
+        extraction.edges.extend(tool_facts.edges);
+    }
     // Gated plugin adapters (#201): route the files each active plugin
     // claims via its golden-corpus extensions. Every fact arrives pinned to
     // the exact artifact by the host; a failure fails the whole plugin pass
@@ -1013,6 +1045,7 @@ fn id_explicitly_owned_by_repo(id: &str, repo: &str) -> bool {
         || id.starts_with(&format!("res:{repo}@"))
         || id.starts_with(&format!("screen:{repo}@"))
         || id.starts_with(&format!("adr:{repo}@"))
+        || id.starts_with(&format!("tool:{repo}@"))
         || id.starts_with(&format!("gap:call:{repo}@"))
         || id.starts_with(&format!("gap:chan:{repo}@"))
         || id.starts_with(&format!("gap:fetch:{repo}@"))
@@ -3447,6 +3480,79 @@ resource "aws_sqs_queue" "orders" {
         assert_eq!(summary.tf.files, 1);
         assert!(summary.tf.nodes > 0);
         assert_eq!(summary.files(), 2);
+    }
+
+    #[test]
+    fn toolchain_facts_land_in_the_graph_with_defined_in_edges() {
+        // AC-0096 (#215): config files become Tool nodes with cited
+        // settings, DEFINED_IN the config File node — end to end through
+        // the extraction pipeline and the FK-enforcing graph load.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{ "name": "shop", "type": "module", "dependencies": { "react": "^19" } }"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("app.ts"), "export function run() {}\n").unwrap();
+        // The vite config is a .ts source file: the TS adapter owns its
+        // File node, and the toolchain must reuse it rather than clobber.
+        std::fs::write(
+            dir.path().join("vite.config.ts"),
+            "export default { base: '/' };\n",
+        )
+        .unwrap();
+        let (extraction, summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/tools",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert!(summary.tools.files >= 2);
+        assert!(summary.tools.nodes > 0);
+
+        let mut graph = SqliteGraphStore::open_in_memory().unwrap();
+        crate::load_into_graph(
+            &mut graph,
+            &extraction,
+            "local/tools",
+            dir.path(),
+            "workdir",
+        )
+        .unwrap();
+        let react = graph.get_node("tool:local/tools@react").unwrap().unwrap();
+        assert_eq!(react.label, "Tool");
+        assert_eq!(react.props["settings"]["requirement"], "^19");
+        let edges = graph.all_edges().unwrap();
+        assert!(edges.iter().any(|edge| edge.src == "tool:local/tools@react"
+            && edge.dst == "file:local/tools@package.json"
+            && edge.label == "DEFINED_IN"));
+        // Presence-only code config: Tool node exists, DEFINED_IN targets
+        // the TS adapter's own File node (no duplicate/clobbered file).
+        let vite = graph
+            .get_node("tool:local/tools@vite.config.ts")
+            .unwrap()
+            .unwrap();
+        assert_eq!(vite.props["settings_behind_code"], true);
+        let vite_file = graph
+            .get_node("file:local/tools@vite.config.ts")
+            .unwrap()
+            .unwrap();
+        assert!(
+            vite_file.props.get("config").is_none(),
+            "adapter-owned File node survives the toolchain pass"
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.src == "tool:local/tools@vite.config.ts"
+                    && edge.dst == "file:local/tools@vite.config.ts"
+                    && edge.label == "DEFINED_IN")
+        );
     }
 
     #[test]
