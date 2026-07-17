@@ -161,14 +161,26 @@ impl ResolutionIndex {
                         continue;
                     };
                     let facts = adapters_fw::tsconfig::parse(&text);
-                    if facts.base_url.is_none() && facts.paths.is_empty() {
-                        continue; // nothing this scope can resolve
-                    }
+                    // A config with no baseUrl/paths still SHADOWS its
+                    // parents (#220 review): the nearest tsconfig governs
+                    // its files, so a root alias must not reach into a
+                    // nested package that didn't declare it.
+                    let mut paths = facts.paths;
+                    // TypeScript matches the pattern with the longest
+                    // prefix before `*`; exact patterns are most specific
+                    // of all (#220 review).
+                    paths.sort_by(|(a, _), (b, _)| {
+                        let specificity = |pattern: &str| match pattern.split_once('*') {
+                            None => usize::MAX,
+                            Some((prefix, _)) => prefix.len(),
+                        };
+                        specificity(b).cmp(&specificity(a)).then(a.cmp(b))
+                    });
                     index.tsconfigs.push(TsconfigScope {
                         dir: dir_rel,
                         config_path: rel,
                         base_url: facts.base_url,
-                        paths: facts.paths,
+                        paths,
                         paths_span: facts.paths_span,
                         span: facts.span,
                     });
@@ -203,10 +215,21 @@ impl ResolutionIndex {
                 }
             }
         }
-        // Longest (most specific) tsconfig scope first per importer lookup.
-        index
-            .tsconfigs
-            .sort_by(|a, b| b.dir.len().cmp(&a.dir.len()).then(a.dir.cmp(&b.dir)));
+        // Longest (most specific) tsconfig scope first per importer lookup;
+        // within one directory the canonical `tsconfig.json`/`jsconfig.json`
+        // outranks `tsconfig.*.json` variants.
+        index.tsconfigs.sort_by(|a, b| {
+            let canonical = |scope: &TsconfigScope| {
+                let name = scope.config_path.rsplit('/').next().unwrap_or("");
+                !(name == "tsconfig.json" || name == "jsconfig.json")
+            };
+            b.dir
+                .len()
+                .cmp(&a.dir.len())
+                .then(a.dir.cmp(&b.dir))
+                .then(canonical(a).cmp(&canonical(b)))
+                .then(a.config_path.cmp(&b.config_path))
+        });
         index.packages.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(index)
     }
@@ -270,12 +293,15 @@ fn resolve_spec(
     repo: &str,
     known_files: &HashSet<String>,
 ) -> Option<Resolved> {
-    // tsconfig scopes: most specific directory containing the importer wins.
-    for scope in &index.tsconfigs {
-        let governs = scope.dir.is_empty() || importer.starts_with(&format!("{}/", scope.dir));
-        if !governs {
-            continue;
-        }
+    // The nearest governing config wins outright (#220 review): a child
+    // tsconfig shadows its parents even when it declares no aliases of its
+    // own, so a root alias can never reach into a nested package that
+    // didn't declare it — no fall-through to less specific scopes.
+    let nearest = index
+        .tsconfigs
+        .iter()
+        .find(|scope| scope.dir.is_empty() || importer.starts_with(&format!("{}/", scope.dir)));
+    if let Some(scope) = nearest {
         let base = match &scope.base_url {
             Some(base_url) if scope.dir.is_empty() => normalize(base_url),
             Some(base_url) => normalize(&format!("{}/{}", scope.dir, base_url)),

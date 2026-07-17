@@ -1363,3 +1363,82 @@ fn unproven_alias_and_missing_index_fail_closed() {
         .expect("placeholder node exists");
     assert_eq!(placeholder.props["placeholder"], true);
 }
+
+#[test]
+fn nested_tsconfig_shadows_parent_aliases_even_when_empty() {
+    // #220 review: the nearest tsconfig governs its files outright — a
+    // nested package with its own (alias-free) tsconfig must NOT have the
+    // root config's aliases reach into it; the import stays an explicit
+    // `mod:` node. Files governed by the root config keep resolving.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/thing.ts"), "export function t() {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("root.ts"),
+        "import { t } from '@/thing';\nexport const a = 1;\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("packages/app")).unwrap();
+    std::fs::write(dir.path().join("packages/app/tsconfig.json"), "{}").unwrap();
+    std::fs::write(
+        dir.path().join("packages/app/main.ts"),
+        "import { t } from '@/thing';\nexport const b = 1;\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports = edge_pairs(&out, "IMPORTS");
+    // Root-governed file resolves through the root alias…
+    assert!(imports.contains(&(
+        "file:qwtm/example@root.ts",
+        "file:qwtm/example@src/thing.ts"
+    )));
+    // …but the nested package's identical import is shadowed by its own
+    // config and stays unresolved rather than borrowing the root alias.
+    assert!(imports.contains(&("file:qwtm/example@packages/app/main.ts", "mod:@/thing")));
+}
+
+#[test]
+fn most_specific_paths_pattern_wins() {
+    // #220 review: TypeScript picks the pattern with the longest prefix
+    // before `*` — `@/foo/*` must beat `@/*` even when both targets exist.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"], "@/foo/*": ["special/*"] } } }"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src/foo")).unwrap();
+    std::fs::write(
+        dir.path().join("src/foo/bar.ts"),
+        "export const general = 1;\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("special")).unwrap();
+    std::fs::write(
+        dir.path().join("special/bar.ts"),
+        "export const specific = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("app.ts"),
+        "import { specific } from '@/foo/bar';\nexport const a = 1;\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports = edge_pairs(&out, "IMPORTS");
+    assert!(imports.contains(&(
+        "file:qwtm/example@app.ts",
+        "file:qwtm/example@special/bar.ts"
+    )));
+    assert!(!imports.contains(&(
+        "file:qwtm/example@app.ts",
+        "file:qwtm/example@src/foo/bar.ts"
+    )));
+}

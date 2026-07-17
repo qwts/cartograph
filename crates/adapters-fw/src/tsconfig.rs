@@ -49,10 +49,8 @@ fn span_of(text: &str, needle: &str) -> (u64, u64) {
     }
 }
 
-/// Strip JSONC comments and trailing commas, string-aware, preserving
-/// everything else byte-for-byte where possible (spans are computed on the
-/// original text, so the sanitized copy is only ever parsed, never cited).
-fn sanitize_jsonc(text: &str) -> String {
+/// Strip JSONC comments, string-aware.
+fn strip_comments(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -90,20 +88,6 @@ fn sanitize_jsonc(text: &str) -> String {
                 }
                 i = (i + 2).min(bytes.len());
             }
-            ',' => {
-                // Trailing comma: next non-whitespace (skipping comments is
-                // handled by later passes of this loop) closes the scope.
-                let mut j = i + 1;
-                while j < bytes.len() && (bytes[j] as char).is_whitespace() {
-                    j += 1;
-                }
-                if j < bytes.len() && (bytes[j] == b'}' || bytes[j] == b']') {
-                    i += 1; // drop the comma
-                } else {
-                    out.push(c);
-                    i += 1;
-                }
-            }
             _ => {
                 out.push(c);
                 i += 1;
@@ -111,6 +95,55 @@ fn sanitize_jsonc(text: &str) -> String {
         }
     }
     out
+}
+
+/// Remove trailing commas from comment-free JSON text, string-aware.
+fn strip_trailing_commas(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut in_string = false;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if in_string {
+            out.push(c);
+            if c == '\\' && i + 1 < bytes.len() {
+                out.push(bytes[i + 1] as char);
+                i += 2;
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+        }
+        if c == ',' {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && (bytes[j] == b'}' || bytes[j] == b']') {
+                i += 1; // drop the trailing comma
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Strip JSONC comments and trailing commas, string-aware, preserving
+/// everything else byte-for-byte where possible (spans are computed on the
+/// original text, so the sanitized copy is only ever parsed, never cited).
+/// Comments are removed FIRST so a trailing comma followed by a comment
+/// (`"baseUrl": ".", // why`) is still recognized as trailing (#220 review).
+fn sanitize_jsonc(text: &str) -> String {
+    strip_trailing_commas(&strip_comments(text))
 }
 
 /// Parse one tsconfig/jsconfig text into facts. Tolerates JSONC; fails
@@ -203,6 +236,21 @@ mod tests {
         );
         let (start, end) = facts.paths_span;
         assert_eq!(&text[start as usize..end as usize], "\"paths\"");
+    }
+
+    #[test]
+    fn trailing_comma_before_a_comment_is_still_trailing() {
+        // #220 review: `"baseUrl": ".", // why` before the closing brace is
+        // a common tsconfig pattern — comments are stripped first, so the
+        // comma is recognized as trailing and the config still parses.
+        let facts = parse(
+            "{\n  \"compilerOptions\": {\n    \"baseUrl\": \".\", // why\n    \"paths\": { \"@/*\": [\"src/*\"] }, /* done */\n  },\n}",
+        );
+        assert_eq!(facts.base_url.as_deref(), Some("."));
+        assert_eq!(
+            facts.paths,
+            vec![("@/*".to_string(), vec!["src/*".to_string()])]
+        );
     }
 
     #[test]
