@@ -17,7 +17,7 @@ its respective license, reproduced below. This list is generated from the
 dependency lockfile by `cargo about`; do not edit by hand.
 
 - Apache License 2.0 (291 crate(s))
-- MIT License (72 crate(s))
+- MIT License (73 crate(s))
 - Unicode License v3 (19 crate(s))
 - BSD 3-Clause "New" or "Revised" License (7 crate(s))
 - Mozilla Public License 2.0 (5 crate(s))
@@ -7221,6 +7221,7 @@ Used by:
 - objc2 0.6.4 — https://github.com/madsmtm/objc2
 - pratt 0.4.0 — https://github.com/segeljakt/pratt/
 - tree-sitter-java 0.23.5 — https://github.com/tree-sitter/tree-sitter-java
+- tree-sitter-kotlin-ng 1.1.0 — https://github.com/tree-sitter-grammars/tree-sitter-kotlin
 - tree-sitter-typescript 0.23.2 — https://github.com/tree-sitter/tree-sitter-typescript
 
 ```

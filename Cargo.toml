@@ -17,14 +17,15 @@ missing_docs = "warn"
 # Production release hardening (#221). Applies to every workspace binary,
 # including the packaged `app` shell:
 #   strip         — drop symbol tables/debuginfo from the shipped binary
-#   lto           — cross-crate link-time optimization (smaller, faster)
+#   lto="thin"    — cross-crate link-time optimization; thin keeps release
+#                   build times reasonable for ~a 2 MB size cost vs fat LTO
 #   codegen-units — single unit maximizes optimization (slower compile)
 #   panic=abort   — no unwinding tables; smaller binary. Safe here: the tree
 #                   has no catch_unwind/should_panic outside the test profile,
 #                   and wasmtime guest traps do not rely on host unwinding.
 [profile.release]
 strip = "symbols"
-lto = true
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 
