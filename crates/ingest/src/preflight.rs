@@ -33,6 +33,12 @@ const SKIP_DIRS: &[&str] = &[
     ".cartograph",
 ];
 
+/// Shared skip predicate — the toolchain walk (#215) must never disagree
+/// with Preflight about what is part of the system.
+pub(crate) fn skip_dir(name: &str) -> bool {
+    SKIP_DIRS.contains(&name)
+}
+
 /// One detected language with its adapter coverage.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LanguageDetection {
@@ -305,20 +311,40 @@ pub fn preflight_with_coverage(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             if path.is_dir() {
-                if !SKIP_DIRS.contains(&name.as_str()) {
+                if !skip_dir(&name) {
                     stack.push(path);
                 }
                 continue;
             }
-            detect_framework(&name, &path, &mut frameworks);
-            let Some(extension) = path.extension().map(|e| e.to_string_lossy().into_owned()) else {
-                continue;
-            };
             let rel = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
-                .into_owned();
+                .replace('\\', "/");
+            // Framework chips and config-behind-code findings quote the
+            // toolchain registry (#215) — the same detection that produces
+            // the graph's Tool facts, so the two surfaces cannot disagree.
+            let detection = crate::toolchain::detect_in_file(&name, &rel, &path);
+            frameworks.extend(detection.framework_labels);
+            for tool in &detection.tools {
+                if tool.settings_behind_code {
+                    unsupported.push(PatternFinding {
+                        kind: "config-behind-code".into(),
+                        path: rel.clone(),
+                        line: 1,
+                        message: format!(
+                            "{} is authored in code — detected by presence; its \
+                             settings are not evaluated and stay uncited",
+                            tool.display
+                        ),
+                        detector: DETECTOR_ID.into(),
+                        request_adapter: None,
+                    });
+                }
+            }
+            let Some(extension) = path.extension().map(|e| e.to_string_lossy().into_owned()) else {
+                continue;
+            };
             // Risky-construct scanning is per-syntax, not per-coverage: a
             // .ts file gets the same eval/WASM findings as .js (#192
             // review) — both extensions are covered by the same adapter.
@@ -406,39 +432,6 @@ pub fn preflight_with_coverage(
         potential_gaps,
         detector: DETECTOR_ID.into(),
     })
-}
-
-/// Recognize frameworks from marker files (cheap, deterministic).
-fn detect_framework(name: &str, path: &Path, frameworks: &mut Vec<String>) {
-    match name {
-        "manifest.json" => {
-            if std::fs::read_to_string(path).is_ok_and(|text| text.contains("\"manifest_version\""))
-            {
-                frameworks.push("WebExtension (Manifest V2/V3)".into());
-            }
-        }
-        "package.json" => {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                for (marker, framework) in [
-                    ("\"react\"", "React"),
-                    ("\"express\"", "Express"),
-                    ("\"next\"", "Next.js"),
-                ] {
-                    if text.contains(marker) {
-                        frameworks.push(framework.into());
-                    }
-                }
-            }
-        }
-        "go.mod" => frameworks.push("Go module".into()),
-        "pyproject.toml" | "requirements.txt" => frameworks.push("Python project".into()),
-        "pom.xml" | "build.gradle" | "build.gradle.kts" => frameworks.push("Java project".into()),
-        _ => {
-            if name.ends_with(".tf") {
-                frameworks.push("Terraform".into());
-            }
-        }
-    }
 }
 
 /// Line-level construct detectors for covered JS/TS sources. Each detector

@@ -249,3 +249,13 @@
 - **Security:** External links open via the system browser; help content ships in the bundle (no runtime fetch).
 - **Performance:** Topics render from pre-bundled strings; no I/O on open.
 - **Trace:** post-M10 · `app`, UI, `scripts` · — · T-0090..0092
+
+### US-0019 — Toolchain recovered as cited facts
+- **Actor:** Engineer
+- **As a** engineer **I want** the system's toolchain — frameworks, build tools, package managers, compiler configs, CI, containers — recovered from its config files as cited graph facts **so that** the spec states what the system is built *with*, not just what it does.
+- **Priority:** Should · **Status:** Done
+- **AC-0096** Given a tree containing recognized config files (`package.json`, `tsconfig.json`/`jsconfig.json`, lockfiles, `Dockerfile`/`docker-compose.*`, `.github/workflows/*`, language manifests such as `Cargo.toml`/`pyproject.toml`/`go.mod`/`pom.xml`/`build.gradle`), when it is ingested, then each detected tool becomes a Confirmed T0 `Tool` node (`tool:{repo}@{name}`) whose allowlisted resolved settings are props, with `DEFINED_IN` edges to the config `File` node(s) that prove it and provenance citing the exact declaring span; Preflight's framework chips quote the same detection registry as the graph (single source, never disagreeing), and the spec export gains a toolchain artifact fed by the same nodes.
+- **AC-0097** Given `.env*` files or secret-shaped strings in any config, when toolchain facts are extracted, then env files contribute key names only (values are never read into facts), any stored string that looks secret-shaped is dropped rather than stored, and configs authored in code (`vite.config.ts`, `webpack.config.js`, …) are detected by presence only — never evaluated — with an explicit `config-behind-code` Unsupported finding naming the limitation. Redaction fails closed.
+- **Security:** AC-0097 is the security surface: fail-closed redaction (AC-0009 standard); no config value is stored unless allowlisted and non-secret-shaped.
+- **Performance:** Only name-matched config files are read; one sorted deterministic walk shared with Preflight's skip set.
+- **Trace:** post-M10 · `ingest`, `core-graph`, `spec`, `app`, UI · — · T-0096..0097

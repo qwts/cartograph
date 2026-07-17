@@ -16,7 +16,9 @@ const EMPTY_LAYERS = {
   python: { files: 0, nodes: 0, edges: 0 },
   go: { files: 0, nodes: 0, edges: 0 },
   tf: { files: 0, nodes: 0, edges: 0 },
-  java: { files: 0, nodes: 0, edges: 0 },  webext: { files: 0, nodes: 0, edges: 0 },
+  java: { files: 0, nodes: 0, edges: 0 },
+  webext: { files: 0, nodes: 0, edges: 0 },
+  tools: { files: 0, nodes: 0, edges: 0 },
 };
 
 export const Idle: Story = {
@@ -48,9 +50,18 @@ export const WithSummary: Story = {
         python: { files: 0, nodes: 0, edges: 0 },
         go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 4, nodes: 34, edges: 51 },
-        java: { files: 0, nodes: 0, edges: 0 },        webext: { files: 0, nodes: 0, edges: 0 },
+        java: { files: 0, nodes: 0, edges: 0 },
+        webext: { files: 0, nodes: 0, edges: 0 },
+        // #215 (AC-0096): config files land as Tool facts with DEFINED_IN proofs.
+        tools: { files: 3, nodes: 6, edges: 5 },
       },
     },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId('tools-layer-summary').textContent).toBe(
+      '3 configs · 6 nodes · 5 edges',
+    );
   },
 };
 
@@ -67,7 +78,9 @@ export const DeltaReingest: Story = {
         python: { files: 0, nodes: 0, edges: 0 },
         go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 4, nodes: 34, edges: 51 },
-        java: { files: 0, nodes: 0, edges: 0 },        webext: { files: 0, nodes: 0, edges: 0 },
+        java: { files: 0, nodes: 0, edges: 0 },
+        webext: { files: 0, nodes: 0, edges: 0 },
+        tools: { files: 0, nodes: 0, edges: 0 },
       },
       delta: { recomputed_files: 1, reused_files: 11, deleted_files: 0 },
     },
@@ -93,7 +106,9 @@ export const PulumiWithoutTerraform: Story = {
         python: { files: 0, nodes: 0, edges: 0 },
         go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 0, nodes: 0, edges: 0 },
-        java: { files: 0, nodes: 0, edges: 0 },        webext: { files: 0, nodes: 0, edges: 0 },
+        java: { files: 0, nodes: 0, edges: 0 },
+        webext: { files: 0, nodes: 0, edges: 0 },
+        tools: { files: 0, nodes: 0, edges: 0 },
       },
     },
   },
@@ -122,7 +137,9 @@ export const PythonAndTypeScript: Story = {
         python: { files: 2, nodes: 20, edges: 19 },
         go: { files: 0, nodes: 0, edges: 0 },
         tf: { files: 0, nodes: 0, edges: 0 },
-        java: { files: 0, nodes: 0, edges: 0 },        webext: { files: 0, nodes: 0, edges: 0 },
+        java: { files: 0, nodes: 0, edges: 0 },
+        webext: { files: 0, nodes: 0, edges: 0 },
+        tools: { files: 0, nodes: 0, edges: 0 },
       },
     },
   },
@@ -151,7 +168,9 @@ export const GoAndPython: Story = {
         python: { files: 2, nodes: 20, edges: 19 },
         go: { files: 3, nodes: 22, edges: 18 },
         tf: { files: 0, nodes: 0, edges: 0 },
-        java: { files: 0, nodes: 0, edges: 0 },        webext: { files: 0, nodes: 0, edges: 0 },
+        java: { files: 0, nodes: 0, edges: 0 },
+        webext: { files: 0, nodes: 0, edges: 0 },
+        tools: { files: 0, nodes: 0, edges: 0 },
       },
     },
   },

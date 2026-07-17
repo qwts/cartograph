@@ -81,6 +81,8 @@ export interface IngestSummary {
     tf: LayerSummary;
     java: LayerSummary;
     webext: LayerSummary;
+    /** Config-file evidence: Tool nodes + DEFINED_IN proofs (#215). */
+    tools: LayerSummary;
   };
   delta?: {
     recomputed_files: number;

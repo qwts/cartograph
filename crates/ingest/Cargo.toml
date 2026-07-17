@@ -11,6 +11,9 @@ workspace = true
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+core-graph = { workspace = true }
+core-prov = { workspace = true }
 toml = "1.1"
 # libgit2 bindings; vendored so CI needs no system libgit2.
 git2 = { version = "0.21", default-features = false, features = ["https", "vendored-libgit2", "vendored-openssl"] }

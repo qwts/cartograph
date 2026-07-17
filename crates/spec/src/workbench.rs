@@ -788,6 +788,76 @@ fn security_view(nodes: &[&Node]) -> (String, Vec<SpecAssertion>, usize) {
     (content, assertions, findings.len())
 }
 
+/// The toolchain view (#215): what the system is built *with*, as cited
+/// facts — `Tool` nodes with their resolved settings and the config files
+/// (`DEFINED_IN`) that prove them.
+fn toolchain_view(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) {
+    let mut content = String::from(
+        "# Toolchain\n\n| Tool | Category | Defined in | Settings | Confidence |\n|---|---|---|---|---|\n",
+    );
+    let mut assertions = Vec::new();
+    let tools: Vec<&&Node> = nodes.iter().filter(|node| node.label == "Tool").collect();
+    for tool in &tools {
+        let tool_provenance = provenance(&tool.props, &tool.id);
+        let display = tool.props["display"].as_str().unwrap_or(&tool.id);
+        let category = tool.props["category"].as_str().unwrap_or("—");
+        let mut defined_in: Vec<String> = edges
+            .iter()
+            .filter(|edge| edge.label == "DEFINED_IN" && edge.src == tool.id)
+            .map(|edge| {
+                edge.dst
+                    .split_once('@')
+                    .map(|(_, path)| path.to_string())
+                    .unwrap_or_else(|| edge.dst.clone())
+            })
+            .collect();
+        defined_in.sort();
+        defined_in.dedup();
+        let settings = if tool.props["settings_behind_code"].as_bool() == Some(true) {
+            "settings live in code — detected by presence only".to_string()
+        } else {
+            let rendered: Vec<String> = tool.props["settings"]
+                .as_object()
+                .map(|settings| {
+                    settings
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if rendered.is_empty() {
+                "—".to_string()
+            } else {
+                rendered.join("; ")
+            }
+        };
+        writeln!(
+            content,
+            "| {} | {} | {} | {} | {:?} |",
+            markdown_safe(display),
+            markdown_safe(category),
+            markdown_safe(&defined_in.join(", ")),
+            markdown_safe(&settings),
+            tool_provenance.confidence_tier,
+        )
+        .expect("write to string");
+        assertions.push(SpecAssertion {
+            id: format!("tool:{}", tool.id),
+            subject_id: tool.id.clone(),
+            subject_kind: "Tool".into(),
+            summary: format!(
+                "Toolchain: {display} ({category}) defined in {}",
+                defined_in.join(", ")
+            ),
+            provenance: tool_provenance,
+        });
+    }
+    if tools.is_empty() {
+        content.push_str("| — | — | — | No toolchain facts recovered | — |\n");
+    }
+    (content, assertions)
+}
+
 /// Compile the complete official artifact set with one R-INT-5 policy.
 /// Rejected inferred content hashes are suppressed without upgrading any fact.
 pub fn compile_spec(
@@ -828,6 +898,7 @@ pub fn compile_spec(
     let (gaps, gap_assertions) = gap_register(&nodes, &edges, &flow_assertions);
     let (drifts, drift_assertions, drift_count) = drift_register(&nodes, &edges);
     let (security, security_assertions, security_count) = security_view(&nodes);
+    let (toolchain, toolchain_assertions) = toolchain_view(&nodes, &edges);
 
     let gap_count = gap_assertions.len();
     let artifacts = vec![
@@ -902,6 +973,14 @@ pub fn compile_spec(
             "markdown",
             security,
             security_assertions,
+        ),
+        artifact(
+            "toolchain",
+            "toolchain.md",
+            "Toolchain",
+            "markdown",
+            toolchain,
+            toolchain_assertions,
         ),
     ];
     let assertion_count = artifacts
@@ -1110,6 +1189,7 @@ mod tests {
                 "gap_register.md",
                 "drift_register.md",
                 "security.md",
+                "toolchain.md",
             ]
         );
         for artifact in &bundle.artifacts {
@@ -1482,5 +1562,95 @@ mod tests {
             .unwrap();
         assert_eq!(curated.security_count, 1);
         assert!(!curated_security.content.contains("s3:Get*"));
+    }
+
+    #[test]
+    fn toolchain_artifact_states_what_the_system_is_built_with() {
+        // #215 (AC-0096): the spec export gains a toolchain section fed by
+        // the same Tool nodes the graph holds — settings cited, config file
+        // named, presence-only code configs honestly marked.
+        let react = Node {
+            id: "tool:local/shop@react".into(),
+            label: "Tool".into(),
+            props: serde_json::json!({
+                "name": "react",
+                "display": "React",
+                "category": "framework",
+                "settings": { "requirement": "^19.0.0" },
+                "prov": prov(Tier::Deterministic, ConfidenceTier::Confirmed, "react"),
+            }),
+        };
+        let vite = Node {
+            id: "tool:local/shop@vite.config.ts".into(),
+            label: "Tool".into(),
+            props: serde_json::json!({
+                "name": "vite.config.ts",
+                "display": "Vite config",
+                "category": "bundler",
+                "settings": {},
+                "settings_behind_code": true,
+                "prov": prov(Tier::Deterministic, ConfidenceTier::Confirmed, "vite"),
+            }),
+        };
+        let manifest = Node {
+            id: "file:local/shop@package.json".into(),
+            label: "File".into(),
+            props: serde_json::json!({
+                "path": "package.json",
+                "prov": prov(Tier::Deterministic, ConfidenceTier::Confirmed, "manifest"),
+            }),
+        };
+        let defined_in = Edge {
+            src: react.id.clone(),
+            dst: manifest.id.clone(),
+            label: "DEFINED_IN".into(),
+            props: serde_json::json!({
+                "prov": prov(Tier::Deterministic, ConfidenceTier::Confirmed, "defined"),
+            }),
+        };
+        let bundle = compile_spec(
+            &[react, vite, manifest],
+            &[defined_in],
+            &[],
+            ExportMode::VerifiedOnly,
+            &BTreeSet::new(),
+        );
+        let toolchain = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == "toolchain")
+            .unwrap();
+        assert!(
+            toolchain
+                .content
+                .contains("| React | framework | package.json |")
+        );
+        assert!(toolchain.content.contains(r#"requirement="^19.0.0""#));
+        assert!(
+            toolchain
+                .content
+                .contains("settings live in code — detected by presence only")
+        );
+        let assertion = toolchain
+            .assertions
+            .iter()
+            .find(|assertion| assertion.subject_id == "tool:local/shop@react")
+            .unwrap();
+        assert_eq!(assertion.subject_kind, "Tool");
+        assert_eq!(
+            assertion.provenance.confidence_tier,
+            ConfidenceTier::Confirmed
+        );
+        // An empty graph renders the honest empty row instead.
+        let empty = compile_spec(&[], &[], &[], ExportMode::VerifiedOnly, &BTreeSet::new());
+        assert!(
+            empty
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == "toolchain")
+                .unwrap()
+                .content
+                .contains("No toolchain facts recovered")
+        );
     }
 }

@@ -10,6 +10,7 @@
 
 pub mod manifest;
 pub mod preflight;
+pub mod toolchain;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

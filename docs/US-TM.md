@@ -22,6 +22,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0016 | AC-0071..0075 | adapters-lang-ts, adapters-fw, events, spec, app, ui | post-M10 | WebExtension flows | ADR-0003, ADR-0013 | T-0071..0075 |
 | US-0017 | AC-0068..0070, AC-0093 | adapters-*, ingest, app, ui | post-M10 | — | ADR-0003, ADR-0017 | T-0068..0070, T-0093 |
 | US-0018 | AC-0090..0092 | app, ui, scripts | post-M10 | — | ADR-0002 | T-0090..0092 |
+| US-0019 | AC-0096..0097 | ingest, core-graph, spec, app, ui | post-M10 | — | ADR-0003 | T-0096..0097 |
 
 ## Coverage assertions
 - Every Must-priority US is anchored to a milestone ≤ M10.
