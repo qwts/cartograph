@@ -1452,3 +1452,305 @@ export function make() {
         }]
     );
 }
+
+#[test]
+fn directory_index_import_resolves_through_index_files() {
+    // #213 (AC-0100): `./utils` meaning `./utils/index.ts` is the Node
+    // directory-index convention; the extensionless guess must try the
+    // index file before giving up, for IMPORTS and cross-file CALLS alike.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("app.ts"),
+        "import { helper } from './utils';\nexport function run() { helper(); }\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("utils")).unwrap();
+    std::fs::write(
+        dir.path().join("utils/index.ts"),
+        "export function helper() {}\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let index_file = "file:qwtm/example@utils/index.ts";
+    assert!(edge_pairs(&out, "IMPORTS").contains(&("file:qwtm/example@app.ts", index_file)));
+    assert!(
+        !out.nodes
+            .iter()
+            .any(|n| n.id == "file:qwtm/example@utils.ts")
+    );
+    assert!(edge_pairs(&out, "CALLS").contains(&(
+        "sym:qwtm/example@app.ts#run",
+        "sym:qwtm/example@utils/index.ts#helper"
+    )));
+}
+
+#[test]
+fn nodenext_js_extension_import_resolves_to_the_ts_source() {
+    // #213 (AC-0100): `moduleResolution: nodenext` requires imports to
+    // spell the *emitted* `.js` extension — `import './foo.js'` written in
+    // a tree that holds `foo.ts`. The spelled file doesn't exist; its TS
+    // sibling does, and both the IMPORTS and CALLS edges must join it. A
+    // real `.js` file spelled `.js` is left exactly as spelled.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("app.ts"),
+        "import { fetchUsers } from './api.js';\nimport { legacy } from './old.js';\nexport function run() { fetchUsers(); legacy(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("api.ts"),
+        "export function fetchUsers() {}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("old.js"), "export function legacy() {}\n").unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports = edge_pairs(&out, "IMPORTS");
+    assert!(imports.contains(&("file:qwtm/example@app.ts", "file:qwtm/example@api.ts")));
+    assert!(imports.contains(&("file:qwtm/example@app.ts", "file:qwtm/example@old.js")));
+    // No phantom api.js placeholder survives.
+    assert!(!out.nodes.iter().any(|n| n.id == "file:qwtm/example@api.js"));
+    let calls = edge_pairs(&out, "CALLS");
+    assert!(calls.contains(&(
+        "sym:qwtm/example@app.ts#run",
+        "sym:qwtm/example@api.ts#fetchUsers"
+    )));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@app.ts#run",
+        "sym:qwtm/example@old.js#legacy"
+    )));
+}
+
+#[test]
+fn tsconfig_paths_alias_resolves_to_a_real_file_with_the_config_cited() {
+    // #213 (AC-0100): a `paths` alias is applied before the specifier is
+    // classified as an opaque package, and the tsconfig that decided the
+    // resolution is cited in the edge's provenance evidence. Unmatched
+    // bare specifiers stay `mod:` nodes exactly as before.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{
+  // JSONC on purpose — real tsconfigs carry comments.
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] },
+  },
+}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src/components")).unwrap();
+    std::fs::write(
+        dir.path().join("src/components/Button.tsx"),
+        "export function Button() { return null; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/app.tsx"),
+        "import { Button } from '@/components/Button';\nimport react from 'react';\nexport const a = 1;\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports: Vec<_> = out.edges.iter().filter(|e| e.label == "IMPORTS").collect();
+    let resolved = imports
+        .iter()
+        .find(|e| e.dst == "file:qwtm/example@src/components/Button.tsx")
+        .expect("alias resolves to the real file");
+    assert_eq!(resolved.props["resolved_via"], "tsconfig-paths");
+    let prov: Provenance = serde_json::from_value(resolved.props["prov"].clone()).unwrap();
+    assert!(
+        prov.evidence
+            .iter()
+            .any(|evidence| evidence.path == "tsconfig.json"),
+        "the deciding config is citable evidence"
+    );
+    // External packages stay opaque — resolution never reaches node_modules.
+    assert!(imports.iter().any(|e| e.dst == "mod:react"));
+    assert!(!imports.iter().any(|e| e.dst == "mod:@/components/Button"));
+}
+
+#[test]
+fn baseurl_bare_specifier_resolves_without_paths() {
+    // #213: an explicit baseUrl alone lets bare specifiers name files
+    // relative to it (classic pre-NodeNext TS).
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{ "compilerOptions": { "baseUrl": "src" } }"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src/lib")).unwrap();
+    std::fs::write(dir.path().join("src/lib/db.ts"), "export function q() {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/main.ts"),
+        "import { q } from 'lib/db';\nexport const a = 1;\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports = edge_pairs(&out, "IMPORTS");
+    assert!(imports.contains(&(
+        "file:qwtm/example@src/main.ts",
+        "file:qwtm/example@src/lib/db.ts"
+    )));
+}
+
+#[test]
+fn workspace_package_bare_specifier_resolves_through_its_exports_map() {
+    // #213 (AC-0100): a bare specifier naming a sibling workspace package
+    // resolves through that package's exports map to its real source, with
+    // the package.json cited; anything not in the tree stays `mod:`.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("packages/shared/src")).unwrap();
+    std::fs::write(
+        dir.path().join("packages/shared/package.json"),
+        r#"{ "name": "@acme/shared", "exports": { ".": { "import": "./src/index.ts" } } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("packages/shared/src/index.ts"),
+        "export function api() {}\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("packages/app")).unwrap();
+    std::fs::write(
+        dir.path().join("packages/app/main.ts"),
+        "import { api } from '@acme/shared';\nimport lodash from 'lodash';\nexport const a = 1;\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports: Vec<_> = out.edges.iter().filter(|e| e.label == "IMPORTS").collect();
+    let resolved = imports
+        .iter()
+        .find(|e| e.dst == "file:qwtm/example@packages/shared/src/index.ts")
+        .expect("workspace package resolves to its entry source");
+    assert_eq!(resolved.props["resolved_via"], "workspace-package");
+    let prov: Provenance = serde_json::from_value(resolved.props["prov"].clone()).unwrap();
+    assert!(
+        prov.evidence
+            .iter()
+            .any(|evidence| evidence.path == "packages/shared/package.json")
+    );
+    assert!(imports.iter().any(|e| e.dst == "mod:lodash"));
+
+    // Deterministic: a second walk produces identical edges (US-0014).
+    let again = extract_dir(dir.path(), &id()).unwrap();
+    assert_eq!(out.edges, again.edges);
+}
+
+#[test]
+fn unproven_alias_and_missing_index_fail_closed() {
+    // #213: resolution is a proof against real files — an alias mapping to
+    // nothing and an import with no file and no index stay explicit
+    // (`mod:` node / placeholder), never a guessed rewrite.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("app.ts"),
+        "import { x } from '@/nothing';\nimport { y } from './missing';\nexport const a = 1;\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports: Vec<_> = out.edges.iter().filter(|e| e.label == "IMPORTS").collect();
+    assert!(imports.iter().any(|e| e.dst == "mod:@/nothing"));
+    // The relative miss keeps the guessed placeholder id (made an explicit
+    // placeholder node by close_over_endpoints) — no invented resolution.
+    assert!(
+        imports
+            .iter()
+            .any(|e| e.dst == "file:qwtm/example@missing.ts")
+    );
+    let placeholder = out
+        .nodes
+        .iter()
+        .find(|n| n.id == "file:qwtm/example@missing.ts")
+        .expect("placeholder node exists");
+    assert_eq!(placeholder.props["placeholder"], true);
+}
+
+#[test]
+fn nested_tsconfig_shadows_parent_aliases_even_when_empty() {
+    // #220 review: the nearest tsconfig governs its files outright — a
+    // nested package with its own (alias-free) tsconfig must NOT have the
+    // root config's aliases reach into it; the import stays an explicit
+    // `mod:` node. Files governed by the root config keep resolving.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/thing.ts"), "export function t() {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("root.ts"),
+        "import { t } from '@/thing';\nexport const a = 1;\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("packages/app")).unwrap();
+    std::fs::write(dir.path().join("packages/app/tsconfig.json"), "{}").unwrap();
+    std::fs::write(
+        dir.path().join("packages/app/main.ts"),
+        "import { t } from '@/thing';\nexport const b = 1;\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports = edge_pairs(&out, "IMPORTS");
+    // Root-governed file resolves through the root alias…
+    assert!(imports.contains(&(
+        "file:qwtm/example@root.ts",
+        "file:qwtm/example@src/thing.ts"
+    )));
+    // …but the nested package's identical import is shadowed by its own
+    // config and stays unresolved rather than borrowing the root alias.
+    assert!(imports.contains(&("file:qwtm/example@packages/app/main.ts", "mod:@/thing")));
+}
+
+#[test]
+fn most_specific_paths_pattern_wins() {
+    // #220 review: TypeScript picks the pattern with the longest prefix
+    // before `*` — `@/foo/*` must beat `@/*` even when both targets exist.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"], "@/foo/*": ["special/*"] } } }"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src/foo")).unwrap();
+    std::fs::write(
+        dir.path().join("src/foo/bar.ts"),
+        "export const general = 1;\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("special")).unwrap();
+    std::fs::write(
+        dir.path().join("special/bar.ts"),
+        "export const specific = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("app.ts"),
+        "import { specific } from '@/foo/bar';\nexport const a = 1;\n",
+    )
+    .unwrap();
+
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let imports = edge_pairs(&out, "IMPORTS");
+    assert!(imports.contains(&(
+        "file:qwtm/example@app.ts",
+        "file:qwtm/example@special/bar.ts"
+    )));
+    assert!(!imports.contains(&(
+        "file:qwtm/example@app.ts",
+        "file:qwtm/example@src/foo/bar.ts"
+    )));
+}

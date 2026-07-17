@@ -430,29 +430,21 @@ fn detect_tsconfig(rel: &str, path: &Path, detection: &mut Detection) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return;
     };
-    let mut settings = BTreeMap::new();
-    // tsconfig allows comments; serde_json does not. An unparseable config
+    // Parse-once seam (#213): the exact same parse the TS adapter's module
+    // resolution consumes — one implementation, so the stored facts and the
+    // resolution behavior can never disagree. An unparseable config
     // degrades to presence-only — never guessed settings.
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-        for key in [
-            "target",
-            "module",
-            "moduleResolution",
-            "strict",
-            "jsx",
-            "baseUrl",
-            "paths",
-        ] {
-            setting(&mut settings, key, &json["compilerOptions"][key]);
-        }
-        setting(&mut settings, "extends", &json["extends"]);
+    let facts = adapters_fw::tsconfig::parse(&text);
+    let mut settings = BTreeMap::new();
+    for (key, value) in &facts.settings {
+        setting(&mut settings, key, value);
     }
     detection.tools.push(tool(
         rel,
         "TypeScript config",
         "compiler-config",
         rel,
-        span_of(&text, "\"compilerOptions\""),
+        facts.span,
         settings,
     ));
 }

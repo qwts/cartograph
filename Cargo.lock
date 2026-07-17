@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "adapters-fw"
 version = "0.9.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "adapters-lang-go"
@@ -2312,6 +2315,7 @@ dependencies = [
 name = "ingest"
 version = "0.9.0"
 dependencies = [
+ "adapters-fw",
  "core-graph",
  "core-prov",
  "git2",

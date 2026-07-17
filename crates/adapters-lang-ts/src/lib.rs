@@ -605,14 +605,28 @@ fn resolve_relative(from: &str, spec: &str) -> Option<String> {
     Some(s)
 }
 
-/// Correct one id built on `resolve_relative`'s extensionless-import guess,
-/// once every real file/symbol in the directory is known. `id` is either a
+/// The NodeNext/ESM extension idiom (#213): TypeScript's `nodenext` module
+/// resolution requires imports to spell the *emitted* extension, so
+/// `import './foo.js'` conventionally means the `foo.ts`/`foo.tsx` sitting
+/// in the tree. Tried only when the spelled file does not itself exist.
+const NODENEXT_SIBLINGS: &[(&str, &[&str])] = &[(".js", &[".ts", ".tsx"]), (".jsx", &[".tsx"])];
+
+/// Correct one id built from an import specifier, once every real
+/// file/symbol in the directory is known. `id` is either a
 /// `file:{repo}@{path}` (an IMPORTS edge target) or a `sym:{repo}@{path}#{name}`
-/// (an imported call's candidate target, via the `imported` map) — in both
-/// shapes the guessed `.ts` sits right before the end or the `#`. Tried
-/// against every other source extension in turn; the first real match wins.
+/// (an imported call's candidate target, via the `imported` map). Three
+/// corrections, all proven against the real file set (#211 review, #213):
+///
+/// 1. `resolve_relative`'s extensionless `.ts` guess → every other source
+///    extension in turn;
+/// 2. still-unmatched extensionless targets → `<target>/index.<ext>` — the
+///    Node directory-index convention;
+/// 3. an explicit `.js`/`.jsx` specifier with no such file on disk → its
+///    `.ts`/`.tsx` sibling (the NodeNext idiom).
+///
 /// Returns `None` when `id` is already correct (or genuinely has nothing
-/// behind it) — the caller leaves those alone.
+/// behind it) — the caller leaves those alone, so a failed proof stays an
+/// explicit Gap or placeholder, never a guess.
 fn reconcile_guessed_extension(
     id: &str,
     known: &std::collections::HashSet<String>,
@@ -622,15 +636,32 @@ fn reconcile_guessed_extension(
     }
     let (head, tail) = id.split_once('#').unzip();
     let head = head.unwrap_or(id);
-    let stem = head.strip_suffix(".ts")?;
-    SOURCE_EXTENSIONS
-        .iter()
-        .filter(|ext| **ext != ".ts")
-        .map(|ext| match tail {
-            Some(tail) => format!("{stem}{ext}#{tail}"),
-            None => format!("{stem}{ext}"),
-        })
-        .find(|candidate| known.contains(candidate))
+    let rebuild = |stem_with_ext: String| match tail {
+        Some(tail) => format!("{stem_with_ext}#{tail}"),
+        None => stem_with_ext,
+    };
+    if let Some(stem) = head.strip_suffix(".ts") {
+        // The extensionless guess: other extensions, then directory index.
+        return SOURCE_EXTENSIONS
+            .iter()
+            .filter(|ext| **ext != ".ts")
+            .map(|ext| rebuild(format!("{stem}{ext}")))
+            .chain(
+                SOURCE_EXTENSIONS
+                    .iter()
+                    .map(|ext| rebuild(format!("{stem}/index{ext}"))),
+            )
+            .find(|candidate| known.contains(candidate));
+    }
+    for (spelled, siblings) in NODENEXT_SIBLINGS {
+        if let Some(stem) = head.strip_suffix(spelled) {
+            return siblings
+                .iter()
+                .map(|ext| rebuild(format!("{stem}{ext}")))
+                .find(|candidate| known.contains(candidate));
+        }
+    }
+    None
 }
 
 /// Apply [`reconcile_guessed_extension`] to every edge already in `edges`
@@ -2675,6 +2706,12 @@ pub fn extract_dir_incremental_with_progress(
         .map(|node| node.id.clone())
         .collect();
     reconcile_guessed_edge_targets(&mut out.edges, &known_files, &known_symbols);
+    // Config-driven bare-specifier resolution (#213): tsconfig paths/baseUrl
+    // and workspace-package names rewrite `mod:` IMPORTS targets to real
+    // files, citing the deciding config. Reads configs fresh on every walk —
+    // a tsconfig edit must take effect even when every source parse is
+    // cache-reused.
+    resolution::resolve_bare_imports(&mut out, root, id, &known_files)?;
     for mut pending in std::mem::take(&mut out.pending_calls) {
         if let Some(real) = reconcile_guessed_extension(&pending.resolved_edge.dst, &known_symbols)
         {
@@ -2872,6 +2909,7 @@ fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::
 pub mod chrome_messaging;
 pub(crate) mod const_resolution;
 pub mod indexeddb;
+pub(crate) mod resolution;
 pub mod webextension;
 
 #[cfg(test)]

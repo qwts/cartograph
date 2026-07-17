@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod events;
+pub mod tsconfig;
 
 /// HTTP framework registry for factory-created routers (Express/Fastify).
 ///
