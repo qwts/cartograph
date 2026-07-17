@@ -68,6 +68,43 @@ pub struct Extraction {
     /// Pulumi relationships whose imported endpoint can only be proven after
     /// all files have been recovered.
     pending_pulumi_edges: Vec<PendingPulumiEdge>,
+    /// Every `eval()` / `new Function()` site, classified by AST-level proof
+    /// (#214, AC-0099). Preflight's textual `inline-eval` scan reconciles
+    /// against these claims — produced by the same extractor that emits the
+    /// facts, so classification and extraction can never disagree (the
+    /// plugin-coverage pattern from #201, host-filled).
+    pub eval_sites: Vec<EvalSite>,
+}
+
+/// One `eval()` / `new Function()` site classified at T0 (#214, AC-0099).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalSite {
+    /// Repo-relative path.
+    pub path: String,
+    /// 1-based line of the call — the line preflight's textual scan flags.
+    pub line: u64,
+    /// What the code-argument proof established.
+    pub proof: EvalProof,
+}
+
+/// Outcome of proving an `eval()` / `new Function()` code argument at T0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalProof {
+    /// Compile-time-known string — its facts were extracted as Confirmed
+    /// T0, so the preflight `inline-eval` finding is covered and closes.
+    Covered,
+    /// A const-shaped argument (identifier or member expression) that could
+    /// not be proven to a literal — stays an explicit Gap, never a guess.
+    ConstUnproven,
+    /// Runtime-computed argument (or none) — stays an Unsupported finding.
+    Dynamic,
+}
+
+/// Compile-time proof attempt for one eval/new Function argument.
+enum EvalArg {
+    Literal(String),
+    ConstShaped,
+    Dynamic,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +171,22 @@ fn retarget_props_commit(props: &mut serde_json::Value, commit: &str) {
     props["prov"] = serde_json::to_value(provenance).expect("provenance serializes");
 }
 
+/// Point a fact's evidence at one exact span — used to re-cite facts
+/// recovered from an eval'd string at the string's span at the eval site
+/// (the code's true source location, #214).
+fn retarget_props_span(props: &mut serde_json::Value, byte_start: u64, byte_end: u64) {
+    let Ok(mut provenance) =
+        serde_json::from_value::<Provenance>(props.get("prov").cloned().unwrap_or_default())
+    else {
+        return;
+    };
+    for evidence in &mut provenance.evidence {
+        evidence.byte_start = byte_start;
+        evidence.byte_end = byte_end;
+    }
+    props["prov"] = serde_json::to_value(provenance).expect("provenance serializes");
+}
+
 fn retarget_commit(extraction: &mut Extraction, commit: &str) {
     for node in &mut extraction.nodes {
         retarget_props_commit(&mut node.props, commit);
@@ -175,6 +228,7 @@ impl Extraction {
         self.pending_calls.clear();
         self.pulumi_bindings.clear();
         self.pending_pulumi_edges.clear();
+        self.eval_sites.clear();
     }
 
     /// Ensure every edge endpoint exists as a node; unresolved targets become
@@ -308,6 +362,91 @@ fn pending_call(
             }),
         },
     }
+}
+
+/// Parse a compile-time-proven `eval()` / `new Function()` code string with
+/// this same extractor and splice its facts into `out` (#214, AC-0099). The
+/// code is wrapped in a synthetic entry function — `new Function` parameter
+/// names become its parameters — so top-level statements attribute to one
+/// entry symbol (`sym:…#eval@<offset>`), which the enclosing symbol CALLS so
+/// the flow tracer walks through the eval boundary instead of stopping at
+/// it. Every emitted fact stays Confirmed T0, cites the argument's span at
+/// the eval site (the code's true source location), and carries
+/// `via: "eval"` so surfaces can mark dynamic-code recoveries. Returns
+/// whether facts were actually emitted (a parse failure fails closed).
+fn emit_eval_extraction(
+    cx: &FileCx<'_>,
+    out: &mut Extraction,
+    site: TsNode<'_>,
+    evidence: TsNode<'_>,
+    params: &[String],
+    code: &str,
+) -> bool {
+    let offset = site.start_byte();
+    let marker = format!("__cgeval{offset}");
+    let synthetic = format!("function {marker}({}) {{\n{code}\n}}\n", params.join(", "));
+    let Ok(inner) = extract_source(synthetic.as_bytes(), cx.path, cx.id) else {
+        return false;
+    };
+    let entry = sym_id(cx.id.repo, cx.path, &format!("eval@{offset}"));
+    let (start, end) = (evidence.start_byte() as u64, evidence.end_byte() as u64);
+    // Offset-keyed ids inside the synthetic source (anonymous symbols and
+    // deeper eval levels) are re-keyed under this site's offset so they can
+    // never collide with the outer file's own offset-keyed ids.
+    let rewrite = |id: &str| -> String {
+        id.replace("#eval@", &format!("#eval@{offset}+"))
+            .replace("#anon@", &format!("#anon@{offset}+"))
+            .replace(&format!("#{marker}"), &format!("#eval@{offset}"))
+    };
+    let file = file_id(cx.id.repo, cx.path);
+    for mut node in inner.nodes {
+        if node.id == file {
+            continue; // the outer extraction already owns the File node
+        }
+        node.id = rewrite(&node.id);
+        if node.id == entry {
+            node.props["name"] = serde_json::json!(format!("<eval@{offset}>"));
+        }
+        node.props["via"] = serde_json::json!("eval");
+        retarget_props_span(&mut node.props, start, end);
+        out.nodes.push(node);
+    }
+    for mut edge in inner.edges {
+        edge.src = rewrite(&edge.src);
+        edge.dst = rewrite(&edge.dst);
+        edge.props["via"] = serde_json::json!("eval");
+        retarget_props_span(&mut edge.props, start, end);
+        out.edges.push(edge);
+    }
+    for mut event_site in inner.event_sites {
+        event_site.symbol = event_site.symbol.map(|symbol| rewrite(&symbol));
+        event_site.byte_start = start;
+        event_site.byte_end = end;
+        out.event_sites.push(event_site);
+    }
+    for mut fetch_site in inner.fetch_sites {
+        fetch_site.symbol = fetch_site.symbol.map(|symbol| rewrite(&symbol));
+        fetch_site.byte_start = start;
+        fetch_site.byte_end = end;
+        out.fetch_sites.push(fetch_site);
+    }
+    // inner.default_exports / pending_calls / pulumi facts are structurally
+    // empty: `import`/`export` are syntax errors inside an eval'd script or
+    // a function body, and every cross-file/Pulumi proof requires them.
+    // inner.eval_sites are dropped too — their lines index the synthetic
+    // source, and this site already carries the outer claim.
+    if let Some(caller) = enclosing_symbol(cx, site) {
+        out.edges.push(Edge {
+            src: caller,
+            dst: entry,
+            label: "CALLS".into(),
+            props: serde_json::json!({
+                "via": "eval",
+                "prov": cx.prov(&evidence, &format!("CALLS eval@{offset}")),
+            }),
+        });
+    }
+    true
 }
 
 /// Node ids are repo-namespaced (`{kind}:{repo}@{rest}`, US-0001 slice 2):
@@ -1545,6 +1684,154 @@ pub fn extract_source(
         }
     }
 
+    // --- Literal eval()/new Function() extraction (#214, AC-0099) -----------
+    // A compile-time-known code string is deterministically parseable — the
+    // code is right there in the file — so it is a T0 fact source, not an
+    // opaque construct. The proof mirrors the crate's binding rules: a string
+    // literal (or substitution-free template), a same-file `const X = '…'`,
+    // or a const-object member proven through `const_resolution` — never a
+    // name coincidence. Anything not provable emits no facts and is
+    // classified for preflight instead (escalation ladder: no guessing).
+    {
+        let mut eval_consts = const_resolution::ConstIndex::default();
+        const_resolution::collect_imports(&cx, root, &language, &mut eval_consts);
+        const_resolution::collect_const_objects(&cx, root, &language, &mut eval_consts);
+        let prove_code = |node: &TsNode| -> EvalArg {
+            if let Some(lit) = literal_string(&cx, *node) {
+                return EvalArg::Literal(lit);
+            }
+            match node.kind() {
+                "identifier" => match const_strings.get(cx.text(node)) {
+                    Some(lit) => EvalArg::Literal(lit.clone()),
+                    None => EvalArg::ConstShaped,
+                },
+                "member_expression" => match eval_consts.resolve_member(path, cx.text(node)) {
+                    Some(lit) => EvalArg::Literal(lit),
+                    None => EvalArg::ConstShaped,
+                },
+                _ => EvalArg::Dynamic,
+            }
+        };
+        // A local binding named `eval`/`Function` is NOT the global — no
+        // facts, and the preflight finding stands (fail closed, the
+        // `shadowed_fetch` precedent).
+        let eval_shadowed = locals.contains_key("eval")
+            || imported.contains_key("eval")
+            || import_modules.contains_key("eval");
+        let function_shadowed = locals.contains_key("Function")
+            || imported.contains_key("Function")
+            || import_modules.contains_key("Function");
+
+        let q_eval = Query::new(
+            &language,
+            r#"(call_expression function: (identifier) @fn arguments: (arguments) @args) @call"#,
+        )
+        .expect("static query");
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&q_eval, root, source);
+        while let Some(m) = matches.next() {
+            let (mut fn_name, mut args, mut call) = (None, None, None);
+            for c in m.captures {
+                match q_eval.capture_names()[c.index as usize] {
+                    "fn" => fn_name = Some(cx.text(&c.node).to_string()),
+                    "args" => args = Some(c.node),
+                    "call" => call = Some(c.node),
+                    _ => {}
+                }
+            }
+            let (Some(fn_name), Some(args), Some(call)) = (fn_name, args, call) else {
+                continue;
+            };
+            if fn_name != "eval" || eval_shadowed {
+                continue;
+            }
+            let mut walk = args.walk();
+            let arg = args.named_children(&mut walk).next();
+            let proof = match &arg {
+                Some(arg) => prove_code(arg),
+                None => EvalArg::Dynamic,
+            };
+            let line = call.start_position().row as u64 + 1;
+            let proof = match proof {
+                EvalArg::Literal(code) => {
+                    let evidence = arg.expect("a literal proof implies an argument");
+                    match emit_eval_extraction(&cx, &mut out, call, evidence, &[], &code) {
+                        true => EvalProof::Covered,
+                        false => EvalProof::Dynamic,
+                    }
+                }
+                EvalArg::ConstShaped => EvalProof::ConstUnproven,
+                EvalArg::Dynamic => EvalProof::Dynamic,
+            };
+            out.eval_sites.push(EvalSite {
+                path: path.into(),
+                line,
+                proof,
+            });
+        }
+
+        // `new Function("a", "b", "body")`: the LAST string argument is the
+        // body; earlier ones are parameter names. Every argument must be
+        // compile-time-proven or the whole site stays unextracted.
+        let q_new_function = Query::new(
+            &language,
+            r#"(new_expression constructor: (identifier) @ctor arguments: (arguments) @args) @new"#,
+        )
+        .expect("static query");
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&q_new_function, root, source);
+        while let Some(m) = matches.next() {
+            let (mut ctor, mut args, mut site) = (None, None, None);
+            for c in m.captures {
+                match q_new_function.capture_names()[c.index as usize] {
+                    "ctor" => ctor = Some(cx.text(&c.node).to_string()),
+                    "args" => args = Some(c.node),
+                    "new" => site = Some(c.node),
+                    _ => {}
+                }
+            }
+            let (Some(ctor), Some(args), Some(site)) = (ctor, args, site) else {
+                continue;
+            };
+            if ctor != "Function" || function_shadowed {
+                continue;
+            }
+            let mut walk = args.walk();
+            let arguments: Vec<_> = args.named_children(&mut walk).collect();
+            let Some(body_arg) = arguments.last().copied() else {
+                continue; // `new Function()` has no body to recover
+            };
+            let proofs: Vec<EvalArg> = arguments.iter().map(&prove_code).collect();
+            let line = site.start_position().row as u64 + 1;
+            let proof = if proofs
+                .iter()
+                .all(|proof| matches!(proof, EvalArg::Literal(_)))
+            {
+                let mut literals: Vec<String> = proofs
+                    .into_iter()
+                    .map(|proof| match proof {
+                        EvalArg::Literal(lit) => lit,
+                        _ => unreachable!("all proofs are literal"),
+                    })
+                    .collect();
+                let body = literals.pop().expect("at least the body argument");
+                match emit_eval_extraction(&cx, &mut out, site, body_arg, &literals, &body) {
+                    true => EvalProof::Covered,
+                    false => EvalProof::Dynamic,
+                }
+            } else if proofs.iter().any(|proof| matches!(proof, EvalArg::Dynamic)) {
+                EvalProof::Dynamic
+            } else {
+                EvalProof::ConstUnproven
+            };
+            out.eval_sites.push(EvalSite {
+                path: path.into(),
+                line,
+                proof,
+            });
+        }
+    }
+
     // Vars bound to `new Ctor(...)` — receiver proof for Method patterns.
     let q_news = Query::new(
         &language,
@@ -2349,6 +2636,7 @@ pub fn extract_dir_incremental_with_progress(
         out.pending_calls.extend(ex.pending_calls);
         out.pulumi_bindings.extend(ex.pulumi_bindings);
         out.pending_pulumi_edges.extend(ex.pending_pulumi_edges);
+        out.eval_sites.extend(ex.eval_sites);
     }
     let known_symbols: std::collections::HashSet<String> =
         out.nodes.iter().map(|node| node.id.clone()).collect();
@@ -2504,6 +2792,24 @@ fn next_pages_screens(out: &mut Extraction, id: &SourceId) {
             });
         }
     }
+}
+
+/// AST-level `eval()` / `new Function()` classification for every source
+/// file under `root` (#214, AC-0099) — the single source of truth
+/// preflight's textual `inline-eval` scan reconciles against. It runs the
+/// same extractor that emits the facts, so a site is only ever reported
+/// covered when extraction actually recovered its facts; classification and
+/// extraction cannot disagree by construction.
+pub fn eval_coverage(root: &Path, id: &SourceId) -> Result<Vec<EvalSite>, ExtractError> {
+    let mut files = Vec::new();
+    collect_ts_files(root, root, &mut files)?;
+    files.sort(); // deterministic order (US-0014)
+    let mut out = Vec::new();
+    for rel in &files {
+        let source = std::fs::read(root.join(rel))?;
+        out.extend(extract_source(&source, rel, id)?.eval_sites);
+    }
+    Ok(out)
 }
 
 fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {

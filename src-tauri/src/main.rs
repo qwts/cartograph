@@ -1370,8 +1370,35 @@ fn preflight_blocking<R: tauri::Runtime>(
                 extensions: plugin.extensions,
             })
             .collect();
-    let report =
-        ingest::preflight::preflight_with_plugins(&root, &claims).map_err(|e| e.to_string())?;
+    // Eval-site claims come from the TS adapter's own AST proof (#214): the
+    // same extractor that emits facts from literal eval()/new Function()
+    // strings classifies each site, so preflight's textual `inline-eval`
+    // scan can close covered sites, downgrade const-unproven ones to
+    // potential Gaps, and keep dynamic ones — without ever disagreeing
+    // with what extraction will actually recover.
+    let eval_sites: Vec<ingest::preflight::EvalSiteCoverage> = adapters_lang_ts::eval_coverage(
+        &root,
+        &adapters_lang_ts::SourceId {
+            repo: &repo,
+            commit: "workdir",
+        },
+    )
+    .map_err(|e| e.to_string())?
+    .into_iter()
+    .map(|site| ingest::preflight::EvalSiteCoverage {
+        path: site.path,
+        line: site.line,
+        proof: match site.proof {
+            adapters_lang_ts::EvalProof::Covered => ingest::preflight::EvalProof::Covered,
+            adapters_lang_ts::EvalProof::ConstUnproven => {
+                ingest::preflight::EvalProof::ConstUnproven
+            }
+            adapters_lang_ts::EvalProof::Dynamic => ingest::preflight::EvalProof::Dynamic,
+        },
+    })
+    .collect();
+    let report = ingest::preflight::preflight_with_coverage(&root, &claims, &eval_sites)
+        .map_err(|e| e.to_string())?;
     let batch: Vec<NewFinding<'_>> = report
         .unsupported
         .iter()
@@ -5313,6 +5340,72 @@ export function App() {
             .unwrap()
             .expect("retried gate persists its verdict");
         assert!(passed, "gate report: {report_json}");
+    }
+
+    #[test]
+    fn preflight_closes_literal_eval_findings_through_adapter_claims() {
+        // AC-0099 (#214): the host fills preflight's eval-site claims from
+        // the TS adapter's own AST proof, so a literal eval() arrives
+        // already covered (no inline-eval finding), a const-shaped-but-
+        // unproven argument downgrades to a potential Gap, and a runtime-
+        // computed one stays Unsupported — scan and extraction agree by
+        // construction.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("app.ts"),
+            concat!(
+                "const CODE = getCode();\n",
+                "export function boot() {\n",
+                "  eval(\"function legacySetup() {}\");\n",
+                "  eval(CODE);\n",
+                "  eval(getCode() + '()');\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let state_path = dir.path().join("state.db");
+        app.manage(super::AppState {
+            graph: std::sync::Mutex::new(
+                SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
+            ),
+            jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
+            settings: std::sync::Mutex::new(
+                super::settings::SettingsStore::open(&state_path).unwrap(),
+            ),
+            decisions: std::sync::Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
+            extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
+            project_roots: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            metrics: std::sync::Mutex::new(
+                super::metrics::MetricsStore::open(&state_path).unwrap(),
+            ),
+        });
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let path_arg = project.to_string_lossy().into_owned();
+
+        let report = super::preflight_blocking(&path_arg, &handle, &state).unwrap();
+        let unsupported: Vec<u64> = report
+            .unsupported
+            .iter()
+            .filter(|f| f.kind == "inline-eval")
+            .map(|f| f.line)
+            .collect();
+        assert_eq!(unsupported, vec![5], "only the computed site stays");
+        let gaps: Vec<u64> = report
+            .potential_gaps
+            .iter()
+            .filter(|f| f.kind == "inline-eval")
+            .map(|f| f.line)
+            .collect();
+        assert_eq!(gaps, vec![4], "const-shaped-but-unproven downgrades");
     }
 
     #[test]

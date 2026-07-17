@@ -1140,3 +1140,234 @@ const queue = new aws.sqs.Queue('orders', {});
     let ex = extract_source(source.as_bytes(), "lookalike.ts", &id()).unwrap();
     assert!(ex.nodes.iter().all(|node| node.label != "Resource"));
 }
+
+// --- Literal eval()/new Function() extraction (#214, AC-0099) ---------------
+
+// A string-literal eval() is compile-time-known: its Symbols and CALLS are
+// Confirmed T0, cite the string's span at the eval site, carry `via: "eval"`,
+// and the enclosing symbol CALLS the extracted code's entry symbol so the
+// flow tracer walks through the eval boundary. (T-0099)
+#[test]
+fn literal_eval_extracts_facts_with_eval_site_provenance() {
+    let src = r#"
+export function boot() {
+  eval("function setup() { registerLegacy(); } function registerLegacy() {} setup();");
+}
+"#;
+    let ex = extract_source(src.as_bytes(), "src/boot.ts", &id()).unwrap();
+    let setup = ex
+        .nodes
+        .iter()
+        .find(|n| n.id == "sym:qwtm/example@src/boot.ts#setup")
+        .expect("eval-defined symbol");
+    assert_eq!(setup.props["via"], "eval");
+    assert_eq!(setup.props["prov"]["tier"], "Deterministic");
+    assert_eq!(setup.props["prov"]["confidence_tier"], "Confirmed");
+    // Evidence cites the string literal's span at the eval site — the
+    // code's true source location.
+    let ev = &setup.props["prov"]["evidence"][0];
+    let span = &src
+        [ev["byte_start"].as_u64().unwrap() as usize..ev["byte_end"].as_u64().unwrap() as usize];
+    assert!(
+        span.starts_with("\"function setup()"),
+        "cites the string at the eval site: {span}"
+    );
+
+    let calls = edge_pairs(&ex, "CALLS");
+    let entry = calls
+        .iter()
+        .find(|(s, d)| {
+            *s == "sym:qwtm/example@src/boot.ts#boot"
+                && d.starts_with("sym:qwtm/example@src/boot.ts#eval@")
+        })
+        .expect("containment CALLS into the eval entry symbol")
+        .1;
+    assert!(calls.contains(&(entry, "sym:qwtm/example@src/boot.ts#setup")));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@src/boot.ts#setup",
+        "sym:qwtm/example@src/boot.ts#registerLegacy"
+    )));
+    let entry_node = ex.nodes.iter().find(|n| n.id == entry).expect("entry node");
+    assert_eq!(entry_node.props["via"], "eval");
+    assert!(
+        entry_node.props["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("<eval@")
+    );
+    // The site is classified covered — preflight closes its finding.
+    assert_eq!(
+        ex.eval_sites,
+        vec![EvalSite {
+            path: "src/boot.ts".into(),
+            line: 3,
+            proof: EvalProof::Covered,
+        }]
+    );
+}
+
+// A same-file `const CODE = '…'` and a const-object member proven through
+// `const_resolution` are as compile-time-known as an inline literal. (T-0099)
+#[test]
+fn const_resolved_eval_extracts_through_binding_proof() {
+    let src = r#"
+const BOOT = "function legacyBoot() {}";
+const Scripts = { report: "function legacyReport() {}" } as const;
+export function run() {
+  eval(BOOT);
+  eval(Scripts.report);
+}
+"#;
+    let ex = extract_source(src.as_bytes(), "src/legacy.ts", &id()).unwrap();
+    for name in ["legacyBoot", "legacyReport"] {
+        let node = ex
+            .nodes
+            .iter()
+            .find(|n| n.id == format!("sym:qwtm/example@src/legacy.ts#{name}"))
+            .unwrap_or_else(|| panic!("{name} extracted"));
+        assert_eq!(node.props["via"], "eval");
+        assert_eq!(node.props["prov"]["confidence_tier"], "Confirmed");
+    }
+    // Both sites prove to literals; `run` calls both entry symbols.
+    let claims: Vec<(u64, EvalProof)> = ex.eval_sites.iter().map(|s| (s.line, s.proof)).collect();
+    assert_eq!(
+        claims,
+        vec![(5, EvalProof::Covered), (6, EvalProof::Covered)]
+    );
+    let entries = edge_pairs(&ex, "CALLS")
+        .into_iter()
+        .filter(|(s, d)| {
+            *s == "sym:qwtm/example@src/legacy.ts#run"
+                && d.starts_with("sym:qwtm/example@src/legacy.ts#eval@")
+        })
+        .count();
+    assert_eq!(entries, 2);
+}
+
+// Unprovable arguments emit no facts, ever — a const-shaped binding that
+// cannot be proven stays an explicit Gap claim, and interpolated templates
+// or computed expressions stay dynamic (Unsupported). (T-0099)
+#[test]
+fn unproven_and_interpolated_eval_yield_classification_but_no_facts() {
+    let src = r#"
+const code = build();
+export function run(name: string) {
+  eval(code);
+  eval(`register('${name}')`);
+  eval(name + '()');
+}
+"#;
+    let ex = extract_source(src.as_bytes(), "src/dynamic.ts", &id()).unwrap();
+    assert!(ex.nodes.iter().all(|n| n.props.get("via").is_none()));
+    assert!(ex.edges.iter().all(|e| e.props.get("via").is_none()));
+    let claims: Vec<(u64, EvalProof)> = ex.eval_sites.iter().map(|s| (s.line, s.proof)).collect();
+    assert_eq!(
+        claims,
+        vec![
+            (4, EvalProof::ConstUnproven),
+            (5, EvalProof::Dynamic),
+            (6, EvalProof::Dynamic),
+        ]
+    );
+}
+
+// A local binding named `eval` is NOT the global — no facts and no claim,
+// following the `shadowed_fetch_is_not_a_fetch_site` precedent. (T-0099)
+#[test]
+fn shadowed_eval_is_not_the_global_and_yields_no_facts() {
+    let local_shadow = extract_source(
+        br#"
+function eval(code) { return code; }
+export function run() { eval("function fake() {}"); }
+"#,
+        "src/sandbox.js",
+        &id(),
+    )
+    .unwrap();
+    assert!(
+        local_shadow
+            .nodes
+            .iter()
+            .all(|n| n.id != "sym:qwtm/example@src/sandbox.js#fake")
+    );
+    assert!(local_shadow.eval_sites.is_empty());
+
+    let imported_shadow = extract_source(
+        br#"
+import { eval } from './interpreter';
+export function run() { eval("function fake() {}"); }
+"#,
+        "src/host.ts",
+        &id(),
+    )
+    .unwrap();
+    assert!(
+        imported_shadow
+            .nodes
+            .iter()
+            .all(|n| n.id != "sym:qwtm/example@src/host.ts#fake")
+    );
+    assert!(imported_shadow.eval_sites.is_empty());
+}
+
+// new Function("a", "b", "body"): the LAST string argument is the body,
+// earlier ones are parameter names; a computed body emits nothing. (T-0099)
+#[test]
+fn new_function_extracts_the_last_string_argument_as_body() {
+    let src = r#"
+export function make() {
+  return new Function("a", "b", "function helper(x) { return x; } return helper(a) + helper(b);");
+}
+"#;
+    let ex = extract_source(src.as_bytes(), "src/factory.ts", &id()).unwrap();
+    let helper = ex
+        .nodes
+        .iter()
+        .find(|n| n.id == "sym:qwtm/example@src/factory.ts#helper")
+        .expect("body-defined symbol");
+    assert_eq!(helper.props["via"], "eval");
+    // Evidence cites the BODY string (the last argument), not a parameter.
+    let ev = &helper.props["prov"]["evidence"][0];
+    let span = &src
+        [ev["byte_start"].as_u64().unwrap() as usize..ev["byte_end"].as_u64().unwrap() as usize];
+    assert!(span.starts_with("\"function helper"), "body span: {span}");
+    let calls = edge_pairs(&ex, "CALLS");
+    let entry = calls
+        .iter()
+        .find(|(s, d)| {
+            *s == "sym:qwtm/example@src/factory.ts#make"
+                && d.starts_with("sym:qwtm/example@src/factory.ts#eval@")
+        })
+        .expect("containment CALLS into the body entry symbol")
+        .1;
+    assert!(calls.contains(&(entry, "sym:qwtm/example@src/factory.ts#helper")));
+    assert_eq!(
+        ex.eval_sites,
+        vec![EvalSite {
+            path: "src/factory.ts".into(),
+            line: 3,
+            proof: EvalProof::Covered,
+        }]
+    );
+
+    // Runtime-computed body: no facts, stays dynamic.
+    let dynamic = extract_source(
+        br#"
+export function make() {
+  return new Function(buildBody());
+}
+"#,
+        "src/dyn.ts",
+        &id(),
+    )
+    .unwrap();
+    assert!(dynamic.nodes.iter().all(|n| n.props.get("via").is_none()));
+    assert_eq!(
+        dynamic.eval_sites,
+        vec![EvalSite {
+            path: "src/dyn.ts".into(),
+            line: 3,
+            proof: EvalProof::Dynamic,
+        }]
+    );
+}

@@ -230,6 +230,34 @@ pub struct PluginCoverage {
     pub extensions: Vec<String>,
 }
 
+/// The TS adapter's AST-level classification of one `eval(` site (#214).
+/// Preflight's textual scan cannot itself prove an argument compile-time
+/// known; the adapter that owns extraction supplies these claims (host-
+/// filled, mirroring [`PluginCoverage`]), so the scan and the AST proof can
+/// never disagree about which sites are covered.
+#[derive(Debug, Clone)]
+pub struct EvalSiteCoverage {
+    /// Repo-relative path, matching this scan's finding paths.
+    pub path: String,
+    /// 1-based line of the call, matching this scan's finding lines.
+    pub line: u64,
+    /// What the adapter's argument proof established.
+    pub proof: EvalProof,
+}
+
+/// Outcome of the adapter's eval-argument proof (#214).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalProof {
+    /// Compile-time-proven literal — the adapter extracted its facts as
+    /// Confirmed T0, so the `inline-eval` finding is covered and closes
+    /// (the #201 finding-closure semantics).
+    Covered,
+    /// Const-shaped but unproven — downgraded to an explicit potential Gap.
+    ConstUnproven,
+    /// Runtime-computed — stays an Unsupported finding.
+    Dynamic,
+}
+
 /// Run the preflight scan over `root`. Purely local; deterministic for a
 /// given tree (files walked in sorted order).
 pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
@@ -243,6 +271,20 @@ pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
 pub fn preflight_with_plugins(
     root: &Path,
     plugins: &[PluginCoverage],
+) -> std::io::Result<PreflightReport> {
+    preflight_with_coverage(root, plugins, &[])
+}
+
+/// [`preflight_with_plugins`] plus the adapter's eval-site claims (#214):
+/// an `eval(` line whose every AST site is a proven literal is covered —
+/// no finding, it closes on this scan like plugin coverage closes
+/// uncovered-language findings — while const-shaped-but-unproven sites
+/// downgrade to explicit potential Gaps and everything else (including
+/// lines the adapter never classified) stays Unsupported. Never a guess.
+pub fn preflight_with_coverage(
+    root: &Path,
+    plugins: &[PluginCoverage],
+    eval_sites: &[EvalSiteCoverage],
 ) -> std::io::Result<PreflightReport> {
     let mut languages: BTreeMap<String, LanguageDetection> = BTreeMap::new();
     let mut frameworks: Vec<String> = Vec::new();
@@ -284,7 +326,13 @@ pub fn preflight_with_plugins(
                 extension.as_str(),
                 "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
             ) {
-                scan_source(&path, &rel, &mut unsupported, &mut potential_gaps)?;
+                scan_source(
+                    &path,
+                    &rel,
+                    eval_sites,
+                    &mut unsupported,
+                    &mut potential_gaps,
+                )?;
             }
             let plugin_claim = plugins
                 .iter()
@@ -399,6 +447,7 @@ fn detect_framework(name: &str, path: &Path, frameworks: &mut Vec<String>) {
 fn scan_source(
     path: &Path,
     rel: &str,
+    eval_sites: &[EvalSiteCoverage],
     unsupported: &mut Vec<PatternFinding>,
     potential_gaps: &mut Vec<PatternFinding>,
 ) -> std::io::Result<()> {
@@ -408,13 +457,36 @@ fn scan_source(
     for (index, line) in text.lines().enumerate() {
         let line_no = (index + 1) as u64;
         if line.contains("eval(") {
-            unsupported.push(finding(
-                "inline-eval",
-                rel,
-                line_no,
-                "inline eval() — no adapter can extract facts from \
-                 dynamically evaluated code",
-            ));
+            // The adapter's AST claims refine the textual hit (#214),
+            // worst-wins per line: one unproven site keeps the line flagged
+            // even next to a proven one — never guess. A line with no claim
+            // at all (nothing the adapter recognized as the global eval)
+            // keeps today's Unsupported finding.
+            let claims: Vec<EvalProof> = eval_sites
+                .iter()
+                .filter(|claim| claim.path == rel && claim.line == line_no)
+                .map(|claim| claim.proof)
+                .collect();
+            if claims.is_empty() || claims.contains(&EvalProof::Dynamic) {
+                unsupported.push(finding(
+                    "inline-eval",
+                    rel,
+                    line_no,
+                    "inline eval() — no adapter can extract facts from \
+                     dynamically evaluated code",
+                ));
+            } else if claims.contains(&EvalProof::ConstUnproven) {
+                potential_gaps.push(finding(
+                    "inline-eval",
+                    rel,
+                    line_no,
+                    "eval() of a const-shaped binding the adapter could not \
+                     prove to a literal — becomes an explicit Gap if recovery \
+                     cannot resolve it deterministically",
+                ));
+            }
+            // Every site on the line proved literal: the adapter extracted
+            // its facts as Confirmed T0 — covered, the finding closes.
         }
         if line.contains("WebAssembly.instantiate") {
             unsupported.push(finding(
@@ -511,6 +583,74 @@ mod tests {
         );
         // Every finding carries the versioned detector.
         assert!(report.unsupported.iter().all(|f| f.detector == DETECTOR_ID));
+    }
+
+    #[test]
+    fn adapter_eval_claims_reclassify_inline_eval_findings() {
+        // AC-0099 (#214): mirrors gated_plugin_coverage — the TS adapter's
+        // AST proof is the single authority on eval sites; preflight only
+        // consumes host-filled claims, so scan and extraction never disagree.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            "src/app.ts",
+            concat!(
+                "eval('function f() {}');\n",  // proven literal
+                "eval(CODE);\n",               // const-shaped, unproven
+                "eval(input + '()');\n",       // runtime-computed
+                "eval('x()'); eval(dyn());\n", // proven + dynamic on one line
+            ),
+        );
+
+        // Without claims every textual hit stays Unsupported (status quo).
+        let before = preflight(root).unwrap();
+        assert_eq!(
+            before
+                .unsupported
+                .iter()
+                .filter(|f| f.kind == "inline-eval")
+                .count(),
+            4
+        );
+        assert!(before.potential_gaps.is_empty());
+
+        let claim = |line: u64, proof: EvalProof| EvalSiteCoverage {
+            path: "src/app.ts".into(),
+            line,
+            proof,
+        };
+        let claims = [
+            claim(1, EvalProof::Covered),
+            claim(2, EvalProof::ConstUnproven),
+            claim(3, EvalProof::Dynamic),
+            claim(4, EvalProof::Covered),
+            claim(4, EvalProof::Dynamic),
+        ];
+        let after = preflight_with_coverage(root, &[], &claims).unwrap();
+        let unsupported: Vec<u64> = after
+            .unsupported
+            .iter()
+            .filter(|f| f.kind == "inline-eval")
+            .map(|f| f.line)
+            .collect();
+        // Line 1 is covered and closes; line 3 stays; line 4 keeps its
+        // finding because one site on it is dynamic (worst-wins, no guess).
+        assert_eq!(unsupported, vec![3, 4]);
+        let gaps: Vec<u64> = after
+            .potential_gaps
+            .iter()
+            .filter(|f| f.kind == "inline-eval")
+            .map(|f| f.line)
+            .collect();
+        assert_eq!(gaps, vec![2]);
+        // The downgraded finding still carries the versioned detector.
+        assert!(
+            after
+                .potential_gaps
+                .iter()
+                .all(|f| f.detector == DETECTOR_ID)
+        );
     }
 
     #[test]
