@@ -282,11 +282,12 @@ pub fn preflight_with_plugins(
 }
 
 /// [`preflight_with_plugins`] plus the adapter's eval-site claims (#214):
-/// an `eval(` line whose every AST site is a proven literal is covered —
-/// no finding, it closes on this scan like plugin coverage closes
-/// uncovered-language findings — while const-shaped-but-unproven sites
-/// downgrade to explicit potential Gaps and everything else (including
-/// lines the adapter never classified) stays Unsupported. Never a guess.
+/// an `eval(` or `new Function(` line whose every AST site is a proven
+/// literal is covered — no finding, it closes on this scan like plugin
+/// coverage closes uncovered-language findings — while const-shaped-but-
+/// unproven sites downgrade to explicit potential Gaps and everything else
+/// (including lines the adapter never classified) stays Unsupported.
+/// Never a guess.
 pub fn preflight_with_coverage(
     root: &Path,
     plugins: &[PluginCoverage],
@@ -449,33 +450,38 @@ fn scan_source(
     };
     for (index, line) in text.lines().enumerate() {
         let line_no = (index + 1) as u64;
-        if line.contains("eval(") {
-            // The adapter's AST claims refine the textual hit (#214),
-            // worst-wins per line: one unproven site keeps the line flagged
-            // even next to a proven one — never guess. A line with no claim
-            // at all (nothing the adapter recognized as the global eval)
-            // keeps today's Unsupported finding.
+        let has_eval = line.contains("eval(");
+        let has_new_function = line.contains("new Function(");
+        if has_eval || has_new_function {
+            // The adapter's AST claims refine the textual hit (#214); both
+            // dynamic-code constructs share one claim pool per line,
+            // worst-wins: one unproven site keeps the line flagged even
+            // next to a proven one — never guess. A line with no claim at
+            // all (nothing the adapter recognized as the global
+            // eval/Function) keeps its Unsupported finding.
             let claims: Vec<EvalProof> = eval_sites
                 .iter()
                 .filter(|claim| claim.path == rel && claim.line == line_no)
                 .map(|claim| claim.proof)
                 .collect();
             if claims.is_empty() || claims.contains(&EvalProof::Dynamic) {
-                unsupported.push(finding(
-                    "inline-eval",
-                    rel,
-                    line_no,
+                let message = if has_eval {
                     "inline eval() — no adapter can extract facts from \
-                     dynamically evaluated code",
-                ));
+                     dynamically evaluated code"
+                } else {
+                    "new Function() — no adapter can extract facts from \
+                     dynamically constructed code"
+                };
+                unsupported.push(finding("inline-eval", rel, line_no, message));
             } else if claims.contains(&EvalProof::ConstUnproven) {
                 potential_gaps.push(finding(
                     "inline-eval",
                     rel,
                     line_no,
-                    "eval() of a const-shaped binding the adapter could not \
-                     prove to a literal — becomes an explicit Gap if recovery \
-                     cannot resolve it deterministically",
+                    "a const-shaped eval()/new Function() argument the \
+                     adapter could not prove to a literal — becomes an \
+                     explicit Gap if recovery cannot resolve it \
+                     deterministically",
                 ));
             }
             // Every site on the line proved literal: the adapter extracted
@@ -593,10 +599,13 @@ mod tests {
                 "eval(CODE);\n",               // const-shaped, unproven
                 "eval(input + '()');\n",       // runtime-computed
                 "eval('x()'); eval(dyn());\n", // proven + dynamic on one line
+                "new Function(body);\n",       // const-shaped, unproven
+                "new Function('return 1');\n", // proven literal body
             ),
         );
 
-        // Without claims every textual hit stays Unsupported (status quo).
+        // Without claims every textual hit — eval() and new Function()
+        // alike (#217 review) — stays Unsupported.
         let before = preflight(root).unwrap();
         assert_eq!(
             before
@@ -604,7 +613,7 @@ mod tests {
                 .iter()
                 .filter(|f| f.kind == "inline-eval")
                 .count(),
-            4
+            6
         );
         assert!(before.potential_gaps.is_empty());
 
@@ -619,6 +628,8 @@ mod tests {
             claim(3, EvalProof::Dynamic),
             claim(4, EvalProof::Covered),
             claim(4, EvalProof::Dynamic),
+            claim(5, EvalProof::ConstUnproven),
+            claim(6, EvalProof::Covered),
         ];
         let after = preflight_with_coverage(root, &[], &claims).unwrap();
         let unsupported: Vec<u64> = after
@@ -627,8 +638,9 @@ mod tests {
             .filter(|f| f.kind == "inline-eval")
             .map(|f| f.line)
             .collect();
-        // Line 1 is covered and closes; line 3 stays; line 4 keeps its
-        // finding because one site on it is dynamic (worst-wins, no guess).
+        // Lines 1 and 6 are covered and close; line 3 stays; line 4 keeps
+        // its finding because one site on it is dynamic (worst-wins, no
+        // guess).
         assert_eq!(unsupported, vec![3, 4]);
         let gaps: Vec<u64> = after
             .potential_gaps
@@ -636,7 +648,9 @@ mod tests {
             .filter(|f| f.kind == "inline-eval")
             .map(|f| f.line)
             .collect();
-        assert_eq!(gaps, vec![2]);
+        // The eval const line and the new Function const line both
+        // downgrade — new Function claims reconcile through the same pool.
+        assert_eq!(gaps, vec![2, 5]);
         // The downgraded finding still carries the versioned detector.
         assert!(
             after

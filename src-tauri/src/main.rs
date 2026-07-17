@@ -5469,6 +5469,8 @@ export function App() {
                 "  eval(CODE);\n",
                 "  eval(getCode() + '()');\n",
                 "}\n",
+                "new Function(getCode());\n",
+                "new Function('return 1');\n",
             ),
         )
         .unwrap();
@@ -5504,7 +5506,12 @@ export function App() {
             .filter(|f| f.kind == "inline-eval")
             .map(|f| f.line)
             .collect();
-        assert_eq!(unsupported, vec![5], "only the computed site stays");
+        assert_eq!(
+            unsupported,
+            vec![5, 7],
+            "computed eval and new Function sites stay; the proven new \
+             Function body (line 8) closes like the literal eval (#217 review)"
+        );
         let gaps: Vec<u64> = report
             .potential_gaps
             .iter()

@@ -390,13 +390,19 @@ fn emit_eval_extraction(
     };
     let entry = sym_id(cx.id.repo, cx.path, &format!("eval@{offset}"));
     let (start, end) = (evidence.start_byte() as u64, evidence.end_byte() as u64);
-    // Offset-keyed ids inside the synthetic source (anonymous symbols and
-    // deeper eval levels) are re-keyed under this site's offset so they can
-    // never collide with the outer file's own offset-keyed ids.
+    // Every symbol recovered from the string is namespaced under this
+    // site's entry: the wrapper becomes `#eval@<offset>` and everything
+    // else `#eval@<offset>.<name>`. An eval-defined `setup` and a real
+    // outer `setup` are different declarations — the store upserts nodes
+    // by id, so sharing one would let either fact clobber the other (#217
+    // review) — and offset-keyed inner ids (anonymous symbols, deeper eval
+    // levels) can never collide with the outer file's own.
     let rewrite = |id: &str| -> String {
-        id.replace("#eval@", &format!("#eval@{offset}+"))
-            .replace("#anon@", &format!("#anon@{offset}+"))
-            .replace(&format!("#{marker}"), &format!("#eval@{offset}"))
+        match id.split_once('#') {
+            Some((head, suffix)) if suffix == marker => format!("{head}#eval@{offset}"),
+            Some((head, suffix)) => format!("{head}#eval@{offset}.{suffix}"),
+            None => id.to_string(),
+        }
     };
     let file = file_id(cx.id.repo, cx.path);
     for mut node in inner.nodes {
@@ -1712,15 +1718,37 @@ pub fn extract_source(
                 _ => EvalArg::Dynamic,
             }
         };
-        // A local binding named `eval`/`Function` is NOT the global — no
-        // facts, and the preflight finding stands (fail closed, the
-        // `shadowed_fetch` precedent).
-        let eval_shadowed = locals.contains_key("eval")
-            || imported.contains_key("eval")
-            || import_modules.contains_key("eval");
-        let function_shadowed = locals.contains_key("Function")
-            || imported.contains_key("Function")
-            || import_modules.contains_key("Function");
+        // ANY local binding named `eval`/`Function` — variable (whatever
+        // its value), parameter, function, class, or import — is NOT the
+        // global: no facts, and the preflight finding stands (fail closed;
+        // the `fetch`/`chrome` shadow precedents, #149 / #217 review).
+        let mut eval_shadowed =
+            imported.contains_key("eval") || import_modules.contains_key("eval");
+        let mut function_shadowed =
+            imported.contains_key("Function") || import_modules.contains_key("Function");
+        let q_shadow_bindings = Query::new(
+            &language,
+            r#"
+            (variable_declarator name: (identifier) @binding)
+            (required_parameter pattern: (identifier) @binding)
+            (optional_parameter pattern: (identifier) @binding)
+            (arrow_function parameter: (identifier) @binding)
+            (function_declaration name: (identifier) @binding)
+            (class_declaration name: (type_identifier) @binding)
+            "#,
+        )
+        .expect("static query");
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&q_shadow_bindings, root, source);
+        while let Some(m) = matches.next() {
+            for c in m.captures {
+                match cx.text(&c.node) {
+                    "eval" => eval_shadowed = true,
+                    "Function" => function_shadowed = true,
+                    _ => {}
+                }
+            }
+        }
 
         let q_eval = Query::new(
             &language,

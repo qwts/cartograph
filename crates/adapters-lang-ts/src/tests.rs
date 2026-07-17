@@ -1155,10 +1155,22 @@ export function boot() {
 }
 "#;
     let ex = extract_source(src.as_bytes(), "src/boot.ts", &id()).unwrap();
+    let calls = edge_pairs(&ex, "CALLS");
+    let entry = calls
+        .iter()
+        .find(|(s, d)| {
+            *s == "sym:qwtm/example@src/boot.ts#boot"
+                && d.starts_with("sym:qwtm/example@src/boot.ts#eval@")
+        })
+        .expect("containment CALLS into the eval entry symbol")
+        .1;
+    // Eval-recovered symbols are namespaced under the entry (#217 review).
+    let setup_id = format!("{entry}.setup");
+    let register_id = format!("{entry}.registerLegacy");
     let setup = ex
         .nodes
         .iter()
-        .find(|n| n.id == "sym:qwtm/example@src/boot.ts#setup")
+        .find(|n| n.id == setup_id)
         .expect("eval-defined symbol");
     assert_eq!(setup.props["via"], "eval");
     assert_eq!(setup.props["prov"]["tier"], "Deterministic");
@@ -1173,20 +1185,8 @@ export function boot() {
         "cites the string at the eval site: {span}"
     );
 
-    let calls = edge_pairs(&ex, "CALLS");
-    let entry = calls
-        .iter()
-        .find(|(s, d)| {
-            *s == "sym:qwtm/example@src/boot.ts#boot"
-                && d.starts_with("sym:qwtm/example@src/boot.ts#eval@")
-        })
-        .expect("containment CALLS into the eval entry symbol")
-        .1;
-    assert!(calls.contains(&(entry, "sym:qwtm/example@src/boot.ts#setup")));
-    assert!(calls.contains(&(
-        "sym:qwtm/example@src/boot.ts#setup",
-        "sym:qwtm/example@src/boot.ts#registerLegacy"
-    )));
+    assert!(calls.contains(&(entry, setup_id.as_str())));
+    assert!(calls.contains(&(setup_id.as_str(), register_id.as_str())));
     let entry_node = ex.nodes.iter().find(|n| n.id == entry).expect("entry node");
     assert_eq!(entry_node.props["via"], "eval");
     assert!(
@@ -1206,6 +1206,51 @@ export function boot() {
     );
 }
 
+// #217 review: an eval-defined symbol that shares its name with a real
+// outer symbol is a different declaration — the store upserts nodes by id,
+// so the eval-recovered fact must live under the site's namespace instead
+// of merging with (and clobbering) the outer one. (T-0099)
+#[test]
+fn eval_defined_symbols_never_clobber_same_named_outer_symbols() {
+    let src = r#"
+function setup() {}
+export function boot() {
+  setup();
+  eval("function setup() {} setup();");
+}
+"#;
+    let ex = extract_source(src.as_bytes(), "src/app.ts", &id()).unwrap();
+    let outer = ex
+        .nodes
+        .iter()
+        .find(|n| n.id == "sym:qwtm/example@src/app.ts#setup")
+        .expect("outer symbol keeps its id");
+    assert!(outer.props.get("via").is_none(), "outer fact untouched");
+    let calls = edge_pairs(&ex, "CALLS");
+    let entry = calls
+        .iter()
+        .find(|(s, d)| {
+            *s == "sym:qwtm/example@src/app.ts#boot"
+                && d.starts_with("sym:qwtm/example@src/app.ts#eval@")
+        })
+        .expect("containment CALLS into the eval entry symbol")
+        .1;
+    let inner_id = format!("{entry}.setup");
+    let inner = ex
+        .nodes
+        .iter()
+        .find(|n| n.id == inner_id)
+        .expect("eval-defined symbol is namespaced under its site");
+    assert_eq!(inner.props["via"], "eval");
+    // Each call targets its own declaration: boot's direct call the outer
+    // symbol, the eval body's call the eval-scoped one.
+    assert!(calls.contains(&(
+        "sym:qwtm/example@src/app.ts#boot",
+        "sym:qwtm/example@src/app.ts#setup"
+    )));
+    assert!(calls.contains(&(entry, inner_id.as_str())));
+}
+
 // A same-file `const CODE = '…'` and a const-object member proven through
 // `const_resolution` are as compile-time-known as an inline literal. (T-0099)
 #[test]
@@ -1223,8 +1268,12 @@ export function run() {
         let node = ex
             .nodes
             .iter()
-            .find(|n| n.id == format!("sym:qwtm/example@src/legacy.ts#{name}"))
-            .unwrap_or_else(|| panic!("{name} extracted"));
+            .find(|n| {
+                n.id.starts_with("sym:qwtm/example@src/legacy.ts#eval@")
+                    && n.id.ends_with(&format!(".{name}"))
+            })
+            .unwrap_or_else(|| panic!("{name} extracted under its eval namespace"));
+        assert_eq!(node.props["name"], *name);
         assert_eq!(node.props["via"], "eval");
         assert_eq!(node.props["prov"]["confidence_tier"], "Confirmed");
     }
@@ -1308,6 +1357,37 @@ export function run() { eval("function fake() {}"); }
             .all(|n| n.id != "sym:qwtm/example@src/host.ts#fake")
     );
     assert!(imported_shadow.eval_sites.is_empty());
+
+    // #217 review: a NON-function local binding shadows too — a const bound
+    // to anything, or a parameter — as does a `Function` binding for the
+    // constructor form. None of these are the global evaluator.
+    for (name, path, source) in [
+        (
+            "const-bound variable",
+            "src/vm.js",
+            "const eval = interpret;\nexport function run() { eval(\"function fake() {}\"); }\n",
+        ),
+        (
+            "parameter",
+            "src/exec.js",
+            "export function run(eval) { eval(\"function fake() {}\"); }\n",
+        ),
+        (
+            "Function constructor binding",
+            "src/ctor.js",
+            "const Function = makeCtor();\nexport function run() { return new Function(\"return 1;\"); }\n",
+        ),
+    ] {
+        let shadowed = extract_source(source.as_bytes(), path, &id()).unwrap();
+        assert!(
+            shadowed.nodes.iter().all(|n| n.props.get("via").is_none()),
+            "{name} shadow must not extract: {path}"
+        );
+        assert!(
+            shadowed.eval_sites.is_empty(),
+            "{name} shadow must not claim: {path}"
+        );
+    }
 }
 
 // new Function("a", "b", "body"): the LAST string argument is the body,
@@ -1320,17 +1400,6 @@ export function make() {
 }
 "#;
     let ex = extract_source(src.as_bytes(), "src/factory.ts", &id()).unwrap();
-    let helper = ex
-        .nodes
-        .iter()
-        .find(|n| n.id == "sym:qwtm/example@src/factory.ts#helper")
-        .expect("body-defined symbol");
-    assert_eq!(helper.props["via"], "eval");
-    // Evidence cites the BODY string (the last argument), not a parameter.
-    let ev = &helper.props["prov"]["evidence"][0];
-    let span = &src
-        [ev["byte_start"].as_u64().unwrap() as usize..ev["byte_end"].as_u64().unwrap() as usize];
-    assert!(span.starts_with("\"function helper"), "body span: {span}");
     let calls = edge_pairs(&ex, "CALLS");
     let entry = calls
         .iter()
@@ -1340,7 +1409,19 @@ export function make() {
         })
         .expect("containment CALLS into the body entry symbol")
         .1;
-    assert!(calls.contains(&(entry, "sym:qwtm/example@src/factory.ts#helper")));
+    let helper_id = format!("{entry}.helper");
+    let helper = ex
+        .nodes
+        .iter()
+        .find(|n| n.id == helper_id)
+        .expect("body-defined symbol");
+    assert_eq!(helper.props["via"], "eval");
+    // Evidence cites the BODY string (the last argument), not a parameter.
+    let ev = &helper.props["prov"]["evidence"][0];
+    let span = &src
+        [ev["byte_start"].as_u64().unwrap() as usize..ev["byte_end"].as_u64().unwrap() as usize];
+    assert!(span.starts_with("\"function helper"), "body span: {span}");
+    assert!(calls.contains(&(entry, helper_id.as_str())));
     assert_eq!(
         ex.eval_sites,
         vec![EvalSite {
