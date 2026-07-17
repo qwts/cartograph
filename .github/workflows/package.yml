@@ -77,6 +77,21 @@ jobs:
         # app crate; the real production UI build still runs in the gate below.
         run: mkdir -p ui/dist
 
+      # Regenerate THIRD-PARTY-NOTICES in the actual shipping environment (#222).
+      # Running here — on the macOS runner, before the UI build — means the
+      # in-app Acknowledgements view and the shipped notices file always reflect
+      # the exact apple-target dependency graph that ships, with no reliance on a
+      # possibly-stale committed copy.
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.1
+
+      - name: Generate third-party notices
+        run: |
+          cargo fetch --locked
+          node scripts/generate-notices.mjs
+
       - name: Run required repository gates
         run: |
           node scripts/check-traceability.mjs

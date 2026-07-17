@@ -28,8 +28,10 @@ accepted = [
     "Zlib",
 ]
 
-# First-party workspace crates carry the PolyForm Noncommercial license and are
-# the subject of the notices file, not entries in it.
-ignore-build-dependencies = false
+# Notices cover crates whose code SHIPS in the binary: runtime deps (incl.
+# transitive), not build-time-only tools (proc-macros, build scripts) or dev
+# deps. Excluding build deps is both correct for a distribution notice and
+# keeps output host-independent (build scripts resolve per build platform).
+ignore-build-dependencies = true
 ignore-dev-dependencies = true
 ignore-transitive-dependencies = false
