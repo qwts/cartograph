@@ -1,5 +1,35 @@
 # cartograph
 
+## 0.10.0
+
+### Minor Changes
+
+- b260d5b: Kotlin joins the deterministic tier (#212): a new compiled-in
+  `adapters-lang-kotlin` crate recovers Confirmed T0 facts from `.kt`/`.kts`
+  sources — classes, interfaces, objects, data classes, enums, and functions
+  (top-level, member, and extension) with exact evidence spans; import-proven
+  cross-file calls (type/object receivers and imported top-level functions)
+  joined repo-wide with declared-package misses failing closed to explicit
+  Gaps; and Spring Web endpoints proven per annotation package with
+  class+method path composition. Preflight and Settings now report Kotlin as
+  installed (`t0.adapter-kotlin`) instead of a requestable planned adapter,
+  the ingest summary reports a Kotlin layer row, and live recovery progress
+  narrates Kotlin file reads. Ktor routing is a follow-on.
+- aba65e1: Literal eval() and new Function() sites give up their facts instead of
+  dead-ending: when the code argument is compile-time-known (a string
+  literal, a substitution-free template, or a same-file const proven by
+  binding), the TS adapter parses the string with the same extractor and
+  emits its Symbols, CALLS, and sites as Confirmed T0 — marked `via:
+"eval"`, cited at the argument's span at the eval site — and the
+  enclosing symbol calls into the extracted code so flows cross the eval
+  boundary. Preflight's inline-eval finding now reconciles with that
+  proof: fully proven sites are covered and close on the next scan,
+  const-shaped-but-unproven arguments downgrade to explicit potential
+  Gaps, and everything dynamic stays an Unsupported finding — never a
+  guess.
+- 4e023c4: Imports now resolve the way Node and TypeScript actually resolve them: directory index files (`./utils` → `utils/index.ts`), the NodeNext `.js`-extension idiom (`import './foo.js'` → the `foo.ts` source), tsconfig/jsconfig `paths` and `baseUrl` aliases, and workspace-package names via their `exports` maps — each resolution proven against real files and citing the deciding config file as evidence. Unresolvable specifiers stay explicitly unresolved, and external packages are never guessed into.
+- d17697e: Config files are now first-class evidence: package.json, tsconfig/jsconfig, lockfiles, Dockerfiles/compose files, GitHub workflows, and language manifests become cited Tool facts in the graph — with resolved settings, click-to-source proof spans, a toolchain section in the spec export, and fail-closed redaction (.env files contribute key names only; secret-shaped values are never stored).
+
 ## 0.9.0
 
 ### Minor Changes
