@@ -152,6 +152,16 @@ const LOCKFILES: &[(&str, &str, &str)] = &[
     ("uv.lock", "uv", "uv"),
 ];
 
+/// True for `.env`/`.env.*` files anywhere in the tree. Their facts carry
+/// **no evidence spans at all** (#216 review): an evidence span — even a
+/// zero-length one — lets the evidence reader open a source window around
+/// it and disclose the file's values, which would break the AC-0097
+/// keys-only guarantee the settings themselves honor.
+fn is_env_file(rel: &str) -> bool {
+    let base = rel.rsplit('/').next().unwrap_or(rel);
+    base == ".env" || base.starts_with(".env.")
+}
+
 /// A stored string is dropped when it looks secret-shaped: one long
 /// unbroken token-like run. Fail closed — a dropped setting is recoverable
 /// by reading the cited file; a leaked secret is not.
@@ -310,10 +320,11 @@ pub fn detect_in_file(name: &str, rel: &str, path: &Path) -> Detection {
     if name == "Dockerfile" || name.starts_with("Dockerfile.") {
         detect_dockerfile(rel, path, &mut detection);
     }
-    if matches!(
-        name,
-        "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml"
-    ) {
+    // Compose files include the common override/profile variants:
+    // `docker-compose.override.yml`, `compose.prod.yaml`, … (#216 review).
+    if (name.starts_with("docker-compose") || name.starts_with("compose."))
+        && (name.ends_with(".yml") || name.ends_with(".yaml"))
+    {
         detect_compose(rel, path, &mut detection);
     }
     if (rel.starts_with(".github/workflows/") || rel.starts_with(".github\\workflows\\"))
@@ -841,22 +852,33 @@ pub fn extract_dir(
         commit_sha: id.commit.to_string(),
     };
     for (rel, len) in &config_files {
+        // Env files get no evidence span: a span is a readable window into
+        // the secret-bearing file (#216 review, AC-0097 fail-closed).
+        let spans = if is_env_file(rel) {
+            vec![]
+        } else {
+            vec![evidence(rel, 0, *len)]
+        };
         let prov = Provenance::new(
             Tier::Deterministic,
             ConfidenceTier::Confirmed,
-            vec![evidence(rel, 0, *len)],
+            spans,
             TOOLCHAIN_EXTRACTOR_ID,
             format!("file:{}@{rel}", id.repo).as_bytes(),
         )
         .expect("within ceiling");
+        let mut props = serde_json::json!({
+            "path": rel,
+            "config": true,
+            "prov": serde_json::to_value(prov).expect("serializes"),
+        });
+        if is_env_file(rel) {
+            props["redacted"] = serde_json::Value::Bool(true);
+        }
         extraction.nodes.push(Node {
             id: format!("file:{}@{rel}", id.repo),
             label: "File".into(),
-            props: serde_json::json!({
-                "path": rel,
-                "config": true,
-                "prov": serde_json::to_value(prov).expect("serializes"),
-            }),
+            props,
         });
     }
     for (name, (detected, proofs)) in &tools {
@@ -870,6 +892,7 @@ pub fn extract_dir(
         );
         let spans: Vec<EvidenceRef> = proofs
             .iter()
+            .filter(|(path, _, _)| !is_env_file(path))
             .map(|(path, start, end)| evidence(path, *start, *end))
             .collect();
         let prov = Provenance::new(
@@ -904,10 +927,15 @@ pub fn extract_dir(
                 .find(|(proof_path, _, _)| proof_path == path)
                 .map(|(_, start, end)| (*start, *end))
                 .unwrap_or((0, 0));
+            let edge_spans = if is_env_file(path) {
+                vec![] // no readable window into a secret-bearing file
+            } else {
+                vec![evidence(path, span.0, span.1)]
+            };
             let edge_prov = Provenance::new(
                 Tier::Deterministic,
                 ConfidenceTier::Confirmed,
-                vec![evidence(path, span.0, span.1)],
+                edge_spans,
                 TOOLCHAIN_EXTRACTOR_ID,
                 format!("{tool_id} DEFINED_IN {path}").as_bytes(),
             )
@@ -1067,6 +1095,58 @@ mod tests {
         let serialized = serde_json::to_string(&extraction.nodes).unwrap();
         assert!(!serialized.contains("hunter2"));
         assert!(!serialized.contains("sk-live"));
+
+        // #216 review: env facts carry NO evidence spans — a span (even
+        // zero-length) is a readable window the evidence reader would open
+        // into the secret-bearing file. Tool node, File node, and the
+        // DEFINED_IN edge are all span-free; the File node is marked
+        // redacted so the UI knows why there is nothing to jump to.
+        let env_prov: Provenance = serde_json::from_value(env.props["prov"].clone()).unwrap();
+        assert!(env_prov.evidence.is_empty());
+        let file = extraction
+            .nodes
+            .iter()
+            .find(|n| n.id == "file:local/tools@.env.production")
+            .unwrap();
+        assert_eq!(file.props["redacted"], true);
+        let file_prov: Provenance = serde_json::from_value(file.props["prov"].clone()).unwrap();
+        assert!(file_prov.evidence.is_empty());
+        let defined_in = extraction
+            .edges
+            .iter()
+            .find(|e| e.src == "tool:local/tools@.env.production")
+            .unwrap();
+        let edge_prov: Provenance =
+            serde_json::from_value(defined_in.props["prov"].clone()).unwrap();
+        assert!(edge_prov.evidence.is_empty());
+    }
+
+    #[test]
+    fn compose_override_files_are_detected() {
+        // #216 review: AC-0096 promises `docker-compose.*` coverage — the
+        // common override/profile variants included.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "docker-compose.override.yml",
+            "services:\n  web:\n    image: shop:dev\n",
+        );
+        write(
+            dir.path(),
+            "compose.prod.yaml",
+            "services:\n  api:\n    image: shop:prod\n",
+        );
+        let extraction = extract(dir.path());
+        let override_file = tool_node(&extraction, "tool:local/tools@docker-compose.override.yml");
+        assert_eq!(
+            override_file.props["settings"]["services"],
+            serde_json::json!(["web"])
+        );
+        let prod = tool_node(&extraction, "tool:local/tools@compose.prod.yaml");
+        assert_eq!(
+            prod.props["settings"]["services"],
+            serde_json::json!(["api"])
+        );
     }
 
     #[test]
