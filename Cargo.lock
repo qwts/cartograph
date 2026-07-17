@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "adapters-fw"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "adapters-lang-go"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-graph",
  "core-prov",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-lang-java"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-graph",
  "core-prov",
@@ -38,8 +38,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "adapters-lang-kotlin"
+version = "0.10.0"
+dependencies = [
+ "core-graph",
+ "core-prov",
+ "serde_json",
+ "streaming-iterator",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tree-sitter",
+ "tree-sitter-kotlin-ng",
+]
+
+[[package]]
 name = "adapters-lang-python"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-graph",
  "core-prov",
@@ -53,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-lang-ts"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "adapters-fw",
  "core-graph",
@@ -69,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-plugin-host"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-graph",
  "core-prov",
@@ -98,7 +112,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agents"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-prov",
  "llm",
@@ -168,10 +182,11 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "app"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "adapters-lang-go",
  "adapters-lang-java",
+ "adapters-lang-kotlin",
  "adapters-lang-python",
  "adapters-lang-ts",
  "adapters-plugin-host",
@@ -685,7 +700,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "core-graph"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -720,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "core-prov"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "serde",
@@ -1305,7 +1320,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "dynamic"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-graph",
  "core-prov",
@@ -1389,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "events"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "adapters-fw",
  "adapters-lang-ts",
@@ -1461,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "flowtracer"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-graph",
  "core-prov",
@@ -2120,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "iac"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-graph",
  "core-prov",
@@ -2313,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "ingest"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "adapters-fw",
  "core-graph",
@@ -2639,7 +2654,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "regex",
@@ -3742,7 +3757,7 @@ dependencies = [
 
 [[package]]
 name = "semantic"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "core-graph",
  "core-prov",
@@ -4026,7 +4041,7 @@ dependencies = [
 
 [[package]]
 name = "spec"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "core-graph",
@@ -4833,6 +4848,16 @@ name = "tree-sitter-java"
 version = "0.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0aa6cbcdc8c679b214e616fd3300da67da0e492e066df01bcf5a5921a71e90d6"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-kotlin-ng"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e800ebbda938acfbf224f4d2c34947a31994b1295ee6e819b65226c7b51b4450"
 dependencies = [
  "cc",
  "tree-sitter-language",

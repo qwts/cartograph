@@ -41,6 +41,7 @@ struct RepoExtractionCache {
     python: adapters_lang_python::IncrementalCache,
     go: adapters_lang_go::IncrementalCache,
     java: adapters_lang_java::IncrementalCache,
+    kotlin: adapters_lang_kotlin::IncrementalCache,
     tf: iac::IncrementalCache,
 }
 
@@ -76,6 +77,7 @@ struct LayerBreakdown {
     python: LayerSummary,
     go: LayerSummary,
     java: LayerSummary,
+    kotlin: LayerSummary,
     tf: LayerSummary,
     webext: LayerSummary,
     tools: LayerSummary,
@@ -87,13 +89,19 @@ impl LayerBreakdown {
         self.python.add(other.python);
         self.go.add(other.go);
         self.java.add(other.java);
+        self.kotlin.add(other.kotlin);
         self.tf.add(other.tf);
         self.webext.add(other.webext);
         self.tools.add(other.tools);
     }
 
     fn files(self) -> u64 {
-        self.ts.files + self.python.files + self.go.files + self.java.files + self.tf.files
+        self.ts.files
+            + self.python.files
+            + self.go.files
+            + self.java.files
+            + self.kotlin.files
+            + self.tf.files
     }
 }
 
@@ -834,6 +842,32 @@ fn extract_tree_incremental(
         };
         extraction.nodes.extend(java.nodes);
         extraction.edges.extend(java.edges);
+
+        let kotlin_id = adapters_lang_kotlin::SourceId { repo, commit };
+        let mut kotlin_progress = |path: &str| on_file(&format!("Reading Kotlin sources — {path}"));
+        let (kotlin, stats) = adapters_lang_kotlin::extract_dir_incremental_with_progress(
+            root,
+            &kotlin_id,
+            &mut cache.kotlin,
+            &mut kotlin_progress,
+        )
+        .map_err(|error| error.to_string())?;
+        delta.add(
+            stats.recomputed_files,
+            stats.reused_files,
+            stats.deleted_files,
+        );
+        layers.kotlin = LayerSummary {
+            files: kotlin
+                .nodes
+                .iter()
+                .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
+                .count() as u64,
+            nodes: kotlin.nodes.len() as u64,
+            edges: kotlin.edges.len() as u64,
+        };
+        extraction.nodes.extend(kotlin.nodes);
+        extraction.edges.extend(kotlin.edges);
     }
     if wants_infra {
         let tf_id = iac::SourceId { repo, commit };
@@ -1560,6 +1594,7 @@ fn record_ingest_metrics(
         ("t0.adapter-python", layers.python.files),
         ("t0.adapter-go", layers.go.files),
         ("t0.adapter-java", layers.java.files),
+        ("t0.adapter-kotlin", layers.kotlin.files),
         ("t0.iac-terraform", layers.tf.files),
         ("t0.webextension", layers.webext.files),
     ]
@@ -4126,6 +4161,67 @@ resource "aws_sqs_queue" "orders" {
                 .nodes
                 .iter()
                 .all(|node| node.props["language"] != "java")
+        );
+    }
+
+    #[test]
+    fn kotlin_server_ingest_reports_layer_and_endpoints() {
+        // AC-0098: the app runs the annotation-proven Kotlin pass for the
+        // server layer and reports it independently.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/com/demo")).unwrap();
+        std::fs::write(
+            dir.path().join("src/com/demo/UserController.kt"),
+            "package com.demo\n\nimport org.springframework.web.bind.annotation.*\n\n@RestController\n@RequestMapping(\"/api\")\nclass UserController {\n    @GetMapping(\"/users\")\n    fun users(): String = \"[]\"\n}\n",
+        )
+        .unwrap();
+
+        let (extraction, summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/kotlin-app",
+            "workdir",
+            &["server".into()],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(summary.kotlin.files, 1);
+        assert!(summary.kotlin.nodes > 0);
+        assert_eq!(summary.ts, crate::LayerSummary::default());
+        let endpoint = extraction
+            .nodes
+            .iter()
+            .find(|node| node.id == "ep:local/kotlin-app@GET:/api/users")
+            .expect("Spring endpoint");
+        assert_eq!(endpoint.props["language"], "kotlin");
+        assert_eq!(endpoint.props["framework"], "spring");
+        assert_eq!(endpoint.props["prov"]["extractor_id"], "t0.adapter-kotlin");
+        assert!(extraction.edges.iter().any(|edge| {
+            edge.label == "HANDLES"
+                && edge.src == endpoint.id
+                && edge.dst
+                    == "sym:local/kotlin-app@src/com/demo/UserController.kt#UserController.users"
+        }));
+
+        let (client_only, client_summary) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/kotlin-app",
+            "workdir",
+            &["client".into()],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(client_summary.kotlin, crate::LayerSummary::default());
+        assert!(
+            client_only
+                .nodes
+                .iter()
+                .all(|node| node.props["language"] != "kotlin")
         );
     }
 

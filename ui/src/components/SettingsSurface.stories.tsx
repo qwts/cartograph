@@ -31,6 +31,12 @@ const INVENTORY: AdapterInventory = {
       covers: 'types, methods, call graph, Spring Web endpoint annotations',
     },
     {
+      id: 't0.adapter-kotlin',
+      language: 'Kotlin',
+      extensions: ['kt', 'kts'],
+      covers: 'types, objects, functions, call graph, Spring Web endpoint annotations',
+    },
+    {
       id: 't0.iac-terraform',
       language: 'Terraform',
       extensions: ['tf'],
@@ -40,7 +46,6 @@ const INVENTORY: AdapterInventory = {
   planned: [
     { language: 'C', extensions: ['c', 'h'] },
     { language: 'C++', extensions: ['cc', 'cpp', 'cxx', 'hpp', 'hh'] },
-    { language: 'Kotlin', extensions: ['kt', 'kts'] },
     { language: 'Swift', extensions: ['swift'] },
     { language: 'Objective-C', extensions: ['m', 'mm'] },
   ],
@@ -219,28 +224,31 @@ export const AdapterInventoryExplainsAndRecommends: Story = {
     await expect(canvas.getByText(/a JDK bump never needs a new adapter/)).toBeInTheDocument();
 
     const installed = canvas.getByRole('list', { name: 'Installed adapters' });
-    await expect(within(installed).getAllByRole('listitem')).toHaveLength(5);
+    await expect(within(installed).getAllByRole('listitem')).toHaveLength(6);
     await expect(within(installed).getByText('TypeScript')).toBeInTheDocument();
     // JavaScript shares the TypeScript crate's extractor id (#209) — two
     // rows, one id, keyed by language so React never collides on it.
     await expect(within(installed).getByText('JavaScript')).toBeInTheDocument();
     await expect(within(installed).getByText('t0.webextension')).toBeInTheDocument();
     await expect(within(installed).getByText('t0.adapter-java')).toBeInTheDocument();
+    // Kotlin graduated from the planned catalog to a compiled-in adapter (#212).
+    await expect(within(installed).getByText('t0.adapter-kotlin')).toBeInTheDocument();
     await expect(within(installed).getByText(/\.ts \.tsx/)).toBeInTheDocument();
     await expect(within(installed).getByText(/\.js \.jsx \.mjs \.cjs/)).toBeInTheDocument();
+    await expect(within(installed).getByText(/\.kt \.kts/)).toBeInTheDocument();
     // Provably the Preflight registry: the shared detector id is stated.
     await expect(canvas.getByText('preflight@1')).toBeInTheDocument();
 
     const planned = canvas.getByRole('list', { name: 'Planned adapters' });
-    await expect(within(planned).getAllByRole('listitem')).toHaveLength(5);
-    for (const language of ['C', 'C++', 'Kotlin', 'Swift', 'Objective-C']) {
+    await expect(within(planned).getAllByRole('listitem')).toHaveLength(4);
+    for (const language of ['C', 'C++', 'Swift', 'Objective-C']) {
       await expect(within(planned).getByText(language)).toBeInTheDocument();
     }
     const links = within(planned).getAllByRole('link', { name: 'Request this adapter' });
-    await expect(links).toHaveLength(5);
+    await expect(links).toHaveLength(4);
     await expect(links[2]).toHaveAttribute(
       'href',
-      expect.stringContaining('title=Adapter%20request%3A%20Kotlin'),
+      expect.stringContaining('title=Adapter%20request%3A%20Swift'),
     );
   },
 };

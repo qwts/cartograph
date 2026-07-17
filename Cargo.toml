@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*", "src-tauri"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 publish = false
 # Source-available under PolyForm Noncommercial 1.0.0 (see LICENSE.md at the
@@ -49,6 +49,7 @@ adapters-lang-ts = { path = "crates/adapters-lang-ts" }
 adapters-lang-python = { path = "crates/adapters-lang-python" }
 adapters-lang-go = { path = "crates/adapters-lang-go" }
 adapters-lang-java = { path = "crates/adapters-lang-java" }
+adapters-lang-kotlin = { path = "crates/adapters-lang-kotlin" }
 dynamic = { path = "crates/dynamic" }
 events = { path = "crates/events" }
 flowtracer = { path = "crates/flowtracer" }

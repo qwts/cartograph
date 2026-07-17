@@ -145,6 +145,13 @@ pub const INSTALLED_ADAPTERS: &[AdapterInfo] = &[
         covers: "types, methods, call graph, Spring Web endpoint annotations",
     },
     AdapterInfo {
+        id: "t0.adapter-kotlin",
+        language: "Kotlin",
+        extensions: &["kt", "kts"],
+        covers: "types, objects, functions (incl. extensions), call graph, \
+                 Spring Web endpoint annotations",
+    },
+    AdapterInfo {
         id: "t0.iac-terraform",
         language: "Terraform",
         extensions: &["tf"],
@@ -174,10 +181,6 @@ pub const PLANNED_ADAPTERS: &[PlannedAdapter] = &[
     PlannedAdapter {
         language: "C++",
         extensions: &["cc", "cpp", "cxx", "hpp", "hh"],
-    },
-    PlannedAdapter {
-        language: "Kotlin",
-        extensions: &["kt", "kts"],
     },
     PlannedAdapter {
         language: "Swift",
@@ -775,18 +778,50 @@ mod tests {
 
         // A detected planned language recommends the adapter in place.
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "App.kt", "fun main() {}\n");
+        write(dir.path(), "App.swift", "func main() {}\n");
         let report = preflight(dir.path()).unwrap();
         let finding = report
             .unsupported
             .iter()
-            .find(|f| f.kind == "uncovered-language" && f.message.contains("Kotlin"))
-            .expect("Kotlin surfaces as uncovered");
+            .find(|f| f.kind == "uncovered-language" && f.message.contains("Swift"))
+            .expect("Swift surfaces as uncovered");
         assert!(
             finding
                 .message
                 .contains("request it from Settings → Adapters")
         );
+    }
+
+    #[test]
+    fn kotlin_is_covered_not_unsupported() {
+        // AC-0098: Kotlin used to be a PLANNED_ADAPTERS recommendation
+        // ("request it from Settings → Adapters"); the compiled-in
+        // adapters-lang-kotlin crate now covers `.kt`/`.kts`, so a Kotlin
+        // tree is covered like any other installed adapter — no
+        // uncovered-language finding, no adapter-request message.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "src/App.kt", "fun main() {}\n");
+        write(root, "build.gradle.kts", "plugins { }\n");
+
+        let report = preflight(root).unwrap();
+        let by_language: BTreeMap<_, _> = report
+            .languages
+            .iter()
+            .map(|l| (l.language.as_str(), l))
+            .collect();
+        assert_eq!(
+            by_language["Kotlin"].adapter.as_deref(),
+            Some("t0.adapter-kotlin")
+        );
+        assert_eq!(by_language["Kotlin"].files, 2);
+        assert!(
+            !report
+                .unsupported
+                .iter()
+                .any(|f| f.message.contains("Kotlin"))
+        );
+        assert!(!planned_adapter_for("Kotlin"));
     }
 
     #[test]

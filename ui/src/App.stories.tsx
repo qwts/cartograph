@@ -282,7 +282,7 @@ function installFakeCore() {
               covers: 'imports, call graph, endpoints',
             },
           ],
-          planned: [{ language: 'Kotlin', extensions: ['kt', 'kts'] }],
+          planned: [{ language: 'Swift', extensions: ['swift'] }],
           detector: 'preflight@1',
         };
       case 'export_topology':
@@ -505,6 +505,7 @@ function installFakeCore() {
             go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 1, nodes: 4, edges: 6 },
             java: { files: 0, nodes: 0, edges: 0 },
+            kotlin: { files: 0, nodes: 0, edges: 0 },
             webext: { files: 0, nodes: 0, edges: 0 },
             tools: { files: 0, nodes: 0, edges: 0 },
           },
@@ -523,6 +524,7 @@ function installFakeCore() {
             go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 2, nodes: 15, edges: 22 },
             java: { files: 0, nodes: 0, edges: 0 },
+            kotlin: { files: 0, nodes: 0, edges: 0 },
             webext: { files: 0, nodes: 0, edges: 0 },
             tools: { files: 0, nodes: 0, edges: 0 },
           },
@@ -542,6 +544,7 @@ function installFakeCore() {
             go: { files: 0, nodes: 0, edges: 0 },
             tf: { files: 0, nodes: 0, edges: 0 },
             java: { files: 0, nodes: 0, edges: 0 },
+            kotlin: { files: 0, nodes: 0, edges: 0 },
             webext: { files: 0, nodes: 0, edges: 0 },
             tools: { files: 0, nodes: 0, edges: 0 },
           },

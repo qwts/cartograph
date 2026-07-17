@@ -21,6 +21,7 @@ adapters-plugin-host = { workspace = true }
 adapters-lang-python = { workspace = true }
 adapters-lang-go = { workspace = true }
 adapters-lang-java = { workspace = true }
+adapters-lang-kotlin = { workspace = true }
 dynamic = { workspace = true }
 iac = { workspace = true }
 events = { workspace = true }

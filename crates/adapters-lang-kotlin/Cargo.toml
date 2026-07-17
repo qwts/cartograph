@@ -1,0 +1,21 @@
+[package]
+name = "adapters-lang-kotlin"
+description = "Kotlin language adapter: tree-sitter T0 extraction (SPEC-00 §3.3, #212)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+core-graph = { workspace = true }
+core-prov = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tree-sitter = "0.26"
+tree-sitter-kotlin-ng = "1.1"
+streaming-iterator = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

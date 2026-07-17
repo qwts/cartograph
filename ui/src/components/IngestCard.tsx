@@ -71,6 +71,13 @@ export function IngestCard({ busy, summary, error, canIngest, onConnect }: Inges
               </dd>
             </div>
             <div>
+              <dt>Kotlin</dt>
+              <dd data-testid="kotlin-layer-summary">
+                {summary.layers.kotlin.files} files · {summary.layers.kotlin.nodes} nodes ·{' '}
+                {summary.layers.kotlin.edges} edges
+              </dd>
+            </div>
+            <div>
               <dt>Terraform</dt>
               <dd data-testid="tf-layer-summary">
                 {summary.layers.tf.files} files · {summary.layers.tf.nodes} nodes ·{' '}
