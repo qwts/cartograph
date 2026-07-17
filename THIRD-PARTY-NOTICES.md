@@ -11,7 +11,6 @@ it. CI fails if it drifts from the dependency manifests.
 
 # Rust crates
 
-} emit raw text: this is Markdown, not HTML, so the }}
 Cartograph bundles the following Rust crates. Each is used under the terms of
 its respective license, reproduced below. This list is generated from the
 dependency lockfile by `cargo about`; do not edit by hand.
