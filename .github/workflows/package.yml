@@ -209,12 +209,11 @@ jobs:
           cp "$DMG_PATH" "dist/Cartograph_${version}_universal_${SIGNING_MODE}.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" \
             "dist/Cartograph_${version}_universal_${SIGNING_MODE}.app.zip"
-          # Ship the license and third-party attribution alongside the binaries
-          # (#222/#223). The in-app Settings › About view carries the notices
-          # inside the bundle too; these are the human-readable copies for the
-          # download. CI's drift-check keeps THIRD-PARTY-NOTICES.md current.
-          cp LICENSE.md "dist/LICENSE.md"
-          cp THIRD-PARTY-NOTICES.md "dist/THIRD-PARTY-NOTICES.md"
+          # Note: LICENSE + THIRD-PARTY-NOTICES are NOT staged into dist/ — the
+          # release-publish job asserts dist/ holds exactly the .app.zip + .dmg.
+          # The notices ship inside the .app itself (Settings › About & licenses
+          # embeds the freshly-generated notices), so they travel with both
+          # artifacts without breaking that check.
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload versioned artifacts
