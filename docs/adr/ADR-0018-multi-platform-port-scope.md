@@ -1,6 +1,6 @@
-# ADR-0018 — multi-platform port scope: Windows and Android/iOS reader, tvOS/visionOS non-goals
+# ADR-0018 — multi-platform port scope: Windows now, mobile not pursued
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-18
 - **Deciders:** Chris Kane
 
@@ -38,12 +38,20 @@ already gone (ADR-0008). The remaining native deps — bundled SQLite, usearch,
 tree-sitter grammars, `git2` with vendored OpenSSL — all cross-compile; they
 are CI cost, not blockers.
 
+A fourth fact emerged while scoping, and it decided the outcome: **a mobile
+build has no legal way to receive a graph.** Ingest cannot run on-device (see
+above), so the graph must arrive from a desktop — and every transport is
+blocked or weak. A LAN server is NG5. Cloud sync sends source-derived data off
+the machine, against the local-first egress posture. That leaves manual file
+transfer of an exported bundle: legal, but a stale snapshot re-exported by hand
+on every code change. The reader concept survives its technical constraints and
+then fails on product value.
+
 ## Decision
 
-Adopt a **three-tier platform policy**, and treat the port as two independent
-workstreams rather than one "go multi-platform" epic.
+**Windows is the only platform target pursued. Mobile is not.**
 
-1. **Tier 1 — Windows, full parity.** The code is already `cfg`-shaped for it
+1. **Windows, to full parity.** The code is already `cfg`-shaped for it
    and Tauri/WebView2 is mature. This is packaging and path normalization, not
    a port. Gating work: add a Windows CI leg; give `open_external`
    (`main.rs:2867`) a non-`explorer` implementation; suppress the console
@@ -51,74 +59,54 @@ workstreams rather than one "go multi-platform" epic.
    `canonicalize` output before any path reaches storage** — otherwise stored
    paths differ by platform and the M10 re-ingest determinism invariant breaks
    cross-platform. That last item is a correctness bug, not a packaging chore.
-2. **Tier 2 — Android and iOS/iPadOS as a *reader*, not the full tool.**
-   Ingest, clone, plugin authoring and local-LLM tiers stay desktop-only. The
-   mobile build opens an already-ingested graph and browses it: flows,
-   findings, evidence, spec bundle. This is the only scope that survives the
-   sandbox, the JIT ban, 2.5.2, and the absence of Ollama
-   (`crates/llm/src/lib.rs:359` hard-codes loopback and *rejects* non-loopback
-   HTTP by design — pointing a phone at a desktop Ollama would require
-   breaking a deliberate security invariant, which this ADR declines to do).
-   iPadOS is the target that actually earns the work; iPhone follows for free.
-3. **Tier 3 — tvOS and visionOS are non-goals.** No Tauri support, no
-   developer-tool precedent, and tvOS's focus-engine remote cannot drive a
-   dense graph UI. If visionOS ever matters, ship the iPad build in
-   compatibility mode for zero porting work. Revisit only if Tauri lands
-   visionOS support *and* a concrete user need appears.
-4. **Prerequisite for Tier 2: make the plugin host interpreter-only.**
-   Standardize on a non-JIT WASM execution path (wasmtime's Pulley
-   interpreter, or wasmi) so one code path runs everywhere, and **bundle all
-   adapters in the app on mobile** — no runtime download. ADR-0017 is not
-   superseded; its runtime-loading and AI-authoring lifecycle becomes
-   explicitly desktop-only, which should be recorded there.
-5. **Prerequisite for Tier 2: a capability-based file access seam.** Replace
-   direct `Path` use at the ingest and evidence boundaries with a trait that a
-   desktop impl satisfies with `std::fs` and a mobile impl satisfies with
-   picker-derived scoped URLs. Hold one directory-level scope, not one per
-   file — iOS caps concurrent security-scoped URLs and requires file
-   coordination for out-of-sandbox reads.
-6. **Sequencing.** Windows first (independent, cheap, fixes a real
-   determinism bug). Then the interpreter switch and the file-access seam,
-   both of which are desktop-testable. Then Android (permissive, proves the
-   NDK cross-compile). iOS last, since it is strictly the most constrained.
+2. **iOS, iPadOS and Android are not pursued.** Not "later" — no work is
+   scheduled and no seams are built speculatively. Full parity is impossible
+   (sandboxed ingest, no `gh`, no Ollama, no JIT, 2.5.2); the reduced reader
+   scope is possible but has no viable graph transport, so it would ship a
+   stale hand-synced snapshot. Cartograph is a desktop analysis tool and this
+   ADR stops treating that as a limitation to design around.
+3. **tvOS and visionOS are non-goals.** No Tauri support, no developer-tool
+   precedent, and tvOS's focus-engine remote cannot drive a dense graph UI.
+   If visionOS ever matters, ship the iPad build in compatibility mode.
+4. **What would reopen this.** A concrete user need for mobile access, plus a
+   decision to revisit NG5 — because the honest answer to "Cartograph on my
+   iPad" is a thin client to a desktop or hosted instance, not an on-device
+   port. That is a product-architecture decision, not a porting one, and it
+   gets its own ADR if it ever comes up. The mobile findings above are
+   recorded so that ADR starts from evidence rather than re-running the spike.
 
-Before any of it, `open_external` needs a fallback `cfg` arm: it defines
-`launcher` only for macos/linux/windows, so adding a mobile target is an
-immediate compile error.
+The mobile-driven prerequisites this spike identified — an interpreter-only
+WASM host and a capability-based file-access seam — are **not** adopted. Both
+were justified by mobile alone; building them now would be speculative
+generality against a target we are declining.
 
 ## Consequences
 
 - Windows becomes a supported, CI-verified target, and a latent cross-platform
-  determinism bug is closed as a side effect.
-- Mobile ships a genuinely smaller product. "Cartograph on iPad" will not
-  ingest a repo, and marketing/docs must say so plainly; this is a real
-  reduction in scope from what was asked for.
-- The interpreter switch costs desktop plugin throughput (a large constant
-  factor on an extraction-heavy workload) in exchange for one execution path.
-  If that proves unacceptable, the fallback is JIT-on-desktop /
-  interpreter-on-mobile — two paths, and a determinism obligation to prove
-  they produce identical fact-set hashes.
-- Two Apple targets and the whole tvOS/visionOS request are declined. That is
-  the substantive disagreement with the ask and the main thing to push back on
-  if the reasoning above is wrong.
-- Mobile signing, provisioning and store review become new release-pipeline
-  surface; ADR-0016's fail-closed posture needs an iOS/Android analogue.
+  determinism bug is closed as a side effect. Both are worth doing on their
+  own merits; neither depended on the mobile question.
+- The plugin host keeps its JIT and ADR-0017 stands unmodified. `Path`-based
+  ingest and evidence APIs stay as they are.
+- Five of the six requested platforms are declined. If mobile later turns out
+  to matter, the reader design is *not* the head start — the transport
+  problem above means the work restarts from the thin-client question.
+- ADR-0016's macOS signing posture needs a Windows analogue (code signing,
+  installer), which is new release-pipeline surface.
+- ADR-0001's "macOS primary, Windows" finally becomes true rather than
+  aspirational.
 
 ## Alternatives (≤3)
 
-- **Port everything, all six platforms, full parity** — what was asked for.
-  Rejected: tvOS/visionOS have no webview layer to build on at any effort
-  level, and full-parity iOS requires either shipping a JIT (impossible) or
-  abandoning runtime plugins (already the Tier 2 position) *and* solving repo
-  ingest inside a sandbox with no `gh` and no local LLM.
-- **Mobile as a thin client to a desktop/server instance** — sidesteps the
-  sandbox and the LLM problem entirely, and is how most dev tools do this.
-  Rejected for v1 by NG5 (no multi-user backend) and by the local-first
-  egress posture; worth reopening as a post-v1 ADR since it dominates the
-  reader design on every axis except architectural commitment.
-- **Windows only, defer all mobile** — lowest cost, highest certainty.
-  Rejected as under-reaching: the file-access seam and the interpreter switch
-  are independently valuable and testable on desktop, so mobile can be
-  de-risked without committing to ship it.
+- **Port everything, all six platforms, full parity** — what was originally
+  asked for. Rejected: tvOS/visionOS have no webview layer to build on at any
+  effort level, and full-parity iOS requires shipping a JIT (impossible) *and*
+  solving repo ingest inside a sandbox with no `gh` and no local LLM.
+- **Mobile as a read-only graph browser** — technically survives the sandbox,
+  the JIT ban and 2.5.2. Rejected on product value, not feasibility: with no
+  legal transport it degrades to hand-synced stale snapshots.
+- **Mobile as a thin client to a desktop/hosted instance** — sidesteps the
+  sandbox, the transport problem and the LLM problem at once, and is how most
+  dev tools solve this. Rejected for v1 by NG5, but it is the *right* design
+  if mobile is ever revisited; recorded here so it is the starting point.
 </content>
 </invoke>
