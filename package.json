@@ -14,7 +14,7 @@
     "version:sync": "node scripts/version.mjs sync"
   },
   "devDependencies": {
-    "@changesets/cli": "2.31.0",
+    "@changesets/cli": "2.31.1",
     "@tauri-apps/cli": "^2.11.4"
   }
 }
