@@ -49,3 +49,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0015 | Single-source semantic versioning and Changesets release intent |
 | ADR-0016 | Fail-closed macOS Developer ID distribution |
 | ADR-0017 | Runtime-loadable, AI-authorable adapter plugins (WASM) |
+| ADR-0018 | Multi-platform port scope: Windows now, mobile not pursued |
