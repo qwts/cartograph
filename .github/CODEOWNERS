@@ -1,0 +1,7 @@
+# Require repository-owner review for all changes when branch protection enables
+# code-owner reviews.
+* @qwts
+
+# Keep repository governance files explicitly owned even if more specific rules are
+# added later.
+/.github/ @qwts
