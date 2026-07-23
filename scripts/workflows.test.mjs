@@ -7,7 +7,7 @@ const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 
 test('version-cut preserves review, token-trigger, and immutable-tag gates', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/version-cut.yml'), 'utf8');
-  assert.match(workflow, /changesets\/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b/u);
+  assert.match(workflow, /changesets\/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d/u);
   assert.match(workflow, /version: npm run changeset:version/u);
   assert.match(workflow, /gh workflow run ci\.yml --ref changeset-release\/main/u);
   assert.match(workflow, /Manual recovery requires an existing \$tag tag/u);
