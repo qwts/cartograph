@@ -38,7 +38,7 @@ jobs:
 
       - name: Create or refresh the Version packages PR
         id: changesets
-        # changesets/action v1.8.0; immutable pin reviewed for issue #91.
+        # changesets/action v1.9.0; immutable pin reviewed for issue #264.
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d
         with:
           version: npm run changeset:version
