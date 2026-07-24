@@ -1,0 +1,68 @@
+name: Feature
+description: Open a feature with problem, requirements, design, and proposed patterns (ENG-0007 lifecycle).
+title: "[Feature]: "
+labels:
+  - feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the shared **feature** form. It captures the open-time spec of the
+        [ENG-0007 feature lifecycle](https://github.com/qwts/playbook-engineering/blob/main/docs/decisions/ENG-0007-feature-lifecycle-convention.md):
+        four sections, in order, filled in **before** the code exists.
+
+        - This binds features (stories, epics, feature-labelled work). Bugs use the bug
+          form; chores and typo-class changes are exempt. If a change warrants design
+          review, it takes this lifecycle.
+        - A repo may **add** fields to this form; it may **not drop** a section.
+        - At close, the feature records **section 5 — the closeout** (solution as built,
+          patterns actually used, deltas). See the
+          [feature-lifecycle SOP](https://github.com/qwts/playbook-engineering/blob/main/docs/sop/feature-lifecycle.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: 1. Problem
+      description: The user or system pain, and why now. Describe the problem only — no solution language here.
+      placeholder: |
+        Who hurts, how, and why this matters now. What is the cost of leaving it as is?
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: 2. Requirements
+      description: Numbered, testable statements. Each one becomes an acceptance criterion that tests and review trace back to.
+      placeholder: |
+        1. <testable requirement>
+        2. <testable requirement>
+        3. <testable requirement>
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: 3. Design
+      description: Constraints, the architecture touchpoints the work lands in (processes, modules, contracts), and what is explicitly out of scope.
+      placeholder: |
+        Constraints:
+        Architecture touchpoints:
+        Out of scope:
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: 4. Proposed solution, with patterns
+      description: The intended approach, naming the design patterns it applies. Use an existing repo pattern by its established name first; name and describe a genuinely new one so later work can cite it.
+      placeholder: |
+        Approach:
+        Patterns applied (by name):
+    validations:
+      required: true
+  - type: checkboxes
+    id: lifecycle
+    attributes:
+      label: Lifecycle
+      options:
+        - label: I will record the closeout (section 5 — solution as built, patterns used, deltas) before this issue is closed.
+          required: true
