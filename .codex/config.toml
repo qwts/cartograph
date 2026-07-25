@@ -1,0 +1,8 @@
+# Keep normal approval behavior and workspace isolation while allowing outbound
+# network access for commands run in this repository.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+allow_login_shell = true
+
+[sandbox_workspace_write]
+network_access = true

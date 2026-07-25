@@ -1,0 +1,56 @@
+# Shared Codex development environment for governed repositories. Keep changes
+# in review like any other agent-facing configuration.
+version = 1
+name = "agent-developer"
+
+[setup]
+script = '''
+bash .codex/scripts/setup.sh
+'''
+
+[setup.win32]
+script = '''
+$gitExe = (Get-Command git -ErrorAction Stop).Source
+$gitRoot = Split-Path -Parent (Split-Path -Parent $gitExe)
+$gitExecPath = & $gitExe --exec-path
+$bash = @(
+  (Join-Path $gitRoot 'bin\bash.exe')
+  (Join-Path $gitExecPath '..\..\..\bin\bash.exe')
+) |
+  Where-Object { Test-Path -LiteralPath $_ } |
+  ForEach-Object { (Get-Item -LiteralPath $_).FullName } |
+  Select-Object -First 1
+
+if (-not $bash) {
+  throw "Git Bash was not found from git.exe ($gitExe) or git --exec-path ($gitExecPath)"
+}
+
+& $bash --noprofile --norc -c 'export PATH="/usr/bin:/bin:$PATH"; exec bash .codex/scripts/setup.sh'
+exit $LASTEXITCODE
+'''
+
+[cleanup]
+script = '''
+bash .codex/scripts/cleanup.sh
+'''
+
+[cleanup.win32]
+script = '''
+$gitExe = (Get-Command git -ErrorAction Stop).Source
+$gitRoot = Split-Path -Parent (Split-Path -Parent $gitExe)
+$gitExecPath = & $gitExe --exec-path
+$bash = @(
+  (Join-Path $gitRoot 'bin\bash.exe')
+  (Join-Path $gitExecPath '..\..\..\bin\bash.exe')
+) |
+  Where-Object { Test-Path -LiteralPath $_ } |
+  ForEach-Object { (Get-Item -LiteralPath $_).FullName } |
+  Select-Object -First 1
+
+if (-not $bash) {
+  throw "Git Bash was not found from git.exe ($gitExe) or git --exec-path ($gitExecPath)"
+}
+
+& $bash --noprofile --norc -c 'export PATH="/usr/bin:/bin:$PATH"; exec bash .codex/scripts/cleanup.sh'
+exit $LASTEXITCODE
+'''
