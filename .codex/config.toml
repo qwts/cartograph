@@ -6,3 +6,8 @@ allow_login_shell = true
 
 [sandbox_workspace_write]
 network_access = true
+
+[features]
+# Keep hooks enabled explicitly for compatible clients that do not yet load
+# project-scoped .codex/hooks.json by default.
+hooks = true
