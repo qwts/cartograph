@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "S=\"${PLAYBOOK_HOME:-$HOME/Code/playbook-engineering}/tools/agent-bot/claude-worktree-create\"; [ -x \"$S\" ] || { echo \"agent-bot: $S not found — clone qwts/playbook-engineering into \\$HOME/Code (ENG-0004), or set PLAYBOOK_HOME\" >&2; exit 127; }; exec \"$S\"",
+            "timeout": 180,
+            "statusMessage": "Creating worktree with its bot identity…"
+          }
+        ]
+      }
+    ]
+  }
+}
