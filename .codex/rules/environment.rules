@@ -1,0 +1,319 @@
+# Trust normal Git operations, including networked and metadata-writing
+# commands. Global options, custom aliases, and command runners remain subject
+# to the normal approval policy.
+prefix_rule(
+    pattern = [
+        "git",
+        [
+            "--help",
+            "--version",
+            "add",
+            "am",
+            "apply",
+            "blame",
+            "branch",
+            "checkout",
+            "cherry-pick",
+            "clean",
+            "clone",
+            "commit",
+            "describe",
+            "diff",
+            "fetch",
+            "format-patch",
+            "grep",
+            "help",
+            "init",
+            "log",
+            "merge",
+            "merge-base",
+            "mv",
+            "notes",
+            "pull",
+            "range-diff",
+            "rebase",
+            "reflog",
+            "remote",
+            "reset",
+            "restore",
+            "revert",
+            "rev-list",
+            "rev-parse",
+            "rm",
+            "show",
+            "show-ref",
+            "sparse-checkout",
+            "stash",
+            "status",
+            "switch",
+            "tag",
+            "worktree",
+        ],
+    ],
+    decision = "allow",
+    justification = "Normal Git operations are explicitly trusted in this environment.",
+    match = [
+        "git status --short --branch",
+        "git commit -m example",
+        "git fetch origin",
+        "git reset --hard HEAD",
+    ],
+    not_match = [
+        "git -c alias.x='!sh -c id' x",
+        "git config alias.x '!sh -c id'",
+        "git push --force origin example",
+        "git x",
+    ],
+)
+
+# Trust standalone, non-destructive GitHub CLI development operations. Commands
+# that can delete repositories, secrets, releases, workflow data, or arbitrary
+# API resources remain under the normal approval policy.
+prefix_rule(
+    pattern = [
+        "gh",
+        [
+            "--help",
+            "--version",
+            "browse",
+            "help",
+            "status",
+        ],
+    ],
+    decision = "allow",
+    justification = "Non-destructive GitHub CLI development operations are trusted in this environment.",
+    match = [
+        "gh --version",
+        "gh browse 641",
+        "gh status",
+    ],
+    not_match = [
+        "gh alias set unsafe '!sh -c id'",
+        "gh extension exec arbitrary-extension",
+        "gh api --method DELETE /repos/qwts/example",
+    ],
+)
+
+prefix_rule(
+    pattern = ["gh", "auth", ["setup-git", "status", "switch"]],
+    decision = "allow",
+    justification = "GitHub authentication inspection and Git integration are trusted.",
+    match = ["gh auth status", "gh auth setup-git"],
+    not_match = ["gh auth token"],
+)
+
+prefix_rule(
+    pattern = ["gh", "cache", ["list"]],
+    decision = "allow",
+    justification = "GitHub Actions cache inspection is trusted.",
+    match = ["gh cache list"],
+    not_match = ["gh cache delete --all"],
+)
+
+prefix_rule(
+    pattern = ["gh", "codespace", ["code", "cp", "jupyter", "list", "logs", "ports", "ssh", "view"]],
+    decision = "allow",
+    justification = "Non-destructive Codespaces development operations are trusted.",
+    match = ["gh codespace list", "gh codespace ssh -c example"],
+    not_match = ["gh codespace delete -c example"],
+)
+
+prefix_rule(
+    pattern = ["gh", "gist", ["clone", "list", "view"]],
+    decision = "allow",
+    justification = "Non-destructive gist operations are trusted.",
+    match = ["gh gist list", "gh gist view example"],
+    not_match = ["gh gist delete example"],
+)
+
+prefix_rule(
+    pattern = ["gh", "issue", ["close", "comment", "create", "develop", "edit", "list", "lock", "pin", "reopen", "status", "transfer", "unlock", "unpin", "view"]],
+    decision = "allow",
+    justification = "Issue development and reversible lifecycle operations are trusted.",
+    match = ["gh issue view 123", "gh issue comment 123 --body example"],
+    not_match = ["gh issue delete 123"],
+)
+
+prefix_rule(
+    pattern = ["gh", "label", ["list"]],
+    decision = "allow",
+    justification = "GitHub label inspection is trusted.",
+    match = ["gh label list"],
+    not_match = ["gh label delete security"],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", ["checkout", "checks", "close", "comment", "create", "diff", "edit", "list", "lock", "merge", "ready", "reopen", "review", "status", "unlock", "update-branch", "view"]],
+    decision = "allow",
+    justification = "Pull-request development and merge operations are trusted.",
+    match = ["gh pr view 641", "gh pr merge 641 --auto --rebase"],
+    not_match = ["gh pr delete 641"],
+)
+
+prefix_rule(
+    pattern = ["gh", "project", ["item-list", "list", "view"]],
+    decision = "allow",
+    justification = "GitHub project inspection is trusted.",
+    match = ["gh project list", "gh project view 1"],
+    not_match = ["gh project delete 1"],
+)
+
+prefix_rule(
+    pattern = ["gh", "release", ["download", "list", "verify", "verify-asset", "view"]],
+    decision = "allow",
+    justification = "Non-destructive release inspection is trusted.",
+    match = ["gh release list", "gh release view v1.0.0"],
+    not_match = ["gh release delete v1.0.0 --yes"],
+)
+
+prefix_rule(
+    pattern = ["gh", "repo", ["clone", "list", "set-default", "view"]],
+    decision = "allow",
+    justification = "Non-destructive repository development operations are trusted.",
+    match = ["gh repo view qwts/example", "gh repo clone qwts/example"],
+    not_match = ["gh repo delete qwts/example --yes"],
+)
+
+prefix_rule(
+    pattern = ["gh", "ruleset", ["check", "list", "view"]],
+    decision = "allow",
+    justification = "Repository ruleset inspection is trusted.",
+    match = ["gh ruleset list", "gh ruleset check feature/example"],
+    not_match = ["gh ruleset delete 1"],
+)
+
+prefix_rule(
+    pattern = ["gh", "run", ["download", "list", "rerun", "view", "watch"]],
+    decision = "allow",
+    justification = "GitHub Actions run inspection and reruns are trusted.",
+    match = ["gh run watch 12345 --exit-status", "gh run rerun 12345 --failed"],
+    not_match = ["gh run delete 12345"],
+)
+
+prefix_rule(
+    pattern = ["gh", "search", ["code", "commits", "issues", "prs", "repos"]],
+    decision = "allow",
+    justification = "GitHub search operations are trusted.",
+    match = ["gh search prs environment permissions"],
+    not_match = ["gh search unknown example"],
+)
+
+prefix_rule(
+    pattern = ["gh", "secret", ["list"]],
+    decision = "allow",
+    justification = "GitHub secret-name inspection is trusted; values remain inaccessible.",
+    match = ["gh secret list"],
+    not_match = ["gh secret delete DEPLOY_TOKEN"],
+)
+
+prefix_rule(
+    pattern = ["gh", "ssh-key", ["list"]],
+    decision = "allow",
+    justification = "GitHub SSH-key inspection is trusted.",
+    match = ["gh ssh-key list"],
+    not_match = ["gh ssh-key delete 1"],
+)
+
+prefix_rule(
+    pattern = ["gh", "variable", ["get", "list"]],
+    decision = "allow",
+    justification = "GitHub Actions variable inspection is trusted.",
+    match = ["gh variable list", "gh variable get NODE_VERSION"],
+    not_match = ["gh variable delete NODE_VERSION"],
+)
+
+prefix_rule(
+    pattern = ["gh", "workflow", ["list", "view"]],
+    decision = "allow",
+    justification = "Workflow inspection is trusted; dispatch remains under normal approval.",
+    match = ["gh workflow list", "gh workflow view ci.yml"],
+    not_match = ["gh workflow run release.yml --ref main", "gh workflow disable ci.yml"],
+)
+
+# Use the protected wrapper when a host does not expose gh on its initial PATH.
+# The protected script mirrors the non-destructive subcommand allowlist above.
+prefix_rule(
+    pattern = ["/bin/zsh", ".codex/scripts/gh.zsh"],
+    decision = "allow",
+    justification = "The protected GitHub CLI wrapper supplies the platform PATH.",
+    match = [
+        "/bin/zsh .codex/scripts/gh.zsh pr view 641",
+        "/bin/zsh .codex/scripts/gh.zsh run watch 12345 --exit-status",
+    ],
+    not_match = [
+        "/bin/zsh -lc 'gh pr view 641'",
+        "/bin/zsh .codex/scripts/git-with-nvm.zsh status",
+    ],
+)
+
+# Node-backed repository hooks may need nvm on PATH. The protected wrapper also
+# rejects destructive push forms so those commands retain normal approval.
+prefix_rule(
+    pattern = ["/bin/zsh", ".codex/scripts/git-with-nvm.zsh"],
+    decision = "allow",
+    justification = "The protected Git wrapper loads nvm for repository hooks.",
+    match = [
+        "/bin/zsh .codex/scripts/git-with-nvm.zsh status --short --branch",
+        "/bin/zsh .codex/scripts/git-with-nvm.zsh commit -m example",
+        "/bin/zsh .codex/scripts/git-with-nvm.zsh push origin example",
+    ],
+    not_match = [
+        "/bin/zsh -lc 'git status'",
+        "/bin/zsh .codex/scripts/git-with-nvm.zsh push --force origin example",
+        "/bin/zsh .codex/scripts/nvm.zsh use",
+    ],
+)
+
+# Node repositories load nvm through environment.toml. Trust version-management
+# operations while keeping arbitrary command runners under normal approval.
+prefix_rule(
+    pattern = [
+        "nvm",
+        [
+            "--help",
+            "--version",
+            "alias",
+            "cache",
+            "current",
+            "deactivate",
+            "install",
+            "help",
+            "ls",
+            "ls-remote",
+            "unalias",
+            "unload",
+            "use",
+            "version",
+            "version-remote",
+            "which",
+        ],
+    ],
+    decision = "allow",
+    justification = "NVM version-management commands are explicitly trusted in this environment.",
+    match = [
+        "nvm use",
+        "nvm install 24.18.0",
+        "nvm alias default 24.18.0",
+    ],
+    not_match = [
+        "nvm exec 24.18.0 sh -c id",
+        "nvm run 24.18.0 arbitrary-script",
+    ],
+)
+
+# nvm is a shell function rather than an executable. Allow its protected zsh
+# wrapper; the wrapper independently rejects exec, run, and unknown commands.
+prefix_rule(
+    pattern = ["/bin/zsh", ".codex/scripts/nvm.zsh"],
+    decision = "allow",
+    justification = "The protected NVM wrapper dispatches version-management commands only.",
+    match = [
+        "/bin/zsh .codex/scripts/nvm.zsh use",
+        "/bin/zsh .codex/scripts/nvm.zsh install 24.18.0",
+        "/bin/zsh .codex/scripts/nvm.zsh alias default 24.18.0",
+    ],
+    not_match = [
+        "/bin/zsh -lc 'nvm use'",
+        "/bin/zsh .codex/scripts/git-with-nvm.zsh status",
+    ],
+)
