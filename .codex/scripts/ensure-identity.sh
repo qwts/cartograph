@@ -21,12 +21,6 @@ if [[ "$git_dir" == "$common_dir" ]]; then
   fail "agents must use a linked worktree; refusing to configure a primary checkout"
 fi
 
-if [[ -z "${CODEX_THREAD_ID:-}" ]] &&
-  { [[ -z "${QWTS_AGENT_TRANSCRIPT_PROVIDER:-}" ]] ||
-    [[ -z "${QWTS_AGENT_TRANSCRIPT_ID:-}" ]]; }; then
-  fail "no Codex transcript locator is available; refusing a transcript-pending identity"
-fi
-
 if [[ -f "$repo_root/tools/agent-bot/setup-worktree.mjs" ]]; then
   playbook_root="$repo_root"
 else

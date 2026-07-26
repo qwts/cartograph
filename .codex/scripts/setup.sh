@@ -81,10 +81,9 @@ if [ "$node_ready" = true ]; then
   echo "==> Node: $(node --version)"
 fi
 
-# Git's post-checkout hook is best-effort because worktree creation can happen
-# before Codex exports its harness and transcript markers. Retry conclusively
-# now that CODEX_THREAD_ID is available; a missing or split identity must stop
-# setup before any development or GitHub write can inherit the wrong actor.
+# Configure the harness-neutral Agent ID and worktree-pinned App. Transcript
+# locators are optional provider metadata: tools that expose one bind it, while
+# tools without one retain a valid transcript-pending identity.
 if [ -f ".codex/scripts/ensure-identity.sh" ]; then
   bash .codex/scripts/ensure-identity.sh
 fi
