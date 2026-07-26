@@ -128,6 +128,7 @@ if [[ -x "$agent_bot_gh" ]]; then
 elif [[ -n "$path_gh_executable" ]]; then
   readonly gh_executable="$path_gh_executable"
 elif [[ -x "/opt/homebrew/bin/gh" ]]; then
+  export PATH="/opt/homebrew/bin:${PATH}"
   readonly gh_executable="/opt/homebrew/bin/gh"
 else
   print -u2 -- "GitHub CLI (gh) was not found on PATH"
