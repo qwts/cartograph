@@ -81,6 +81,14 @@ if [ "$node_ready" = true ]; then
   echo "==> Node: $(node --version)"
 fi
 
+# Git's post-checkout hook is best-effort because worktree creation can happen
+# before Codex exports its harness and transcript markers. Retry conclusively
+# now that CODEX_THREAD_ID is available; a missing or split identity must stop
+# setup before any development or GitHub write can inherit the wrong actor.
+if [ -f ".codex/scripts/ensure-identity.sh" ]; then
+  bash .codex/scripts/ensure-identity.sh
+fi
+
 # These tools improve the agent experience but are host prerequisites, not
 # project dependencies. Report them without mutating the host package manager.
 if [ -x "/bin/zsh" ]; then
