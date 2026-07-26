@@ -117,13 +117,20 @@ if [[ "$return_code" -ne 0 ]]; then
   exit "$return_code"
 fi
 
-if [[ -d "/opt/homebrew/bin" ]]; then
-  export PATH="/opt/homebrew/bin:$PATH"
-fi
+readonly agent_bot_gh="${HOME}/.config/agent-bot/bin/gh"
+readonly path_gh_executable="$(command -v gh || true)"
 
-readonly gh_executable="$(command -v gh || true)"
-
-if [[ -z "$gh_executable" ]]; then
+if [[ -x "$agent_bot_gh" ]]; then
+  # A fresh zsh may reorder PATH before this script runs. Prefer the installed
+  # ENG-0045 identity shim explicitly so a bot worktree cannot fall through to
+  # a developer's stored gh credentials.
+  readonly gh_executable="$agent_bot_gh"
+elif [[ -n "$path_gh_executable" ]]; then
+  readonly gh_executable="$path_gh_executable"
+elif [[ -x "/opt/homebrew/bin/gh" ]]; then
+  export PATH="/opt/homebrew/bin:${PATH}"
+  readonly gh_executable="/opt/homebrew/bin/gh"
+else
   print -u2 -- "GitHub CLI (gh) was not found on PATH"
   exit 127
 fi
