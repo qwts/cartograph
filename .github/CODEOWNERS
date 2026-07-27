@@ -5,3 +5,15 @@
 # Keep repository governance files explicitly owned even if more specific rules are
 # added later.
 /.github/ @qwts
+
+# Agent primitives: text agents read as directives, and configuration they
+# execute. Named explicitly rather than relying on the `*` wildcard above, so
+# these survive any future relaxation of it. `.claude/settings.json` and its
+# peers can define hooks that run shell commands, which is why the directories
+# matter at least as much as the markdown.
+AGENTS.md   @qwts
+CLAUDE.md   @qwts
+.claude/    @qwts
+.codex/     @qwts
+.cursor/    @qwts
+.mcp.json   @qwts
