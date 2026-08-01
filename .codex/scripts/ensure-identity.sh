@@ -21,17 +21,11 @@ if [[ "$git_dir" == "$common_dir" ]]; then
   fail "agents must use a linked worktree; refusing to configure a primary checkout"
 fi
 
-if [[ -f "$repo_root/tools/agent-bot/setup-worktree.mjs" ]]; then
-  playbook_root="$repo_root"
-else
-  playbook_root="${PLAYBOOK_HOME:-$HOME/Code/playbook-engineering}"
-fi
+setup="${HOME}/.local/bin/playbook-setup-worktree"
+[[ -x "$setup" ]] ||
+  fail "playbook-setup-worktree is not installed; run playbook-engineering install from a clean playbook-engineering checkout"
 
-setup="$playbook_root/tools/agent-bot/setup-worktree.mjs"
-[[ -f "$setup" ]] ||
-  fail "setup-worktree.mjs was not found under $playbook_root; set PLAYBOOK_HOME to the canonical checkout"
-
-node "$setup"
+"$setup"
 
 agent_id="$(git config --worktree --get qwts.agentId 2>/dev/null || true)"
 agent_app="$(git config --worktree --get qwts.agentApp 2>/dev/null || true)"
