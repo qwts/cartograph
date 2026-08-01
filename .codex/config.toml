@@ -11,3 +11,27 @@ network_access = true
 # Keep hooks enabled explicitly for compatible clients that do not yet load
 # project-scoped .codex/hooks.json by default.
 hooks = true
+
+# Keep the hosted GitHub connector available for reads while forcing every
+# GitHub mutation through the worktree's bot-authenticated git/gh path.
+[apps.connector_76869538009648d5b282a4bb21c3d157]
+enabled = true
+destructive_enabled = false
+
+# Skills provide the GitHub workflow and CLI fallback; disabling them does not
+# disable connector writes, so keep them available under the connector policy.
+[[skills.config]]
+name = "github:yeet"
+enabled = true
+
+[[skills.config]]
+name = "github:github"
+enabled = true
+
+[[skills.config]]
+name = "github:gh-fix-ci"
+enabled = true
+
+[[skills.config]]
+name = "github:gh-address-comments"
+enabled = true
