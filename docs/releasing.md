@@ -7,13 +7,16 @@ the release rules in `AGENTS.md`. macOS bundle trust is governed by ADR-0016.
 
 1. Merge behavior changes with their required Changesets. The **Version cut**
    workflow keeps the `changeset-release/main` **Version packages** PR current.
-2. Review that PR, require CI to pass, and merge it. This merge is the release
-   decision: automation creates the immutable annotated `vX.Y.Z` tag and hands
-   it to the **Release** workflow.
-3. The Release workflow validates that exact tag and reviewed PR, runs the
-   reusable macOS package workflow, and publishes only its named artifact. The
-   release notes come from the exact version section generated in
-   `CHANGELOG.md`.
+2. Review that ready PR, require its exact head and merge-queue candidate to
+   pass the normal complete suite, and merge it. Version-cut does not dispatch
+   a second equivalent suite. This merge is the release decision: automation
+   waits for the exact `main` commit's stable CI result, creates the immutable
+   annotated `vX.Y.Z` tag, and hands it to the **Release** workflow.
+3. The Release workflow validates the exact tag, its reviewed PR head, and
+   complete-suite evidence for the exact release commit. It then runs the
+   reusable macOS package workflow and publishes only that invocation's named
+   artifact. The release notes come from the exact version section generated
+   in `CHANGELOG.md`.
 
 With the complete five-secret set below, the result is a normal GitHub Release
 containing signed, notarized, stapled, Gatekeeper-verified universal app and DMG
@@ -48,10 +51,13 @@ task.
 ## macOS packaging
 
 Run the **Package macOS** workflow manually for a branch, tag, or commit SHA.
-The optional `ref` input is checked out exactly; when omitted, the triggering
-ref is used. The workflow installs locked root/UI dependencies, runs every
-repository gate, and builds universal Intel + Apple Silicon `.app` and `.dmg`
-bundles.
+The optional `ref` input is resolved once to an immutable commit; when omitted,
+the triggering SHA is used. Packaging first requires successful complete-suite
+evidence for that exact commit. It does not repeat generic lint, format,
+typecheck, unit, Storybook, security, compliance, or docs gates. It retains the
+release-specific dependency install, notices generation, universal Intel +
+Apple Silicon build, signing/notarization boundary, bundle inspection, and
+artifact upload.
 
 With no signing secrets, the workflow uses an ad-hoc signature required by
 Apple Silicon and uploads artifacts whose names contain `unsigned-dev`. These

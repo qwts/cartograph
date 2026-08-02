@@ -38,20 +38,79 @@ on:
         value: ${{ jobs.package.outputs.artifact_name }}
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
+  policy:
+    name: Action Policy
+    if: github.event_name != 'workflow_call'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authorize direct workflow event
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@060c1fae87a9297f6480a9fdd3a4e7741bb92e80
+        with:
+          authorization-only: 'true'
+
+  evidence:
+    name: Verify exact CI evidence
+    needs: policy
+    if: always() && (github.event_name == 'workflow_call' || needs.policy.result == 'success')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - id: commit
+        name: Resolve immutable package commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful complete-suite evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          queue_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$PACKAGE_SHA&per_page=100" \
+            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+          complete=false
+          if [ -n "$queue_run" ]; then
+            complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$queue_run/jobs?filter=latest&per_page=100" \
+              --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
+          else
+            push_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=push&head_sha=$PACKAGE_SHA&per_page=100" \
+              --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+            if [ -n "$push_run" ]; then
+              complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$push_run/jobs?filter=latest&per_page=100" \
+                --jq 'any(.jobs[]; .name == "Complete suite" and .conclusion == "success")')
+            else
+              manual_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&head_sha=$PACKAGE_SHA&per_page=100" \
+                --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+              if [ -n "$manual_run" ]; then
+                complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$manual_run/jobs?filter=latest&per_page=100" \
+                  --jq 'any(.jobs[]; .name == "Complete suite" and .conclusion == "success")')
+              fi
+            fi
+          fi
+          test "$complete" = true
+
   package:
     name: macOS universal bundle
+    needs: evidence
     runs-on: macos-latest
     outputs:
       signing_mode: ${{ steps.signing.outputs.mode }}
       artifact_name: ${{ steps.metadata.outputs.artifact_name }}
     steps:
-      - name: Checkout exact ref
+      - name: Checkout exact validated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ needs.evidence.outputs.sha }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -67,15 +126,8 @@ jobs:
           npm ci
           npm --prefix ui ci
 
-      - name: Install browser and universal Rust targets
-        run: |
-          npm --prefix ui exec -- playwright install chromium
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
-      - name: Create frontend placeholder for Tauri's Rust macro
-        # generate_context! reads frontendDist while clippy/tests compile the
-        # app crate; the real production UI build still runs in the gate below.
-        run: mkdir -p ui/dist
+      - name: Install universal Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       # Regenerate THIRD-PARTY-NOTICES in the actual shipping environment (#222).
       # Running here — on the macOS runner, before the UI build — means the
@@ -91,19 +143,6 @@ jobs:
         run: |
           cargo fetch --locked
           node scripts/generate-notices.mjs
-
-      - name: Run required repository gates
-        run: |
-          node scripts/check-traceability.mjs
-          npm run version:check
-          npm run test:version
-          cargo fmt --all --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
-          npm --prefix ui run lint
-          npm --prefix ui run typecheck
-          npm --prefix ui run test
-          npm --prefix ui run build
 
       - name: Select signing mode
         id: signing
