@@ -63,7 +63,8 @@ events, client), then compiles official spec artifacts. Master spec:
 ## Governed CI lifecycle
 
 Cartograph inherits the execution policy from `qwts/playbook-engineering`
-ENG-0004 and `docs/reference/ci-execution-policy.md`. The policy changes when
+ENG-0004 and the reviewed [CI execution policy](https://raw.githubusercontent.com/qwts/playbook-engineering/main/docs/reference/ci-execution-policy.md).
+The policy changes when
 the agreed suite runs; it does not reduce the gate list below.
 
 - Draft PR events start no Actions jobs. Before marking a PR ready, run the
