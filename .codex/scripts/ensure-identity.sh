@@ -8,7 +8,6 @@ fail() {
 }
 
 command -v git >/dev/null 2>&1 || fail "git is required"
-command -v node >/dev/null 2>&1 || fail "Node.js is required"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" ||
   fail "run the shared Codex environment from a Git worktree"
@@ -21,23 +20,17 @@ if [[ "$git_dir" == "$common_dir" ]]; then
   fail "agents must use a linked worktree; refusing to configure a primary checkout"
 fi
 
-setup="${HOME}/.local/bin/agent-bot"
-[[ -x "$setup" ]] ||
+setup="${AGENT_BOT_BIN:-agent-bot}"
+if command -v "$setup" >/dev/null 2>&1; then
+  "$setup" setup-worktree
+elif [[ -n "${AGENT_BOT_HOME:-}" && -f "$AGENT_BOT_HOME/setup-worktree.mjs" ]]; then
+  node "$AGENT_BOT_HOME/setup-worktree.mjs"
+else
   fail "agent-bot is not installed; install it from the agent-bot-identity runtime repository"
+fi
 
-"$setup" setup-worktree
-
-read_identity_config() {
-  local value
-  value="$(git config --worktree --get "$1" 2>/dev/null || true)"
-  if [[ -z "$value" ]]; then
-    value="$(git config --worktree --get "$2" 2>/dev/null || true)"
-  fi
-  printf '%s' "$value"
-}
-
-agent_id="$(read_identity_config agentBot.agentId qwts.agentId)"
-agent_app="$(read_identity_config agentBot.app qwts.agentApp)"
+agent_id="$(git config --worktree --get agentBot.agentId 2>/dev/null || true)"
+agent_app="$(git config --worktree --get agentBot.app 2>/dev/null || true)"
 author="$(git config --worktree --get user.name 2>/dev/null || true)"
 helper="$(git config --worktree --get-all credential.helper 2>/dev/null | tail -n 1 || true)"
 hooks="$(git config --worktree --path --get core.hooksPath 2>/dev/null || true)"
