@@ -13,8 +13,18 @@ permissions:
   pull-requests: read
 
 jobs:
+  policy:
+    name: Action Policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authorize direct workflow event
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@060c1fae87a9297f6480a9fdd3a4e7741bb92e80
+        with:
+          authorization-only: 'true'
+
   close-linked-issues:
     name: Close linked issues
+    needs: policy
     # Keep in sync with TARGET_BASE_REFS in scripts/close-linked-issues.mjs.
     if: |
       github.event.pull_request.merged == true &&
