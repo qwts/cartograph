@@ -60,6 +60,41 @@ events, client), then compiles official spec artifacts. Master spec:
    test code cites its AC in a comment. Manual procedures run at milestone
    boundaries, results recorded on the milestone's task issue.
 
+## Governed CI lifecycle
+
+Cartograph inherits the execution policy from `qwts/playbook-engineering`
+ENG-0004 and the reviewed [CI execution policy](https://raw.githubusercontent.com/qwts/playbook-engineering/main/docs/reference/ci-execution-policy.md).
+The policy changes when
+the agreed suite runs; it does not reduce the gate list below.
+
+- Draft PR events start no Actions jobs. Before marking a PR ready, run the
+  complete local gate list in this file. After pushing the final branch SHA,
+  an agent may dispatch **CI** with purpose `exact-sha-preflight` and must wait
+  for that exact SHA to succeed before relying on it.
+- A ready PR verifies exact-head manual evidence and otherwise runs the complete
+  suite. Ready updates cancel obsolete PR runs. Dependabot follows the same
+  lifecycle and review bar.
+- The merge queue runs the complete suite on its exact `merge_group` candidate.
+  A `main` push with successful evidence for that exact SHA runs only Advanced
+  CodeQL plus the short repository-integrity smoke; missing evidence runs the
+  complete suite fail-safe.
+- Manual CI dispatch is limited to exact-SHA preflight, diagnostics, release
+  recovery, workflow testing, and explicit reruns. Public-fork workflows are
+  never approved or run.
+- The immutable CI-policy action validates both `github.actor` and
+  `github.triggering_actor`. Repository Actions Policy allows only `qwts`,
+  `chores-dumb[bot]`, `dependabot[bot]`, and active Apps in the governed agent
+  roster. Authorization does not imply that a credential must exist.
+- Advanced CodeQL is lifecycle-called for Actions, JavaScript/TypeScript, and
+  Rust. Default setup must remain disabled after the workflow is enabled.
+
+Required repository settings are manual until governance automation supports
+them: activate Actions Policy with the exact actor roster and `merge_group`;
+require stable `CI` and retain independent `CodeQL`; switch CodeQL default
+setup to Advanced; and require the merge queue with method `MERGE`, grouping
+`ALLGREEN`, one candidate build, and one PR per merge. Until the queue is
+enabled, the exact-commit `main` fallback protects merge/squash SHA rewrites.
+
 ## Versioning and releases
 
 - `package.json` is the canonical application version. The root and UI npm
@@ -79,6 +114,9 @@ events, client), then compiles official spec artifacts. Master spec:
   exact annotated `vX.Y.Z` tag and dispatches the release handoff. A failed
   handoff is recovered by manually dispatching the version-cut workflow; tags
   are immutable and are never moved.
+- A Version packages PR receives the normal ready/queue complete suite once;
+  version-cut never dispatches a duplicate suite. Tag and release automation
+  require exact-commit CI and reviewed-PR evidence before release-specific work.
 - macOS production bundles are universal Intel + Apple Silicon `.app` and `.dmg`
   artifacts. Signing is all-or-nothing across the five repository secrets
   `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, and

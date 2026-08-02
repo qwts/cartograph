@@ -52,6 +52,15 @@ change without allowing a bot to infer release intent from commit messages.
   workflow updates title, notes, trust flags, and current assets in place,
   removes stale assets from the opposite signing mode, and never moves the tag.
 
+### Amendment — 2026-08-01: governed exact-commit evidence
+
+The ENG-0004 lifecycle supersedes the earlier bot-dispatch mechanism. A Version
+packages PR receives the normal ready-PR and merge-queue validation once;
+version-cut does not dispatch duplicate generic CI. Tagging waits for the exact
+cut commit's stable `main` result. Release publication proves successful
+complete-suite evidence for that exact commit and successful ready-PR evidence
+for the reviewed version head before it begins release-specific work.
+
 ## Consequences
 
 - Every artifact and version tag can be checked against one value before it is

@@ -1,41 +1,114 @@
 name: CI
+run-name: CI ${{ github.event_name }} purpose=${{ inputs.purpose || 'automatic' }}
 
 on:
-  # Version-cut explicitly dispatches CI after refreshing the bot-managed
-  # Version packages branch because GITHUB_TOKEN PR updates do not emit a
-  # pull_request event.
-  workflow_dispatch:
   pull_request:
-    branches:
-      - main
-  # Post-merge signal: run the same gates on main so it can never sit red unnoticed.
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
   push:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      purpose:
+        description: Why the complete suite is being run manually
+        required: true
+        type: choice
+        options:
+          - exact-sha-preflight
+          - diagnostics
+          - release-recovery
+          - workflow-testing
+          - explicit-rerun
 
-# Cancel superseded PR runs. Main-push runs are keyed by SHA so back-to-back merges each keep
-# their own post-merge verdict instead of replacing one another in a shared ref group.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('merge-group-{0}', github.event.merge_group.head_ref) || github.sha }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
 
 jobs:
-  # Keeps the spec, user stories, traceability matrix, and ADRs mutually
-  # consistent on every PR.
+  policy:
+    name: Action Policy
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.policy.outputs.mode }}
+      run_full: ${{ steps.policy.outputs.run_full }}
+      run_post_merge: ${{ steps.policy.outputs.run_post_merge }}
+    steps:
+      - id: policy
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@060c1fae87a9297f6480a9fdd3a4e7741bb92e80
+
+  merge-evidence:
+    name: Verify merged commit evidence
+    needs: policy
+    if: needs.policy.outputs.run_post_merge == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      validated: ${{ steps.evidence.outputs.validated }}
+    steps:
+      - id: evidence
+        name: Find successful merge-group CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$GITHUB_SHA&per_page=100" \
+            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+          validated=false
+          if [ -n "$run_id" ]; then
+            validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
+              --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
+          fi
+          echo "validated=$validated" >> "$GITHUB_OUTPUT"
+
+  preflight-evidence:
+    name: Verify preflight evidence
+    needs: policy
+    if: github.event_name == 'pull_request' && needs.policy.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      validated: ${{ steps.evidence.outputs.validated }}
+    steps:
+      - id: evidence
+        name: Find successful manual complete suite for the PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&head_sha=$TARGET_SHA&per_page=100" \
+            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .display_title == "CI workflow_dispatch purpose=exact-sha-preflight" and .conclusion == "success") | .id) // empty')
+          validated=false
+          if [ -n "$run_id" ]; then
+            validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
+              --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
+          fi
+          echo "validated=$validated" >> "$GITHUB_OUTPUT"
+
+  # Keeps the spec, user stories, traceability matrix, ADRs, release tooling,
+  # and public help mirror mutually consistent in every complete suite.
   docs:
     name: Docs & traceability
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Single source of truth: CI and local resolve Node from the same .nvmrc.
           node-version-file: .nvmrc
 
       - name: Traceability check
@@ -44,27 +117,31 @@ jobs:
       - name: Version synchronization check
         run: npm run version:check
 
-      - name: Version tooling tests
+      - name: Version and workflow tooling tests
         run: npm run test:version
 
-      # Help single-sourcing (#155): docs/help/ and the wiki must be
-      # identical; the wiki is public so the clone needs no token.
       - name: Help mirror drift check
         run: |
           git clone --depth 1 https://github.com/qwts/cartograph.wiki.git /tmp/wiki
           node scripts/check-help-mirror.mjs /tmp/wiki
 
   # Rust core: format, lint-as-error, tests. The pinned toolchain comes from
-  # rust-toolchain.toml (rustup auto-installs it on first cargo call), so CI
-  # and local always agree — bump the pin deliberately.
+  # rust-toolchain.toml; the commands and stable context are unchanged.
   rust:
     name: Rust
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
-      # Compiling the tauri crate on Linux needs the webkit/gtk dev stack.
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
@@ -74,15 +151,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      # Translate rustc/clippy diagnostics into GitHub annotations so a failed
-      # run shows the actual error in the summary UI instead of a blank
-      # "Error:" — matcher pairs the message line with its `--> file:line:col`.
       - name: Enable Rust problem matcher
         run: echo "::add-matcher::.github/rust-problem-matcher.json"
 
-      # tauri's generate_context! macro requires the frontendDist directory to
-      # exist at compile time; the Rust job must not depend on the Frontend job
-      # for that (they run in parallel), so give it an empty placeholder.
       - name: Placeholder frontend dist
         run: mkdir -p ui/dist
 
@@ -95,39 +166,49 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  # License compliance + supply-chain gate (#222). cargo-deny enforces the
-  # allow-listed licenses and RustSec advisories. This is the license *gate*:
-  # a new dep with a disallowed license (or a fresh RustSec advisory) fails the
-  # build. THIRD-PARTY-NOTICES.md is regenerated at release time in package.yml
-  # (the macOS build env that resolves the shipped apple-target graph), so it is
-  # not byte-diff-checked here — cargo-about output is not reproducible across a
-  # Linux runner and the macOS shipping target.
+  # License compliance + supply-chain gate (#222). This remains a complete-
+  # suite lane and retains its stable context.
   compliance:
     name: License & supply-chain
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
         with:
           tool: cargo-deny@0.20.2
 
-      # cargo-deny: licenses + advisories + bans + sources.
       - name: cargo-deny
         run: cargo deny check
 
-  # Web UI: lint, typecheck, unit tests, production build.
+  # Web UI: lint, typecheck, unit + Storybook interaction tests, production build.
   frontend:
     name: Frontend
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ui
     steps:
-      - name: Checkout
+      - name: Checkout exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -139,8 +220,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Story interaction tests run in headless Chromium via the vitest
-      # browser provider (`npm run test` covers the unit + storybook projects).
       - name: Install Playwright browser (for story tests)
         run: npx playwright install --with-deps chromium
 
@@ -155,3 +234,99 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  codeql:
+    name: Advanced CodeQL
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      (needs.policy.outputs.run_post_merge == 'true' ||
+      (needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true'))
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
+
+  complete:
+    name: Complete suite
+    needs: [policy, merge-evidence, preflight-evidence, docs, rust, compliance, frontend, codeql]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every agreed complete-suite gate
+        env:
+          DOCS: ${{ needs.docs.result }}
+          RUST: ${{ needs.rust.result }}
+          COMPLIANCE: ${{ needs.compliance.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          CODEQL: ${{ needs.codeql.result }}
+        run: |
+          test "$DOCS" = success
+          test "$RUST" = success
+          test "$COMPLIANCE" = success
+          test "$FRONTEND" = success
+          test "$CODEQL" = success
+
+  post-merge:
+    name: Post-merge smoke
+    needs: [policy, merge-evidence]
+    if: needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact merged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Repository integrity smoke
+        run: node scripts/check-traceability.mjs && npm run version:check
+
+  gate:
+    name: CI
+    needs: [policy, merge-evidence, preflight-evidence, complete, codeql, post-merge]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce the selected lifecycle lane
+        env:
+          MODE: ${{ needs.policy.outputs.mode }}
+          POLICY: ${{ needs.policy.result }}
+          COMPLETE: ${{ needs.complete.result }}
+          CODEQL: ${{ needs.codeql.result }}
+          PREFLIGHT: ${{ needs.preflight-evidence.result }}
+          PREFLIGHT_VALIDATED: ${{ needs.preflight-evidence.outputs.validated }}
+          MERGE_VALIDATED: ${{ needs.merge-evidence.outputs.validated }}
+          POST_MERGE: ${{ needs.post-merge.result }}
+        run: |
+          test "$POLICY" = success
+          case "$MODE" in
+            full)
+              if [ "$PREFLIGHT_VALIDATED" = true ]; then
+                test "$PREFLIGHT" = success
+              else
+                test "$COMPLETE" = success
+              fi
+              ;;
+            queue|manual)
+              test "$COMPLETE" = success
+              ;;
+            post-merge)
+              test "$CODEQL" = success
+              if [ "$MERGE_VALIDATED" = true ]; then
+                test "$POST_MERGE" = success
+              else
+                test "$COMPLETE" = success
+              fi
+              ;;
+            *) exit 1 ;;
+          esac

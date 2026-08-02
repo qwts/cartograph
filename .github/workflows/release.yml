@@ -19,13 +19,25 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
+  policy:
+    name: Action Policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authorize direct workflow event
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@060c1fae87a9297f6480a9fdd3a4e7741bb92e80
+        with:
+          authorization-only: 'true'
+
   validate:
     name: Validate reviewed release tag
+    needs: policy
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
@@ -80,6 +92,54 @@ jobs:
             exit 1
           fi
 
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "::error::$TAG does not resolve to a commit on main."
+            exit 1
+          fi
+
+          # Prefer complete merge-group evidence for this exact commit. Until
+          # the required queue is enabled, a rewritten main SHA must have run
+          # the complete fallback rather than borrowing a tree-equivalent run.
+          queue_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$tag_commit&per_page=100" \
+            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+          complete=false
+          if [ -n "$queue_run" ]; then
+            complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$queue_run/jobs?filter=latest&per_page=100" \
+              --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
+          else
+            push_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=push&head_sha=$tag_commit&per_page=100" \
+              --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+            if [ -n "$push_run" ]; then
+              complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$push_run/jobs?filter=latest&per_page=100" \
+                --jq 'any(.jobs[]; .name == "Complete suite" and .conclusion == "success")')
+            fi
+          fi
+          if [ "$complete" != true ]; then
+            echo "::error::$tag_commit lacks successful exact-commit complete-suite evidence."
+            exit 1
+          fi
+
+          approved=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$version_pr/reviews?per_page=100" \
+            --jq 'any(.[]; .state == "APPROVED")')
+          if [ "$approved" != true ]; then
+            echo "::error::Version packages PR #$version_pr lacks an approval."
+            exit 1
+          fi
+          pr_head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$version_pr" --jq '.head.sha')
+          pr_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=pull_request&head_sha=$pr_head&per_page=100" \
+            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+          if [ -z "$pr_run" ]; then
+            echo "::error::Version packages PR #$version_pr lacks ready-PR CI for exact head $pr_head."
+            exit 1
+          fi
+          verified=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$pr_run/jobs?filter=latest&per_page=100" \
+            --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
+          if [ "$verified" != true ]; then
+            echo "::error::Version packages PR #$version_pr lacks a successful stable CI gate."
+            exit 1
+          fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "Validated $TAG at reviewed Version packages PR #$version_pr."
@@ -99,9 +159,9 @@ jobs:
       - build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      actions: read
+      contents: read
     env:
-      GH_TOKEN: ${{ github.token }}
       SIGNING_MODE: ${{ needs.build.outputs.signing_mode }}
       TAG: ${{ needs.validate.outputs.tag }}
       VERSION: ${{ needs.validate.outputs.version }}
@@ -144,8 +204,19 @@ jobs:
             node scripts/release-metadata.mjs notes "$VERSION" CHANGELOG.md > release-notes.md
           fi
 
+      - name: Require chores-dumb credentials
+        run: test "${{ secrets.CHORES_DUMB_CLIENT_ID != '' && secrets.CHORES_DUMB_PRIVATE_KEY != '' }}" = true
+
+      - name: Mint the chores-dumb token
+        id: chores
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CHORES_DUMB_CLIENT_ID }}
+          private-key: ${{ secrets.CHORES_DUMB_PRIVATE_KEY }}
+
       - name: Create or update release without duplicate assets
         env:
+          GH_TOKEN: ${{ steps.chores.outputs.token }}
           PRERELEASE: ${{ steps.publication.outputs.prerelease }}
           RELEASE_TITLE: ${{ steps.publication.outputs.title }}
         run: |

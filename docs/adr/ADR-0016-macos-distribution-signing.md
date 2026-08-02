@@ -42,6 +42,16 @@ environment variables.
   Artifacts include the synchronized application version, universal
   architecture, and signing mode in stable names.
 
+### Amendment — 2026-08-01: validated-source packaging
+
+The ENG-0004 lifecycle supersedes the earlier requirement to repeat every
+generic repository gate inside the packaging workflow. Packaging resolves its
+input to an immutable commit and requires successful complete-suite evidence
+for that exact SHA. It then runs only release-specific work: notices generation,
+the universal application and disk-image build, signing or explicit
+`unsigned-dev` handling, notarization, Gatekeeper and staple validation, bundle
+inspection, stable artifact staging, and upload.
+
 ## Consequences
 
 - One artifact runs natively on supported Intel and Apple Silicon Macs.
