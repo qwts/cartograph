@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "verified_at": null,
+  "note": "Retrieval target for issue-time model routing (ENG-0151). Read this file; never name models from memory. Entries with status 'seeded' were written by hand at authoring time and have not been confirmed against vendor documentation by a refresh run -- treat them as provisional and say so when citing them.",
+  "policy": {
+    "chinese_models": {
+      "access": ["cursor", "devin"],
+      "rule": "Chinese models are used only through Cursor or Devin. No direct vendor accounts, no direct API access, no first-party clients.",
+      "reason": "We do not adopt products associated with the CCP. Reaching a model through an IDE we already run is a different posture from installing the vendor's own product.",
+      "refresh_constraint": "available_in for this group must never widen beyond cursor/devin. A refresh that finds a direct API route must not adopt it -- report it and stop."
+    }
+  },
+  "sources": {
+    "anthropic": "https://docs.claude.com/en/docs/about-claude/models/overview",
+    "openai": "https://platform.openai.com/docs/models",
+    "chinese": null,
+    "ide_native": null
+  },
+  "tiers": {
+    "T1": {
+      "name": "Judgment",
+      "when": "Ambiguous scope, cross-repo blast radius, security or identity surface, or failure modes that look like success. Architecture, ADRs, governance changes. Tier is set by the work, not the diff size.",
+      "vendors": {
+        "anthropic": {
+          "plan": { "model": "claude-opus-5", "reasoning": "high", "status": "seeded" },
+          "build": { "model": "claude-opus-5", "reasoning": "high", "status": "seeded" },
+          "available_in": ["claude-code", "api"]
+        },
+        "openai": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": []
+        },
+        "chinese": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": ["cursor", "devin"]
+        },
+        "ide_native": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": []
+        }
+      }
+    },
+    "T2": {
+      "name": "Build",
+      "when": "Scope is clear, the design is settled, the risk is contained. Most feature work.",
+      "vendors": {
+        "anthropic": {
+          "plan": { "model": "claude-opus-5", "reasoning": "medium", "status": "seeded" },
+          "build": { "model": "claude-sonnet-5", "reasoning": "medium", "status": "seeded" },
+          "available_in": ["claude-code", "api"]
+        },
+        "openai": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": []
+        },
+        "chinese": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": ["cursor", "devin"]
+        },
+        "ide_native": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": []
+        }
+      }
+    },
+    "T3": {
+      "name": "Mechanical",
+      "when": "Deterministic transformation with an obvious oracle. Renames, dependency bumps, format migrations.",
+      "vendors": {
+        "anthropic": {
+          "plan": { "model": "claude-haiku-4-5-20251001", "reasoning": "low", "status": "seeded" },
+          "build": { "model": "claude-haiku-4-5-20251001", "reasoning": "low", "status": "seeded" },
+          "available_in": ["claude-code", "api"]
+        },
+        "openai": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": []
+        },
+        "chinese": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": ["cursor", "devin"]
+        },
+        "ide_native": {
+          "plan": { "model": null, "reasoning": null, "status": "unverified" },
+          "build": { "model": null, "reasoning": null, "status": "unverified" },
+          "available_in": []
+        }
+      }
+    }
+  }
+}
