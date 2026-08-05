@@ -161,10 +161,10 @@ Storybook itself: `npm run storybook` (from `ui/`).
 PR-first workflow, validation-before-push, commit and PR hygiene, and the
 untrusted-input threat model are defined once, for every repo, in the
 [org-wide agent conventions](https://github.com/qwts/playbook-engineering/blob/main/docs/reference/agent-conventions.md).
-Before creating or copying a repo-local skill, consult the
-[shared agent skills](https://github.com/qwts/playbook-engineering/blob/main/skills/README.md)
-index. Reuse a shared skill when it fits; only a skill genuinely specific
-to this repository belongs in its local context.
+Before creating or copying a repo-local skill, consult the reviewed
+[shared agent skills](https://github.com/qwts/playbook-engineering/blob/74e775ef23d8e7d8f8e693ccc2329f430978c096/skills/README.md)
+index. Reuse only the pinned version supplied by the governed harness; a skill
+genuinely specific to this repository belongs in its local context.
 This repository is governed by
 [playbook-engineering](https://github.com/qwts/playbook-engineering) — its
 [shared SOPs](https://github.com/qwts/playbook-engineering/blob/main/docs/sop/README.md)
