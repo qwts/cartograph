@@ -16,7 +16,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { userInfo } from 'node:os';
 import path from 'node:path';
 
 export const PROTOCOL_VERSION = 1;
@@ -37,15 +37,24 @@ export const CORE_LEASE_FIELDS = ['id', 'pid', 'estimatedMb', 'grantedAt'];
  * excluded from iCloud Drive by design, `$XDG_RUNTIME_DIR` is tmpfs, and
  * `~/.cache` is conventionally unsynced on Linux.
  *
- * Resolution is env-first so a test (or a deliberately isolated session) can
- * point at a scratch directory without touching the real one.
+ * Production resolution ignores environment-selected home/cache paths. An
+ * agent can set HOME, XDG_CACHE_HOME, XDG_RUNTIME_DIR, or even the test-only
+ * override before starting Node; none of those values may mint a private
+ * lease namespace. A separately supplied environment object remains an
+ * explicit test seam for unit and conformance tests.
  */
 export function stateDir(env = process.env) {
+  if (env === process.env) {
+    const home = userInfo().homedir;
+    return process.platform === 'darwin'
+      ? path.join(home, 'Library', 'Caches', 'agent-guard')
+      : path.join(home, '.cache', 'agent-guard');
+  }
   const explicit = typeof env.AGENT_GUARD_STATE_DIR === 'string' ? env.AGENT_GUARD_STATE_DIR.trim() : '';
   if (explicit) return explicit;
   const runtime = typeof env.XDG_RUNTIME_DIR === 'string' ? env.XDG_RUNTIME_DIR.trim() : '';
   if (runtime) return path.join(runtime, 'agent-guard');
-  const home = env.HOME || homedir();
+  const home = env.HOME || userInfo().homedir;
   if (process.platform === 'darwin') return path.join(home, 'Library', 'Caches', 'agent-guard');
   const cache = typeof env.XDG_CACHE_HOME === 'string' && env.XDG_CACHE_HOME.trim() ? env.XDG_CACHE_HOME.trim() : path.join(home, '.cache');
   return path.join(cache, 'agent-guard');

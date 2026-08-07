@@ -15,23 +15,16 @@ prefix_rule(
             "checkout",
             "cherry-pick",
             "clean",
-            "clone",
             "commit",
             "describe",
-            "diff",
-            "fetch",
             "format-patch",
-            "grep",
             "help",
             "init",
-            "log",
             "merge",
             "merge-base",
             "mv",
             "notes",
-            "pull",
             "range-diff",
-            "rebase",
             "reflog",
             "remote",
             "reset",
@@ -111,11 +104,11 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["gh", "codespace", ["code", "cp", "jupyter", "list", "logs", "ports", "ssh", "view"]],
+    pattern = ["gh", "codespace", ["code", "cp", "jupyter", "list", "logs", "ports", "view"]],
     decision = "allow",
     justification = "Non-destructive Codespaces development operations are trusted.",
-    match = ["gh codespace list", "gh codespace ssh -c example"],
-    not_match = ["gh codespace delete -c example"],
+    match = ["gh codespace list", "gh codespace view -c example"],
+    not_match = ["gh codespace ssh -c example", "gh codespace delete -c example"],
 )
 
 prefix_rule(
@@ -167,11 +160,11 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["gh", "repo", ["clone", "list", "set-default", "view"]],
+    pattern = ["gh", "repo", ["list", "set-default", "view"]],
     decision = "allow",
     justification = "Non-destructive repository development operations are trusted.",
-    match = ["gh repo view qwts/example", "gh repo clone qwts/example"],
-    not_match = ["gh repo delete qwts/example --yes"],
+    match = ["gh repo view qwts/example", "gh repo list qwts"],
+    not_match = ["gh repo clone qwts/example", "gh repo delete qwts/example --yes"],
 )
 
 prefix_rule(
