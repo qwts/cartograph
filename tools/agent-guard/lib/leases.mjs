@@ -278,7 +278,9 @@ export async function withAdmissionLock(env, fn, { timeoutMs = 15_000, now = () 
       if (error.code !== 'EEXIST') throw error;
       breakStaleLock(dir);
       if (now() >= deadline) {
-        throw new Error('timed out waiting for the admission lock; refusing to proceed without machine-wide serialization');
+        throw new Error('timed out waiting for the admission lock; refusing to proceed without machine-wide serialization', {
+          cause: error,
+        });
       }
       await new Promise((resolve) => {
         setTimeout(resolve, LOCK_POLL_MS);

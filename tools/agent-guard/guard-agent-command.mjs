@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+/* eslint-disable max-lines -- This governed command parser is centralized so every harness shares one fail-closed policy. */
+
 // Pre-execution command hook for every agent harness in the fleet.
 //
 // The wrapper (run-guarded.mjs) is the primary control; this hook exists to
@@ -1406,7 +1408,7 @@ function hasRuntimeShellExpansion(word) {
     }
     if (character === '`') return true;
     if (character === '$' && /[({A-Za-z0-9_@*#?!$-]/u.test(word[index + 1] ?? '')) return true;
-    if (quote === null && /[*?\[{]/u.test(character)) return true;
+    if (quote === null && '*?[{'.includes(character)) return true;
   }
   return false;
 }
@@ -1559,7 +1561,11 @@ function shellPatternCanMatch(component, target) {
         source += character.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
       }
     }
-    if (new RegExp(`${source}$`, 'u').test(target)) return true;
+    try {
+      if (new RegExp(`${source}$`, 'u').test(target)) return true;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
   }
   return false;
 }

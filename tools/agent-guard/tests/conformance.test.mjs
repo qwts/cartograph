@@ -142,6 +142,7 @@ describe('agent-guard conformance (ENG-0138)', () => {
     for (const command of [
       'corepack yarn run test:e2e',
       'yarn workspaces foreach -A npm run ci',
+      'npm run ci [z-a]',
       'cat <(npx vitest)',
       "watch -n 1 'npx vitest'",
       'printf x | xargs npx vitest',
