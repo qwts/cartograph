@@ -37,7 +37,7 @@ test('CI enforces the governed lifecycle without draft jobs', () => {
   assert.match(workflow, /github\.event\.pull_request\.draft == false/u);
   assert.match(
     workflow,
-    /qwts\/playbook-engineering\/\.github\/actions\/ci-policy@4e70c773155c2c804e52a487352627010bea1897/u,
+    /qwts\/playbook-engineering\/\.github\/actions\/ci-policy@a407b9afcfa8c515e3c4a41f535d1c5cfafa1116/u,
   );
   assert.match(workflow, /head_sha=\$TARGET_SHA/u);
   assert.match(workflow, /head_sha=\$GITHUB_SHA/u);
@@ -53,7 +53,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
     '.github/workflows/version-cut.yml',
   ].map((file) => readFileSync(path.join(root, file), 'utf8'));
   for (const workflow of workflows) {
-    assert.match(workflow, /ci-policy@4e70c773155c2c804e52a487352627010bea1897/u);
+    assert.match(workflow, /ci-policy@a407b9afcfa8c515e3c4a41f535d1c5cfafa1116/u);
     assert.match(workflow, /authorization-only: 'true'/u);
     assert.match(workflow, /name: Action Policy/u);
     const policyPosition = workflow.indexOf('name: Action Policy');
@@ -68,7 +68,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
 test('the immutable policy action contract covers both actor fields and fork refusal', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
   const guidance = readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
-  assert.match(workflow, /ci-policy@4e70c773155c2c804e52a487352627010bea1897/u);
+  assert.match(workflow, /ci-policy@a407b9afcfa8c515e3c4a41f535d1c5cfafa1116/u);
   assert.match(guidance, /github\.triggering_actor/u);
   assert.match(guidance, /github\.actor/u);
   assert.match(guidance, /Public-fork workflows are\s+never approved or run/u);
@@ -102,11 +102,11 @@ test('Advanced CodeQL is governed, immutable, and preserves Rust coverage', () =
   assert.match(workflow, /language: \[actions, javascript-typescript, rust\]/u);
   assert.match(
     workflow,
-    /github\/codeql-action\/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38/u,
+    /github\/codeql-action\/init@5595ccaf912efad79be6eef63a5619ff05969be3/u,
   );
   assert.match(
     workflow,
-    /github\/codeql-action\/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38/u,
+    /github\/codeql-action\/analyze@5595ccaf912efad79be6eef63a5619ff05969be3/u,
   );
   assert.match(workflow, /build-mode: none/u);
 });
