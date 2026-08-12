@@ -24,7 +24,7 @@
 //        AGENT_GUARDED=1 (set for children so nested guards pass through).
 
 import { execFile, spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
