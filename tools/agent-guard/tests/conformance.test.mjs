@@ -20,6 +20,7 @@ import path from 'node:path';
 import { after, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { parseGrantMinutes } from '../arbiter.mjs';
 import { evaluateCommand, evaluateHookInput } from '../guard-agent-command.mjs';
 import { clampCeiling, deriveBudget } from '../lib/budget.mjs';
 import { isCi } from '../lib/policy.mjs';
@@ -238,6 +239,18 @@ describe('agent-guard conformance (ENG-0138)', () => {
   test('the guard denies tampering with its own controls', () => {
     for (const command of ['AGENT_GUARD_FORCE=1 npm run test:dom', 'AGENT_GUARD_ASSUME_HUMAN=1 npm run test:dom', 'node tools/agent-guard/arbiter.mjs grant e2e']) {
       assert.equal(evaluateCommand(command, { env }).allow, false, `expected the guard to deny: ${command}`);
+    }
+  });
+
+  test('grant honors the documented --minutes flag instead of silently defaulting', () => {
+    // In-process on purpose: spawning the real arbiter would mint a real
+    // machine-wide grant — stateDir ignores env overrides for real processes.
+    assert.deepEqual(parseGrantMinutes(['grant', 'e2e', '--minutes', '5']), { ok: true, minutes: 5 });
+    assert.deepEqual(parseGrantMinutes(['grant', 'e2e', '7']), { ok: true, minutes: 7 });
+    assert.deepEqual(parseGrantMinutes(['grant', 'e2e']), { ok: true, minutes: 30 });
+    assert.deepEqual(parseGrantMinutes(['grant', 'e2e', '--minutes', '9999']), { ok: true, minutes: 240 });
+    for (const argv of [['grant', 'e2e', '--minutes', 'soon'], ['grant', 'e2e', '--minutes'], ['grant', 'e2e', '--minutes', '-5'], ['grant', 'e2e', '--minutes', '0']]) {
+      assert.equal(parseGrantMinutes(argv).ok, false, `expected a refusal for: ${argv.join(' ')}`);
     }
   });
 

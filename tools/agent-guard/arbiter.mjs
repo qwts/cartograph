@@ -95,6 +95,19 @@ function doctor() {
   return 0;
 }
 
+// Accepts the documented `grant <lane> [--minutes N]` form and the legacy
+// positional value. A value that was supplied but does not parse is a refusal,
+// not a silent fallback — a 5-minute grant must never quietly become a
+// 30-minute one. Exported so conformance can test this without minting a real
+// grant (stateDir ignores env overrides for real processes by design).
+export function parseGrantMinutes(argv) {
+  const raw = flag(argv, '--minutes') ?? argv[2] ?? null;
+  if (raw === null) return { ok: true, minutes: 30 };
+  const requested = Number(raw);
+  if (!Number.isFinite(requested) || requested <= 0) return { ok: false, raw };
+  return { ok: true, minutes: Math.min(Math.round(requested), 240) };
+}
+
 function grant(argv) {
   const laneId = argv[1];
   const lane = HEAVY_LANES.find((entry) => entry.id === laneId);
@@ -113,8 +126,12 @@ function grant(argv) {
     );
     return 1;
   }
-  const requested = Number(argv[2]);
-  const minutes = Number.isFinite(requested) && requested > 0 ? Math.min(Math.round(requested), 240) : 30;
+  const parsed = parseGrantMinutes(argv);
+  if (!parsed.ok) {
+    process.stderr.write(`invalid minutes value ${JSON.stringify(parsed.raw)}; expected a positive number\n`);
+    return 1;
+  }
+  const { minutes } = parsed;
   const written = writeGrant({ laneId: lane.id, minutes });
   out(`granted ${lane.id} for ${minutes} minutes (expires ${written.expiresAt})`);
   out('Run the lane through its guarded entrypoint; lease, ceiling, timeout, and admission enforcement still apply.');
