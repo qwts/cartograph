@@ -4,9 +4,9 @@
 // governed repo carried its own drifting copy of.
 //
 // What it does, in order:
-//   1. Gets out of the way in CI, and for nested guarded commands.
+//   1. Gets out of the way for nested guarded commands.
 //   2. Applies the agent-vs-human lane policy (lib/policy.mjs).
-//   3. Derives the ceiling from os.totalmem() and CLAMPS the request down to
+//   3. Derives the ceiling from the effective machine/cgroup total and CLAMPS the request down to
 //      it — an `--rss-mb 8192` inherited from an old npm script becomes 3072 on
 //      an 8 GB machine instead of a ceiling that can never trip.
 //   4. Asks the machine-wide arbiter for admission, counting every other repo's
@@ -24,14 +24,13 @@
 //        AGENT_GUARDED=1 (set for children so nested guards pass through).
 
 import { execFile, spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
-import { clampCeiling, decideAdmission, deriveBudget } from './lib/budget.mjs';
-import { acquireLease, heartbeatLease, leaseExists, readLeases, releaseLease, withAdmissionLock } from './lib/leases.mjs';
-import { evaluateLanePolicy, harnessName, isAgentSession, isCi } from './lib/policy.mjs';
+import { clampCeiling, decideAdmission, deriveBudgetForMemory, laneReservationMb } from './lib/budget.mjs';
+import { acquireLease, heartbeatLease, leaseExists, psExecutable, readLanePeakMb, readLeases, recordLanePeak, releaseLease, retargetLease, withAdmissionLock } from './lib/leases.mjs';
+import { evaluateLanePolicy, harnessName, isAgentSession } from './lib/policy.mjs';
 import { readMemoryStatus, topConsumers } from './lib/system-memory.mjs';
 
 const POLL_MS = 250;
@@ -40,6 +39,7 @@ const SIGKILL_AFTER_MS = 2000;
 // A runaway can allocate faster than a SIGTERM shutdown completes; past this
 // factor of the ceiling, skip straight to SIGKILL.
 const HARD_KILL_FACTOR = 1.25;
+const MAX_MONITOR_FAILURES = 3;
 const DEFAULT_TIMEOUT_S = 900;
 const RETRY_MS = 5000;
 
@@ -148,7 +148,7 @@ function describeRefusal(decision, env) {
   if (consumers.length > 0) {
     lines.push(`Largest resident processes: ${consumers.map((entry) => `${entry.name} ${entry.rssMb} MB`).join(', ')}`);
   }
-  lines.push('CI is exempt from this guard — pushing and letting GitHub verify is always available.');
+  lines.push('GitHub CI runs the underlying CI entrypoint directly, so pushing and letting GitHub verify is always available.');
   return lines.join('\n[guard] ');
 }
 
@@ -179,9 +179,9 @@ async function admit({ env, request, budget, leaseFields }) {
     const attempt = await withAdmissionLock(env, () => {
       const memory = readMemoryStatus();
       const leases = readLeases(env);
-      const decision = decideAdmission({ budget, memory, leases, requestMb: request.ceilingMb });
+      const decision = decideAdmission({ budget, memory, leases, requestMb: request.reserveMb ?? request.ceilingMb });
       if (!decision.granted && env.AGENT_GUARD_FORCE !== '1') return { decision, memory };
-      const lease = acquireLease({ env, estimatedMb: request.ceilingMb, ...leaseFields });
+      const lease = acquireLease({ env, estimatedMb: request.reserveMb ?? request.ceilingMb, ...leaseFields });
       return { decision, memory, lease };
     });
     if (attempt.lease) {
@@ -199,35 +199,54 @@ async function admit({ env, request, budget, leaseFields }) {
 }
 
 async function main() {
-  const { options, command } = parseArgs(process.argv.slice(2));
+  let parsed;
+  try {
+    parsed = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+  const { options, command } = parsed;
   if (command.length === 0) fail('no command given');
 
-  // CI is exempt, entirely and deliberately (see lib/policy.mjs).
-  if (isCi(process.env)) return passthrough(command);
   // Nested guarded scripts pass through — but only when the marker names a
-  // lease this machine is actually holding. `AGENT_GUARDED=1` typed by hand is
-  // a claim to be inside a guarded run that does not exist, and honouring it
-  // would skip the lease, the ceiling and the headroom check outright. An
-  // unrecognised marker falls through to full admission rather than failing.
+  // live lease bound to this caller's process group. Lease ids are visible to
+  // same-user processes, so id knowledge alone cannot prove nesting. A copied
+  // or unrecognised marker falls through to full admission rather than
+  // skipping the lease, ceiling, and headroom check.
   if (leaseExists(process.env.AGENT_GUARDED, process.env)) return passthrough(command);
   if (process.platform === 'win32') {
     note('WARNING: guard unsupported on win32; running unguarded.');
     return passthrough(command);
   }
+  const ps = psExecutable();
+  if (ps === null) fail('guard requires ps at /bin/ps or /usr/bin/ps to enforce process-group memory limits');
 
   const commandLine = command.join(' ');
   const policy = evaluateLanePolicy({ label: options.label, command: commandLine, env: process.env });
   if (!policy.allowed) fail(policy.message);
-  if (policy.grant) note(`running "${policy.lane.id}" under an owner grant that expires ${policy.grant.expiresAt}.`);
 
-  const totalMb = Math.round(os.totalmem() / (1024 * 1024));
-  const budget = deriveBudget(totalMb);
+  const initialMemory = readMemoryStatus();
+  const totalMb = initialMemory.totalMb;
+  const budget = deriveBudgetForMemory(initialMemory);
   const request = resolveRequest(options, process.env, budget);
   if (request.clamped) {
     note(`ceiling clamped: requested ${request.requestedMb} MB, machine cap is ${request.ceilingMb} MB (${totalMb} MB total RAM, ${budget.machineBudgetMb} MB machine budget). Tightening is allowed; loosening is not.`);
   }
 
   const worktree = process.cwd();
+  const guardDir = path.join(worktree, '.guard');
+
+  // Plan with what the lane actually costs, enforce with the ceiling. Peaks
+  // come from the protected state store — recorded only by run-guarded from
+  // RSS it measured, never from worktree files an agent can edit (#203
+  // review) — so a trustworthy recent peak lowers the reservation while the
+  // kill at the ceiling is unchanged by history.
+  const lanePeakMb = readLanePeakMb({ env: process.env, repo: path.basename(worktree), label: options.label });
+  request.reserveMb = laneReservationMb(request.ceilingMb, lanePeakMb);
+  if (request.reserveMb < request.ceilingMb) {
+    note(`reserving ${request.reserveMb} MB from the lane's recent measured peak (${lanePeakMb} MB); the enforced ceiling stays ${request.ceilingMb} MB.`);
+  }
+
   const { decision, memory, lease, refused } = await admit({
     env: process.env,
     request,
@@ -242,7 +261,6 @@ async function main() {
   });
   if (refused) fail(describeRefusal(decision, process.env));
 
-  const guardDir = path.join(worktree, '.guard');
   mkdirSync(guardDir, { recursive: true });
 
   const nodeOptions = [process.env.NODE_OPTIONS, `--max-old-space-size=${request.heapMb}`].filter(Boolean).join(' ');
@@ -255,7 +273,20 @@ async function main() {
     env: { ...process.env, AGENT_GUARDED: lease.id, NODE_OPTIONS: nodeOptions },
   });
 
-  const state = { peakRssMb: 0, peakProcessCount: 0, reason: null, termAt: null, done: false, polling: false, lastBeat: 0 };
+  // The admitted reservation must follow the detached group, not this
+  // wrapper. A hard-killed wrapper can leave its descendants alive; binding
+  // the lease to their group keeps that memory charged until the group exits.
+  if (!retargetLease(lease, { pid: child.pid, processGroupId: child.pid })) {
+    try {
+      if (Number.isInteger(child.pid)) process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // Spawn may have failed before the group existed.
+    }
+    releaseLease(lease);
+    fail('failed to bind the admission lease to the guarded process group');
+  }
+
+  const state = { peakRssMb: 0, peakProcessCount: 0, reason: null, termAt: null, done: false, polling: false, lastBeat: 0, monitorFailures: 0, killTimer: null };
 
   const killGroup = (signal) => {
     try {
@@ -274,14 +305,24 @@ async function main() {
         `(peak RSS ${state.peakRssMb} MB, ceiling ${request.ceilingMb} MB, ${Math.round((Date.now() - startedAt) / 1000)}s elapsed).`,
     );
     killGroup('SIGTERM');
+    state.killTimer = setTimeout(() => killGroup('SIGKILL'), SIGKILL_AFTER_MS);
   };
+
+  const timeoutTimer =
+    request.timeoutS > 0 ? setTimeout(() => terminate('timeout'), request.timeoutS * 1000) : null;
 
   const poll = setInterval(() => {
     if (state.polling) return;
     state.polling = true;
-    execFile('ps', ['-axo', 'pid=,ppid=,pgid=,rss='], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+    execFile(ps, ['-axo', 'pid=,ppid=,pgid=,rss='], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
       state.polling = false;
-      if (state.done || error) return;
+      if (state.done) return;
+      if (error) {
+        state.monitorFailures += 1;
+        if (state.monitorFailures >= MAX_MONITOR_FAILURES) terminate('monitor-unavailable');
+        return;
+      }
+      state.monitorFailures = 0;
       const { totalKb, processCount } = collectTreeRssKb(stdout, child.pid);
       const rssMb = Math.round(totalKb / 1024);
       state.peakRssMb = Math.max(state.peakRssMb, rssMb);
@@ -310,6 +351,8 @@ async function main() {
   child.on('exit', (code, signal) => {
     state.done = true;
     clearInterval(poll);
+    if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+    if (state.killTimer !== null) clearTimeout(state.killTimer);
     killGroup('SIGKILL'); // sweep any stragglers left in the group
     releaseLease(lease);
     const record = {
@@ -320,6 +363,7 @@ async function main() {
       peakRssMb: state.peakRssMb,
       peakProcessCount: state.peakProcessCount,
       ceilingMb: request.ceilingMb,
+      reservedMb: request.reserveMb,
       requestedMb: request.requestedMb,
       clamped: request.clamped,
       heapMb: request.heapMb,
@@ -339,11 +383,16 @@ async function main() {
       note(`run failed: ${state.reason} (diagnostics in .guard/last-run.json).`);
       process.exit(1);
     }
+    // Only a completed run's peak informs future reservations: a run killed
+    // at the ceiling or timed out proves nothing about steady-state cost.
+    if (code === 0) recordLanePeak({ env: process.env, repo: path.basename(worktree), label: options.label, peakRssMb: state.peakRssMb });
     process.exit(code ?? (signal ? 1 : 0));
   });
 
   child.on('error', (error) => {
     clearInterval(poll);
+    if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+    if (state.killTimer !== null) clearTimeout(state.killTimer);
     releaseLease(lease);
     fail(`failed to start command: ${error.message}`);
   });
@@ -353,4 +402,10 @@ async function main() {
 // module's own filename, which is true for every importer and would leave a
 // test awaiting a command that never comes).
 const entry = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (entry && import.meta.filename === entry) await main();
+if (entry && import.meta.filename === entry) {
+  try {
+    await main();
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+}

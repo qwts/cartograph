@@ -1,13 +1,8 @@
 #!/usr/bin/env node
 
-// Operator surface for the machine-scoped guard: see what holds the machine,
-// dry-run an admission decision, and hand an agent a time-boxed grant for one
-// heavy lane.
-//
-// `grant` is the owner's opt-in and is deliberately a separate command rather
-// than an environment variable, because an agent composes its own command
-// lines: any env-var opt-in is one the agent can grant itself. The command
-// hook blocks agents from running this subcommand.
+// Operator surface for the machine-scoped guard: see what holds the machine
+// and dry-run an admission decision. The legacy grant command remains only to
+// fail closed with an explanation; same-user files cannot prove human intent.
 //
 // Usage:
 //   node tools/agent-guard/arbiter.mjs status
@@ -16,22 +11,17 @@
 //   node tools/agent-guard/arbiter.mjs grant <lane> [--minutes N]
 //   node tools/agent-guard/arbiter.mjs revoke <lane>
 
-import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
-import { clampCeiling, decideAdmission, deriveBudget } from './lib/budget.mjs';
+import { clampCeiling, decideAdmission, deriveBudgetForMemory } from './lib/budget.mjs';
 import { readLeases } from './lib/leases.mjs';
-import { HEAVY_LANES, isAgentSession, isCi, listGrants, revokeGrant, writeGrant } from './lib/policy.mjs';
+import { HEAVY_LANES, harnessName, isAgentSession, isCi, listGrants, revokeGrant, writeGrant } from './lib/policy.mjs';
 import { machineToken, stateDir } from './lib/protocol.mjs';
 import { readMemoryStatus, topConsumers } from './lib/system-memory.mjs';
 
 function out(line = '') {
   process.stdout.write(`${line}\n`);
-}
-
-function totalMb() {
-  return Math.round(os.totalmem() / (1024 * 1024));
 }
 
 function flag(argv, name) {
@@ -40,8 +30,8 @@ function flag(argv, name) {
 }
 
 function status() {
-  const budget = deriveBudget(totalMb());
   const memory = readMemoryStatus();
+  const budget = deriveBudgetForMemory(memory);
   const leases = readLeases(process.env, { reap: false });
   const grants = listGrants();
 
@@ -61,7 +51,7 @@ function status() {
       out(`  ${lease.label ?? 'run'}  repo=${lease.repo ?? '?'}  harness=${lease.harness ?? '?'}  pid=${lease.pid}  reserved=${lease.estimatedMb} MB  resident=${lease.observedMb ?? 0} MB  since=${lease.grantedAt}`);
     }
   }
-  out(grants.length === 0 ? 'grants         none' : `grants         ${grants.map((grant) => `${grant.laneId} until ${grant.expiresAt}`).join(', ')}`);
+  out(grants.length === 0 ? 'legacy grants  none' : `legacy grants  ${grants.map((grant) => `${grant.laneId} until ${grant.expiresAt} (revoke)`).join(', ')}`);
   const consumers = topConsumers(5);
   if (consumers.length > 0) {
     out();
@@ -70,12 +60,13 @@ function status() {
 }
 
 function check(argv) {
-  const budget = deriveBudget(totalMb());
+  const memory = readMemoryStatus();
+  const budget = deriveBudgetForMemory(memory);
   const requested = Number(flag(argv, '--rss-mb'));
   const ceiling = clampCeiling(Number.isFinite(requested) ? requested : budget.maxRunMb, budget);
   const decision = decideAdmission({
     budget,
-    memory: readMemoryStatus(),
+    memory,
     leases: readLeases(process.env, { reap: false }),
     requestMb: ceiling.ceilingMb,
   });
@@ -111,13 +102,37 @@ function grant(argv) {
     process.stderr.write(`unknown lane ${JSON.stringify(laneId ?? '')}; expected one of ${HEAVY_LANES.map((entry) => entry.id).join(', ')}\n`);
     return 1;
   }
-  if (isAgentSession(process.env)) {
-    process.stderr.write('refusing to grant from an agent session: the grant is the owner\'s opt-in, and an agent granting itself one is not an opt-in.\n');
+  // Defense in depth: the command hook already denies this invocation from
+  // agent sessions, but the arbiter refuses marked callers on its own too.
+  // The grant is honored by lane policy only in an UNMARKED session, so a
+  // grant minted here is owner evidence, not agent self-approval (#180).
+  if (harnessName(process.env) !== 'human') {
+    process.stderr.write(
+      `grants cannot be minted from an agent session (${harnessName(process.env)} markers present). ` +
+        "Run this from the owner's own terminal.\n",
+    );
     return 1;
   }
-  const minutes = Number(flag(argv, '--minutes')) || 30;
+  const requested = Number(argv[2]);
+  const minutes = Number.isFinite(requested) && requested > 0 ? Math.min(Math.round(requested), 240) : 30;
   const written = writeGrant({ laneId: lane.id, minutes });
-  out(`granted "${lane.id}" until ${written.expiresAt} (${minutes} min). Agents may run this lane locally until it expires.`);
+  out(`granted ${lane.id} for ${minutes} minutes (expires ${written.expiresAt})`);
+  out('Run the lane through its guarded entrypoint; lease, ceiling, timeout, and admission enforcement still apply.');
+  return 0;
+}
+
+function revoke(argv) {
+  const laneId = argv[1];
+  const lane = HEAVY_LANES.find((entry) => entry.id === laneId);
+  if (!lane) {
+    process.stderr.write(`unknown lane ${JSON.stringify(laneId ?? '')}; expected one of ${HEAVY_LANES.map((entry) => entry.id).join(', ')}\n`);
+    return 1;
+  }
+  if (!revokeGrant(lane.id)) {
+    process.stderr.write(`no active grant for ${lane.id}\n`);
+    return 1;
+  }
+  out(`revoked ${lane.id}`);
   return 0;
 }
 
@@ -135,9 +150,7 @@ function main() {
     case 'grant':
       return grant(argv);
     case 'revoke':
-      revokeGrant(argv[1]);
-      out(`revoked ${argv[1]}`);
-      return 0;
+      return revoke(argv);
     default:
       process.stderr.write(`unknown command ${JSON.stringify(argv[0])}\n`);
       return 1;

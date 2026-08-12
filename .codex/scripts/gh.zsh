@@ -21,7 +21,7 @@ case "$gh_group" in
     ;;
   codespace)
     case "$gh_action" in
-      code | cp | jupyter | list | logs | ports | ssh | view) ;;
+      code | cp | jupyter | list | logs | ports | view) ;;
       *) return_code=64 ;;
     esac
     ;;
@@ -63,7 +63,7 @@ case "$gh_group" in
     ;;
   repo)
     case "$gh_action" in
-      clone | list | set-default | view) ;;
+      list | set-default | view) ;;
       *) return_code=64 ;;
     esac
     ;;

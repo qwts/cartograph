@@ -77,8 +77,8 @@ export function validateRegistry(registry) {
         if (slot.status === 'unverified' && (slot.model !== null || slot.reasoning !== null)) {
           fail(`${tier}.${vendor}.${phase} is unverified and must leave model and reasoning null`);
         }
-        if (slot.status !== 'unverified' && !slot.model) {
-          fail(`${tier}.${vendor}.${phase} claims status ${slot.status} but names no model`);
+        if (slot.status !== 'unverified' && (!slot.model || !slot.reasoning)) {
+          fail(`${tier}.${vendor}.${phase} claims status ${slot.status} but must name both model and reasoning`);
         }
         // A named model with nowhere to run it renders as an actionable
         // recommendation followed by "via unknown". The refresh task treats
@@ -98,14 +98,16 @@ export function validateRegistry(registry) {
 // rather than being omitted — a gap the author can see is a gap they will
 // mention; a silently dropped row reads as "no recommendation exists".
 export function routingFor(registry, tier) {
+  const errors = validateRegistry(registry);
+  if (errors.length > 0) throw new Error(`invalid model registry: ${errors.join('; ')}`);
   const entry = registry.tiers?.[tier];
   if (!entry) throw new Error(`unknown tier ${tier}`);
   return VENDOR_GROUPS.map((vendor) => {
     const v = entry.vendors[vendor];
     const render = (slot) =>
-      slot.status === 'unverified'
-        ? 'unverified — do not guess'
-        : `${slot.model} (reasoning ${slot.reasoning}${slot.status === 'seeded' ? ', provisional' : ''})`;
+      slot.status === 'verified'
+        ? `${slot.model} (reasoning ${slot.reasoning})`
+        : 'unverified — do not guess';
     return {
       vendor,
       plan: render(v.plan),
