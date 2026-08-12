@@ -1060,6 +1060,28 @@ function isReviewedCheckedInScript(token, cwd) {
   }
 }
 
+// Reviewed-content provenance vouches for a script's bytes, not for what its
+// argv tells it to do: a checked-in argv-forwarding dispatcher
+// (`node scripts/measure-runner-capacity.mjs -- npx vitest`) spawns the
+// delegated command sight-unseen, outside static classification. The
+// provenance allowance therefore also requires inert arguments — no `--`
+// forwarding separator, no token naming a runtime, shell, package manager, or
+// test binary, and no blanked quoted word this scan cannot read. Ordinary
+// flags and path arguments stay allowed.
+const DISPATCHABLE_ARGUMENT = /^(?:node|electron|deno|npm|npx|bunx|corepack|pnpm|yarn|bun|playwright|vitest|c8|test-storybook|xargs|env|sh|bash|dash|zsh|ksh|python(?:\d+(?:\.\d+)*)?|perl|ruby|php)$/u;
+
+function hasInertScriptArguments(segment, scriptToken) {
+  const tokens = commandAfterPrefixes(segment).split(/\s+/u).filter(Boolean);
+  // A script token the stripped segment does not contain leaves the argument
+  // list unresolvable; indexOf's -1 then keeps every token in the tail, so
+  // the runtime token itself fails the scan — closed, not open.
+  const tail = tokens.slice(tokens.indexOf(scriptToken) + 1);
+  return tail.every((token) =>
+    token !== '--' &&
+    !/['"]/u.test(token) &&
+    !DISPATCHABLE_ARGUMENT.test(token.split('/').at(-1) ?? ''));
+}
+
 function hasRuntimeScriptFile(command, cwd = process.cwd()) {
   const segments = splitSegments(command);
   for (let index = 0; index < segments.length; index += 1) {
@@ -1075,12 +1097,13 @@ function hasRuntimeScriptFile(command, cwd = process.cwd()) {
     // order cannot prove safety — stripInertText promotes quoted
     // substitutions to *trailing* segments even though they execute
     // first — so only a single-segment, substitution-free command
-    // qualifies. Other runtimes, modified scripts, and dynamic paths
-    // stay denied.
+    // qualifies. Other runtimes, modified scripts, dynamic paths, and
+    // command-shaped argument tails stay denied.
     if (
       program.family === 'node' &&
       segments.length === 1 &&
       !/\$\(|`|[<>]\(/u.test(segments[index]) &&
+      hasInertScriptArguments(segments[index], program.token) &&
       isReviewedCheckedInScript(normalized, cwd)
     )
       continue;
@@ -1326,17 +1349,19 @@ function firstNpmScriptToken(tokens) {
  * non-option token after it. Without one, the first non-option token is the
  * script (`npm test`, `npm ci`).
  */
-export function npmScriptNames(command) {
+export function npmScriptNames(command, { scanWrapperTails = false } = {}) {
   const names = [];
   for (const segment of splitSegments(command)) {
-    const tokens = commandAfterPrefixes(segment).split(/\s+/u).filter(Boolean);
-    if (!/(?:^|\/)npm$/u.test(tokens[0] ?? '')) continue;
-    const rest = tokens.slice(1);
-    const aliasAt = rest.findIndex((token) => NPM_RUN_ALIASES.has(token));
-    const candidates = aliasAt >= 0 ? rest.slice(aliasAt + 1) : rest;
-    const script = firstNpmScriptToken(candidates);
-    if (aliasAt < 0 && !NPM_IMPLICIT_SCRIPTS.has(script)) continue;
-    if (script !== undefined) names.push(script);
+    for (const start of scanWrapperTails ? denyScanCandidates(segment) : [commandAfterPrefixes(segment)]) {
+      const tokens = start.split(/\s+/u).filter(Boolean);
+      if (!/(?:^|\/)npm$/u.test(tokens[0] ?? '')) continue;
+      const rest = tokens.slice(1);
+      const aliasAt = rest.findIndex((token) => NPM_RUN_ALIASES.has(token));
+      const candidates = aliasAt >= 0 ? rest.slice(aliasAt + 1) : rest;
+      const script = firstNpmScriptToken(candidates);
+      if (aliasAt < 0 && !NPM_IMPLICIT_SCRIPTS.has(script)) continue;
+      if (script !== undefined) names.push(script);
+    }
   }
   return names;
 }
@@ -1411,15 +1436,17 @@ function otherPackageScriptToken(manager, tokens) {
 // pnpm, Yarn and Bun all expose package scripts as `run <script>` and also
 // accept a direct script spelling. They share the same heavy-lane policy as
 // npm; otherwise changing package manager would silently remove admission.
-export function otherPackageScriptNames(command) {
+export function otherPackageScriptNames(command, { scanWrapperTails = false } = {}) {
   const names = [];
   for (const segment of splitSegments(command)) {
-    const tokens = commandAfterPrefixes(segment).split(/\s+/u).filter(Boolean);
-    const manager = tokens[0]?.split('/').at(-1);
-    if (!OTHER_PACKAGE_MANAGERS.has(manager)) continue;
-    const rest = tokens.slice(1);
-    const script = otherPackageScriptToken(manager, rest);
-    if (script !== undefined) names.push(script);
+    for (const start of scanWrapperTails ? denyScanCandidates(segment) : [commandAfterPrefixes(segment)]) {
+      const tokens = start.split(/\s+/u).filter(Boolean);
+      const manager = tokens[0]?.split('/').at(-1);
+      if (!OTHER_PACKAGE_MANAGERS.has(manager)) continue;
+      const rest = tokens.slice(1);
+      const script = otherPackageScriptToken(manager, rest);
+      if (script !== undefined) names.push(script);
+    }
   }
   return names;
 }
@@ -1515,8 +1542,12 @@ function incompleteXargsCommand(segment, executableSegment) {
   return /^(?:node|electron|(?:ba|da|z)?sh)$/u.test(command ?? '') && tokens.length === 1;
 }
 
-function packageScriptNames(command) {
-  return [...npmScriptNames(command), ...nodeRunScriptNames(command), ...otherPackageScriptNames(command)];
+function packageScriptNames(command, options = {}) {
+  return [
+    ...npmScriptNames(command, options),
+    ...nodeRunScriptNames(command, options),
+    ...otherPackageScriptNames(command, options),
+  ];
 }
 
 function hasRuntimeShellExpansion(word) {
@@ -1546,8 +1577,8 @@ function hasRuntimeShellExpansion(word) {
   return false;
 }
 
-function hasDynamicPackageScript(command) {
-  return packageScriptNames(command).some((script) => hasRuntimeShellExpansion(script));
+function hasDynamicPackageScript(command, options = {}) {
+  return packageScriptNames(command, options).some((script) => hasRuntimeShellExpansion(script));
 }
 
 function hasDynamicExecutionPosition(command) {
@@ -1750,22 +1781,24 @@ function referencesGuardState(command) {
 
 // Node >=22 exposes package.json scripts through `node --run <script>` and
 // `node --run=<script>`. Those spellings have the same admission policy as npm.
-export function nodeRunScriptNames(command) {
+export function nodeRunScriptNames(command, { scanWrapperTails = false } = {}) {
   const names = [];
   for (const segment of splitSegments(command)) {
-    const tokens = commandAfterPrefixes(segment).split(/\s+/u).filter(Boolean);
-    if (!/(?:^|\/)node$/u.test(tokens[0] ?? '')) continue;
-    const rest = tokens.slice(1);
-    for (let i = 0; i < rest.length; i += 1) {
-      const token = rest[i];
-      if (token.startsWith('--run=')) {
-        const script = token.slice('--run='.length);
-        if (script) names.push(script);
-        break;
-      }
-      if (token === '--run' && rest[i + 1] !== undefined) {
-        names.push(rest[i + 1]);
-        break;
+    for (const start of scanWrapperTails ? denyScanCandidates(segment) : [commandAfterPrefixes(segment)]) {
+      const tokens = start.split(/\s+/u).filter(Boolean);
+      if (!/(?:^|\/)node$/u.test(tokens[0] ?? '')) continue;
+      const rest = tokens.slice(1);
+      for (let i = 0; i < rest.length; i += 1) {
+        const token = rest[i];
+        if (token.startsWith('--run=')) {
+          const script = token.slice('--run='.length);
+          if (script) names.push(script);
+          break;
+        }
+        if (token === '--run' && rest[i + 1] !== undefined) {
+          names.push(rest[i + 1]);
+          break;
+        }
       }
     }
   }
@@ -1773,7 +1806,7 @@ export function nodeRunScriptNames(command) {
 }
 
 function isUnguardedInnerScript(command) {
-  return packageScriptNames(command).some((script) => /:(?:run|inner)$/u.test(script));
+  return packageScriptNames(command, { scanWrapperTails: true }).some((script) => /:(?:run|inner)$/u.test(script));
 }
 
 /**
@@ -1785,20 +1818,22 @@ function isUnguardedInnerScript(command) {
  * themselves count here.
  */
 export function heavyLaneFor(command) {
-  for (const script of packageScriptNames(command)) {
+  for (const script of packageScriptNames(command, { scanWrapperTails: true })) {
     const lane = HEAVY_LANES.find((entry) => entry.pattern.test(script));
     if (lane) return lane;
   }
   for (const segment of splitSegments(command)) {
-    const tokens = commandAfterPrefixes(segment).split(/\s+/u).filter(Boolean);
-    const executable = tokens[0]?.split('/').at(-1);
-    if (executable === 'playwright' && tokens[1] === 'test') return HEAVY_LANES.find((entry) => entry.id === 'e2e');
-    if (executable === 'test-storybook') return HEAVY_LANES.find((entry) => entry.id === 'stories');
-    if (executable === 'npx' || executable === 'bunx') {
-      const binaryAt = skipCliOptions(tokens, 1, EXEC_OPTIONS_WITH_OPERANDS);
-      const binary = tokens[binaryAt]?.split('/').at(-1);
-      if (binary === 'playwright' && tokens[binaryAt + 1] === 'test') return HEAVY_LANES.find((entry) => entry.id === 'e2e');
-      if (binary === 'test-storybook') return HEAVY_LANES.find((entry) => entry.id === 'stories');
+    for (const start of denyScanCandidates(segment)) {
+      const tokens = start.split(/\s+/u).filter(Boolean);
+      const executable = tokens[0]?.split('/').at(-1);
+      if (executable === 'playwright' && tokens[1] === 'test') return HEAVY_LANES.find((entry) => entry.id === 'e2e');
+      if (executable === 'test-storybook') return HEAVY_LANES.find((entry) => entry.id === 'stories');
+      if (executable === 'npx' || executable === 'bunx') {
+        const binaryAt = skipCliOptions(tokens, 1, EXEC_OPTIONS_WITH_OPERANDS);
+        const binary = tokens[binaryAt]?.split('/').at(-1);
+        if (binary === 'playwright' && tokens[binaryAt + 1] === 'test') return HEAVY_LANES.find((entry) => entry.id === 'e2e');
+        if (binary === 'test-storybook') return HEAVY_LANES.find((entry) => entry.id === 'stories');
+      }
     }
   }
   return null;
@@ -1989,6 +2024,46 @@ function commandAfterPrefixes(segment) {
   return tokens.slice(index).join(' ');
 }
 
+// The words a deny-side scan must treat as a possible command start even when
+// they are not the segment's head. The prefix stripper above only recognizes
+// an enumerated wrapper set, so behind any wrapper it does not know —
+// `flock /tmp/lock npm run ci`, `sudo npx vitest`, `chrt -b 0 node --run e2e`
+// — the stripped "command" is the wrapper and the real invocation sits in the
+// argument tail, out of reach of the head-anchored checks.
+const DENY_SCAN_START = /^(?:npm|npx|bunx|corepack|pnpm|yarn|bun|node|electron|playwright|test-storybook|vitest|c8)$/u;
+
+// Heads whose arguments are data by construction — they search, print,
+// measure, or record text and cannot execute an argument word. Their tails
+// are prose (`rg pnpm run ci`, `git commit -m ci`), not hidden invocations.
+// Executing wrappers (flock, sudo, chrt, strace, …) are deliberately NOT
+// enumerable here: any head outside this list has its tail scanned, so an
+// unrecognized wrapper fails closed instead of becoming a bypass.
+const TEXT_CONSUMING_HEAD = /^(?:grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|wc|sort|uniq|cut|tr|diff|cmp|comm|echo|printf|git|hexdump|xxd|strings|file|stat|ls|du|md5sum|shasum|sha256sum|basename|dirname|realpath|readlink|test|\[)$/u;
+
+// Every candidate command start in one segment: the prefix-stripped head plus
+// each suffix beginning at a runner-shaped token. Canonical run-guarded
+// segments contribute only their head — the wrapper enforces lane policy on
+// the command it carries, and its own `-- npm run <lane>:inner` tail is the
+// sanctioned path, not a bypass.
+function denyScanCandidates(segment) {
+  const stripped = commandAfterPrefixes(segment);
+  const candidates = [stripped];
+  if (ANY_WRAPPER_SEGMENT.test(stripped)) return candidates;
+  // A known runner head is classified by the head-anchored checks, and what
+  // follows it is that command's own argument list (`npm run lint -- --grep
+  // vitest`), not a hidden invocation. Only an UNKNOWN head — the wrapper
+  // shape — gets its tail scanned.
+  const head = stripped.split(/\s+/u)[0]?.split('/').at(-1) ?? '';
+  if (DENY_SCAN_START.test(head) || TEXT_CONSUMING_HEAD.test(head)) return candidates;
+  const tokens = normalizeUnquotedEscapes(segment).split(/\s+/u).filter(Boolean);
+  for (let index = 1; index < tokens.length; index += 1) {
+    if (!DENY_SCAN_START.test(tokens[index].split('/').at(-1) ?? '')) continue;
+    const candidate = tokens.slice(index).join(' ');
+    if (candidate !== stripped) candidates.push(candidate);
+  }
+  return candidates;
+}
+
 const PROTECTED_ENV_ASSIGNMENT = /^["']?(?:NODE_OPTIONS|BASH_ENV|ENV|ZDOTDIR|PERL5OPT|RUBYOPT|PYTHONPATH|PYTHONHOME|PHPRC|PHP_INI_SCAN_DIR|LD_PRELOAD|DYLD_INSERT_LIBRARIES|GIT_SSH_COMMAND|GIT_CONFIG_COUNT|PATH)=/u;
 const ASSIGNMENT_TOKEN = /^["']?[A-Za-z_][A-Za-z0-9_]*=/u;
 const ASSIGNMENT_PREFIX_COMMAND = /^(?:command|builtin|env|exec|time|nice|nohup|timeout|setsid|stdbuf|sudo|doas)$/u;
@@ -2102,6 +2177,19 @@ export function evaluateCommand(command, { cwd = process.cwd() } = {}) {
   }
   const effective = stripInertText(command);
 
+  // Re-run the dynamic-script check over wrapper argument tails on the
+  // inert-stripped text: quoted mentions are blanked by now, so this cannot
+  // misread a commit message, while `flock /tmp/lock npm run $lane` still
+  // fails closed.
+  if (hasDynamicPackageScript(effective, { scanWrapperTails: true })) {
+    return {
+      allow: false,
+      reason:
+        'Blocked a runtime-computed executable, package command, or script: shell expansion can resolve to a protected ' +
+        `lane after static admission checks. Use the guarded entrypoint with literal command slots. ${USE_ENTRYPOINT}`,
+    };
+  }
+
   if (/(?:^|\s)--checkpoint-action(?:=|\s+)exec(?:=|\s|$)/u.test(dynamicCommand)) {
     return {
       allow: false,
@@ -2201,30 +2289,35 @@ export function evaluateCommand(command, { cwd = process.cwd() } = {}) {
         reason: `Blocked an incomplete package or test command dispatched by xargs: stdin could supply the guarded lane or binary. ${USE_ENTRYPOINT}`,
       };
     }
-    if (directVitestNodeEntry(executableSegment)) {
-      return {
-        allow: false,
-        reason: `Blocked direct execution of the Vitest Node entry module: it bypasses the machine-scoped memory guard. ${USE_ENTRYPOINT}`,
-      };
-    }
-    if (directTestBinaryThroughExec(executableSegment)) {
-      return {
-        allow: false,
-        reason: `Blocked direct test-binary invocation through a package-manager exec shim: it bypasses the machine-scoped memory guard. ${USE_ENTRYPOINT}`,
-      };
-    }
     if (isUnguardedInnerScript(segment)) {
       return {
         allow: false,
         reason: `Blocked unguarded inner package script: it bypasses the machine-scoped memory guard. ${USE_ENTRYPOINT}`,
       };
     }
-    for (const { pattern, what, reason } of BLOCKED) {
-      if (pattern.test(executableSegment)) {
+    // Anchored checks run against every candidate command start, not only the
+    // stripped head — an unenumerated wrapper (`sudo npx vitest`) must not
+    // hide the invocation these anchors exist to catch.
+    for (const start of denyScanCandidates(segment)) {
+      if (directVitestNodeEntry(start)) {
         return {
           allow: false,
-          reason: reason ?? `Blocked ${what}: it bypasses the machine-scoped memory guard. ${USE_ENTRYPOINT}`,
+          reason: `Blocked direct execution of the Vitest Node entry module: it bypasses the machine-scoped memory guard. ${USE_ENTRYPOINT}`,
         };
+      }
+      if (directTestBinaryThroughExec(start)) {
+        return {
+          allow: false,
+          reason: `Blocked direct test-binary invocation through a package-manager exec shim: it bypasses the machine-scoped memory guard. ${USE_ENTRYPOINT}`,
+        };
+      }
+      for (const { pattern, what, reason } of BLOCKED) {
+        if (pattern.test(start)) {
+          return {
+            allow: false,
+            reason: reason ?? `Blocked ${what}: it bypasses the machine-scoped memory guard. ${USE_ENTRYPOINT}`,
+          };
+        }
       }
     }
   }

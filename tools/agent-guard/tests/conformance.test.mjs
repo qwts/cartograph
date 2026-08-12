@@ -236,6 +236,35 @@ describe('agent-guard conformance (ENG-0138)', () => {
     }
   });
 
+  test('unenumerated wrappers cannot hide a heavy lane or test binary', () => {
+    // The prefix stripper knows an enumerated wrapper set; anything outside
+    // it (flock, sudo, doas, chrt, strace, …) must not become a bypass. The
+    // deny-side scans consider every runner-shaped token as a candidate
+    // command start, so the wrapper's argument tail is still inspected.
+    for (const command of [
+      'flock /tmp/agent.lock npm run ci',
+      'sudo npx vitest',
+      'doas npm run test:e2e',
+      'chrt -b 0 node --run ci',
+      'flock /tmp/agent.lock pnpm run test:stories:ci',
+      'strace -f npx playwright test',
+      'sudo -u me npx c8 npm test',
+      'flock /tmp/agent.lock npm run test:e2e:inner',
+      'flock /tmp/agent.lock npm run $lane',
+    ]) {
+      assert.equal(evaluateCommand(command, { env }).allow, false, `expected the guard to deny: ${command}`);
+    }
+    // The canonical wrapper still carries its own sanctioned tail, and a
+    // runner-shaped word in argument position is data, not an invocation.
+    for (const command of [
+      'node tools/agent-guard/run-guarded.mjs --label test:e2e -- npm run test:e2e:inner',
+      'brew info npm',
+      'git log --oneline -- vitest.config.ts',
+    ]) {
+      assert.equal(evaluateCommand(command, { env }).allow, true, `expected the guard to allow: ${command}`);
+    }
+  });
+
   test('the guard denies tampering with its own controls', () => {
     for (const command of ['AGENT_GUARD_FORCE=1 npm run test:dom', 'AGENT_GUARD_ASSUME_HUMAN=1 npm run test:dom', 'node tools/agent-guard/arbiter.mjs grant e2e']) {
       assert.equal(evaluateCommand(command, { env }).allow, false, `expected the guard to deny: ${command}`);
