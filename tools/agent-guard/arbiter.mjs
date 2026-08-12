@@ -103,8 +103,11 @@ function doctor() {
 export function parseGrantMinutes(argv) {
   const raw = flag(argv, '--minutes') ?? argv[2] ?? null;
   if (raw === null) return { ok: true, minutes: 30 };
+  // Bounds-check the ROUNDED value: 0.1 is positive but rounds to zero
+  // minutes, which would mint a grant already expired at write time while
+  // reporting success. Refuse it instead.
   const requested = Number(raw);
-  if (!Number.isFinite(requested) || requested <= 0) return { ok: false, raw };
+  if (!Number.isFinite(requested) || Math.round(requested) < 1) return { ok: false, raw };
   return { ok: true, minutes: Math.min(Math.round(requested), 240) };
 }
 

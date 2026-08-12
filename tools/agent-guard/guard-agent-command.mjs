@@ -822,6 +822,10 @@ function endsWithExecutableString(scanned) {
   const command = tokens[0]?.split('/').at(-1);
   if (command === 'node' && /^(?:-[A-Za-z]*[ep][A-Za-z]*|--eval|--print)$/u.test(tokens.at(-1) ?? '')) return true;
   if (command === 'script' && /^(?:-c|--command)=?$/u.test(tokens.at(-1) ?? '')) return true;
+  // flock runs its -c string like script -c does, but as a wrapper it may not
+  // survive as the classified command word, so the check reads the raw tokens
+  // the way env -S above does.
+  if (rawTokens.some((token) => token.split('/').at(-1) === 'flock') && /^(?:-c|--command)=?$/u.test(rawTokens.at(-1) ?? '')) return true;
   if (tokens[0]?.split('/').at(-1) === 'eval' && (tokens.length === 1 || (tokens.length === 2 && tokens[1] === '--'))) return true;
   const npmAt = tokens.findIndex((token) => token.split('/').at(-1) === 'npm');
   if (npmAt < 0) return false;
@@ -891,6 +895,22 @@ function commandStringPayloads(command) {
           break;
         }
         if (/^(?:-S|--split-string)=/u.test(rawTokens[i])) {
+          payloads.push(restore(rawTokens[i].slice(rawTokens[i].indexOf('=') + 1)));
+          break;
+        }
+      }
+    }
+    // `flock [opts] <lock> -c '<command>'` runs the string exactly as
+    // `script -c` does; collected from the raw tokens like env -S above so a
+    // wrapper position cannot hide it.
+    const flockAt = rawTokens.findIndex((token) => token.split('/').at(-1) === 'flock');
+    if (flockAt >= 0) {
+      for (let i = flockAt + 1; i < rawTokens.length; i += 1) {
+        if (rawTokens[i] === '-c' || rawTokens[i] === '--command') {
+          if (rawTokens[i + 1] !== undefined) payloads.push(restore(rawTokens.slice(i + 1).join(' ')));
+          break;
+        }
+        if (/^(?:-c|--command)=/u.test(rawTokens[i])) {
           payloads.push(restore(rawTokens[i].slice(rawTokens[i].indexOf('=') + 1)));
           break;
         }
