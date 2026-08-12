@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "verified_at": null,
-  "note": "Retrieval target for issue-time model routing (ENG-0151). Read this file; never name models from memory. Entries with status 'seeded' were written by hand at authoring time and have not been confirmed against vendor documentation by a refresh run -- treat them as provisional and say so when citing them.",
+  "note": "Retrieval target for issue-time model routing (ENG-0151). Read this file; never name models from memory. Entries with status 'seeded' were written by hand at authoring time and have not been confirmed against vendor documentation by a refresh run, so routing output withholds them until a source-backed refresh marks them verified.",
   "policy": {
     "chinese_models": {
       "access": ["cursor", "devin"],

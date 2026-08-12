@@ -1,15 +1,11 @@
 // Who is asking, what they are asking to run, and whether they are allowed to.
 //
-// Three separable questions, kept separate:
-//   1. Is this CI?      → the entire mechanism is off. Hosted runners are
-//                         disposable, isolated, and already bounded by
-//                         job timeouts. They were never the problem and must
-//                         not be slowed down.
-//   2. Is this an agent? → agents do not get the heavy local suites. They push
-//                         and let GitHub CI verify, which is the authoritative
-//                         lane regardless.
-//   3. Is there a grant? → the owner can hand an agent one heavy lane, briefly,
-//                         out of band.
+// One authorization question: is this an agent? Agents do not get the heavy
+// local suites. They push and let GitHub CI verify, which is the authoritative
+// lane regardless. The wrapper does not try to infer whether it is running in
+// CI because no available process-local evidence proves process locality.
+// Heavy lanes are never delegated back to an agent process. A same-user file
+// or local token is forgeable by that process and cannot prove human approval.
 
 import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -17,8 +13,8 @@ import path from 'node:path';
 import { ensureStateDirs, grantsDir } from './protocol.mjs';
 
 /**
- * CI detection. Broad on purpose — a false positive costs a hosted runner
- * nothing, while a false negative slows down every build in the fleet.
+ * Informational CI-marker detection. Broad by design, but never a trust or
+ * authorization decision: process-local evidence cannot prove process locality.
  */
 export function isCi(env = process.env) {
   return (
@@ -44,26 +40,40 @@ export function isCi(env = process.env) {
  * unrecognised agent, so it answers `true` when unsure. Same evidence,
  * opposite and deliberate failure directions.
  *
- * A human proves themselves by the absence of every agent marker, which a
- * plain terminal satisfies for free.
+ * Absence of a marker is not human authentication: an agent-controlled script
+ * can unset ordinary environment variables before invoking the wrapper. Local
+ * callers therefore fail closed. GitHub workflows run the underlying CI
+ * entrypoints directly instead of asking this local wrapper to infer where it
+ * is executing; a human owner can run the underlying lane directly too.
  */
-export function isAgentSession(env = process.env) {
-  if (env.AGENT_GUARD_ASSUME_HUMAN === '1') return false;
-  const aiAgent = typeof env.AI_AGENT === 'string' ? env.AI_AGENT.toLowerCase() : '';
-  return (
-    env.CLAUDECODE === '1' ||
-    (typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' && env.CLAUDE_CODE_ENTRYPOINT !== '') ||
-    Object.keys(env).some((key) => key.startsWith('CODEX_')) ||
-    Object.keys(env).some((key) => key.startsWith('CURSOR_')) ||
-    aiAgent !== ''
-  );
+export function isAgentSession(_env = process.env) {
+  return true;
 }
+
+// A regex for the `<NAME>_AGENT` marker shape that every agent runtime sets in
+// the process it drives (Devin's DEVIN_AGENT, Windsurf's WINDSURF_AGENT). Keyed
+// ONLY on the `_AGENT` suffix — never on ambient editor variables like VSCODE_*,
+// CURSOR_TRACE_ID, or WINDSURF_IDE_TYPE, which mean an editor is open, not that
+// an agent is driving (agent-bot-identity#12). This is what keeps a human's
+// terminal from being misread as an agent while still catching harnesses the
+// registry does not know yet.
+const AGENT_MARKER = /^[A-Z][A-Z0-9_]*_AGENT$/u;
 
 export function harnessName(env = process.env) {
   if (env.CLAUDECODE === '1' || (typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' && env.CLAUDE_CODE_ENTRYPOINT !== '')) return 'claude';
   if (Object.keys(env).some((key) => key.startsWith('CODEX_'))) return 'codex';
   if (Object.keys(env).some((key) => key.startsWith('CURSOR_'))) return 'cursor';
   if (typeof env.AI_AGENT === 'string' && env.AI_AGENT !== '') return env.AI_AGENT.toLowerCase().split(/[^a-z]/u)[0] || 'agent';
+  // Any other `<NAME>_AGENT` marker names an unregistered harness (#142). A
+  // Devin/Windsurf session used to fall through to 'human' here, and that
+  // matters more than a label: the owner-grant path and `arbiter grant` both
+  // key on harnessName === 'human', so an unrecognised agent resolving to
+  // 'human' could mint and use its own heavy-lane grant. Deterministic pick
+  // (sorted) when several are present.
+  const marker = Object.keys(env)
+    .filter((key) => AGENT_MARKER.test(key) && typeof env[key] === 'string' && env[key] !== '')
+    .sort()[0];
+  if (marker) return marker.slice(0, -'_AGENT'.length).toLowerCase().replace(/_/gu, '-') || 'agent';
   return 'human';
 }
 
@@ -87,15 +97,12 @@ export function classifyLane(text) {
   return HEAVY_LANES.find((lane) => lane.pattern.test(text)) ?? null;
 }
 
-// --- Out-of-band grants ------------------------------------------------------
+// --- Legacy grant artifacts -------------------------------------------------
 //
-// The opt-in deliberately cannot be expressed in the command an agent runs.
-// An env var would be self-serve: the agent that wants the heavy lane is the
-// same agent writing the command line, so `AGENT_GUARD_ALLOW_HEAVY=1 npm run
-// test:e2e` would be an opt-in it grants itself — the same hole
-// `IMAGE_TRAIL_GUARD_DISABLE=` had until image-trail's hook started blocking
-// the string. A grant is a file the owner creates, time-boxed, and the hook
-// blocks agents from running the command that creates it.
+// These helpers remain only so old artifacts can expire, be listed, and be
+// revoked during rollout. They are never consulted for admission: an agent
+// running as the same OS user can write the file directly, so it cannot
+// authenticate human intent.
 
 export function grantPath(laneId, env = process.env) {
   return path.join(grantsDir(env), `${laneId}.json`);
@@ -144,7 +151,7 @@ export function listGrants(env = process.env, now = Date.now()) {
 
 export function revokeGrant(laneId, env = process.env) {
   try {
-    rmSync(grantPath(laneId, env), { force: true });
+    rmSync(grantPath(laneId, env));
     return true;
   } catch {
     return false;
@@ -154,24 +161,29 @@ export function revokeGrant(laneId, env = process.env) {
 /**
  * The agent-vs-human gate, resolved.
  *
- * Humans are never refused *by policy* — only clamped, and headroom-checked
- * like everything else. Agents are refused the heavy lanes unless the owner
- * has granted that specific lane, and told exactly how to proceed instead:
- * push and let CI verify.
+ * Classification stays fail-closed: every local caller is an agent until
+ * proven otherwise, and no marker's absence proves otherwise. The owner path
+ * is a GRANT (#180): `arbiter.mjs grant <lane>` is deniable to agents by the
+ * command hook, marker scrubbing is denied by the same hook, so the pair
+ * "unmarked session + live grant on disk" is evidence the owner opened this
+ * window from their own terminal. A granted run stays fully guarded — lease,
+ * ceiling, timeout, and admission enforcement all still apply; the grant
+ * only answers WHO. Marked agent sessions are never admitted by a grant.
  */
 export function evaluateLanePolicy({ label, command, env = process.env, now = Date.now() }) {
   const lane = classifyLane(label) ?? classifyLane(command);
   if (!lane) return { allowed: true, lane: null };
   if (!isAgentSession(env)) return { allowed: true, lane, actor: 'human' };
-  const grant = readGrant(lane.id, env, now);
-  if (grant) return { allowed: true, lane, actor: 'agent', grant };
+  if (harnessName(env) === 'human' && readGrant(lane.id, env, now) !== null) {
+    return { allowed: true, lane, actor: 'owner-grant' };
+  }
   return {
     allowed: false,
     lane,
     actor: 'agent',
     message:
       `The "${lane.id}" lane is a heavy local suite (${lane.why}) and agents do not run it on this machine by default. ` +
-      'Push the branch and let GitHub CI verify — CI is the authoritative lane, and it is exempt from this guard. ' +
-      `If a local run is genuinely required, ask the owner to run: node tools/agent-guard/arbiter.mjs grant ${lane.id} --minutes 30`,
+      'Push the branch and let GitHub CI verify — the workflow invokes its underlying CI entrypoint directly. ' +
+      `If a local run is genuinely required, the owner can open a window from their own (non-agent) terminal with \`node tools/agent-guard/arbiter.mjs grant ${lane.id}\` and run this same guarded entrypoint — enforcement stays on. Agent sessions cannot mint or use grants.`,
   };
 }

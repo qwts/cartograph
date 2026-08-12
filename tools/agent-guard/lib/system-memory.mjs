@@ -48,12 +48,25 @@ export function parseVmStat(output) {
   const speculative = pages('Pages speculative');
   const inactive = pages('Pages inactive');
   const purgeable = pages('Pages purgeable');
-  const compressed = pages('Pages occupying compressor');
+  const compressed = pages('Pages occupied by compressor') || pages('Pages occupying compressor');
   return {
     pageSize,
     availableMb: toMb((free + speculative + inactive + purgeable) * pageSize),
     compressedMb: toMb(compressed * pageSize),
   };
+}
+
+/**
+ * `sysctl kern.memorystatus_vm_pressure_level` → `kern.memorystatus_vm_pressure_level: 1`.
+ *
+ * The kernel's own synthesis of whether memory is actually scarce: 1 normal,
+ * 2 warning, 4 critical. This is the signal that distinguishes "13 GB used,
+ * 8 GB of it reclaimable cache, machine comfortably green" from genuine
+ * scarcity — page counts and static swap allocation cannot (#180).
+ */
+export function parsePressureLevel(output) {
+  const match = /^kern\.memorystatus_vm_pressure_level:\s*(\d+)/u.exec(output.trim());
+  return match ? Number(match[1]) : null;
 }
 
 /** `sysctl vm.swapusage` → `total = 7168.00M  used = 6090.00M  free = 1078.00M`. */
@@ -83,6 +96,47 @@ export function parseMeminfo(output) {
   };
 }
 
+function cgroupBases(readFile) {
+  const bases = new Set(['/sys/fs/cgroup']);
+  try {
+    for (const line of readFile('/proc/self/cgroup', 'utf8').split('\n')) {
+      const [hierarchy, controllers, relative = ''] = line.split(':');
+      if (hierarchy === '0' && controllers === '') bases.add(`/sys/fs/cgroup${relative}`);
+      if (controllers?.split(',').includes('memory')) bases.add(`/sys/fs/cgroup/memory${relative}`);
+    }
+  } catch {
+    // Root candidates still cover the common container layouts.
+  }
+  return [...bases];
+}
+
+/** The finite memory limit and current usage of a cgroup v1 or v2 process. */
+export function readCgroupMemory(readFile = readFileSync) {
+  const candidates = [];
+  for (const base of cgroupBases(readFile)) {
+    candidates.push([`${base}/memory.max`, `${base}/memory.current`]);
+    candidates.push([`${base}/memory.limit_in_bytes`, `${base}/memory.usage_in_bytes`]);
+  }
+  let effective = null;
+  for (const [limitPath, currentPath] of candidates) {
+    try {
+      const rawLimit = readFile(limitPath, 'utf8').trim();
+      if (rawLimit === 'max') continue;
+      const limitBytes = Number(rawLimit);
+      const currentBytes = Number(readFile(currentPath, 'utf8').trim());
+      if (!Number.isSafeInteger(limitBytes) || limitBytes <= 0 || !Number.isSafeInteger(currentBytes) || currentBytes < 0) continue;
+      const availableBytes = Math.max(0, limitBytes - currentBytes);
+      effective = {
+        limitBytes: Math.min(effective?.limitBytes ?? Number.POSITIVE_INFINITY, limitBytes),
+        availableBytes: Math.min(effective?.availableBytes ?? Number.POSITIVE_INFINITY, availableBytes),
+      };
+    } catch {
+      // Try the next supported cgroup layout.
+    }
+  }
+  return effective;
+}
+
 function run(command, args) {
   return execFileSync(command, args, { encoding: 'utf8', timeout: 5000, maxBuffer: 4 * MB });
 }
@@ -99,13 +153,56 @@ function run(command, args) {
 export function readMemoryStatus({ platform = process.platform, totalMb = toMb(os.totalmem()), exec = run, readFile = readFileSync } = {}) {
   try {
     if (platform === 'darwin') {
+      // Each probe stands alone: agent sandboxes can EPERM `sysctl
+      // vm.swapusage` while `vm_stat` stays readable, and discarding a good
+      // availability reading over a failed swap probe is what pushed the
+      // whole status down to os.freemem() (#180). Only a failed vm_stat
+      // degrades; missing swap or pressure evidence is carried as unknown
+      // and the admission logic treats it accordingly.
       const { availableMb, compressedMb } = parseVmStat(exec('vm_stat', []));
-      const { swapTotalMb, swapUsedMb } = parseSwapusage(exec('sysctl', ['vm.swapusage']));
-      return { totalMb, availableMb, compressedMb, swapTotalMb, swapUsedMb, source: 'vm_stat+sysctl', degraded: false };
+      let swap = null;
+      try {
+        swap = parseSwapusage(exec('sysctl', ['vm.swapusage']));
+      } catch {
+        // Swap unknown; pressure may still be readable.
+      }
+      let pressureLevel = null;
+      try {
+        pressureLevel = parsePressureLevel(exec('sysctl', ['kern.memorystatus_vm_pressure_level']));
+      } catch {
+        // Pressure unknown; the static swap gate applies when swap is known.
+      }
+      return {
+        totalMb,
+        availableMb,
+        compressedMb,
+        swapTotalMb: swap?.swapTotalMb ?? 0,
+        swapUsedMb: swap?.swapUsedMb ?? 0,
+        swapKnown: swap !== null,
+        pressureLevel,
+        source: swap ? 'vm_stat+sysctl' : 'vm_stat',
+        degraded: false,
+      };
     }
     if (platform === 'linux') {
       const { availableMb, swapTotalMb, swapUsedMb } = parseMeminfo(readFile('/proc/meminfo', 'utf8'));
-      return { totalMb, availableMb, compressedMb: 0, swapTotalMb, swapUsedMb, source: '/proc/meminfo', degraded: false };
+      const cgroup = readCgroupMemory(readFile);
+      if (cgroup) {
+        const cgroupTotalMb = Math.floor(cgroup.limitBytes / MB);
+        const cgroupAvailableMb = Math.floor(cgroup.availableBytes / MB);
+        return {
+          totalMb: Math.min(totalMb, cgroupTotalMb),
+          availableMb: Math.min(availableMb, cgroupAvailableMb),
+          compressedMb: 0,
+          swapTotalMb,
+          swapUsedMb,
+          swapKnown: true,
+          pressureLevel: null,
+          source: '/proc/meminfo+cgroup',
+          degraded: false,
+        };
+      }
+      return { totalMb, availableMb, compressedMb: 0, swapTotalMb, swapUsedMb, swapKnown: true, pressureLevel: null, source: '/proc/meminfo', degraded: false };
     }
   } catch {
     // Fall through to the degraded reading below.
@@ -116,6 +213,8 @@ export function readMemoryStatus({ platform = process.platform, totalMb = toMb(o
     compressedMb: 0,
     swapTotalMb: 0,
     swapUsedMb: 0,
+    swapKnown: false,
+    pressureLevel: null,
     source: 'os.freemem',
     degraded: true,
   };
