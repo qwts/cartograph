@@ -135,7 +135,7 @@ jobs:
       # the exact apple-target dependency graph that ships, with no reliance on a
       # possibly-stale committed copy.
       - name: Install cargo-about
-        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
           tool: cargo-about@0.9.1
 
