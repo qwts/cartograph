@@ -92,6 +92,26 @@ describe('agent-guard conformance (ENG-0138)', () => {
     );
   });
 
+  test('uninstalled identity adapters ship with the fleet harness', () => {
+    const cursor = (json('.cursor/hooks.json').hooks?.beforeShellExecution ?? [])
+      .map((hook) => hook.command ?? '');
+    const claude = hookCommands(json('.claude/settings.json').hooks?.PreToolUse);
+    const codex = hookCommands(json('.codex/hooks.json').hooks?.PreToolUse);
+    for (const [path, commands] of [
+      ['.cursor/hooks.json', cursor],
+      ['.claude/settings.json', claude],
+      ['.codex/hooks.json', codex],
+    ]) {
+      assert.ok(
+        commands.some((command) => (
+          command.includes('agent-bot agent-hook')
+          && command.includes('AGENT_BOT_UNMANAGED_AUTHORS')
+        )),
+        `${path} must carry the uninstalled identity adapter (ENG-0128)`,
+      );
+    }
+  });
+
   test('the worktree-identity hook survives alongside it', () => {
     assert.ok(
       hookCommands(json('.claude/settings.json').hooks?.WorktreeCreate).some((command) => command.includes('claude-worktree-create')),
