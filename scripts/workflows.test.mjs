@@ -97,18 +97,23 @@ test('complete suite retains every existing Cartograph gate', () => {
 
 test('Advanced CodeQL is governed, immutable, and preserves Rust coverage', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/codeql.yml'), 'utf8');
+  const dependabot = readFileSync(path.join(root, '.github/dependabot.yml'), 'utf8');
   assert.match(workflow, /^\s{2}workflow_call:/mu);
   assert.doesNotMatch(workflow, /^\s{2}(push|pull_request|schedule):/mu);
   assert.match(workflow, /language: \[actions, javascript-typescript, rust\]/u);
   assert.match(
     workflow,
-    /github\/codeql-action\/init@5595ccaf912efad79be6eef63a5619ff05969be3/u,
+    /github\/codeql-action\/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd/u,
   );
   assert.match(
     workflow,
-    /github\/codeql-action\/analyze@5595ccaf912efad79be6eef63a5619ff05969be3/u,
+    /github\/codeql-action\/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd/u,
   );
   assert.match(workflow, /build-mode: none/u);
+  assert.match(
+    dependabot,
+    /codeql-action:\n\s+patterns:\n\s+- github\/codeql-action\/\*/u,
+  );
 });
 
 test('macOS packaging is exact-SHA, universal, fail-closed, and verified', () => {
