@@ -24,9 +24,9 @@ pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
 mod tests {
     #[test]
     fn canonical_paths_carry_no_verbatim_prefix() {
-        // The determinism contract (#225): what we store must never start
-        // with the Windows extended-length prefix. On Unix this asserts the
-        // passthrough; on Windows it asserts the actual strip.
+        // AC-0039 (#225): what we store must never start with the Windows
+        // extended-length prefix. On Unix this asserts the passthrough; on
+        // Windows it asserts the actual strip.
         let dir = tempfile::tempdir().expect("tempdir");
         let canonical = super::canonicalize(dir.path()).expect("canonicalize");
         assert!(!canonical.to_string_lossy().starts_with(r"\\?\"));
@@ -39,9 +39,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn stripped_path_still_opens() {
-        // A naive unconditional strip would produce paths Windows cannot
-        // open (>260 chars, reserved names); dunce keeps the prefix in those
-        // cases. Round-trip a real file to prove the normal case opens.
+        // AC-0039 (#225): a naive unconditional strip would produce paths
+        // Windows cannot open (>260 chars, reserved names); dunce keeps the
+        // prefix in those cases. Round-trip a real file to prove the normal
+        // case opens.
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("probe.txt");
         std::fs::write(&file, b"evidence").expect("write");
