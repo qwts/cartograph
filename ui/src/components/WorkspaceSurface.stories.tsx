@@ -162,9 +162,9 @@ export const FullyConfirmedRecovery: Story = {
 };
 
 export const ConfirmedWithGapsIsNotInferred: Story = {
-  // #245: a fully deterministic recovery with open gaps is partial, but the
-  // tier badge states what the recovered facts carry — Confirmed, never an
-  // Inferred tier no fact holds (R-INT-2/R-INT-4).
+  // AC-0057 (#245): a fully deterministic recovery with open gaps is
+  // partial, but the tier badge states what the recovered facts carry —
+  // Confirmed, never an Inferred tier no fact holds (R-INT-2/R-INT-4).
   args: {
     findings: {
       gaps: 203,
