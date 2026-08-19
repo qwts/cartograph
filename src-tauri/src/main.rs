@@ -9,6 +9,7 @@ mod evidence;
 mod findings;
 mod jobs;
 mod metrics;
+mod paths;
 mod settings;
 
 use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
@@ -1419,7 +1420,7 @@ fn preflight_blocking<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<ingest::preflight::PreflightReport, String> {
-    let root = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    let root = paths::canonicalize(path).map_err(|e| e.to_string())?;
     if let Ok(mut roots) = state.project_roots.lock() {
         roots.insert(root.display().to_string());
     }
@@ -2134,7 +2135,7 @@ fn run_ingest(
     // Local unversioned tree: identified by directory basename (two dirs
     // with the same basename still collide — real identity is `add_repo`).
     report_progress(app, state, job_id, "scan", 5.0)?;
-    let root = std::fs::canonicalize(path).map_err(|e| fail(e.to_string()))?;
+    let root = paths::canonicalize(path).map_err(|e| fail(e.to_string()))?;
     if let Ok(mut roots) = state.project_roots.lock() {
         roots.insert(root.display().to_string());
     }
@@ -2492,7 +2493,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
     };
 
     let manifest_path =
-        std::fs::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
+        paths::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
     let manifest = ingest::manifest::SystemManifest::load(&manifest_path)
         .map_err(|e| fail(e.to_string(), &state, job_id))?;
     let base = manifest_dir(&manifest_path);
@@ -2519,7 +2520,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
                 .map_err(|e| fail(e.to_string(), &state, job_id))?;
             (cloned.path, cloned.repo, cloned.commit_sha)
         } else {
-            let root = std::fs::canonicalize(base.join(&entry.url))
+            let root = paths::canonicalize(base.join(&entry.url))
                 .map_err(|e| fail(e.to_string(), &state, job_id))?;
             let name = root
                 .file_name()
@@ -4946,7 +4947,7 @@ ORDERS_QUEUE = "https://sqs.example/orders"
         let manifest = ingest::manifest::SystemManifest::load(dir.path()).unwrap();
         let mut store = SqliteGraphStore::open_in_memory().unwrap();
         for entry in &manifest.repos {
-            let root = std::fs::canonicalize(dir.path().join(&entry.url)).unwrap();
+            let root = super::paths::canonicalize(dir.path().join(&entry.url)).unwrap();
             let name = root.file_name().unwrap().to_string_lossy().into_owned();
             let repo = format!("local/{name}");
             let ex = crate::extract_tree(
@@ -5033,7 +5034,7 @@ layers = ["events", "server"]
         let manifest = ingest::manifest::SystemManifest::load(dir.path()).unwrap();
         let mut store = SqliteGraphStore::open_in_memory().unwrap();
         for entry in &manifest.repos {
-            let root = std::fs::canonicalize(dir.path().join(&entry.url)).unwrap();
+            let root = super::paths::canonicalize(dir.path().join(&entry.url)).unwrap();
             let name = root.file_name().unwrap().to_string_lossy().into_owned();
             let repo = format!("local/{name}");
             let ex = crate::extract_tree(
@@ -5251,7 +5252,7 @@ state_json = "shop.state.json"
         let manifest = ingest::manifest::SystemManifest::load(dir.path()).unwrap();
         let mut store = SqliteGraphStore::open_in_memory().unwrap();
         for entry in &manifest.repos {
-            let root = std::fs::canonicalize(dir.path().join(&entry.url)).unwrap();
+            let root = super::paths::canonicalize(dir.path().join(&entry.url)).unwrap();
             let state_path = entry.state_json.as_ref().map(|p| dir.path().join(p));
             let ex = crate::extract_tree(
                 &root,
@@ -5737,7 +5738,7 @@ export function App() {
         });
         let handle = app.handle().clone();
         let state = app.state::<super::AppState>();
-        let root = std::fs::canonicalize(&project).unwrap();
+        let root = super::paths::canonicalize(&project).unwrap();
         let root_key = root.display().to_string();
         let path_arg = project.to_string_lossy().into_owned();
 
