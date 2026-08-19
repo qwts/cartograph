@@ -85,11 +85,18 @@ export function WorkspaceSurface({
       : findings.open_findings > 0
         ? 'Recovery with open findings'
         : 'Full recovery';
+  // The badge states the lowest confidence tier the recovered facts actually
+  // carry (R-INT-2). Gaps are explicit unresolved markers, not inferred
+  // assertions (R-INT-4) — partiality is already reported by the outcome
+  // title and the findings tally, so a gapped but fully deterministic
+  // recovery stays "Confirmed overall" (#245).
   const overallTier = !recovered
     ? null
-    : distribution.inferredStrong + distribution.inferredWeak > 0 || findings.gaps > 0
-      ? { label: 'InferredStrong overall', className: 'tier-inferredstrong' }
-      : { label: 'Confirmed overall', className: 'tier-confirmed' };
+    : distribution.inferredWeak > 0
+      ? { label: 'InferredWeak overall', className: 'tier-inferredweak' }
+      : distribution.inferredStrong > 0
+        ? { label: 'InferredStrong overall', className: 'tier-inferredstrong' }
+        : { label: 'Confirmed overall', className: 'tier-confirmed' };
 
   return (
     <section className="workspace-landing" aria-label="Workspace">

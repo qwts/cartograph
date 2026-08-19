@@ -86,9 +86,10 @@ export const PartialRecovery: Story = {
     await expect(canvas.getByText('collidingscopes/image-trail')).toBeInTheDocument();
     await expect(canvas.getByText('@ a1b9f30')).toBeInTheDocument();
 
-    // The honest tally: findings are listed explicitly, never guessed.
+    // The honest tally: findings are listed explicitly, never guessed. The
+    // badge reports the weakest tier present (11 InferredWeak facts here).
     await expect(canvas.getByText('Partial recovery')).toBeInTheDocument();
-    await expect(canvas.getByText('InferredStrong overall')).toBeInTheDocument();
+    await expect(canvas.getByText('InferredWeak overall')).toBeInTheDocument();
     const outcome = within(canvas.getByTestId('outcome-card'));
     await expect(outcome.getByText('6 open findings')).toBeInTheDocument();
     // #164: outcome jargon and artifact authority explain themselves.
@@ -157,6 +158,36 @@ export const FullyConfirmedRecovery: Story = {
     await expect(canvas.getByText('Confirmed overall')).toBeInTheDocument();
     await expect(canvas.getAllByText('Recovery: authoritative')).toHaveLength(5);
     await expect(canvas.getByRole('button', { name: 'Triage 0 gaps' })).toBeInTheDocument();
+  },
+};
+
+export const ConfirmedWithGapsIsNotInferred: Story = {
+  // #245: a fully deterministic recovery with open gaps is partial, but the
+  // tier badge states what the recovered facts carry — Confirmed, never an
+  // Inferred tier no fact holds (R-INT-2/R-INT-4).
+  args: {
+    findings: {
+      gaps: 203,
+      unsupported: 0,
+      no_evidence: 0,
+      drift: 0,
+      open_findings: 203,
+      graph_facts: 1265,
+    },
+    distribution: {
+      confirmed: 1062,
+      inferredStrong: 0,
+      inferredWeak: 0,
+      gap: 203,
+      unattributed: 0,
+      total: 1265,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText('Partial recovery')).toBeInTheDocument();
+    await expect(canvas.getByText('Confirmed overall')).toBeInTheDocument();
+    await expect(canvas.queryByText(/Inferred\w+ overall/)).not.toBeInTheDocument();
   },
 };
 
