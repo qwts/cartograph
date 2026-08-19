@@ -911,7 +911,14 @@ pub fn compile_spec(
     let (security, security_assertions, security_count) = security_view(&nodes);
     let (toolchain, toolchain_assertions) = toolchain_view(&nodes, &edges);
 
-    let gap_count = gap_assertions.len();
+    // One finding per unresolved fact (#241): the register still lists gap
+    // edge and flow-hop assertions as supporting rows, but the count the
+    // Workbench displays mirrors drift_count and the findings-summary
+    // headline — gap nodes only, so no surface doubles the tally.
+    let gap_count = gap_assertions
+        .iter()
+        .filter(|assertion| assertion.id.starts_with("node:"))
+        .count();
     let artifacts = vec![
         artifact(
             "user-stories",
@@ -1236,7 +1243,9 @@ mod tests {
         assert!(data_model.content.contains("sym:save-order"));
         assert!(data_model.content.contains("MAPS_TO"));
         assert!(data_model.content.contains("WRITES"));
-        assert_eq!(bundle.gap_count, 2);
+        // One gap node → one displayed finding; the register's flow-hop
+        // restatement of the same gap stays a supporting row (#241).
+        assert_eq!(bundle.gap_count, 1);
         assert_eq!(bundle.drift_count, 1);
         assert_eq!(bundle.security_count, 0);
     }
@@ -1265,7 +1274,9 @@ mod tests {
                 .contains("weak inference excluded by verified-only export")
         );
         assert!(!dossier.content.contains("— Verified"));
-        assert_eq!(verified.gap_count, 3);
+        // Still one gap node: verified-only adds excluded-weak flow rows to
+        // the register, but supporting assertions never inflate the count.
+        assert_eq!(verified.gap_count, 1);
         assert_eq!(verified.drift_count, 1);
         assert_eq!(verified.security_count, 0);
     }
