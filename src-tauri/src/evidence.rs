@@ -10,11 +10,13 @@ use std::path::Path;
 pub const MAX_EVIDENCE_BYTES: u64 = 256 * 1024;
 
 /// Resolve `rel_path` under `root`, refusing any escape (`..`, absolute
-/// paths, symlinks out of the tree).
+/// paths, symlinks out of the tree). Canonicalization goes through
+/// `paths::canonicalize` so the containment check compares the same
+/// prefix-free form the ingest lane stores (#225).
 fn confined_path(root: &Path, rel_path: &str) -> io::Result<std::path::PathBuf> {
-    let root = root.canonicalize()?;
+    let root = crate::paths::canonicalize(root)?;
     let candidate = root.join(rel_path);
-    let file_path = candidate.canonicalize()?;
+    let file_path = crate::paths::canonicalize(candidate)?;
     if !file_path.starts_with(&root) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
