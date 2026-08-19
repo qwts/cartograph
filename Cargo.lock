@@ -193,6 +193,7 @@ dependencies = [
  "agents",
  "core-graph",
  "core-prov",
+ "dunce",
  "dynamic",
  "events",
  "flowtracer",
