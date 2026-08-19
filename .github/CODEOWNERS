@@ -13,6 +13,7 @@
 # matter at least as much as the markdown.
 AGENTS.md   @qwts
 CLAUDE.md   @qwts
+.agents/    @qwts
 .claude/    @qwts
 .codex/     @qwts
 .cursor/    @qwts
