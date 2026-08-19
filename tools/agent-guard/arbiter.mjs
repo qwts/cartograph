@@ -8,7 +8,7 @@
 //   node tools/agent-guard/arbiter.mjs status
 //   node tools/agent-guard/arbiter.mjs doctor
 //   node tools/agent-guard/arbiter.mjs check [--rss-mb N] [--label name]
-//   node tools/agent-guard/arbiter.mjs grant <lane> [--minutes N]
+//   node tools/agent-guard/arbiter.mjs grant <lane>  # disabled legacy command
 //   node tools/agent-guard/arbiter.mjs revoke <lane>
 
 import path from 'node:path';
@@ -16,7 +16,7 @@ import process from 'node:process';
 
 import { clampCeiling, decideAdmission, deriveBudgetForMemory } from './lib/budget.mjs';
 import { readLeases } from './lib/leases.mjs';
-import { HEAVY_LANES, harnessName, isAgentSession, isCi, listGrants, revokeGrant, writeGrant } from './lib/policy.mjs';
+import { HEAVY_LANES, isAgentSession, isCi, listGrants, revokeGrant } from './lib/policy.mjs';
 import { machineToken, stateDir } from './lib/protocol.mjs';
 import { readMemoryStatus, topConsumers } from './lib/system-memory.mjs';
 
@@ -95,50 +95,13 @@ function doctor() {
   return 0;
 }
 
-// Accepts the documented `grant <lane> [--minutes N]` form and the legacy
-// positional value. A value that was supplied but does not parse is a refusal,
-// not a silent fallback — a 5-minute grant must never quietly become a
-// 30-minute one. Exported so conformance can test this without minting a real
-// grant (stateDir ignores env overrides for real processes by design).
-export function parseGrantMinutes(argv) {
-  const raw = flag(argv, '--minutes') ?? argv[2] ?? null;
-  if (raw === null) return { ok: true, minutes: 30 };
-  // Bounds-check the ROUNDED value: 0.1 is positive but rounds to zero
-  // minutes, which would mint a grant already expired at write time while
-  // reporting success. Refuse it instead.
-  const requested = Number(raw);
-  if (!Number.isFinite(requested) || Math.round(requested) < 1) return { ok: false, raw };
-  return { ok: true, minutes: Math.min(Math.round(requested), 240) };
-}
-
 function grant(argv) {
-  const laneId = argv[1];
-  const lane = HEAVY_LANES.find((entry) => entry.id === laneId);
-  if (!lane) {
-    process.stderr.write(`unknown lane ${JSON.stringify(laneId ?? '')}; expected one of ${HEAVY_LANES.map((entry) => entry.id).join(', ')}\n`);
-    return 1;
-  }
-  // Defense in depth: the command hook already denies this invocation from
-  // agent sessions, but the arbiter refuses marked callers on its own too.
-  // The grant is honored by lane policy only in an UNMARKED session, so a
-  // grant minted here is owner evidence, not agent self-approval (#180).
-  if (harnessName(process.env) !== 'human') {
-    process.stderr.write(
-      `grants cannot be minted from an agent session (${harnessName(process.env)} markers present). ` +
-        "Run this from the owner's own terminal.\n",
-    );
-    return 1;
-  }
-  const parsed = parseGrantMinutes(argv);
-  if (!parsed.ok) {
-    process.stderr.write(`invalid minutes value ${JSON.stringify(parsed.raw)}; expected a positive number\n`);
-    return 1;
-  }
-  const { minutes } = parsed;
-  const written = writeGrant({ laneId: lane.id, minutes });
-  out(`granted ${lane.id} for ${minutes} minutes (expires ${written.expiresAt})`);
-  out('Run the lane through its guarded entrypoint; lease, ceiling, timeout, and admission enforcement still apply.');
-  return 0;
+  const laneId = argv[1] ?? '';
+  process.stderr.write(
+    `legacy grant minting is disabled${laneId ? ` for ${JSON.stringify(laneId)}` : ''}: ` +
+      'same-user files cannot authenticate human approval. An owner may choose the underlying lane directly from their own non-agent terminal, but that exceptional run is outside agent-guard protection.\n',
+  );
+  return 1;
 }
 
 function revoke(argv) {

@@ -1,0 +1,28 @@
+# governed:agent-harness-format:start
+# These paths are synchronized by playbook-engineering. Their lint and syntax
+# contract runs at the governance source; consumer formatters must not rewrite
+# the managed bytes and start a format-versus-sync loop.
+.codex/config.toml
+.codex/environments/environment.toml
+.codex/rules/environment.rules
+.codex/scripts/cleanup.sh
+.codex/scripts/ensure-identity.sh
+.codex/scripts/gh.zsh
+.codex/scripts/git-with-nvm.zsh
+.codex/scripts/nvm.zsh
+.codex/scripts/setup.sh
+.codex/hooks.json
+.claude/settings.json
+.cursor/hooks.json
+tools/agent-guard/arbiter.mjs
+tools/agent-guard/guard-agent-command.mjs
+tools/agent-guard/run-guarded.mjs
+tools/agent-guard/lib/budget.mjs
+tools/agent-guard/lib/leases.mjs
+tools/agent-guard/lib/policy.mjs
+tools/agent-guard/lib/protocol.mjs
+tools/agent-guard/lib/system-memory.mjs
+tools/agent-guard/tests/conformance.test.mjs
+governance/agent-models.json
+tools/models/registry.mjs
+# governed:agent-harness-format:end

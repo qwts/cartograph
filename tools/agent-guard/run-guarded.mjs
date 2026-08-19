@@ -4,8 +4,8 @@
 // governed repo carried its own drifting copy of.
 //
 // What it does, in order:
-//   1. Gets out of the way for nested guarded commands.
-//   2. Applies the agent-vs-human lane policy (lib/policy.mjs).
+//   1. Applies the agent-vs-human lane policy (lib/policy.mjs).
+//   2. Gets out of the way for allowed nested guarded commands.
 //   3. Derives the ceiling from the effective machine/cgroup total and CLAMPS the request down to
 //      it — an `--rss-mb 8192` inherited from an old npm script becomes 3072 on
 //      an 8 GB machine instead of a ceiling that can never trip.
@@ -94,6 +94,21 @@ export function resolveRequest(options, env, budget) {
     timeoutS: pick('AGENT_GUARD_TIMEOUT_S', options.timeoutS, DEFAULT_TIMEOUT_S),
     waitS: pick('AGENT_GUARD_WAIT_S', options.waitS, isAgentSession(env) ? 0 : 180),
   };
+}
+
+/**
+ * Decide whether this invocation is refused, is already covered by its
+ * parent's lease, or needs its own admission. Lane policy comes first: a live
+ * lease proves that admission and enforcement already exist for the process
+ * group, but it does not authorize a different command hidden inside an
+ * innocuously named guarded package script (#235).
+ */
+export function resolveInvocation({ options, command, env = process.env, processGroupId }) {
+  const commandLine = command.join(' ');
+  const policy = evaluateLanePolicy({ label: options.label, command: commandLine, env });
+  if (!policy.allowed) return { action: 'refuse', commandLine, policy };
+  if (leaseExists(env.AGENT_GUARDED, env, { processGroupId })) return { action: 'passthrough', commandLine, policy };
+  return { action: 'admit', commandLine, policy };
 }
 
 // Automatic peak reuse is deliberately dormant. Polling cannot prove a true
@@ -265,12 +280,13 @@ async function main() {
   const { options, command } = parsed;
   if (command.length === 0) fail('no command given');
 
-  // Nested guarded scripts pass through — but only when the marker names a
-  // live lease bound to this caller's process group. Lease ids are visible to
-  // same-user processes, so id knowledge alone cannot prove nesting. A copied
-  // or unrecognised marker falls through to full admission rather than
-  // skipping the lease, ceiling, and headroom check.
-  if (leaseExists(process.env.AGENT_GUARDED, process.env)) return passthrough(command);
+  // Policy is evaluated even for nested guarded scripts. A live parent lease
+  // skips only duplicate admission; it cannot authorize a heavy inner lane.
+  // Lease ids are visible to same-user processes, so id knowledge alone also
+  // cannot prove nesting: an unrecognised marker falls through to admission.
+  const resolved = resolveInvocation({ options, command, env: process.env });
+  if (resolved.action === 'refuse') fail(resolved.policy.message);
+  if (resolved.action === 'passthrough') return passthrough(command);
   if (process.platform === 'win32') {
     note('WARNING: guard unsupported on win32; running unguarded.');
     return passthrough(command);
@@ -278,9 +294,7 @@ async function main() {
   const ps = psExecutable();
   if (ps === null) fail('guard requires ps at /bin/ps or /usr/bin/ps to enforce process-group memory limits');
 
-  const commandLine = command.join(' ');
-  const policy = evaluateLanePolicy({ label: options.label, command: commandLine, env: process.env });
-  if (!policy.allowed) fail(policy.message);
+  const { commandLine } = resolved;
 
   const initialMemory = readMemoryStatus();
   const totalMb = initialMemory.totalMb;

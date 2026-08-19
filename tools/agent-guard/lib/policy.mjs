@@ -46,7 +46,7 @@ export function isCi(env = process.env) {
  * entrypoints directly instead of asking this local wrapper to infer where it
  * is executing; a human owner can run the underlying lane directly too.
  */
-export function isAgentSession(_env = process.env) {
+export function isAgentSession() {
   return true;
 }
 
@@ -65,11 +65,10 @@ export function harnessName(env = process.env) {
   if (Object.keys(env).some((key) => key.startsWith('CURSOR_'))) return 'cursor';
   if (typeof env.AI_AGENT === 'string' && env.AI_AGENT !== '') return env.AI_AGENT.toLowerCase().split(/[^a-z]/u)[0] || 'agent';
   // Any other `<NAME>_AGENT` marker names an unregistered harness (#142). A
-  // Devin/Windsurf session used to fall through to 'human' here, and that
-  // matters more than a label: the owner-grant path and `arbiter grant` both
-  // key on harnessName === 'human', so an unrecognised agent resolving to
-  // 'human' could mint and use its own heavy-lane grant. Deterministic pick
-  // (sorted) when several are present.
+  // Devin/Windsurf session used to fall through to 'human' here. Policy now
+  // treats every local wrapper caller as an agent regardless, while this
+  // classification still provides an accurate diagnostic label. Deterministic
+  // pick (sorted) when several markers are present.
   const marker = Object.keys(env)
     .filter((key) => AGENT_MARKER.test(key) && typeof env[key] === 'string' && env[key] !== '')
     .sort()[0];
@@ -161,22 +160,14 @@ export function revokeGrant(laneId, env = process.env) {
 /**
  * The agent-vs-human gate, resolved.
  *
- * Classification stays fail-closed: every local caller is an agent until
- * proven otherwise, and no marker's absence proves otherwise. The owner path
- * is a GRANT (#180): `arbiter.mjs grant <lane>` is deniable to agents by the
- * command hook, marker scrubbing is denied by the same hook, so the pair
- * "unmarked session + live grant on disk" is evidence the owner opened this
- * window from their own terminal. A granted run stays fully guarded — lease,
- * ceiling, timeout, and admission enforcement all still apply; the grant
- * only answers WHO. Marked agent sessions are never admitted by a grant.
+ * Classification stays fail-closed: every local wrapper caller is an agent,
+ * and no missing marker or same-user file proves otherwise. Legacy grant
+ * artifacts remain readable only for cleanup; they are never authorization
+ * because an agent-controlled package script can mint them (#235).
  */
-export function evaluateLanePolicy({ label, command, env = process.env, now = Date.now() }) {
+export function evaluateLanePolicy({ label, command }) {
   const lane = classifyLane(label) ?? classifyLane(command);
   if (!lane) return { allowed: true, lane: null };
-  if (!isAgentSession(env)) return { allowed: true, lane, actor: 'human' };
-  if (harnessName(env) === 'human' && readGrant(lane.id, env, now) !== null) {
-    return { allowed: true, lane, actor: 'owner-grant' };
-  }
   return {
     allowed: false,
     lane,
@@ -184,6 +175,8 @@ export function evaluateLanePolicy({ label, command, env = process.env, now = Da
     message:
       `The "${lane.id}" lane is a heavy local suite (${lane.why}) and agents do not run it on this machine by default. ` +
       'Push the branch and let GitHub CI verify — the workflow invokes its underlying CI entrypoint directly. ' +
-      `If a local run is genuinely required, the owner can open a window from their own (non-agent) terminal with \`node tools/agent-guard/arbiter.mjs grant ${lane.id}\` and run this same guarded entrypoint — enforcement stays on. Agent sessions cannot mint or use grants.`,
+      'If a local run is genuinely required, the owner makes that exceptional decision in their own non-agent terminal. ' +
+      'Running the underlying lane directly is outside this wrapper and therefore outside its lease, admission, ceiling, and timeout protections; same-user grant files are not authorization. ' +
+      'See https://github.com/qwts/playbook-engineering/blob/main/docs/reference/agent-memory-guard.md.',
   };
 }
