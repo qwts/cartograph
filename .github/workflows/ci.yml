@@ -238,13 +238,20 @@ jobs:
         # Same hang class as apt (#343): --with-deps runs apt plus a CDN
         # download. Bound each attempt and retry so a stalled mirror costs
         # minutes, not the whole job (observed live: the job-level timeout
-        # caught exactly this hang on this PR's first run).
+        # caught exactly this hang on this PR's first run). A killed attempt
+        # can orphan apt's dpkg lock on the ephemeral runner (also observed
+        # live), so clear apt state before retrying.
         run: |
           for attempt in 1 2 3; do
-            if timeout 300 npx playwright install --with-deps chromium; then
+            if timeout -k 10 300 npx playwright install --with-deps chromium; then
               exit 0
             fi
-            echo "playwright install attempt $attempt failed; retrying"
+            echo "playwright install attempt $attempt failed; clearing apt state and retrying"
+            sudo pkill -9 -f 'apt-get|apt|dpkg' 2>/dev/null || true
+            sleep 5
+            sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock \
+              /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
+            sudo dpkg --configure -a || true
           done
           exit 1
 
