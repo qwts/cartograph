@@ -247,14 +247,16 @@ const SCALE_GAPS: SpecAssertion[] = [
 export const ClassesGroupAtScale: Story = {
   // #167/AC-0082: at scale the gap lane triages by cause class — grouped
   // deterministically (count desc), expanding to paged instances; the
-  // per-gap Resolution Strategy path is unchanged.
+  // per-gap Resolution Strategy path is unchanged. The 5 gap CALLS edge
+  // assertions in the fixture are supporting assertions of node findings
+  // and must not be listed as rows of their own (#241).
   args: {
     summary: {
-      gaps: 345,
+      gaps: 340,
       unsupported: 0,
       no_evidence: 0,
       drift: 0,
-      open_findings: 345,
+      open_findings: 340,
       graph_facts: 40_000,
     },
     gaps: SCALE_GAPS,
@@ -263,18 +265,18 @@ export const ClassesGroupAtScale: Story = {
   },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    // 345 gaps read as 3 causes, largest first.
-    await expect(canvas.getByText('System gaps · 345 — 3 causes')).toBeInTheDocument();
+    // 340 gap-node findings read as 2 causes, largest first — the edge
+    // assertions never form a phantom third class.
+    await expect(canvas.getByText('System gaps · 340 — 2 causes')).toBeInTheDocument();
     const classes = within(canvas.getByLabelText('Gap classes'));
     const heads = classes.getAllByRole('button', { expanded: false });
-    await expect(heads).toHaveLength(3);
+    await expect(heads).toHaveLength(2);
     await expect(heads[0]).toHaveTextContent('×300');
     await expect(heads[0]).toHaveTextContent('runtime-computed message identity');
     await expect(heads[1]).toHaveTextContent('×40');
     await expect(heads[1]).toHaveTextContent('unresolved Java import target');
     await expect(heads[1]).toHaveTextContent('t0.adapter-java');
-    await expect(heads[2]).toHaveTextContent('×5');
-    await expect(heads[2]).toHaveTextContent('unresolved CALLS edge');
+    await expect(canvas.queryByText('unresolved CALLS edge')).not.toBeInTheDocument();
 
     // Grouping is deterministic: shuffled input yields the same class order.
     const shuffledOrder = groupGapClasses([...SCALE_GAPS].reverse()).map((c) => c.key);

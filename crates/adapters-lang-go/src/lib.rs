@@ -589,6 +589,7 @@ fn extract_source_with_module(
                     };
                     handles.dst = gap_id;
                     handles.props = serde_json::json!({
+                        "reason": "unresolved Go route handler expression",
                         "attempted_resolution": "go-handler-expression",
                         "prov": cx.prov_with_confidence(
                             &call,

@@ -149,12 +149,23 @@ fn edge_identity(edge: &Edge) -> String {
 
 fn edge_assertion(edge: &Edge) -> SpecAssertion {
     let identity = edge_identity(edge);
+    let provenance = provenance(&edge.props, &format!("edge:{identity}"));
+    // Gap edges carry the same `reason` as their gap node (#241) — surface it
+    // so register rows never render a bare identity in the reason column.
+    // Non-gap edges (topology, mappings, decisions) keep their identity.
+    let summary = if provenance.confidence_tier == ConfidenceTier::Gap
+        && let Some(reason) = edge.props["reason"].as_str()
+    {
+        format!("{}: {reason}", edge.label)
+    } else {
+        identity.clone()
+    };
     SpecAssertion {
         id: format!("edge:{identity}"),
-        subject_id: identity.clone(),
+        subject_id: identity,
         subject_kind: edge.label.clone(),
-        summary: identity.clone(),
-        provenance: provenance(&edge.props, &format!("edge:{identity}")),
+        summary,
+        provenance,
     }
 }
 

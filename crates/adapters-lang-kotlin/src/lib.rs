@@ -871,6 +871,7 @@ pub fn extract_source(
                     dst: handler.clone(),
                     label: "HANDLES".into(),
                     props: serde_json::json!({
+                        "reason": "dynamic Spring mapping path",
                         "attempted_resolution": "literal-path",
                         "prov": cx.prov_with_confidence(
                             &annotation.node,
@@ -1052,6 +1053,7 @@ fn push_pending(
         dst: gap_id.clone(),
         label: "CALLS".into(),
         props: serde_json::json!({
+            "reason": "unresolved Kotlin import target",
             "attempted_resolution": "import-fqn",
             "prov": cx.prov_with_confidence(
                 &call,

@@ -247,11 +247,11 @@ export function GapsDriftSurface({
   onDecideProposal,
 }: GapsDriftSurfaceProps) {
   const [tab, setTab] = useState<Tab>('lanes');
-  // Reconcile with findings_summary's own definitions: the gap tally counts
-  // gap nodes + gap edges (flow-hop assertions restate the same gaps inside
-  // flows), and the drift headline counts drift nodes (CONFLICTS/DRIFTS_FROM
-  // edges are supporting assertions of the same finding, not new findings).
-  const gapFindings = gaps.filter((assertion) => !assertion.id.startsWith('flow:'));
+  // Reconcile with findings_summary's own definitions (#241): both headlines
+  // count nodes only — gap CALLS edges and drift CONFLICTS/DRIFTS_FROM edges
+  // are supporting assertions of the same finding, and flow-hop assertions
+  // restate the same gaps inside flows, so neither lane lists them as rows.
+  const gapFindings = gaps.filter((assertion) => assertion.id.startsWith('node:'));
   // At scale the lane triages by cause class, never row-by-row (#167).
   const flowGapSet = new Set(flowGapIds ?? []);
   const gapClasses =
