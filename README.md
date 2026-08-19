@@ -60,6 +60,20 @@ This repo runs a strict, agent-first SDLC: every change lands through a gated
 PR traceable to a user story / acceptance criterion. See
 [CONTRIBUTING.md](CONTRIBUTING.md) and `AGENTS.md` for the workflow.
 
+### Agent skills
+
+Repo-local skills for coding agents live in [`.agents/skills/`](.agents/skills/)
+— the tool-agnostic home; `.claude/skills/` symlinks into it so Claude Code
+discovers them automatically. Agents whose harness does not auto-discover
+skills should read the relevant `SKILL.md` directly before starting the task
+it covers.
+
+- [`add-language-adapter`](.agents/skills/add-language-adapter/SKILL.md) —
+  scaffold language-adapter coverage (a sandboxed WASM plugin, or an extension
+  to a compiled-in `adapters-lang-*` crate). It is the short version of the
+  authoritative [adapter authoring guide](docs/adapters/AUTHORING_GUIDE.md)
+  (ADR-0017).
+
 ## License
 
 Cartograph is **source-available, not open source**. It is licensed under the
