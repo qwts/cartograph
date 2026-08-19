@@ -3066,6 +3066,28 @@ mod tests {
         assert_eq!(summary.graph_facts, 4);
     }
 
+    #[test]
+    fn adapter_inventory_matches_what_the_ts_walker_ingests() {
+        // AC-0095 (#247): the Settings adapter cards derive their "Files:"
+        // copy from ingest::preflight's registry, while the walker ingests
+        // adapters_lang_ts::SOURCE_EXTENSIONS. One assertion binds the two
+        // hand-maintained lists so coverage and inventory cannot disagree.
+        let registry: std::collections::BTreeSet<String> = ingest::preflight::INSTALLED_ADAPTERS
+            .iter()
+            .filter(|adapter| adapter.id == "t0.adapter-ts")
+            .flat_map(|adapter| adapter.extensions.iter().map(|ext| format!(".{ext}")))
+            .collect();
+        let walker: std::collections::BTreeSet<String> = adapters_lang_ts::SOURCE_EXTENSIONS
+            .iter()
+            .map(|ext| (*ext).to_string())
+            .collect();
+        assert_eq!(
+            registry, walker,
+            "Settings/Preflight adapter inventory must list exactly the \
+             extensions the TS/JS walker ingests"
+        );
+    }
+
     struct M7KeywordProvider;
 
     impl llm::LlmProvider for M7KeywordProvider {
