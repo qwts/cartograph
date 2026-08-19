@@ -235,7 +235,18 @@ jobs:
         run: npm ci
 
       - name: Install Playwright browser (for story tests)
-        run: npx playwright install --with-deps chromium
+        # Same hang class as apt (#343): --with-deps runs apt plus a CDN
+        # download. Bound each attempt and retry so a stalled mirror costs
+        # minutes, not the whole job (observed live: the job-level timeout
+        # caught exactly this hang on this PR's first run).
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 300 npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "playwright install attempt $attempt failed; retrying"
+          done
+          exit 1
 
       - name: Lint
         run: npm run lint
