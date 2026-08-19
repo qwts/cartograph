@@ -2,4 +2,4 @@
 "cartograph": patch
 ---
 
-Unresolved calls are no longer double-counted in the findings register: the gap node carries the finding and the gap CALLS edge is a supporting assertion, mirroring how drift counts nodes only — so "open findings" now matches the number of actual unknowns. Gap edges also carry the same `reason` as their gap node, so no register row renders a bare edge identity in the reason column, and the gap lane no longer lists a phantom "unresolved edge" cause class.
+Unresolved calls are no longer double-counted in the findings register: a gap edge that touches its gap node supports that node's finding (one finding per unresolved call, mirroring how drift counts), while an edge-only gap with no gap node on either end stays a finding of its own. The headline count, the Spec Workbench gap chip, and the gap lane all reconcile through one shared definition. Gap edges also carry the same `reason` as their gap node, so no register row renders a bare edge identity in the reason column.

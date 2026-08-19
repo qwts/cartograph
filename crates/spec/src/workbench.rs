@@ -655,6 +655,32 @@ pub fn is_gap_edge(edge: &Edge) -> bool {
     provenance(&edge.props, &edge_identity(edge)).confidence_tier == ConfidenceTier::Gap
 }
 
+/// One finding per unresolved fact (#241): a Gap-tier edge that touches an
+/// explicit gap node supports that node's finding and never doubles it,
+/// while an edge-only gap — no gap node on either end, e.g. a callee that
+/// cannot be resolved between two real symbols — is a finding of its own.
+/// Public for the same reason as the register predicates (#116): every
+/// surface must count with one definition.
+pub fn count_gap_findings<'a>(
+    nodes: impl IntoIterator<Item = &'a Node>,
+    edges: impl IntoIterator<Item = &'a Edge>,
+) -> usize {
+    let gap_ids: BTreeSet<&str> = nodes
+        .into_iter()
+        .filter(|node| is_gap_node(node))
+        .map(|node| node.id.as_str())
+        .collect();
+    gap_ids.len()
+        + edges
+            .into_iter()
+            .filter(|edge| {
+                is_gap_edge(edge)
+                    && !gap_ids.contains(edge.src.as_str())
+                    && !gap_ids.contains(edge.dst.as_str())
+            })
+            .count()
+}
+
 /// True when `edge` records ADR/code drift (see [`is_drift_node`]).
 pub fn is_drift_edge(edge: &Edge) -> bool {
     matches!(edge.label.as_str(), "CONFLICTS" | "DRIFTS_FROM")
@@ -911,14 +937,10 @@ pub fn compile_spec(
     let (security, security_assertions, security_count) = security_view(&nodes);
     let (toolchain, toolchain_assertions) = toolchain_view(&nodes, &edges);
 
-    // One finding per unresolved fact (#241): the register still lists gap
-    // edge and flow-hop assertions as supporting rows, but the count the
-    // Workbench displays mirrors drift_count and the findings-summary
-    // headline — gap nodes only, so no surface doubles the tally.
-    let gap_count = gap_assertions
-        .iter()
-        .filter(|assertion| assertion.id.starts_with("node:"))
-        .count();
+    // The register still lists supporting edge and flow-hop assertions as
+    // rows, but the count the Workbench displays uses the shared finding
+    // definition, so it reconciles with the findings-summary headline.
+    let gap_count = count_gap_findings(nodes.iter().copied(), edges.iter().copied());
     let artifacts = vec![
         artifact(
             "user-stories",

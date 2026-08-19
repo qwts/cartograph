@@ -242,21 +242,31 @@ const SCALE_GAPS: SpecAssertion[] = [
     summary: `sym:a${index} CALLS gap:x${index}`,
     provenance: gapProvenance('Deterministic'),
   })),
+  // Supporting edges of listed gap nodes (#241): folded into their node's
+  // finding, never a row or a class of their own.
+  ...Array.from({ length: 3 }, (_, index) => ({
+    id: `edge:sym:p${index} CALLS gap:msg-${index}`,
+    subject_id: `sym:p${index} CALLS gap:msg-${index}`,
+    subject_kind: 'CALLS',
+    summary: `CALLS: runtime-computed message identity`,
+    provenance: gapProvenance('Deterministic'),
+  })),
 ];
 
 export const ClassesGroupAtScale: Story = {
   // #167/AC-0082: at scale the gap lane triages by cause class — grouped
   // deterministically (count desc), expanding to paged instances; the
-  // per-gap Resolution Strategy path is unchanged. The 5 gap CALLS edge
-  // assertions in the fixture are supporting assertions of node findings
-  // and must not be listed as rows of their own (#241).
+  // per-gap Resolution Strategy path is unchanged. #241: the 3 supporting
+  // edges of listed gap nodes fold into their node's finding (the edge
+  // class stays ×5 standalone edge-gaps, never ×8), so nothing is counted
+  // or classed twice.
   args: {
     summary: {
-      gaps: 340,
+      gaps: 345,
       unsupported: 0,
       no_evidence: 0,
       drift: 0,
-      open_findings: 340,
+      open_findings: 345,
       graph_facts: 40_000,
     },
     gaps: SCALE_GAPS,
@@ -265,18 +275,19 @@ export const ClassesGroupAtScale: Story = {
   },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    // 340 gap-node findings read as 2 causes, largest first — the edge
-    // assertions never form a phantom third class.
-    await expect(canvas.getByText('System gaps · 340 — 2 causes')).toBeInTheDocument();
+    // 345 findings read as 3 causes, largest first — the 3 supporting
+    // edges fold into the ×300 class's nodes instead of inflating it.
+    await expect(canvas.getByText('System gaps · 345 — 3 causes')).toBeInTheDocument();
     const classes = within(canvas.getByLabelText('Gap classes'));
     const heads = classes.getAllByRole('button', { expanded: false });
-    await expect(heads).toHaveLength(2);
+    await expect(heads).toHaveLength(3);
     await expect(heads[0]).toHaveTextContent('×300');
     await expect(heads[0]).toHaveTextContent('runtime-computed message identity');
     await expect(heads[1]).toHaveTextContent('×40');
     await expect(heads[1]).toHaveTextContent('unresolved Java import target');
     await expect(heads[1]).toHaveTextContent('t0.adapter-java');
-    await expect(canvas.queryByText('unresolved CALLS edge')).not.toBeInTheDocument();
+    await expect(heads[2]).toHaveTextContent('×5');
+    await expect(heads[2]).toHaveTextContent('unresolved CALLS edge');
 
     // Grouping is deterministic: shuffled input yields the same class order.
     const shuffledOrder = groupGapClasses([...SCALE_GAPS].reverse()).map((c) => c.key);

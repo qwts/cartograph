@@ -247,11 +247,25 @@ export function GapsDriftSurface({
   onDecideProposal,
 }: GapsDriftSurfaceProps) {
   const [tab, setTab] = useState<Tab>('lanes');
-  // Reconcile with findings_summary's own definitions (#241): both headlines
-  // count nodes only — gap CALLS edges and drift CONFLICTS/DRIFTS_FROM edges
-  // are supporting assertions of the same finding, and flow-hop assertions
-  // restate the same gaps inside flows, so neither lane lists them as rows.
-  const gapFindings = gaps.filter((assertion) => assertion.id.startsWith('node:'));
+  // Reconcile with findings_summary's own definition (#241): a gap edge
+  // that touches a listed gap node supports that node's finding and never
+  // doubles it, while an edge-only gap (no gap node on either end — e.g. a
+  // callee unresolvable between two real symbols) stays a finding of its
+  // own. Flow-hop assertions restate the same gaps inside flows; drift
+  // mirrors the rule via its node-only filter (CONFLICTS/DRIFTS_FROM edges
+  // support the drift node).
+  const listedGapNodes = new Set(
+    gaps.filter((assertion) => assertion.id.startsWith('node:')).map((a) => a.subject_id),
+  );
+  const supportsListedNode = (assertion: SpecAssertion) => {
+    const [src, , dst] = assertion.subject_id.split(' ');
+    return listedGapNodes.has(src) || listedGapNodes.has(dst ?? '');
+  };
+  const gapFindings = gaps.filter(
+    (assertion) =>
+      assertion.id.startsWith('node:') ||
+      (assertion.id.startsWith('edge:') && !supportsListedNode(assertion)),
+  );
   // At scale the lane triages by cause class, never row-by-row (#167).
   const flowGapSet = new Set(flowGapIds ?? []);
   const gapClasses =
