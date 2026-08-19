@@ -575,8 +575,11 @@ fn joined_route(prefix: &str, route: &str) -> String {
 
 /// Every extension this crate collects/parses (`collect_ts_files`); shared
 /// with `resolve_relative`'s extensionless-import guess and
-/// `reconcile_guessed_extension`'s directory-wide correction of it.
-const SOURCE_EXTENSIONS: [&str; 6] = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+/// `reconcile_guessed_extension`'s directory-wide correction of it. Public
+/// so the adapter inventory (`ingest::preflight::INSTALLED_ADAPTERS`) can be
+/// asserted against what the walker actually ingests (#247) — the Settings
+/// card copy derives from that registry and must not drift from this list.
+pub const SOURCE_EXTENSIONS: [&str; 6] = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 
 /// Resolve a relative import specifier against the importing file's path.
 /// Returns `None` for bare (package) specifiers. An explicit known extension
@@ -2888,12 +2891,7 @@ fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::
                 continue;
             }
             collect_ts_files(root, &path, out)?;
-        } else if (name.ends_with(".ts")
-            || name.ends_with(".tsx")
-            || name.ends_with(".js")
-            || name.ends_with(".jsx")
-            || name.ends_with(".mjs")
-            || name.ends_with(".cjs"))
+        } else if SOURCE_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
             && !name.ends_with(".d.ts")
         {
             let rel = path
