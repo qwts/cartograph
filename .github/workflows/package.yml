@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authorize direct workflow event
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@21d64d91c80b3f4af78919e5106b8e45b2b366dd
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4
         with:
           authorization-only: 'true'
 
