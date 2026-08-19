@@ -42,7 +42,7 @@ jobs:
       run_post_merge: ${{ steps.policy.outputs.run_post_merge }}
     steps:
       - id: policy
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@a407b9afcfa8c515e3c4a41f535d1c5cfafa1116
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@21d64d91c80b3f4af78919e5106b8e45b2b366dd
 
   merge-evidence:
     name: Verify merged commit evidence
@@ -149,7 +149,7 @@ jobs:
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
 
       - name: Enable Rust problem matcher
         run: echo "::add-matcher::.github/rust-problem-matcher.json"
