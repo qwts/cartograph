@@ -18,12 +18,426 @@
 // there: `.local` ↔ `.lan` drift made crashed same-machine locks permanently
 // unreclaimable, so the crash-recovery path became the outage.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { CORE_LEASE_FIELDS, PROTOCOL_VERSION, ensureStateDirs, lanePeaksDir, leasesDir, machineToken, stateDir } from './protocol.mjs';
+
+const GIT_EXECUTABLES = ['/usr/bin/git', '/bin/git'];
+const BEHAVIOR_IDENTITY_VERSION = 6;
+const MAX_INTERPRETER_PAYLOAD_BYTES = 16 * 1024 * 1024;
+const INDIRECT_EXECUTABLES = new Set([
+  'chrt',
+  'doas',
+  'env',
+  'flock',
+  'ionice',
+  'nice',
+  'nohup',
+  'setsid',
+  'strace',
+  'stdbuf',
+  'sudo',
+  'time',
+  'timeout',
+  'xargs',
+]);
+const TRANSITIVE_DISPATCHERS = new Set([
+  'bun',
+  'bunx',
+  'c8',
+  'corepack',
+  'deno',
+  'electron',
+  'npm',
+  'npx',
+  'pnpm',
+  'pnpx',
+  'playwright',
+  'test-storybook',
+  'vitest',
+  'yarn',
+  'yarnpkg',
+]);
+const UNTRACKED_GUARD_DIAGNOSTICS = new Set([
+  '? .guard/history.jsonl',
+  '? .guard/last-run.json',
+]);
+
+function canonicalWorktreePath(worktree) {
+  try {
+    return realpathSync(worktree);
+  } catch {
+    return path.resolve(worktree);
+  }
+}
+
+function gitEnvironment(env) {
+  const clean = { ...env };
+  for (const name of Object.keys(clean)) {
+    if (name.startsWith('GIT_')) delete clean[name];
+  }
+  clean.GIT_OPTIONAL_LOCKS = '0';
+  return clean;
+}
+
+/**
+ * Dormant future-provenance identity for a peak store namespace.
+ *
+ * Git's common directory is the one filesystem object shared by a checkout's
+ * primary worktree and all of its linked worktrees. Canonicalising it also
+ * prevents symlink spellings of the same checkout from splitting history.
+ * Separate clones keep separate common directories even when their worktree
+ * basenames match. If Git cannot identify the checkout, fall back to the
+ * canonical full worktree path: losing history is safe; aliasing repositories
+ * is not.
+ */
+export function repositoryIdentity(worktree, { env = process.env } = {}) {
+  const canonicalWorktree = canonicalWorktreePath(worktree);
+
+  const git = GIT_EXECUTABLES.find((candidate) => existsSync(candidate));
+  if (git === undefined) return canonicalWorktree;
+
+  // Git identity variables are caller-controlled process state. Letting them
+  // redirect this lookup would let a run borrow another checkout's light-lane
+  // history. Resolve from the worktree on disk instead.
+  try {
+    const raw = execFileSync(git, ['-C', canonicalWorktree, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8',
+      env: gitEnvironment(env),
+      timeout: 2000,
+    }).trim();
+    const commonDir = path.isAbsolute(raw) ? raw : path.resolve(canonicalWorktree, raw);
+    return realpathSync(commonDir);
+  } catch {
+    return canonicalWorktree;
+  }
+}
+
+function resolveExecutable(worktree, command, env) {
+  const requested = command[0];
+  const candidates = requested.includes(path.sep)
+    ? [path.isAbsolute(requested) ? requested : path.resolve(worktree, requested)]
+    : (env.PATH ?? '/usr/bin:/bin').split(path.delimiter).map((entry) => path.resolve(entry || worktree, requested));
+
+  let executable;
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      executable = realpathSync(candidate);
+      break;
+    } catch {
+      // execvp-style search: keep looking for a runnable candidate.
+    }
+  }
+  return executable ?? null;
+}
+
+function executableEvidence(worktree, executable) {
+  try {
+    const stats = statSync(executable, { bigint: true });
+    if (!stats.isFile()) return null;
+    const relative = path.relative(worktree, executable);
+    const insideWorktree = relative === '' || (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+    if (insideWorktree) {
+      return {
+        scope: 'worktree',
+        path: relative || '.',
+        sha256: createHash('sha256').update(readFileSync(executable)).digest('hex'),
+      };
+    }
+    return {
+      scope: 'external',
+      path: executable,
+      device: String(stats.dev),
+      inode: String(stats.ino),
+      mode: String(stats.mode),
+      size: String(stats.size),
+      modifiedNs: String(stats.mtimeNs),
+      changedNs: String(stats.ctimeNs),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function executableNames(requested, canonical) {
+  return [requested, canonical].map((value) => path.basename(value).toLowerCase());
+}
+
+function interpreterNameFamily(name) {
+  if (/^(?:node|nodejs)(?:[.-]?\d+(?:\.\d+)*)?$/u.test(name)) return 'node';
+  if (/^(?:python|pypy)(?:[.-]?\d+(?:\.\d+)*)?$/u.test(name)) return 'python';
+  if (/^(?:bash|dash|ksh|sh)(?:[.-]?\d+(?:\.\d+)*)?$/u.test(name)) return 'shell';
+  if (/^(?:ash|csh|fish|mksh|powershell|pwsh|tcsh|zsh)(?:[.-]?\d+(?:\.\d+)*)?$/u.test(name)) return 'unsupported-shell';
+  return null;
+}
+
+function interpreterFamily(requested, canonical) {
+  const [requestedFamily, canonicalFamily] = executableNames(requested, canonical).map(interpreterNameFamily);
+  if (canonicalFamily === null) return requestedFamily === null ? null : 'conflict';
+  if (requestedFamily !== null && requestedFamily !== canonicalFamily) return 'conflict';
+  return canonicalFamily;
+}
+
+function sameStableFile(before, after) {
+  return ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'].every((name) => before[name] === after[name]);
+}
+
+function payloadFileEvidence(raw, canonicalCwd, repositoryRoot) {
+  if (raw === '' || raw === '-') return null;
+  const resolved = path.resolve(canonicalCwd, raw);
+  try {
+    const canonical = realpathSync(resolved);
+    const before = statSync(canonical, { bigint: true });
+    if (!before.isFile() || before.size < 0n || before.size > BigInt(MAX_INTERPRETER_PAYLOAD_BYTES)) return null;
+    const contents = readFileSync(canonical);
+    const after = statSync(canonical, { bigint: true });
+    if (BigInt(contents.length) !== before.size || !sameStableFile(before, after)) return null;
+    return {
+      scope: repositoryRelativePath(repositoryRoot, canonical) === null ? 'external' : 'worktree',
+      raw,
+      resolved,
+      canonical,
+      repositoryPath: repositoryRelativePath(repositoryRoot, canonical),
+      device: String(before.dev),
+      inode: String(before.ino),
+      mode: String(before.mode),
+      size: String(before.size),
+      modifiedNs: String(before.mtimeNs),
+      changedNs: String(before.ctimeNs),
+      sha256: createHash('sha256').update(contents).digest('hex'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function hasIndirectEnvironment(family, env) {
+  const nonEmpty = (name) => typeof env[name] === 'string' && env[name] !== '';
+  if (Object.keys(env).some((name) => (name.startsWith('LD_') || name.startsWith('DYLD_')) && nonEmpty(name))) return true;
+  if (family === 'node') {
+    if (nonEmpty('NODE_PATH')) return true;
+    if (nonEmpty('NODE_OPTIONS') && !/^--max-old-space-size=\d+$/u.test(env.NODE_OPTIONS.trim())) return true;
+  }
+  if (family === 'python' && ['PYTHONHOME', 'PYTHONINSPECT', 'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONUSERBASE'].some(nonEmpty)) return true;
+  if (family === 'shell' && ['BASH_ENV', 'ENV', 'ZDOTDIR'].some(nonEmpty)) return true;
+  return false;
+}
+
+function unrecognizedExecutableStaysCold(worktree, command) {
+  const args = command.slice(1);
+  if (args.length === 0 || args.some((raw) => raw.startsWith('-') || raw.startsWith('+'))) return true;
+  for (const raw of args) {
+    const equalsAt = raw.indexOf('=');
+    const candidates = equalsAt >= 0 && equalsAt < raw.length - 1 ? [raw, raw.slice(equalsAt + 1)] : [raw];
+    for (const candidate of candidates) {
+      try {
+        realpathSync(path.resolve(worktree, candidate));
+        return true;
+      } catch {
+        // Literal and missing operands do not identify mutable filesystem
+        // input. Exact argv still binds their behavior identity.
+      }
+    }
+  }
+  return false;
+}
+
+function commandPayloadEvidence(worktree, command, env, repositoryRoot, executable) {
+  const names = executableNames(command[0], executable);
+  // These launchers can execute ignored dependencies, generated outputs,
+  // plugins, or network-selected code that their own entry bytes do not bind.
+  // Until the guard has immutable provenance for those transitive inputs,
+  // they cannot seed reusable light-lane history.
+  if (names.some((name) => INDIRECT_EXECUTABLES.has(name) || TRANSITIVE_DISPATCHERS.has(name))) return null;
+  const family = interpreterFamily(command[0], executable);
+  if (family === null) {
+    // A copied or renamed runtime has no trustworthy family. Filesystem and
+    // stdin-shaped operands stay cold rather than becoming inert native argv.
+    return unrecognizedExecutableStaysCold(worktree, command) ? null : { kind: 'native' };
+  }
+  if (family === 'conflict' || family === 'unsupported-shell') return null;
+  if (hasIndirectEnvironment(family, env)) return null;
+  const args = command.slice(1);
+  const explicitSeparator = family === 'python' ? args[1] === '--' : args[0] === '--';
+  const payloadAt = family === 'python'
+    ? (args[0] === '-S' ? (explicitSeparator ? 2 : 1) : -1)
+    : (explicitSeparator ? 1 : 0);
+  if (
+    payloadAt < 0 ||
+    payloadAt >= args.length ||
+    args[payloadAt] === '-' ||
+    (!explicitSeparator && (args[payloadAt].startsWith('-') || args[payloadAt].startsWith('+')))
+  ) return null;
+  const file = payloadFileEvidence(args[payloadAt], worktree, repositoryRoot);
+  if (file === null) return null;
+  return { kind: 'interpreter-file', family, file };
+}
+
+function repositoryRelativePath(repositoryRoot, target) {
+  const relative = path.relative(repositoryRoot, target);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  return relative ? relative.split(path.sep).join('/') : '.';
+}
+
+// Objects, rather than sentinel strings, keep structural tags disjoint from
+// literal environment values. Only canonical containment earns a portable
+// worktree-relative tag; every other spelling stays bound to its raw and
+// absolute resolution evidence.
+function structuralPathEvidence(raw, canonicalCwd, repositoryRoot, { emptyMeansCwd = false } = {}) {
+  if (raw === '' && !emptyMeansCwd) return { scope: 'literal', raw, value: '' };
+  const spelling = raw === '' && emptyMeansCwd ? '.' : raw;
+  const resolved = path.resolve(canonicalCwd, spelling);
+  try {
+    const canonical = realpathSync(resolved);
+    const repositoryPath = repositoryRelativePath(repositoryRoot, canonical);
+    if (repositoryPath !== null) return { scope: 'worktree', raw, path: repositoryPath };
+    return {
+      scope: 'external',
+      raw,
+      resolved,
+      canonical,
+    };
+  } catch {
+    return { scope: 'unresolved', raw, resolved };
+  }
+}
+
+function normalizedEnvironment(env, canonicalCwd, repositoryRoot) {
+  const entries = [];
+  for (const name of Object.keys(env).sort()) {
+    if (typeof env[name] !== 'string') return null;
+    const raw = env[name];
+    // These are structural checkout locations, not caller-selected behavior:
+    // model their repository-relative meaning so equivalent sibling
+    // worktrees can share. Every other environment value remains exact.
+    let value = raw;
+    if (name === 'PWD' || name === 'INIT_CWD') {
+      value = structuralPathEvidence(raw, canonicalCwd, repositoryRoot);
+    } else if (name === 'PATH') {
+      value = {
+        scope: 'path-list',
+        raw,
+        entries: raw.split(path.delimiter).map((entry) => (
+          structuralPathEvidence(entry, canonicalCwd, repositoryRoot, { emptyMeansCwd: true })
+        )),
+      };
+    }
+    entries.push([name, value]);
+  }
+  return entries;
+}
+
+export function repositoryWorktreeRoot(worktree, { env = process.env } = {}) {
+  const canonicalCwd = canonicalWorktreePath(worktree);
+  const git = GIT_EXECUTABLES.find((candidate) => existsSync(candidate));
+  if (git === undefined) return null;
+  try {
+    const topLevel = execFileSync(
+      git,
+      ['-C', canonicalCwd, 'rev-parse', '--path-format=absolute', '--show-toplevel'],
+      { encoding: 'utf8', env: gitEnvironment(env), timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    if (!path.isAbsolute(topLevel)) return null;
+    const repositoryRoot = realpathSync(topLevel);
+    const relative = path.relative(repositoryRoot, canonicalCwd);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+    return repositoryRoot;
+  } catch {
+    return null;
+  }
+}
+
+function repositoryRelativeCwd(repositoryRoot, canonicalCwd) {
+  return repositoryRelativePath(repositoryRoot, canonicalCwd);
+}
+
+/**
+ * Dormant future-provenance evidence that a command still means what a proven
+ * peak measured. The production runner does not consume this identity today.
+ *
+ * The common Git directory deliberately lets sibling worktrees share state,
+ * but that is safe only when their clean revision, executable, argv and child
+ * environment agree. Any missing or dirty evidence returns null so admission
+ * treats the lane as unmeasured. Environment values are authenticated with the
+ * machine token and never persisted in the peak filename or file contents.
+ */
+export function commandBehaviorIdentity(worktree, command, { env = process.env, behaviorEnv = env } = {}) {
+  if (!Array.isArray(command) || command.length === 0 || command.some((part) => typeof part !== 'string')) return null;
+  const canonicalCwd = canonicalWorktreePath(worktree);
+  const git = GIT_EXECUTABLES.find((candidate) => existsSync(candidate));
+  if (git === undefined) return null;
+
+  try {
+    const options = { encoding: 'utf8', env: gitEnvironment(env), timeout: 5000 };
+    const repositoryRoot = repositoryWorktreeRoot(canonicalCwd, { env });
+    if (repositoryRoot === null) return null;
+    const relativeCwd = repositoryRelativeCwd(repositoryRoot, canonicalCwd);
+    if (relativeCwd === null) return null;
+    const status = execFileSync(
+      git,
+      ['-C', canonicalCwd, 'status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all', '--ignore-submodules=none'],
+      options,
+    ).split('\0').filter(Boolean);
+    const revision = status.find((entry) => entry.startsWith('# branch.oid '))?.slice('# branch.oid '.length);
+    const dirty = status.some((entry) => !entry.startsWith('# ') && !UNTRACKED_GUARD_DIAGNOSTICS.has(entry));
+    if (!revision || revision === '(initial)' || dirty) return null;
+
+    // status/diff intentionally trust index hints such as assume-unchanged and
+    // skip-worktree. Those hints are local performance controls, not evidence
+    // that the worktree bytes still match HEAD, so any such entry makes this a
+    // cold start. With `-v`, ordinary tracked entries are tagged `H`, while an
+    // assume-unchanged tag is lower-case and skip-worktree is tagged `S`.
+    const tracked = execFileSync(git, ['-C', canonicalCwd, 'ls-files', '-v', '-z'], options)
+      .split('\0')
+      .filter(Boolean);
+    if (tracked.some((entry) => !entry.startsWith('H '))) return null;
+
+    const resolvedExecutable = resolveExecutable(canonicalCwd, command, behaviorEnv);
+    if (resolvedExecutable === null) return null;
+    const executable = executableEvidence(canonicalCwd, resolvedExecutable);
+    const payload = commandPayloadEvidence(canonicalCwd, command, behaviorEnv, repositoryRoot, resolvedExecutable);
+    const environment = normalizedEnvironment(behaviorEnv, canonicalCwd, repositoryRoot);
+    if (executable === null || payload === null || environment === null) return null;
+    const evidence = JSON.stringify({
+      version: BEHAVIOR_IDENTITY_VERSION,
+      revision,
+      command,
+      cwd: { raw: worktree, canonical: canonicalCwd, repositoryRelative: relativeCwd },
+      executable,
+      payload,
+      environment,
+    });
+    return createHmac('sha256', machineToken(env)).update(evidence).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function lanePeakFile(env, repo, label, command, behaviorIdentity) {
+  const valid =
+    typeof repo === 'string' &&
+    repo !== '' &&
+    typeof label === 'string' &&
+    label !== '' &&
+    Array.isArray(command) &&
+    command.length > 0 &&
+    command.every((part) => typeof part === 'string') &&
+    typeof behaviorIdentity === 'string' &&
+    behaviorIdentity !== '';
+  if (!valid) return null;
+  // Full canonical paths are deliberately part of the identity, but must not
+  // become filenames: long worktree roots can exceed a filesystem component
+  // limit, and delimiter-based concatenation has ambiguous edge cases. Hash
+  // the structured tuple instead.
+  const digest = createHash('sha256')
+    .update(JSON.stringify([BEHAVIOR_IDENTITY_VERSION, repo, label, command, behaviorIdentity]))
+    .digest('hex');
+  return path.join(lanePeaksDir(env), `${digest}.json`);
+}
 
 export function isProcessAlive(pid) {
   try {
@@ -131,12 +545,24 @@ export function readLeases(env = process.env, { reap = true } = {}) {
   return live;
 }
 
+function writeFileAtomically(file, content) {
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp, content);
+    renameSync(temp, file);
+  } finally {
+    try {
+      rmSync(temp, { force: true });
+    } catch {
+      // The rename consumed it, or cleanup will happen with the state store.
+    }
+  }
+}
+
 function writeLeaseFile(file, lease) {
   // Write-then-rename: a reader never sees a partial lease, which would
   // otherwise be reaped as junk and free budget that is genuinely in use.
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(lease, null, 2)}\n`);
-  renameSync(temp, file);
+  writeFileAtomically(file, `${JSON.stringify(lease, null, 2)}\n`);
 }
 
 export function acquireLease({ env = process.env, label, estimatedMb, repo, worktree, harness, command, pid = process.pid }) {
@@ -235,34 +661,38 @@ const LOCK_STALE_MS = 30_000;
 const LOCK_POLL_MS = 50;
 
 /**
- * Record a lane's measured peak after a COMPLETED run, keyed by repo and
- * label. Stored in the protected state directory so shell commands cannot
- * plant a low peak to shrink the next reservation; only run-guarded itself
- * writes here, from RSS it measured. Kept as a small rolling window so one
- * unusually light run does not undersize the next reservation.
+ * Dormant future-provenance store API, keyed by repository, label, exact argv,
+ * and verified behavior identity. run-guarded currently neither calls this nor
+ * reads its output: automatic polling cannot prove a true high-water mark.
+ * Retained for compatibility tests and a future trusted recorder.
  */
-export function recordLanePeak({ env = process.env, repo, label, peakRssMb }) {
-  if (!Number.isFinite(peakRssMb) || peakRssMb <= 0) return;
-  const file = path.join(lanePeaksDir(env), `${encodeURIComponent(`${repo}::${label}`)}.json`);
-  let peaks = [];
+export async function recordLanePeak({ env = process.env, repo, label, command, behaviorIdentity, peakRssMb }) {
+  if (!Number.isFinite(peakRssMb) || peakRssMb <= 0) return false;
+  const file = lanePeakFile(env, repo, label, command, behaviorIdentity);
+  if (file === null) return false;
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'));
-    if (Array.isArray(parsed)) peaks = parsed.filter((value) => Number.isFinite(value) && value > 0);
+    return await withAdmissionLock(env, () => {
+      let peaks = [];
+      try {
+        const parsed = JSON.parse(readFileSync(file, 'utf8'));
+        if (Array.isArray(parsed)) peaks = parsed.filter((value) => Number.isFinite(value) && value > 0);
+      } catch {
+        // First record, or an unreadable file: start fresh.
+      }
+      peaks.push(Math.round(peakRssMb));
+      writeFileAtomically(file, `${JSON.stringify(peaks.slice(-5))}\n`);
+      return true;
+    });
   } catch {
-    // First record, or an unreadable file: start fresh.
-  }
-  peaks.push(Math.round(peakRssMb));
-  try {
-    mkdirSync(lanePeaksDir(env), { recursive: true });
-    writeFileSync(file, `${JSON.stringify(peaks.slice(-5))}\n`);
-  } catch {
-    // Peak history is an optimization; failing to record must not fail the run.
+    // Peak history is an optimization; lock or write failure must not fail the run.
+    return false;
   }
 }
 
 /** The largest recent recorded peak for a lane, or null without history. */
-export function readLanePeakMb({ env = process.env, repo, label }) {
-  const file = path.join(lanePeaksDir(env), `${encodeURIComponent(`${repo}::${label}`)}.json`);
+export function readLanePeakMb({ env = process.env, repo, label, command, behaviorIdentity }) {
+  const file = lanePeakFile(env, repo, label, command, behaviorIdentity);
+  if (file === null) return null;
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8'));
     const peaks = Array.isArray(parsed) ? parsed.filter((value) => Number.isFinite(value) && value > 0) : [];

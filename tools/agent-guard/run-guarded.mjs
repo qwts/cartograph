@@ -24,16 +24,16 @@
 //        AGENT_GUARDED=1 (set for children so nested guards pass through).
 
 import { execFile, spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
-import { clampCeiling, decideAdmission, deriveBudgetForMemory, laneReservationMb } from './lib/budget.mjs';
-import { acquireLease, heartbeatLease, leaseExists, psExecutable, readLanePeakMb, readLeases, recordLanePeak, releaseLease, retargetLease, withAdmissionLock } from './lib/leases.mjs';
+import { clampCeiling, decideAdmission, deriveBudgetForMemory } from './lib/budget.mjs';
+import { acquireLease, heartbeatLease, leaseExists, psExecutable, readLeases, releaseLease, repositoryWorktreeRoot, retargetLease, withAdmissionLock } from './lib/leases.mjs';
 import { evaluateLanePolicy, harnessName, isAgentSession } from './lib/policy.mjs';
 import { readMemoryStatus, topConsumers } from './lib/system-memory.mjs';
 
-const POLL_MS = 250;
+export const POLL_MS = 250;
 const HEARTBEAT_MS = 3000;
 const SIGKILL_AFTER_MS = 2000;
 // A runaway can allocate faster than a SIGTERM shutdown completes; past this
@@ -96,6 +96,33 @@ export function resolveRequest(options, env, budget) {
   };
 }
 
+// Automatic peak reuse is deliberately dormant. Polling cannot prove a true
+// process-tree high-water mark, and arbitrary commands may consume inherited
+// stdin or mutable transitive inputs that are not bound by behavior evidence.
+// Keep the admission seam explicit for a future OS-backed/provenance-backed
+// design, but never let an existing store entry reduce today's reservation.
+export function applyAutomaticLaneHistoryPolicy(request) {
+  request.lanePeakMb = null;
+  request.reserveMb = request.ceilingMb;
+  return request;
+}
+
+export function guardDiagnosticPaths(worktree, { env = process.env } = {}) {
+  let cwd;
+  try {
+    cwd = realpathSync(worktree);
+  } catch {
+    cwd = path.resolve(worktree);
+  }
+  const guardDir = path.join(repositoryWorktreeRoot(cwd, { env }) ?? cwd, '.guard');
+  const lastRunPath = path.join(guardDir, 'last-run.json');
+  return {
+    guardDir,
+    lastRunPath,
+    lastRunDisplayPath: path.relative(cwd, lastRunPath) || lastRunPath,
+  };
+}
+
 // Aggregate RSS (KB) of the guarded tree: descendants of rootPid plus anything
 // still in its process group (catches orphans that reparented to launchd/init).
 export function collectTreeRssKb(psOutput, rootPid) {
@@ -127,6 +154,30 @@ export function collectTreeRssKb(psOutput, rootPid) {
     }
   }
   return { totalKb, processCount };
+}
+
+// Spawn the exact requested argv without a shell interpolation layer.
+export function guardedInvocation(command) {
+  return {
+    executable: command[0],
+    args: command.slice(1),
+  };
+}
+
+export function recordProcessTreeSample(state, psOutput, rootPid) {
+  const { totalKb, processCount } = collectTreeRssKb(psOutput, rootPid);
+  // `ps` reports KB, but the public record is whole MB. A real one-process
+  // tree must never round down to the same zero used for "not measured".
+  const rssMb = processCount > 0 && totalKb > 0 ? Math.max(1, Math.ceil(totalKb / 1024)) : 0;
+  if (state.done) return { rssMb, processCount };
+  state.peakRssMb = Math.max(state.peakRssMb, rssMb);
+  state.peakProcessCount = Math.max(state.peakProcessCount, processCount);
+  return { rssMb, processCount };
+}
+
+export function startProcessTreeMonitor(sample, { schedule = setInterval, intervalMs = POLL_MS } = {}) {
+  sample();
+  return schedule(sample, intervalMs);
 }
 
 function passthrough(command) {
@@ -179,7 +230,13 @@ async function admit({ env, request, budget, leaseFields }) {
     const attempt = await withAdmissionLock(env, () => {
       const memory = readMemoryStatus();
       const leases = readLeases(env);
-      const decision = decideAdmission({ budget, memory, leases, requestMb: request.reserveMb ?? request.ceilingMb });
+      const decision = decideAdmission({
+        budget,
+        memory,
+        leases,
+        requestMb: request.reserveMb ?? request.ceilingMb,
+        lanePeakMb: request.lanePeakMb,
+      });
       if (!decision.granted && env.AGENT_GUARD_FORCE !== '1') return { decision, memory };
       const lease = acquireLease({ env, estimatedMb: request.reserveMb ?? request.ceilingMb, ...leaseFields });
       return { decision, memory, lease };
@@ -228,24 +285,20 @@ async function main() {
   const initialMemory = readMemoryStatus();
   const totalMb = initialMemory.totalMb;
   const budget = deriveBudgetForMemory(initialMemory);
-  const request = resolveRequest(options, process.env, budget);
+  const request = applyAutomaticLaneHistoryPolicy(resolveRequest(options, process.env, budget));
   if (request.clamped) {
     note(`ceiling clamped: requested ${request.requestedMb} MB, machine cap is ${request.ceilingMb} MB (${totalMb} MB total RAM, ${budget.machineBudgetMb} MB machine budget). Tightening is allowed; loosening is not.`);
   }
 
   const worktree = process.cwd();
-  const guardDir = path.join(worktree, '.guard');
-
-  // Plan with what the lane actually costs, enforce with the ceiling. Peaks
-  // come from the protected state store — recorded only by run-guarded from
-  // RSS it measured, never from worktree files an agent can edit (#203
-  // review) — so a trustworthy recent peak lowers the reservation while the
-  // kill at the ceiling is unchanged by history.
-  const lanePeakMb = readLanePeakMb({ env: process.env, repo: path.basename(worktree), label: options.label });
-  request.reserveMb = laneReservationMb(request.ceilingMb, lanePeakMb);
-  if (request.reserveMb < request.ceilingMb) {
-    note(`reserving ${request.reserveMb} MB from the lane's recent measured peak (${lanePeakMb} MB); the enforced ceiling stays ${request.ceilingMb} MB.`);
-  }
+  // One diagnostic location per Git worktree: a run from a nested cwd must
+  // not scatter untracked files through nested directories. A non-Git or
+  // unresolvable cwd safely falls back to its own local diagnostics.
+  const { guardDir, lastRunPath, lastRunDisplayPath } = guardDiagnosticPaths(worktree, { env: process.env });
+  const nodeOptions = [process.env.NODE_OPTIONS, `--max-old-space-size=${request.heapMb}`].filter(Boolean).join(' ');
+  // The live lease id is added after admission so nested guarded commands can
+  // prove they belong to this process group.
+  const childEnvironment = { ...process.env, NODE_OPTIONS: nodeOptions };
 
   const { decision, memory, lease, refused } = await admit({
     env: process.env,
@@ -263,14 +316,14 @@ async function main() {
 
   mkdirSync(guardDir, { recursive: true });
 
-  const nodeOptions = [process.env.NODE_OPTIONS, `--max-old-space-size=${request.heapMb}`].filter(Boolean).join(' ');
   const startedAt = Date.now();
-  const child = spawn(command[0], command.slice(1), {
+  const invocation = guardedInvocation(command);
+  const child = spawn(invocation.executable, invocation.args, {
     stdio: 'inherit',
     detached: true, // new process group; kill(-pid) reaches every descendant
     // The marker carries this run's lease id, so a child can prove it is
     // nested inside a real guarded run rather than merely asserting it.
-    env: { ...process.env, AGENT_GUARDED: lease.id, NODE_OPTIONS: nodeOptions },
+    env: { ...childEnvironment, AGENT_GUARDED: lease.id },
   });
 
   // The admitted reservation must follow the detached group, not this
@@ -286,7 +339,17 @@ async function main() {
     fail('failed to bind the admission lease to the guarded process group');
   }
 
-  const state = { peakRssMb: 0, peakProcessCount: 0, reason: null, termAt: null, done: false, polling: false, lastBeat: 0, monitorFailures: 0, killTimer: null };
+  const state = {
+    peakRssMb: 0,
+    peakProcessCount: 0,
+    reason: null,
+    termAt: null,
+    done: false,
+    polling: false,
+    lastBeat: 0,
+    monitorFailures: 0,
+    killTimer: null,
+  };
 
   const killGroup = (signal) => {
     try {
@@ -311,7 +374,7 @@ async function main() {
   const timeoutTimer =
     request.timeoutS > 0 ? setTimeout(() => terminate('timeout'), request.timeoutS * 1000) : null;
 
-  const poll = setInterval(() => {
+  const sampleTree = () => {
     if (state.polling) return;
     state.polling = true;
     execFile(ps, ['-axo', 'pid=,ppid=,pgid=,rss='], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
@@ -323,10 +386,8 @@ async function main() {
         return;
       }
       state.monitorFailures = 0;
-      const { totalKb, processCount } = collectTreeRssKb(stdout, child.pid);
-      const rssMb = Math.round(totalKb / 1024);
-      state.peakRssMb = Math.max(state.peakRssMb, rssMb);
-      state.peakProcessCount = Math.max(state.peakProcessCount, processCount);
+      const sample = recordProcessTreeSample(state, stdout, child.pid);
+      const { rssMb } = sample;
       // Report real usage so other repos' arbiters stop counting this run's
       // reservation twice (see lib/budget.mjs unmaterializedMb).
       if (Date.now() - state.lastBeat > HEARTBEAT_MS) {
@@ -337,10 +398,17 @@ async function main() {
         if (Date.now() - state.termAt > SIGKILL_AFTER_MS || rssMb > request.ceilingMb * HARD_KILL_FACTOR) killGroup('SIGKILL');
         return;
       }
-      if (rssMb > request.ceilingMb) terminate('rss-limit');
-      else if (request.timeoutS > 0 && Date.now() - startedAt > request.timeoutS * 1000) terminate('timeout');
+      if (rssMb > request.ceilingMb) {
+        terminate('rss-limit');
+        return;
+      }
+      if (request.timeoutS > 0 && Date.now() - startedAt > request.timeoutS * 1000) {
+        terminate('timeout');
+        return;
+      }
     });
-  }, POLL_MS);
+  };
+  const poll = startProcessTreeMonitor(sampleTree);
 
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(signal, () => {
@@ -374,18 +442,15 @@ async function main() {
       terminationReason: state.reason ?? 'completed',
     };
     try {
-      writeFileSync(path.join(guardDir, 'last-run.json'), `${JSON.stringify(record, null, 2)}\n`);
+      writeFileSync(lastRunPath, `${JSON.stringify(record, null, 2)}\n`);
       appendFileSync(path.join(guardDir, 'history.jsonl'), `${JSON.stringify(record)}\n`);
     } catch {
       // Diagnostics are best-effort.
     }
     if (state.reason !== null) {
-      note(`run failed: ${state.reason} (diagnostics in .guard/last-run.json).`);
+      note(`run failed: ${state.reason} (diagnostics in ${lastRunDisplayPath}).`);
       process.exit(1);
     }
-    // Only a completed run's peak informs future reservations: a run killed
-    // at the ceiling or timed out proves nothing about steady-state cost.
-    if (code === 0) recordLanePeak({ env: process.env, repo: path.basename(worktree), label: options.label, peakRssMb: state.peakRssMb });
     process.exit(code ?? (signal ? 1 : 0));
   });
 

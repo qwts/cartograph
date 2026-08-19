@@ -68,10 +68,11 @@ export function grantsDir(env = process.env) {
   return path.join(stateDir(env), 'grants');
 }
 
-// Per-lane measured peaks live IN the protected state store, not in the
-// worktree: a worktree file is agent-writable, and a fabricated low peak
-// would shrink the admission reservation (#203 review). The command hook
-// denies shell writes here the same way it does for leases.
+// Reserved for a future proven-peak design. The production runner currently
+// neither reads nor writes this dormant store: polling cannot prove a true
+// high-water mark, and arbitrary command inputs lack immutable provenance.
+// Keeping the protected namespace lets lower-level compatibility tests and a
+// future OS-backed implementation evolve without trusting worktree files.
 export function lanePeaksDir(env = process.env) {
   return path.join(stateDir(env), 'lane-peaks');
 }

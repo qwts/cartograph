@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseGrantMinutes } from '../arbiter.mjs';
 import { evaluateCommand, evaluateHookInput } from '../guard-agent-command.mjs';
-import { clampCeiling, deriveBudget } from '../lib/budget.mjs';
+import { clampCeiling, decideAdmission, deriveBudget } from '../lib/budget.mjs';
 import { isCi } from '../lib/policy.mjs';
 import { readMemoryStatus } from '../lib/system-memory.mjs';
 
@@ -64,6 +64,12 @@ describe('agent-guard conformance (ENG-0138)', () => {
     assert.match(runner, /monitorFailures >= MAX_MONITOR_FAILURES\) terminate\('monitor-unavailable'\)/u);
     assert.match(runner, /setTimeout\(\(\) => terminate\('timeout'\), request\.timeoutS \* 1000\)/u);
     assert.match(runner, /state\.killTimer = setTimeout\(\(\) => killGroup\('SIGKILL'\)/u);
+  });
+
+  test('the runner neither consumes nor records automatic lane peak history', () => {
+    const runner = readFileSync(path.join(root, 'tools/agent-guard/run-guarded.mjs'), 'utf8');
+    assert.doesNotMatch(runner, /\breadLanePeakMb\b/u, 'pre-existing lane peaks must not grant an admission exemption');
+    assert.doesNotMatch(runner, /\brecordLanePeak\b/u, 'a successful polled run must not seed automatic history');
   });
 
   test('Claude Code registers the guard on Bash', () => {
@@ -355,6 +361,13 @@ describe('agent-guard conformance (ENG-0138)', () => {
       assert.ok(budget.maxRunMb < totalMb, `a ${totalMb} MB machine must cap a run below its own RAM`);
       assert.equal(clampCeiling(totalMb * 4, budget).ceilingMb, budget.maxRunMb, 'an oversized request must clamp to the cap');
     }
+  });
+
+  test('the dormant admission seam requires an explicit proven peak, not a caller-declared ceiling (#223)', () => {
+    const budget = deriveBudget(16384);
+    const memory = { totalMb: 16384, availableMb: 8000, swapTotalMb: 2048, swapUsedMb: 1200, pressureLevel: 2 };
+    assert.equal(decideAdmission({ budget, memory, requestMb: 256 }).reason, 'memory-pressure');
+    assert.equal(decideAdmission({ budget, memory, requestMb: 1280, lanePeakMb: 996 }).granted, true);
   });
 
   test('Linux admission uses the container limit rather than host memory', () => {

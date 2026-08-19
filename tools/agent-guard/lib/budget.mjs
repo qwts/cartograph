@@ -12,6 +12,11 @@
 
 export const SWAP_REFUSE_RATIO = 0.5;
 
+// Proven-peak parameters below are lower-level policy seams for a future
+// OS-backed high-water/provenance design. run-guarded intentionally supplies
+// no peak today, so automatic runs reserve their full enforced ceiling and
+// receive no pressure exemption.
+
 // The per-lane hard cap (#179/#180). The incident this guard exists for was a
 // single test lane ballooning to ~100 GB and taking the machine into swap; no
 // sanctioned local lane needs more than this, and the cap is enforced on the
@@ -51,14 +56,15 @@ export function deriveBudget(totalMb) {
     // The hard floor of real, measured availability that must survive the run.
     // Cross this and the machine starts trading pages for progress.
     availabilityFloorMb: Math.max(768, Math.round(totalMb * 0.125)),
-    // A run at or below this is exempt from the pressure and swap gates
-    // (never from the headroom floor). A lint or unit lane is not what turns
-    // a thrashing machine into a frozen one — three Electron workers are —
-    // and a guard that refuses every command on a busy machine is a guard
-    // people switch off, which protects nothing at all. Kept strictly below
-    // maxRunMb: on large machines floor/2 reaches the lane cap, and a
-    // carve-out as big as the cap would exempt every run from both gates
-    // (#203 review).
+    // A lane whose separately proven peak is at or below this may be exempt
+    // from the pressure and swap gates (never from the headroom floor). A lint
+    // or unit lane is not what turns a thrashing machine into a frozen one —
+    // three Electron workers are — and a guard that refuses every command on
+    // a busy machine is a guard people switch off, which protects nothing at
+    // all. Kept strictly below maxRunMb: on large machines floor/2 reaches the
+    // lane cap, and a carve-out as big as the cap would exempt every run from
+    // both gates (#203 review). The caller's requested ceiling is enforcement,
+    // not evidence that a lane is light (#223).
     lightRunMb: Math.max(256, Math.min(Math.round(Math.max(768, Math.round(totalMb * 0.125)) / 2), Math.floor(maxRunMb / 2))),
   };
 }
@@ -85,13 +91,10 @@ export function clampCeiling(requestedMb, budget) {
 /**
  * What a lane should *reserve*, as opposed to what it may never exceed.
  *
- * The ceiling is enforcement; the reservation is planning. When a lane has a
- * trustworthy recent measured peak, reserving that peak plus a conservative
- * margin stops a ~2 GB lane from booking the full cap and being refused on a
- * healthy machine (#180). Unknown lanes reserve the ceiling. History can only
- * lower the reservation, never raise the ceiling — a fabricated low peak
- * under-reserves the plan but the runner still kills the tree at the ceiling,
- * and heartbeats correct the arithmetic as real usage materializes.
+ * Dormant future-provenance seam: the ceiling is enforcement; the reservation
+ * is planning. A separately proven peak could reserve that peak plus a
+ * conservative margin. The production runner supplies no peak and therefore
+ * reserves the ceiling. This helper cannot raise the ceiling.
  */
 export function laneReservationMb(ceilingMb, peakMb) {
   if (!Number.isFinite(peakMb) || peakMb <= 0) return ceilingMb;
@@ -125,19 +128,24 @@ export function outstandingMb(leases) {
 /**
  * Grant or refuse, with the reason and the arithmetic that produced it.
  *
- * Order matters: the checks run most-diagnostic first, so the message a user
- * sees names the condition they can actually act on. Swap pressure is checked
- * before headroom because a swapping machine reports plausible-looking
- * "available" memory right up until it stops responding.
+ * `lanePeakMb` is an explicit lower-level evidence input; the production
+ * runner always passes null. Order matters: the checks run most-diagnostic
+ * first, so the message a user sees names the condition they can actually act
+ * on. Swap pressure is checked before headroom because a swapping machine
+ * reports plausible-looking "available" memory right up until it stops
+ * responding.
  */
-export function decideAdmission({ budget, memory, leases = [], requestMb }) {
+export function decideAdmission({ budget, memory, leases = [], requestMb, lanePeakMb = null }) {
   const outstanding = outstandingMb(leases);
   const unmaterialized = unmaterializedMb(leases);
   const projectedFreeMb = memory.availableMb - unmaterialized - requestMb;
   const swapUsedRatio = memory.swapTotalMb > 0 ? memory.swapUsedMb / memory.swapTotalMb : 0;
   const pressureLevel = Number.isFinite(memory.pressureLevel) ? memory.pressureLevel : null;
+  const measuredLightRun = Number.isFinite(lanePeakMb) && lanePeakMb > 0 && lanePeakMb <= budget.lightRunMb;
   const arithmetic = {
     requestMb,
+    lanePeakMb,
+    measuredLightRun,
     outstandingMb: outstanding,
     unmaterializedMb: unmaterialized,
     availableMb: memory.availableMb,
@@ -152,27 +160,29 @@ export function decideAdmission({ budget, memory, leases = [], requestMb }) {
   // page counts look plausible, and normal pressure means swap that was
   // committed during an earlier squeeze is history, not evidence — macOS
   // keeps it allocated after pressure subsides.
-  if (pressureLevel !== null && pressureLevel >= PRESSURE_WARNING && requestMb > budget.lightRunMb) {
+  if (pressureLevel !== null && pressureLevel >= PRESSURE_WARNING && !measuredLightRun) {
     return {
       granted: false,
       reason: 'memory-pressure',
       message:
         `the kernel reports memory pressure level ${pressureLevel} (2 = warning, 4 = critical). ` +
         'The machine is actively short of memory right now; starting another memory-heavy run makes that worse. ' +
-        `Runs reserving up to ${budget.lightRunMb} MB are still admitted.`,
+        `Only lanes with a separately proven peak at or below ${budget.lightRunMb} MB are admitted under pressure; ` +
+        'a caller-declared ceiling does not qualify.',
       ...arithmetic,
     };
   }
 
   const staticSwapApplies = pressureLevel === null || pressureLevel > PRESSURE_NORMAL;
-  if (staticSwapApplies && memory.swapTotalMb > 0 && swapUsedRatio >= SWAP_REFUSE_RATIO && requestMb > budget.lightRunMb) {
+  if (staticSwapApplies && memory.swapTotalMb > 0 && swapUsedRatio >= SWAP_REFUSE_RATIO && !measuredLightRun) {
     return {
       granted: false,
       reason: 'swap-pressure',
       message:
         `swap is ${Math.round(swapUsedRatio * 100)}% committed (${memory.swapUsedMb} MB of ${memory.swapTotalMb} MB). ` +
         'The machine is already trading pages for progress; starting another memory-heavy run is what turns that into a freeze. ' +
-        `Runs reserving up to ${budget.lightRunMb} MB are still admitted.`,
+        `Only lanes with a separately proven peak at or below ${budget.lightRunMb} MB are admitted under pressure; ` +
+        'a caller-declared ceiling does not qualify.',
       ...arithmetic,
     };
   }
