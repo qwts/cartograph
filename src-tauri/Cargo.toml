@@ -11,6 +11,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Already in the dependency graph via tauri/wry; canonicalize without the
+# Windows \\?\ verbatim prefix at the storage boundary (#225).
+dunce = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
