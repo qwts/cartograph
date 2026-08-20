@@ -131,7 +131,10 @@ jobs:
     name: Tag version merges
     needs: [policy, version-pr]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The exact-commit CI poll is intentionally allowed to wait 70 minutes;
+    # leave setup and publication headroom without returning to GitHub's
+    # unbounded six-hour default.
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read
