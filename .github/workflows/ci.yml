@@ -43,7 +43,7 @@ jobs:
       run_post_merge: ${{ steps.policy.outputs.run_post_merge }}
     steps:
       - id: policy
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@5455a3f5939369ea843b1bbb4d2573739f4381a6
 
   merge-evidence:
     name: Verify merged commit evidence
@@ -60,7 +60,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$GITHUB_SHA&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
           validated=false
           if [ -n "$run_id" ]; then
             validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
@@ -84,7 +84,7 @@ jobs:
           TARGET_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&head_sha=$TARGET_SHA&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .display_title == "CI workflow_dispatch purpose=exact-sha-preflight" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .display_title == "CI workflow_dispatch purpose=exact-sha-preflight" and .conclusion == "success") | .id) // empty')
           validated=false
           if [ -n "$run_id" ]; then
             validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
@@ -149,28 +149,23 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      - name: Refresh apt metadata
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Refresh Tauri apt metadata
+          executable: sudo
+          arguments-json: '["apt-get","-o","Acquire::Retries=3","-o","Acquire::http::Timeout=30","-o","Acquire::https::Timeout=30","update"]'
+          timeout-seconds: '240'
+          attempts: '2'
+          retry-delay-seconds: '5'
+
       - name: Install Tauri system dependencies
-        # Bounded mirror I/O (#343): apt's Acquire timeouts alone did not
-        # catch the observed stall mode (a mirror that accepts and then
-        # starves the connection), so every attempt is also hard-bounded
-        # with timeout(1) and retried after clearing any orphaned locks.
-        run: |
-          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
-          for attempt in 1 2 3; do
-            if timeout -k 10 240 sudo apt-get $APT_OPTS update &&
-              timeout -k 10 420 sudo apt-get $APT_OPTS install -y \
-                libwebkit2gtk-4.1-dev build-essential curl wget file \
-                libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev; then
-              exit 0
-            fi
-            echo "apt attempt $attempt failed; clearing apt state and retrying"
-            sudo pkill -9 -f 'apt-get|apt|dpkg' 2>/dev/null || true
-            sleep 5
-            sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock \
-              /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
-            sudo dpkg --configure -a || true
-          done
-          exit 1
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install Tauri system dependencies
+          executable: sudo
+          arguments-json: '["apt-get","-o","Acquire::Retries=3","-o","Acquire::http::Timeout=30","-o","Acquire::https::Timeout=30","install","-y","libwebkit2gtk-4.1-dev","build-essential","curl","wget","file","libxdo-dev","libssl-dev","libayatana-appindicator3-dev","librsvg2-dev"]'
+          timeout-seconds: '420'
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
@@ -246,28 +241,26 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install frontend dependencies
+          executable: npm
+          arguments-json: '["ci"]'
+          working-directory: ui
+          timeout-seconds: '300'
+          attempts: '2'
+          retry-delay-seconds: '5'
 
       - name: Install Playwright browser (for story tests)
-        # Same hang class as apt (#343): --with-deps runs apt plus a CDN
-        # download. Bound each attempt and retry so a stalled mirror costs
-        # minutes, not the whole job (observed live: the job-level timeout
-        # caught exactly this hang on this PR's first run). A killed attempt
-        # can orphan apt's dpkg lock on the ephemeral runner (also observed
-        # live), so clear apt state before retrying.
-        run: |
-          for attempt in 1 2 3; do
-            if timeout -k 10 300 npx playwright install --with-deps chromium; then
-              exit 0
-            fi
-            echo "playwright install attempt $attempt failed; clearing apt state and retrying"
-            sudo pkill -9 -f 'apt-get|apt|dpkg' 2>/dev/null || true
-            sleep 5
-            sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock \
-              /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
-            sudo dpkg --configure -a || true
-          done
-          exit 1
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install Playwright Chromium and system dependencies
+          executable: npx
+          arguments-json: '["playwright","install","--with-deps","chromium"]'
+          working-directory: ui
+          timeout-seconds: '300'
+          attempts: '2'
+          retry-delay-seconds: '5'
 
       - name: Lint
         run: npm run lint
@@ -295,9 +288,37 @@ jobs:
       security-events: write
     uses: ./.github/workflows/codeql.yml
 
+  workflow-runtime:
+    name: Workflow runtime policy
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact validation commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned runtime checker
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: qwts/playbook-engineering
+          ref: 5455a3f5939369ea843b1bbb4d2573739f4381a6
+          path: .ci-runtime-policy
+          sparse-checkout: tools/ci-runtime
+          persist-credentials: false
+
+      - name: Enforce bounded workflow runtime
+        run: node .ci-runtime-policy/tools/ci-runtime/runtime-policy.mjs --root "$GITHUB_WORKSPACE"
+
   complete:
     name: Complete suite
-    needs: [policy, merge-evidence, preflight-evidence, docs, rust, compliance, frontend, codeql]
+    needs: [policy, merge-evidence, preflight-evidence, docs, rust, compliance, frontend, codeql, workflow-runtime]
     if: >-
       always() && needs.policy.result == 'success' &&
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
@@ -312,12 +333,14 @@ jobs:
           COMPLIANCE: ${{ needs.compliance.result }}
           FRONTEND: ${{ needs.frontend.result }}
           CODEQL: ${{ needs.codeql.result }}
+          WORKFLOW_RUNTIME: ${{ needs.workflow-runtime.result }}
         run: |
           test "$DOCS" = success
           test "$RUST" = success
           test "$COMPLIANCE" = success
           test "$FRONTEND" = success
           test "$CODEQL" = success
+          test "$WORKFLOW_RUNTIME" = success
 
   post-merge:
     name: Post-merge smoke
