@@ -13,18 +13,19 @@
 // needed memory to run would be self-defeating.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { parseGrantMinutes } from '../arbiter.mjs';
 import { evaluateCommand, evaluateHookInput } from '../guard-agent-command.mjs';
-import { clampCeiling, deriveBudget } from '../lib/budget.mjs';
+import { clampCeiling, decideAdmission, deriveBudget } from '../lib/budget.mjs';
+import { acquireLease, releaseLease, retargetLease } from '../lib/leases.mjs';
 import { isCi } from '../lib/policy.mjs';
 import { readMemoryStatus } from '../lib/system-memory.mjs';
+import { resolveInvocation } from '../run-guarded.mjs';
 
 // <repo>/tools/agent-guard/tests/this-file → <repo>
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -64,6 +65,12 @@ describe('agent-guard conformance (ENG-0138)', () => {
     assert.match(runner, /monitorFailures >= MAX_MONITOR_FAILURES\) terminate\('monitor-unavailable'\)/u);
     assert.match(runner, /setTimeout\(\(\) => terminate\('timeout'\), request\.timeoutS \* 1000\)/u);
     assert.match(runner, /state\.killTimer = setTimeout\(\(\) => killGroup\('SIGKILL'\)/u);
+  });
+
+  test('the runner neither consumes nor records automatic lane peak history', () => {
+    const runner = readFileSync(path.join(root, 'tools/agent-guard/run-guarded.mjs'), 'utf8');
+    assert.doesNotMatch(runner, /\breadLanePeakMb\b/u, 'pre-existing lane peaks must not grant an admission exemption');
+    assert.doesNotMatch(runner, /\brecordLanePeak\b/u, 'a successful polled run must not seed automatic history');
   });
 
   test('Claude Code registers the guard on Bash', () => {
@@ -296,18 +303,56 @@ describe('agent-guard conformance (ENG-0138)', () => {
     }
   });
 
-  test('grant honors the documented --minutes flag instead of silently defaulting', () => {
-    // In-process on purpose: spawning the real arbiter would mint a real
-    // machine-wide grant — stateDir ignores env overrides for real processes.
-    assert.deepEqual(parseGrantMinutes(['grant', 'e2e', '--minutes', '5']), { ok: true, minutes: 5 });
-    assert.deepEqual(parseGrantMinutes(['grant', 'e2e', '7']), { ok: true, minutes: 7 });
-    assert.deepEqual(parseGrantMinutes(['grant', 'e2e']), { ok: true, minutes: 30 });
-    assert.deepEqual(parseGrantMinutes(['grant', 'e2e', '--minutes', '9999']), { ok: true, minutes: 240 });
-    // 0.1 is positive but rounds to zero minutes — a grant already expired at
-    // write time must be a refusal, not a reported success.
-    for (const argv of [['grant', 'e2e', '--minutes', 'soon'], ['grant', 'e2e', '--minutes'], ['grant', 'e2e', '--minutes', '-5'], ['grant', 'e2e', '--minutes', '0'], ['grant', 'e2e', '--minutes', '0.1'], ['grant', 'e2e', '0.4']]) {
-      assert.equal(parseGrantMinutes(argv).ok, false, `expected a refusal for: ${argv.join(' ')}`);
+  test('legacy grant minting fails closed even outside an identified agent session', () => {
+    const arbiter = path.join(root, 'tools', 'agent-guard', 'arbiter.mjs');
+    const run = spawnSync(process.execPath, [arbiter, 'grant', 'e2e', '--minutes', '5'], {
+      env: { PATH: process.env.PATH ?? '' },
+      encoding: 'utf8',
+    });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /legacy grant minting is disabled/u);
+  });
+
+  test('a valid nested lease skips duplicate admission only after lane policy (#235)', () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 10_000)'], { detached: true, stdio: 'ignore' });
+    child.unref();
+    const lease = acquireLease({ env, label: 'outer ordinary lane', estimatedMb: 128 });
+    try {
+      assert.equal(retargetLease(lease, { pid: child.pid, processGroupId: child.pid }), true);
+      const nested = { ...env, AGENT_GUARDED: lease.id };
+
+      const heavy = resolveInvocation({
+        options: { label: 'innocuous-wrapper' },
+        command: ['npm', 'run', 'test:e2e:inner'],
+        env: nested,
+        processGroupId: child.pid,
+      });
+      assert.equal(heavy.action, 'refuse', 'a parent lease is not heavy-lane authorization');
+      assert.match(heavy.policy.message, /agents do not run it on this machine/u);
+
+      const ordinary = resolveInvocation({
+        options: { label: 'test:dom' },
+        command: ['npm', 'run', 'test:dom:inner'],
+        env: nested,
+        processGroupId: child.pid,
+      });
+      assert.equal(ordinary.action, 'passthrough', 'an allowed nested lane must not duplicate admission');
+    } finally {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // The child may have exited independently.
+      }
+      releaseLease(lease);
     }
+
+    const staleMarker = resolveInvocation({
+      options: { label: 'test:dom' },
+      command: ['npm', 'run', 'test:dom:inner'],
+      env: { ...env, AGENT_GUARDED: lease.id },
+      processGroupId: child.pid,
+    });
+    assert.equal(staleMarker.action, 'admit', 'a stale marker must not skip admission');
   });
 
   test('ordinary work is untouched', () => {
@@ -355,6 +400,13 @@ describe('agent-guard conformance (ENG-0138)', () => {
       assert.ok(budget.maxRunMb < totalMb, `a ${totalMb} MB machine must cap a run below its own RAM`);
       assert.equal(clampCeiling(totalMb * 4, budget).ceilingMb, budget.maxRunMb, 'an oversized request must clamp to the cap');
     }
+  });
+
+  test('the dormant admission seam requires an explicit proven peak, not a caller-declared ceiling (#223)', () => {
+    const budget = deriveBudget(16384);
+    const memory = { totalMb: 16384, availableMb: 8000, swapTotalMb: 2048, swapUsedMb: 1200, pressureLevel: 2 };
+    assert.equal(decideAdmission({ budget, memory, requestMb: 256 }).reason, 'memory-pressure');
+    assert.equal(decideAdmission({ budget, memory, requestMb: 1280, lanePeakMb: 996 }).granted, true);
   });
 
   test('Linux admission uses the container limit rather than host memory', () => {

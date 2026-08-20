@@ -405,48 +405,468 @@ function maskHeredocBodies(text) {
 }
 
 function scopeWords(text) {
-  return [...text.matchAll(/\$'(?:[^'\\]|\\.)*'|'([^']*)'|"((?:[^"\\]|\\.)*)"|([^\s]+)/gu)].map((match) => ({
-    index: match.index,
-    value: match[1] ?? match[2]?.replace(/\\(["\\$`])/gu, '$1') ?? match[3] ?? decodeAnsiCWord(match[0]),
-  }));
+  const words = [];
+  Object.defineProperty(words, 'source', { value: text });
+  let index = 0;
+  while (index < text.length) {
+    while (/\s/u.test(text[index] ?? '')) index += 1;
+    if (index >= text.length) break;
+    const start = index;
+    const word = parseHeredocWord(text, start);
+    if (word.end === start) {
+      index += 1;
+      continue;
+    }
+    words.push({ index: start, end: word.end, value: word.value });
+    index = word.end;
+  }
+  return words;
 }
 
 function prefixReaches(words, index) {
   const marker = '__agent_guard_scope_command__';
-  return commandAfterPrefixes([...words.slice(0, index).map((word) => word.value), marker].join(' ')) === marker;
+  // Preserve shell syntax between argv words (case-arm `)`, redirections,
+  // grouping) while replacing each parsed word with its quote-removed value.
+  // The sentinel keeps a quoted or escaped blank inside one argv slot.
+  if (typeof words.source === 'string') {
+    let prefix = '';
+    let cursor = 0;
+    for (const word of words.slice(0, index)) {
+      prefix += words.source.slice(cursor, word.index);
+      prefix += word.value.replace(/\s/gu, '\u0004');
+      cursor = word.end;
+    }
+    prefix += words.source.slice(cursor, words[index]?.index ?? words.source.length);
+    return commandAfterPrefixes(`${prefix}${marker}`) === marker;
+  }
+  const prefix = words.slice(0, index).map((word) => word.value.replace(/\s/gu, '\u0004'));
+  return commandAfterPrefixes([...prefix, marker].join(' ')) === marker;
+}
+
+// GNU env accepts every unambiguous long-option abbreviation. Model the
+// documented option set rather than matching only the full spelling: a
+// shortened --chdir still changes the child cwd and must participate in
+// reviewed-script provenance. Ambiguous/unknown spellings return null; GNU
+// rejects the former, while callers below continue to treat the latter as an
+// option rather than accidentally consuming it as a command.
+const ENV_LONG_OPTIONS = [
+  '--argv0',
+  '--block-signal',
+  '--chdir',
+  '--debug',
+  '--default-signal',
+  '--env0-from',
+  '--help',
+  '--ignore-environment',
+  '--ignore-signal',
+  '--list-signal-handling',
+  '--null',
+  '--path',
+  '--split-string',
+  '--unset',
+  '--version',
+];
+const ENV_LONG_OPERAND_OPTIONS = new Set(['--argv0', '--chdir', '--env0-from', '--path', '--split-string', '--unset']);
+const ENV_SHORT_FLAGS = new Set(['0', 'i', 'v']);
+const ENV_SHORT_OPERAND_OPTIONS = new Map([
+  ['a', '--argv0'],
+  ['C', '--chdir'],
+  ['P', '--path'],
+  ['S', '--split-string'],
+  ['u', '--unset'],
+]);
+
+function envLongOption(word) {
+  if (!word.startsWith('--') || word === '--') return null;
+  const equalsAt = word.indexOf('=');
+  const spelling = equalsAt === -1 ? word : word.slice(0, equalsAt);
+  const matches = ENV_LONG_OPTIONS.filter((option) => option.startsWith(spelling));
+  if (matches.length !== 1) return null;
+  return {
+    name: matches[0],
+    short: false,
+    value: equalsAt === -1 ? null : word.slice(equalsAt + 1),
+  };
+}
+
+function envShortOption(word) {
+  if (!word.startsWith('-') || word.startsWith('--') || word.length < 2) return null;
+  const cluster = word.slice(1);
+  for (let index = 0; index < cluster.length; index += 1) {
+    if (ENV_SHORT_FLAGS.has(cluster[index])) continue;
+    const name = ENV_SHORT_OPERAND_OPTIONS.get(cluster[index]);
+    if (!name) return null;
+    const attached = cluster.slice(index + 1);
+    return {
+      name,
+      short: true,
+      value: attached.length === 0 ? null : attached,
+    };
+  }
+  return { name: null, short: true, value: null };
+}
+
+function envOption(word) {
+  return envLongOption(word) ?? envShortOption(word);
+}
+
+const COREPACK_PROXY_INFO = new Map([
+  ['npm', { command: 'npm', manager: 'npm' }],
+  ['npx', { command: 'npx', manager: 'npm' }],
+  ['pnpm', { command: 'pnpm', manager: 'pnpm' }],
+  // pnpx is an executable package proxy. Classify it like npx for the deny
+  // side while retaining pnpm's cwd-option grammar for scope discovery.
+  ['pnpx', { command: 'npx', manager: 'pnpm' }],
+  ['yarn', { command: 'yarn', manager: 'yarn' }],
+  ['yarnpkg', { command: 'yarn', manager: 'yarn' }],
+]);
+
+function corepackProxyInfo(word) {
+  const binary = /^(npm|npx|pnpm|pnpx|yarn|yarnpkg)(?:@.*)?$/u.exec(word)?.[1];
+  return COREPACK_PROXY_INFO.get(binary) ?? null;
+}
+
+const UNMODELED_EXECUTION_WRAPPER_OPTIONS = {
+  sudo: {
+    long: [
+      '--askpass', '--auth-type', '--background', '--bell', '--chdir', '--chroot', '--close-from', '--command-timeout',
+      '--edit', '--group', '--help', '--host', '--list', '--login', '--login-class', '--non-interactive', '--other-user',
+      '--no-update', '--preserve-env', '--preserve-groups', '--prompt', '--remove-timestamp', '--reset-timestamp', '--role',
+      '--set-home', '--shell', '--stdin', '--type', '--user', '--validate', '--version',
+    ],
+    longOperands: new Set([
+      '--auth-type', '--chdir', '--chroot', '--close-from', '--command-timeout', '--group', '--host', '--login-class',
+      '--other-user', '--prompt', '--role', '--type', '--user',
+    ]),
+    shortFlags: new Set(['A', 'B', 'b', 'E', 'e', 'H', 'i', 'K', 'k', 'l', 'N', 'n', 'P', 'S', 's', 'V', 'v']),
+    shortOperands: new Set(['a', 'C', 'c', 'D', 'g', 'h', 'p', 'R', 'r', 'T', 't', 'U', 'u']),
+  },
+  doas: {
+    long: [],
+    longOperands: new Set(),
+    shortFlags: new Set(['L', 'n', 's']),
+    shortOperands: new Set(['a', 'C', 'u']),
+  },
+  flock: {
+    long: [
+      '--close', '--command', '--conflict-exit-code', '--exclusive', '--fcntl', '--fd', '--help', '--length',
+      '--nb', '--no-fork', '--nonblock', '--nonblocking', '--nofollow', '--shared', '--start', '--timeout', '--unlock',
+      '--verbose', '--version', '--wait',
+    ],
+    longOperands: new Set(['--command', '--conflict-exit-code', '--fd', '--length', '--start', '--timeout', '--wait']),
+    shortFlags: new Set(['e', 'F', 'n', 'o', 's', 'u', 'x']),
+    shortOperands: new Set(['c', 'E', 'w']),
+  },
+  chrt: {
+    long: [
+      '--all-tasks', '--batch', '--clamp-max', '--clamp-min', '--deadline', '--deadline-overrun', '--ext', '--fifo', '--help',
+      '--idle', '--max', '--other', '--pid', '--reclaim-grub', '--reset-on-fork', '--rr', '--sched-deadline', '--sched-period',
+      '--sched-runtime', '--verbose', '--version',
+    ],
+    longOperands: new Set(['--clamp-max', '--clamp-min', '--sched-deadline', '--sched-period', '--sched-runtime']),
+    shortFlags: new Set(['a', 'b', 'd', 'e', 'f', 'G', 'h', 'i', 'm', 'O', 'o', 'p', 'R', 'r', 'v', 'V']),
+    shortOperands: new Set(['D', 'P', 'T', 'U', 'X']),
+  },
+};
+
+function unmodeledWrapperOption(word, grammar) {
+  if (word.startsWith('--')) {
+    const equalsAt = word.indexOf('=');
+    const spelling = equalsAt === -1 ? word : word.slice(0, equalsAt);
+    const matches = grammar.long.includes(spelling)
+      ? [spelling]
+      : grammar.long.filter((option) => option.startsWith(spelling));
+    if (matches.length !== 1) return null;
+    return {
+      consumesNext: equalsAt === -1 && grammar.longOperands.has(matches[0]),
+      name: matches[0],
+      processOnly: matches[0] === '--pid',
+    };
+  }
+  if (!word.startsWith('-') || word.length < 2) return null;
+  const cluster = word.slice(1);
+  let processOnly = false;
+  for (let index = 0; index < cluster.length; index += 1) {
+    const option = cluster[index];
+    if (grammar.shortOperands.has(option)) {
+      // getopt stops at an operand-taking short option. A remaining suffix is
+      // the attached operand; otherwise the next argv word is consumed.
+      return { consumesNext: index === cluster.length - 1, name: option, processOnly };
+    }
+    if (!grammar.shortFlags.has(option)) return null;
+    if (option === 'p') processOnly = true;
+  }
+  return { consumesNext: false, name: null, processOnly };
+}
+
+function unmodeledExecutionCommand(words) {
+  const wrapperAt = words.findIndex((word, index) =>
+    Object.hasOwn(UNMODELED_EXECUTION_WRAPPER_OPTIONS, word.value.split('/').at(-1)) && prefixReaches(words, index));
+  if (wrapperAt < 0) return null;
+  const wrapper = words[wrapperAt].value.split('/').at(-1);
+  const grammar = UNMODELED_EXECUTION_WRAPPER_OPTIONS[wrapper];
+  let index = wrapperAt + 1;
+  let processOnly = false;
+  let flockFd = false;
+  const dataIndices = new Set();
+  const uncertain = () => ({
+    starts: words.map((_, candidate) => candidate).slice(wrapperAt + 1).filter((candidate) => !dataIndices.has(candidate)),
+    uncertain: true,
+    wrapperAt,
+  });
+  while (index < words.length) {
+    if ((wrapper === 'sudo' || wrapper === 'doas') && /^\w+=/u.test(words[index].value)) {
+      dataIndices.add(index);
+      index += 1;
+      continue;
+    }
+    if (!words[index].value.startsWith('-')) break;
+    const option = words[index].value;
+    if (option === '--') {
+      index += 1;
+      break;
+    }
+    const parsed = unmodeledWrapperOption(option, grammar);
+    if (parsed === null) return uncertain();
+    processOnly ||= wrapper === 'chrt' && parsed.processOnly;
+    flockFd ||= wrapper === 'flock' && parsed.name === '--fd';
+    if (parsed.consumesNext && index + 1 >= words.length) return uncertain();
+    if (parsed.consumesNext) dataIndices.add(index + 1);
+    index += parsed.consumesNext ? 2 : 1;
+  }
+  if (processOnly || index >= words.length) return { starts: [], uncertain: false, wrapperAt };
+  if (wrapper === 'sudo' || wrapper === 'doas') {
+    return { starts: [index], uncertain: false, wrapperAt };
+  }
+  if (wrapper === 'flock') {
+    if (!flockFd) {
+      dataIndices.add(index);
+      index += 1;
+    }
+    return { starts: index < words.length ? [index] : [], uncertain: false, wrapperAt };
+  }
+  // Modern chrt accepts an optional positional priority. Treat a numeric word
+  // as data; otherwise it is the executable (for example `chrt -b node ...`).
+  if (/^[+-]?\d+$/u.test(words[index].value)) index += 1;
+  return { starts: index < words.length ? [index] : [], uncertain: false, wrapperAt };
+}
+
+function unmodeledExecutionStarts(words, depth = 0) {
+  if (depth > 16) return words.map((_, index) => index);
+  const execution = unmodeledExecutionCommand(words);
+  if (execution === null) return [];
+  const starts = new Set(execution.starts);
+  for (const start of execution.starts) {
+    if (start <= execution.wrapperAt) continue;
+    for (const nested of unmodeledExecutionStarts(words.slice(start), depth + 1)) starts.add(start + nested);
+  }
+  return [...starts];
+}
+
+function splitOuterCommandSegments(command) {
+  const segments = [];
+  let start = 0;
+  let quote = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (quote !== null) {
+      if (character === '\\' && quote !== "'") index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '\\') {
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === '`') {
+      quote = character;
+      continue;
+    }
+    if (!/[;\n|&]/u.test(character)) continue;
+    if (character === '&' && (command[index - 1] === '>' || command[index + 1] === '>')) continue;
+    const segment = command.slice(start, index).trim();
+    if (segment) segments.push(segment);
+    if (command[index + 1] === character && (character === '|' || character === '&')) index += 1;
+    start = index + 1;
+  }
+  const tail = command.slice(start).trim();
+  if (tail) segments.push(tail);
+  return segments;
+}
+
+function unmodeledWrapperShellPayloads(command) {
+  const payloads = [];
+  for (const segment of splitOuterCommandSegments(command)) {
+    const words = scopeWords(segment);
+    for (const start of unmodeledExecutionStarts(words)) {
+      if (!/(?:^|\/)(?:ba|da|z)?sh$/u.test(words[start]?.value ?? '')) continue;
+      for (let index = start + 1; index < words.length - 1; index += 1) {
+        const option = words[index].value;
+        if (option === '-c' || /^-[A-Za-z]*c[A-Za-z]*$/u.test(option)) {
+          payloads.push(words[index + 1].value);
+          break;
+        }
+        if (/^(?:-[A-Za-z]*[oO]|\+[oO]|--(?:option|shopt)|--rcfile|--init-file)$/u.test(option)) index += 1;
+        else if (!option.startsWith('-') && !option.startsWith('+')) break;
+      }
+    }
+  }
+  return payloads;
+}
+
+function envMayExecuteBehindUnknownHead(words, index) {
+  return unmodeledExecutionStarts(words).includes(index);
+}
+
+function hasUnmodeledEnvInvocation(command, depth = 0) {
+  for (const segment of splitSegments(command)) {
+    const words = scopeWords(segment);
+    for (let index = 0; index < words.length; index += 1) {
+      if (words[index].value.split('/').at(-1) !== 'env') continue;
+      const directlyReached = prefixReaches(words, index);
+      if (!directlyReached && !envMayExecuteBehindUnknownHead(words, index)) continue;
+      // An unmodeled wrapper may execute env, but its option operands and cwd
+      // semantics are not represented by prefixReaches. Refuse the reviewed-
+      // helper shortcut rather than authenticating the wrong execution path.
+      if (!directlyReached) return true;
+      for (let optionAt = index + 1; optionAt < words.length; optionAt += 1) {
+        const word = words[optionAt];
+        if (/^\w+=/u.test(word.value)) continue;
+        if (word.value === '--') break;
+        if (word.value === '-') continue;
+        if (!word.value.startsWith('-')) break;
+        const option = envOption(word.value);
+        // Unknown and ambiguous options already fail in current env releases,
+        // but a future operand-taking option could otherwise hide the command
+        // or a later cwd change from this parser. Deny instead of guessing.
+        if (option === null) return true;
+        // These options change executable identity or import environment
+        // assignments from outside the reviewed command. A checked-in script
+        // cannot authenticate a substituted runtime, argv0 multicall mode, or
+        // file-sourced NODE_OPTIONS/PATH payload.
+        if (['--argv0', '--env0-from', '--path'].includes(option.name)) return true;
+        if (!ENV_LONG_OPERAND_OPTIONS.has(option.name)) continue;
+        let operand = word;
+        if (option.value === null) {
+          operand = words[++optionAt];
+          if (!operand) return true;
+        }
+        if (
+          option.name === '--split-string' &&
+          /[\\$]/u.test(segment.slice(operand.index, operand.end))
+        ) return true;
+        if (option.name === '--split-string') {
+          const payload = option.value === null ? operand.value : envSplitStringOption(word.value).value;
+          if (hasUnmodeledEnvCommand(payload, depth + 1)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function hasUnmodeledEnvCommand(command, depth = 0) {
+  if (depth > 16) return true;
+  if (hasUnmodeledEnvInvocation(command, depth)) return true;
+  const executablePayloads = [];
+  const effective = stripInertText(command, { executablePayloads });
+  if (effective !== command && hasUnmodeledEnvInvocation(effective, depth)) return true;
+  return [...executablePayloads, ...unmodeledWrapperShellPayloads(command)]
+    .some((payload) => hasUnmodeledEnvCommand(payload, depth + 1));
+}
+
+function hasRuntimeScriptBehindUnmodeledWrapper(command, depth = 0) {
+  if (depth > 16) return true;
+  const direct = splitSegments(command).some((segment) => {
+    const words = scopeWords(segment);
+    return unmodeledExecutionStarts(words).some((start) => {
+      const candidate = words
+        .slice(start)
+        .map((word) => word.value.replace(/\s/gu, '\u0004'))
+        .join(' ');
+      return runtimeProgram(candidate)?.kind === 'file';
+    });
+  });
+  if (direct) return true;
+  return unmodeledWrapperShellPayloads(command).some((payload) => {
+    const effective = stripInertText(payload);
+    return splitSegments(effective).some((segment) => runtimeProgram(segment)?.kind === 'file') ||
+      hasRuntimeScriptBehindUnmodeledWrapper(payload, depth + 1);
+  });
 }
 
 function directoryOptionTargets(segment) {
   const words = scopeWords(segment);
   const targets = [];
+  const envReachedExecutables = new WeakSet();
   for (let index = 0; index < words.length; index += 1) {
     const executable = words[index].value.split('/').at(-1);
-    const corepackProxy = index > 0 && words[index - 1].value.split('/').at(-1) === 'corepack' && prefixReaches(words, index - 1);
+    const corepackProxy =
+      index > 0 &&
+      words[index - 1].value.split('/').at(-1) === 'corepack' &&
+      (prefixReaches(words, index - 1) || envReachedExecutables.has(words[index - 1]))
+        ? corepackProxyInfo(words[index].value)
+        : null;
+    const packageExecutable = corepackProxy?.manager ?? executable;
     if (executable === 'env' && prefixReaches(words, index)) {
-      let envTarget;
-      for (let optionAt = index + 1; optionAt < words.length; optionAt += 1) {
-        const option = words[optionAt].value;
-        if (option === '-C' || option === '--chdir') {
-          if (words[optionAt + 1]) envTarget = words[++optionAt].value;
-        } else if (option.startsWith('--chdir=')) {
-          envTarget = option.slice('--chdir='.length);
-        } else if (/^-C.+/u.test(option)) {
-          envTarget = option.slice(2);
-        } else if (/^(?:-u|--unset|-P|--path|-S|--split-string)$/u.test(option)) {
-          optionAt += 1;
-        } else if (option === '--') {
-          break;
-        } else if (!option.startsWith('-') && !/^\w+=/u.test(option)) {
-          break;
+      // `env -S` splices its operand into the current argv. If that argv starts
+      // another env command, its relative `-C` is resolved from the outer
+      // env's selected directory. Walk that executable chain explicitly: the
+      // synthetic words do not have faithful source offsets for prefixReaches.
+      let envAt = index;
+      while (words[envAt]?.value.split('/').at(-1) === 'env') {
+        let envTarget;
+        let commandAt = envAt + 1;
+        for (; commandAt < words.length; commandAt += 1) {
+          const option = words[commandAt].value;
+          const parsedOption = envOption(option);
+          const splitString = envSplitStringOption(option);
+          if (parsedOption?.name === '--chdir' && parsedOption.value === null) {
+            if (words[commandAt + 1]) envTarget = words[++commandAt].value;
+          } else if (parsedOption?.name === '--chdir') {
+            envTarget = parsedOption.value;
+          } else if (
+            ['--argv0', '--env0-from', '--path', '--unset'].includes(parsedOption?.name) &&
+            parsedOption.value === null
+          ) {
+            commandAt += 1;
+          } else if (splitString?.value === null) {
+            const operand = words[commandAt + 1];
+            if (!operand) break;
+            const splitWords = scopeWords(operand.value).map((part) => ({
+              index: operand.index + part.index / 100_000,
+              value: part.value,
+            }));
+            words.splice(commandAt, 2, ...splitWords);
+            commandAt -= 1;
+          } else if (splitString !== null) {
+            const splitWords = scopeWords(splitString.value).map((part) => ({
+              index: words[commandAt].index + part.index / 100_000,
+              value: part.value,
+            }));
+            words.splice(commandAt, 1, ...splitWords);
+            commandAt -= 1;
+          } else if (option === '--') {
+            commandAt += 1;
+            break;
+          } else if (!option.startsWith('-') && !/^\w+=/u.test(option)) {
+            break;
+          }
         }
+        if (envTarget) targets.push({ index: words[envAt].index, target: envTarget });
+        if (words[commandAt]) envReachedExecutables.add(words[commandAt]);
+        if (words[commandAt]?.value.split('/').at(-1) !== 'env') break;
+        envAt = commandAt;
       }
-      if (envTarget) targets.push({ index: words[index].index, target: envTarget });
     }
-    if (!['npm', 'pnpm', 'yarn', 'bun'].includes(executable) || (!prefixReaches(words, index) && !corepackProxy)) continue;
+    if (
+      !['npm', 'pnpm', 'yarn', 'bun'].includes(packageExecutable) ||
+      (!prefixReaches(words, index) && !envReachedExecutables.has(words[index]) && corepackProxy === null)
+    ) continue;
     const options =
-      executable === 'npm'
+      packageExecutable === 'npm'
         ? { equals: ['--prefix='], operands: new Set(['--prefix', '-C']) }
-        : executable === 'pnpm'
+        : packageExecutable === 'pnpm'
           ? { equals: ['--dir='], operands: new Set(['--dir', '-C']) }
           : { equals: ['--cwd='], operands: new Set(['--cwd']) };
     let packageTarget;
@@ -459,7 +879,7 @@ function directoryOptionTargets(segment) {
       }
       const equals = options.equals.find((prefix) => option.startsWith(prefix));
       if (equals) packageTarget = option.slice(equals.length);
-      if ((executable === 'npm' || executable === 'pnpm') && /^-C.+/u.test(option)) {
+      if ((packageExecutable === 'npm' || packageExecutable === 'pnpm') && /^-C.+/u.test(option)) {
         packageTarget = option.slice(2);
       }
     }
@@ -546,25 +966,28 @@ export function resolveExecutionDirs(cwd, command) {
   for (const match of scopedCommand.matchAll(envCommands)) {
     const envIndex = match.index + match[0].indexOf('env');
     if (!shellSyntax[envIndex]) continue;
-    const words = [...match[1].matchAll(/"([^"]*)"|'([^']*)'|([^\s]+)/gu)].map((word) => word[1] ?? word[2] ?? word[3]);
+    const words = scopeWords(match[1]).map((word) => word.value);
     let chdirTarget;
     for (let index = 0; index < words.length; index += 1) {
       const word = words[index];
-      if (word === '-C' || word === '--chdir') {
+      const parsedOption = envOption(word);
+      const splitString = envSplitStringOption(word);
+      if (parsedOption?.name === '--chdir' && parsedOption.value === null) {
         chdirTarget = words[index + 1];
         index += 1;
-      } else if (word.startsWith('--chdir=')) {
-        chdirTarget = word.slice('--chdir='.length);
-      } else if (/^-C.+/u.test(word)) {
-        chdirTarget = word.slice(2);
-      } else if (/^(?:-u|--unset|-P|--path)$/u.test(word)) {
+      } else if (parsedOption?.name === '--chdir') {
+        chdirTarget = parsedOption.value;
+      } else if (
+        ['--argv0', '--env0-from', '--path', '--unset'].includes(parsedOption?.name) &&
+        parsedOption.value === null
+      ) {
         index += 1;
-      } else if (word === '-S' || word === '--split-string') {
-        const splitWords = [...(words[index + 1] ?? '').matchAll(/"([^"]*)"|'([^']*)'|([^\s]+)/gu)].map((part) => part[1] ?? part[2] ?? part[3]);
+      } else if (splitString?.value === null) {
+        const splitWords = scopeWords(words[index + 1] ?? '').map((part) => part.value);
         words.splice(index, 2, ...splitWords);
         index -= 1;
-      } else if (/^(?:-S|--split-string)=/u.test(word)) {
-        const splitWords = [...word.slice(word.indexOf('=') + 1).matchAll(/"([^"]*)"|'([^']*)'|([^\s]+)/gu)].map((part) => part[1] ?? part[2] ?? part[3]);
+      } else if (splitString !== null) {
+        const splitWords = scopeWords(splitString.value).map((part) => part.value);
         words.splice(index, 1, ...splitWords);
         index -= 1;
       } else if (word === '--') {
@@ -573,7 +996,7 @@ export function resolveExecutionDirs(cwd, command) {
         break;
       }
     }
-    if (chdirTarget) events.push({ index: envIndex, target: chdirTarget, type: 'env-chdir' });
+    if (chdirTarget) events.push({ index: envIndex, scope: match.index, target: chdirTarget, type: 'env-chdir' });
   }
 
   // Normalize supported execution prefixes before looking for directory
@@ -584,7 +1007,7 @@ export function resolveExecutionDirs(cwd, command) {
     const firstWord = scopeWords(match[1])[0];
     if (!firstWord || !shellSyntax[segmentOffset + firstWord.index]) continue;
     for (const option of directoryOptionTargets(match[1])) {
-      events.push({ index: segmentOffset + option.index, target: option.target, type: 'env-chdir' });
+      events.push({ index: segmentOffset + option.index, scope: match.index, target: option.target, type: 'env-chdir' });
     }
   }
 
@@ -600,19 +1023,37 @@ export function resolveExecutionDirs(cwd, command) {
   const order = { 'subshell-open': 0, cd: 1, 'env-chdir': 1, 'subshell-close': 2 };
   const uniqueEvents = [...new Map(events.map((event) => [`${event.index}:${event.type}:${event.target ?? ''}`, event])).values()];
   uniqueEvents.sort((left, right) => left.index - right.index || order[left.type] - order[right.type]);
+  let envScope = null;
+  let envCurrent = null;
   for (const event of uniqueEvents) {
     if (event.type === 'subshell-open') {
       parentScopes.push(current);
+      envScope = null;
+      envCurrent = null;
       continue;
     }
     if (event.type === 'subshell-close') {
       current = parentScopes.pop() ?? current;
+      envScope = null;
+      envCurrent = null;
       continue;
     }
-    const target = resolveTarget(event.target, current);
+    // Consecutive directory-changing wrappers form one child process chain.
+    // Each nested relative target is resolved from the cwd selected by its
+    // enclosing wrapper, but the resulting cwd does not leak to the next shell
+    // command in the parent (#209).
+    const base = event.type === 'env-chdir' && event.scope === envScope ? envCurrent : current;
+    const target = resolveTarget(event.target, base);
     if (!target) continue;
     directories.push(target);
-    if (event.type === 'cd') current = target;
+    if (event.type === 'cd') {
+      current = target;
+      envScope = null;
+      envCurrent = null;
+    } else {
+      envScope = event.scope;
+      envCurrent = target;
+    }
   }
   const effective = stripInertText(command);
   const hasShellCommandString = /(?:^|[;\n|&(){}])[^;\n|&(){}]*\b(?:ba|da|z)?sh\b[^;\n|&(){}]*\s-[A-Za-z]*c[A-Za-z]*\s+(?:\$)?["']/u.test(command);
@@ -810,14 +1251,37 @@ function normalizeUnquotedEscapes(text) {
   return normalized;
 }
 
+function endsWithEnvSplitString(scanned) {
+  const segment = scanned.split(/\|\||&&|[;\n|&]/u).at(-1).trim();
+  const rawTokens = segment.split(/\s+/u).filter(Boolean);
+  const envAt = rawTokens.findLastIndex((token) => token.split('/').at(-1) === 'env');
+  return envAt >= 0 && envSplitStringOption(rawTokens.at(-1) ?? '') !== null;
+}
+
+function envSplitStringOption(word) {
+  const option = envOption(word);
+  if (option?.name !== '--split-string') return null;
+  // Preserve the guard's conservative historic treatment of -S=payload: GNU
+  // passes the leading '=' as data, while scanning payload without it can only
+  // deny an invocation that env would reject or treat as an assignment.
+  return option.short && option.value?.startsWith('=')
+    ? { ...option, value: option.value.slice(1) }
+    : option;
+}
+
+function stripTrailingEnvSplitString(scanned) {
+  const lastToken = /\S+\s*$/u.exec(scanned);
+  if (!lastToken || envSplitStringOption(lastToken[0].trim()) === null) return scanned;
+  return scanned.slice(0, lastToken.index);
+}
+
 function endsWithExecutableString(scanned) {
   if (endsWithShellC(scanned)) return true;
   if (dispatcherCommandPayloads(scanned).some((payload) => endsWithShellC(payload))) return true;
   if (endsWithWatchCommandString(scanned)) return true;
+  if (endsWithEnvSplitString(scanned)) return true;
   const segment = scanned.split(/\|\||&&|[;\n|&]/u).at(-1).trim();
   const rawTokens = segment.split(/\s+/u).filter(Boolean);
-  const envAt = rawTokens.findLastIndex((token) => token.split('/').at(-1) === 'env');
-  if (envAt >= 0 && /^(?:-S|--split-string)=?$/u.test(rawTokens.at(-1) ?? '')) return true;
   const tokens = commandAfterPrefixes(segment).split(/\s+/u).filter(Boolean);
   const command = tokens[0]?.split('/').at(-1);
   if (command === 'node' && /^(?:-[A-Za-z]*[ep][A-Za-z]*|--eval|--print)$/u.test(tokens.at(-1) ?? '')) return true;
@@ -890,12 +1354,13 @@ function commandStringPayloads(command) {
     const envAt = rawTokens.findIndex((token) => token.split('/').at(-1) === 'env');
     if (envAt >= 0) {
       for (let i = envAt + 1; i < rawTokens.length; i += 1) {
-        if (rawTokens[i] === '-S' || rawTokens[i] === '--split-string') {
+        const splitString = envSplitStringOption(rawTokens[i]);
+        if (splitString?.value === null) {
           if (rawTokens[i + 1] !== undefined) payloads.push(restore(rawTokens[i + 1]));
           break;
         }
-        if (/^(?:-S|--split-string)=/u.test(rawTokens[i])) {
-          payloads.push(restore(rawTokens[i].slice(rawTokens[i].indexOf('=') + 1)));
+        if (splitString !== null) {
+          payloads.push(restore(splitString.value));
           break;
         }
       }
@@ -1056,8 +1521,8 @@ function reviewedBaseRef(cwd) {
 // not a filename allowlist an agent could extend (#141's fake-wrapper
 // defect), and not mere trackedness an agent could satisfy with `git add`
 // or a local commit. Any git failure, path escape, or mismatch fails closed.
-function isReviewedCheckedInScript(token, cwd) {
-  let file = resolve(cwd, token);
+function isReviewedCheckedInScript(token, executionCwd, provenanceCwd) {
+  let file = resolve(executionCwd, token);
   if (!existsSync(file)) return false;
   // git prints physical paths; resolve symlinked segments (macOS /var → /private/var)
   // so the toplevel-relative computation compares like with like.
@@ -1067,13 +1532,18 @@ function isReviewedCheckedInScript(token, cwd) {
     return false;
   }
   try {
-    const toplevel = git(cwd, 'rev-parse', '--show-toplevel');
+    // The execution cwd determines a relative script path, but provenance is
+    // anchored to the checkout that supplied the hook's reported cwd. An
+    // absolute path continues to name a reviewed file after `env -C`, without
+    // letting the command nominate an unrelated repository as its own trust
+    // anchor (#209).
+    const toplevel = git(provenanceCwd, 'rev-parse', '--show-toplevel');
     const relPath = relative(toplevel, file);
     if (relPath.startsWith('..') || isAbsolute(relPath)) return false;
-    const base = reviewedBaseRef(cwd);
+    const base = reviewedBaseRef(toplevel);
     if (base === null) return false;
-    const reviewedBlob = git(cwd, 'rev-parse', '--verify', '--quiet', `${base}:${relPath.split(sep).join('/')}`);
-    const onDiskBlob = git(cwd, 'hash-object', '--', file);
+    const reviewedBlob = git(toplevel, 'rev-parse', '--verify', '--quiet', `${base}:${relPath.split(sep).join('/')}`);
+    const onDiskBlob = git(toplevel, 'hash-object', '--', file);
     return reviewedBlob === onDiskBlob;
   } catch {
     return false;
@@ -1085,10 +1555,19 @@ function isReviewedCheckedInScript(token, cwd) {
 // (`node scripts/measure-runner-capacity.mjs -- npx vitest`) spawns the
 // delegated command sight-unseen, outside static classification. The
 // provenance allowance therefore also requires inert arguments — no `--`
-// forwarding separator, no token naming a runtime, shell, package manager, or
-// test binary, and no blanked quoted word this scan cannot read. Ordinary
-// flags and path arguments stay allowed.
+// forwarding separator, no token (including an option-encoded value) naming a
+// runtime, shell, package manager, or test binary, and no blanked quoted word
+// this scan cannot read. Ordinary flags and path arguments stay allowed.
 const DISPATCHABLE_ARGUMENT = /^(?:node|electron|deno|npm|npx|bunx|corepack|pnpm|yarn|bun|playwright|vitest|c8|test-storybook|xargs|env|sh|bash|dash|zsh|ksh|python(?:\d+(?:\.\d+)*)?|perl|ruby|php)$/u;
+const COMMAND_VALUE_OPTION = /^--(?:cmd|command|exec|execute|executable|launcher|program|shell)(?:=|$)/iu;
+
+function hasCommandLikeScriptArgument(token) {
+  if (COMMAND_VALUE_OPTION.test(token)) return true;
+  return token
+    .split(/[^A-Za-z0-9_./+-]+/u)
+    .filter(Boolean)
+    .some((component) => DISPATCHABLE_ARGUMENT.test(component.split('/').at(-1) ?? ''));
+}
 
 function hasInertScriptArguments(segment, scriptToken) {
   const tokens = commandAfterPrefixes(segment).split(/\s+/u).filter(Boolean);
@@ -1099,15 +1578,24 @@ function hasInertScriptArguments(segment, scriptToken) {
   return tail.every((token) =>
     token !== '--' &&
     !/['"]/u.test(token) &&
-    !DISPATCHABLE_ARGUMENT.test(token.split('/').at(-1) ?? ''));
+    !hasCommandLikeScriptArgument(token));
 }
 
-function hasRuntimeScriptFile(command, cwd = process.cwd()) {
+function hasRuntimeScriptFile(command, cwd = process.cwd(), sourceCommand = command) {
   const segments = splitSegments(command);
   for (let index = 0; index < segments.length; index += 1) {
     const program = runtimeProgram(segments[index]);
     if (program?.kind !== 'file') continue;
     const normalized = program.token.replaceAll('\u0004', ' ');
+    // Provenance must be checked from the directory the runtime will actually
+    // use. `env -C/--chdir` changes the child cwd without changing the hook's
+    // reported cwd, so resolving against `cwd` alone can authenticate the
+    // reviewed repository copy while Node executes a planted same-path script
+    // elsewhere (#209).
+    // Classification runs over inert-stripped text, but provenance resolution
+    // needs the original shell spelling: quote removal may otherwise erase a
+    // directory operand such as `env -C '/tmp/out side'` (#209).
+    const executionCwd = resolveExecutionDir(cwd, sourceCommand) ?? cwd;
     if (program.family === 'node' && /(?:^|\/)tools\/agent-guard\/(?:run-guarded|arbiter)\.mjs$/u.test(normalized)) continue;
     // Checked-in Node helpers whose content matches the reviewed base ref
     // are the repository's own documented tooling (#191). Provenance only
@@ -1124,7 +1612,7 @@ function hasRuntimeScriptFile(command, cwd = process.cwd()) {
       segments.length === 1 &&
       !/\$\(|`|[<>]\(/u.test(segments[index]) &&
       hasInertScriptArguments(segments[index], program.token) &&
-      isReviewedCheckedInScript(normalized, cwd)
+      isReviewedCheckedInScript(normalized, executionCwd, cwd)
     )
       continue;
     return true;
@@ -1239,7 +1727,7 @@ function isExecutableQuotedWord(scanned, word) {
     if (/^\w+=\S*$/u.test(word) && followsEnvCommand(scanned)) return true;
     return true;
   }
-  if (tokens[0]?.split('/').at(-1) === 'corepack' && /^(?:pnpm|yarn)(?:@.+)?$/u.test(word)) return true;
+  if (tokens[0]?.split('/').at(-1) === 'corepack' && corepackProxyInfo(word) !== null) return true;
   if (tokens[0]?.split('/').at(-1) === 'find') {
     if (/^-exec(?:dir)?$|^-ok(?:dir)?$/u.test(word)) return true;
     const actionAt = tokens.findLastIndex((token) => /^-exec(?:dir)?$|^-ok(?:dir)?$/u.test(token));
@@ -1280,7 +1768,7 @@ function isExecutableQuotedWord(scanned, word) {
 // the patterns can see them, executable argv words are preserved, and ordinary
 // quoted text is blanked. Order matters — a commit message that merely mentions
 // `bash -c "npm run test:e2e"` is blanked before its inner text is inspected.
-export function stripInertText(command) {
+export function stripInertText(command, { executablePayloads = null } = {}) {
   let scanned = '';
   let rest = transformHeredocs(command, 'strip');
   for (;;) {
@@ -1295,8 +1783,14 @@ export function stripInertText(command) {
         : quoted.startsWith("'")
           ? quoted.slice(1, -1)
           : quoted.slice(1, -1).replace(/\\(["\\$`])/gu, '$1');
+      executablePayloads?.push(inner);
       rest = `${inner}${rest}`;
-      scanned += '\n';
+      // `env -S/--split-string` expands its operand into the current argv;
+      // preserve the `env` wrapper so directory options in that operand keep
+      // governing provenance resolution. Shell `-c` and other command-string
+      // consumers execute a nested payload and remain separate segments.
+      if (endsWithEnvSplitString(scanned)) scanned = stripTrailingEnvSplitString(scanned);
+      else scanned += '\n';
     } else {
       const substitutions = quoted.startsWith('"') ? commandSubstitutionBodies(quoted.slice(1, -1)) : [];
       if (substitutions.length > 0) {
@@ -1859,12 +2353,93 @@ export function heavyLaneFor(command) {
   return null;
 }
 
+function maskNestedShellWords(text) {
+  let masked = '';
+  let quote = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '\\') {
+      masked += text.slice(index, index + 2);
+      index += 1;
+      continue;
+    }
+    if (quote === "'") {
+      masked += character;
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null;
+      }
+      masked += character;
+      continue;
+    }
+    if (character === "'") {
+      quote = "'";
+      masked += character;
+      continue;
+    }
+    if (character === '"') {
+      quote = '"';
+      masked += character;
+      continue;
+    }
+    const substitution = text[index + 1] === '(' && (character === '<' || character === '>');
+    if (!substitution) {
+      masked += character;
+      continue;
+    }
+    let depth = 1;
+    let innerQuote = null;
+    let end = index + 2;
+    for (; end < text.length && depth > 0; end += 1) {
+      const inner = text[end];
+      if (inner === '\\') {
+        end += 1;
+      } else if (innerQuote !== null) {
+        if (inner === innerQuote) innerQuote = null;
+      } else if (inner === "'" || inner === '"' || inner === '`') {
+        innerQuote = inner;
+      } else if (inner === '(') {
+        depth += 1;
+      } else if (inner === ')') {
+        depth -= 1;
+      }
+    }
+    if (depth !== 0) {
+      masked += character;
+      continue;
+    }
+    masked += 'AGENT_GUARD_NESTED_SHELL_WORD';
+    index = end - 1;
+  }
+  return masked;
+}
+
 function commandAfterPrefixes(segment) {
-  const tokens = normalizeUnquotedEscapes(segment).split(/\s+/u).filter(Boolean);
+  const tokens = normalizeUnquotedEscapes(maskNestedShellWords(segment)).split(/\s+/u).filter(Boolean);
   let index = 0;
   while (index < tokens.length) {
-    while (/^\w+=\S*$/u.test(tokens[index] ?? '')) index += 1;
-    if (/^(?:then|do|else|elif|if|while|until|coproc|!)$/u.test(tokens[index] ?? '')) {
+    for (;;) {
+      if (/^\w+=\S*$/u.test(tokens[index] ?? '')) {
+        index += 1;
+        continue;
+      }
+      const token = tokens[index] ?? '';
+      const redirection = /^(?:(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:<<<|<<|<>|>>|>\||<&|>&|<|>)|&>>?)$/u;
+      const attachedRedirection = /^(?:(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:<<<|<<|<>|>>|>\||<&|>&|<|>)|&>>?).+$/u;
+      if (redirection.test(token)) {
+        index += 2;
+        continue;
+      }
+      if (attachedRedirection.test(token)) {
+        index += 1;
+        continue;
+      }
+      break;
+    }
+    if (/^(?:then|do|else|elif|if|while|until|coproc|!|\{|\})$/u.test(tokens[index] ?? '')) {
       index += 1;
       continue;
     }
@@ -1905,9 +2480,9 @@ function commandAfterPrefixes(segment) {
       continue;
     }
     if (command === 'corepack') {
-      const proxy = /^(?:pnpm|yarn)(?:@.+)?$/u.exec(tokens[index + 1]?.split('/').at(-1) ?? '')?.[0];
+      const proxy = corepackProxyInfo(tokens[index + 1] ?? '');
       if (!proxy) break;
-      tokens[index + 1] = proxy.split('@')[0];
+      tokens[index + 1] = proxy.command;
       index += 1;
       continue;
     }
@@ -2032,7 +2607,12 @@ function commandAfterPrefixes(segment) {
         }
         if (token.startsWith('-')) {
           index += 1;
-          if (/^(?:-u|--unset|--chdir|-C|-S|--split-string)$/u.test(token) && index < tokens.length) index += 1;
+          const parsedOption = envOption(token);
+          if (
+            ENV_LONG_OPERAND_OPTIONS.has(parsedOption?.name) &&
+            parsedOption.value === null &&
+            index < tokens.length
+          ) index += 1;
           continue;
         }
         break;
@@ -2141,7 +2721,11 @@ export function hasProtectedEnvironmentAssignment(command) {
         while (tokens[index]?.startsWith('-')) {
           const option = tokens[index];
           index += 1;
-          if (operandOptions.has(option)) index += 1;
+          const parsedEnvOption = name === 'env' ? envOption(option) : null;
+          if (
+            operandOptions.has(option) ||
+            (ENV_LONG_OPERAND_OPTIONS.has(parsedEnvOption?.name) && parsedEnvOption.value === null)
+          ) index += 1;
         }
         if ((name === 'timeout' || name === 'nice') && /^\d/u.test(tokens[index] ?? '')) index += 1;
         continue;
@@ -2152,9 +2736,24 @@ export function hasProtectedEnvironmentAssignment(command) {
   return false;
 }
 
-export function evaluateCommand(command, { cwd = process.cwd() } = {}) {
+export function evaluateCommand(command, { cwd = process.cwd(), depth = 0 } = {}) {
   if (typeof command !== 'string' || command.length === 0) return { allow: true };
+  if (depth > 16) {
+    return {
+      allow: false,
+      reason: `Blocked a recursively nested executable command payload that exceeds the static policy depth. ${USE_ENTRYPOINT}`,
+    };
+  }
   const dynamicCommand = maskNonShellHeredocs(command);
+  const wrapperShellPayloads = unmodeledWrapperShellPayloads(dynamicCommand);
+  if (hasUnmodeledEnvCommand(dynamicCommand)) {
+    return {
+      allow: false,
+      reason:
+        'Blocked an env invocation whose option or split-string semantics cannot be proven statically. ' +
+        `Use literal supported env options without split-string escapes or variable expansion. ${USE_ENTRYPOINT}`,
+    };
+  }
   // Executable-loading environment overrides are denied only in positions
   // that reach a command's environment: leading VAR=… prefixes and the
   // argument list of env-style wrappers — where a quoted assignment is still
@@ -2181,13 +2780,21 @@ export function evaluateCommand(command, { cwd = process.cwd() } = {}) {
       reason: `Blocked a runtime-computed identity removal before run-guarded.mjs: it could erase the active harness marker. ${GUIDANCE}`,
     };
   }
-  if (hasDynamicPackageScript(dynamicCommand) || hasDynamicExecutionPosition(dynamicCommand)) {
+  if (
+    hasDynamicPackageScript(dynamicCommand) ||
+    hasDynamicExecutionPosition(dynamicCommand) ||
+    wrapperShellPayloads.some((payload) => hasRuntimeShellExpansion(payload))
+  ) {
     return {
       allow: false,
       reason:
         'Blocked a runtime-computed executable, package command, or script: shell expansion can resolve to a protected ' +
         `lane after static admission checks. Use the guarded entrypoint with literal command slots. ${USE_ENTRYPOINT}`,
     };
+  }
+  for (const payload of wrapperShellPayloads) {
+    const nested = evaluateCommand(payload, { cwd, depth: depth + 1 });
+    if (!nested.allow) return nested;
   }
   if (hasRuntimeStdinProgram(command)) {
     return {
@@ -2196,6 +2803,18 @@ export function evaluateCommand(command, { cwd = process.cwd() } = {}) {
     };
   }
   const effective = stripInertText(command);
+
+  if (
+    hasRuntimeScriptBehindUnmodeledWrapper(command) ||
+    (effective !== command && hasRuntimeScriptBehindUnmodeledWrapper(effective))
+  ) {
+    return {
+      allow: false,
+      reason:
+        'Blocked direct runtime script dispatch behind an execution wrapper whose cwd and executable-selection semantics cannot be proven statically. ' +
+        `Use the repository's guarded entrypoint without sudo, doas, flock, or chrt. ${USE_ENTRYPOINT}`,
+    };
+  }
 
   // Re-run the dynamic-script check over wrapper argument tails on the
   // inert-stripped text: quoted mentions are blanked by now, so this cannot
@@ -2217,7 +2836,7 @@ export function evaluateCommand(command, { cwd = process.cwd() } = {}) {
     };
   }
 
-  if (hasRuntimeScriptFile(effective, cwd)) {
+  if (hasRuntimeScriptFile(effective, cwd, command)) {
     return {
       allow: false,
       reason: `Blocked direct runtime script-file dispatch: a script can launch a protected lane after static shell checks. Run it through the repository's guarded entrypoint. ${USE_ENTRYPOINT}`,
@@ -2285,7 +2904,8 @@ export function evaluateCommand(command, { cwd = process.cwd() } = {}) {
       reason:
         `Blocked the "${lane.id}" lane: ${lane.why}, and on a small machine several of these in parallel across repos and ` +
         `agents is what exhausts memory. Agents do not run it locally by default. ${GUIDANCE} ` +
-        'If a local run is genuinely required, the owner can run it directly from their own terminal; agent sessions cannot receive forgeable local grants.',
+        'If a local run is genuinely required, the owner may make an exceptional direct run from their own terminal. ' +
+        'That run is outside agent-guard protection and is never delegated to an agent.',
     };
   }
 
