@@ -150,13 +150,27 @@ jobs:
           persist-credentials: false
 
       - name: Install Tauri system dependencies
-        # Bounded mirror I/O (#343): retries plus per-connection timeouts so
-        # a stalled Ubuntu mirror errors out instead of blocking the job.
+        # Bounded mirror I/O (#343): apt's Acquire timeouts alone did not
+        # catch the observed stall mode (a mirror that accepts and then
+        # starves the connection), so every attempt is also hard-bounded
+        # with timeout(1) and retried after clearing any orphaned locks.
         run: |
           APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
-          sudo apt-get $APT_OPTS update
-          sudo apt-get $APT_OPTS install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          for attempt in 1 2 3; do
+            if timeout -k 10 240 sudo apt-get $APT_OPTS update &&
+              timeout -k 10 420 sudo apt-get $APT_OPTS install -y \
+                libwebkit2gtk-4.1-dev build-essential curl wget file \
+                libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed; clearing apt state and retrying"
+            sudo pkill -9 -f 'apt-get|apt|dpkg' 2>/dev/null || true
+            sleep 5
+            sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock \
+              /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
+            sudo dpkg --configure -a || true
+          done
+          exit 1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
