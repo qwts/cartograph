@@ -37,7 +37,7 @@ test('CI enforces the governed lifecycle without draft jobs', () => {
   assert.match(workflow, /github\.event\.pull_request\.draft == false/u);
   assert.match(
     workflow,
-    /qwts\/playbook-engineering\/\.github\/actions\/ci-policy@21d64d91c80b3f4af78919e5106b8e45b2b366dd/u,
+    /qwts\/playbook-engineering\/\.github\/actions\/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4/u,
   );
   assert.match(workflow, /head_sha=\$TARGET_SHA/u);
   assert.match(workflow, /head_sha=\$GITHUB_SHA/u);
@@ -53,7 +53,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
     '.github/workflows/version-cut.yml',
   ].map((file) => readFileSync(path.join(root, file), 'utf8'));
   for (const workflow of workflows) {
-    assert.match(workflow, /ci-policy@21d64d91c80b3f4af78919e5106b8e45b2b366dd/u);
+    assert.match(workflow, /ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4/u);
     assert.match(workflow, /authorization-only: 'true'/u);
     assert.match(workflow, /name: Action Policy/u);
     const policyPosition = workflow.indexOf('name: Action Policy');
@@ -68,7 +68,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
 test('the immutable policy action contract covers both actor fields and fork refusal', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
   const guidance = readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
-  assert.match(workflow, /ci-policy@21d64d91c80b3f4af78919e5106b8e45b2b366dd/u);
+  assert.match(workflow, /ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4/u);
   assert.match(guidance, /github\.triggering_actor/u);
   assert.match(guidance, /github\.actor/u);
   assert.match(guidance, /Public-fork workflows are\s+never approved or run/u);
