@@ -689,6 +689,7 @@ pub fn extract_source(
                     dst: gap_id.clone(),
                     label: "CALLS".into(),
                     props: serde_json::json!({
+                        "reason": "unresolved Java import target",
                         "attempted_resolution": "import-fqn",
                         "prov": cx.prov_with_confidence(
                             &call,

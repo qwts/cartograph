@@ -242,12 +242,24 @@ const SCALE_GAPS: SpecAssertion[] = [
     summary: `sym:a${index} CALLS gap:x${index}`,
     provenance: gapProvenance('Deterministic'),
   })),
+  // Supporting edges of listed gap nodes (#241): folded into their node's
+  // finding, never a row or a class of their own.
+  ...Array.from({ length: 3 }, (_, index) => ({
+    id: `edge:sym:p${index} CALLS gap:msg-${index}`,
+    subject_id: `sym:p${index} CALLS gap:msg-${index}`,
+    subject_kind: 'CALLS',
+    summary: `CALLS: runtime-computed message identity`,
+    provenance: gapProvenance('Deterministic'),
+  })),
 ];
 
 export const ClassesGroupAtScale: Story = {
   // #167/AC-0082: at scale the gap lane triages by cause class — grouped
   // deterministically (count desc), expanding to paged instances; the
-  // per-gap Resolution Strategy path is unchanged.
+  // per-gap Resolution Strategy path is unchanged. #241: the 3 supporting
+  // edges of listed gap nodes fold into their node's finding (the edge
+  // class stays ×5 standalone edge-gaps, never ×8), so nothing is counted
+  // or classed twice.
   args: {
     summary: {
       gaps: 345,
@@ -263,7 +275,8 @@ export const ClassesGroupAtScale: Story = {
   },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    // 345 gaps read as 3 causes, largest first.
+    // 345 findings read as 3 causes, largest first — the 3 supporting
+    // edges fold into the ×300 class's nodes instead of inflating it.
     await expect(canvas.getByText('System gaps · 345 — 3 causes')).toBeInTheDocument();
     const classes = within(canvas.getByLabelText('Gap classes'));
     const heads = classes.getAllByRole('button', { expanded: false });

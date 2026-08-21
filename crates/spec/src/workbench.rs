@@ -149,12 +149,23 @@ fn edge_identity(edge: &Edge) -> String {
 
 fn edge_assertion(edge: &Edge) -> SpecAssertion {
     let identity = edge_identity(edge);
+    let provenance = provenance(&edge.props, &format!("edge:{identity}"));
+    // Gap edges carry the same `reason` as their gap node (#241) — surface it
+    // so register rows never render a bare identity in the reason column.
+    // Non-gap edges (topology, mappings, decisions) keep their identity.
+    let summary = if provenance.confidence_tier == ConfidenceTier::Gap
+        && let Some(reason) = edge.props["reason"].as_str()
+    {
+        format!("{}: {reason}", edge.label)
+    } else {
+        identity.clone()
+    };
     SpecAssertion {
         id: format!("edge:{identity}"),
-        subject_id: identity.clone(),
+        subject_id: identity,
         subject_kind: edge.label.clone(),
-        summary: identity.clone(),
-        provenance: provenance(&edge.props, &format!("edge:{identity}")),
+        summary,
+        provenance,
     }
 }
 
@@ -644,6 +655,32 @@ pub fn is_gap_edge(edge: &Edge) -> bool {
     provenance(&edge.props, &edge_identity(edge)).confidence_tier == ConfidenceTier::Gap
 }
 
+/// One finding per unresolved fact (#241): a Gap-tier edge that touches an
+/// explicit gap node supports that node's finding and never doubles it,
+/// while an edge-only gap — no gap node on either end, e.g. a callee that
+/// cannot be resolved between two real symbols — is a finding of its own.
+/// Public for the same reason as the register predicates (#116): every
+/// surface must count with one definition.
+pub fn count_gap_findings<'a>(
+    nodes: impl IntoIterator<Item = &'a Node>,
+    edges: impl IntoIterator<Item = &'a Edge>,
+) -> usize {
+    let gap_ids: BTreeSet<&str> = nodes
+        .into_iter()
+        .filter(|node| is_gap_node(node))
+        .map(|node| node.id.as_str())
+        .collect();
+    gap_ids.len()
+        + edges
+            .into_iter()
+            .filter(|edge| {
+                is_gap_edge(edge)
+                    && !gap_ids.contains(edge.src.as_str())
+                    && !gap_ids.contains(edge.dst.as_str())
+            })
+            .count()
+}
+
 /// True when `edge` records ADR/code drift (see [`is_drift_node`]).
 pub fn is_drift_edge(edge: &Edge) -> bool {
     matches!(edge.label.as_str(), "CONFLICTS" | "DRIFTS_FROM")
@@ -900,7 +937,10 @@ pub fn compile_spec(
     let (security, security_assertions, security_count) = security_view(&nodes);
     let (toolchain, toolchain_assertions) = toolchain_view(&nodes, &edges);
 
-    let gap_count = gap_assertions.len();
+    // The register still lists supporting edge and flow-hop assertions as
+    // rows, but the count the Workbench displays uses the shared finding
+    // definition, so it reconciles with the findings-summary headline.
+    let gap_count = count_gap_findings(nodes.iter().copied(), edges.iter().copied());
     let artifacts = vec![
         artifact(
             "user-stories",
@@ -1225,7 +1265,9 @@ mod tests {
         assert!(data_model.content.contains("sym:save-order"));
         assert!(data_model.content.contains("MAPS_TO"));
         assert!(data_model.content.contains("WRITES"));
-        assert_eq!(bundle.gap_count, 2);
+        // One gap node → one displayed finding; the register's flow-hop
+        // restatement of the same gap stays a supporting row (#241).
+        assert_eq!(bundle.gap_count, 1);
         assert_eq!(bundle.drift_count, 1);
         assert_eq!(bundle.security_count, 0);
     }
@@ -1254,7 +1296,9 @@ mod tests {
                 .contains("weak inference excluded by verified-only export")
         );
         assert!(!dossier.content.contains("— Verified"));
-        assert_eq!(verified.gap_count, 3);
+        // Still one gap node: verified-only adds excluded-weak flow rows to
+        // the register, but supporting assertions never inflate the count.
+        assert_eq!(verified.gap_count, 1);
         assert_eq!(verified.drift_count, 1);
         assert_eq!(verified.security_count, 0);
     }

@@ -741,6 +741,7 @@ pub fn extract_source(
                 dst: gap_id.clone(),
                 label: "CALLS".into(),
                 props: serde_json::json!({
+                    "reason": "unresolved Python import target",
                     "attempted_resolution": "directory-import",
                     "prov": cx.prov_with_confidence(
                         &call,

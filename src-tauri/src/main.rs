@@ -1350,11 +1350,11 @@ fn summarize_register(
     unsupported: u64,
     no_evidence: u64,
 ) -> FindingsSummary {
-    let gaps = nodes.iter().filter(|node| spec::is_gap_node(node)).count() as u64
-        + edges.iter().filter(|edge| spec::is_gap_edge(edge)).count() as u64;
-    // Drift counts nodes only, matching the drift register's own headline
-    // (`drift_register` counts drift nodes; CONFLICTS/DRIFTS_FROM edges are
-    // supporting assertions of the same finding, not additional findings).
+    // One finding per unresolved fact (#241): an unresolved call emits a Gap
+    // node plus a supporting Gap CALLS edge — spec::count_gap_findings folds
+    // the pair into one finding while keeping an edge-only gap (no gap node
+    // on either end) as its own. Shared definition, every surface (#116).
+    let gaps = spec::count_gap_findings(nodes.iter(), edges.iter()) as u64;
     let drift = nodes
         .iter()
         .filter(|node| spec::is_drift_node(node))
@@ -3049,21 +3049,57 @@ mod tests {
                 props: serde_json::json!({ "prov": confirmed }),
             },
         ];
-        let edges = vec![Edge {
-            src: "svc:api".into(),
-            dst: "adr:3".into(),
-            label: "CONFLICTS".into(),
-            props: serde_json::json!({ "prov": confirmed }),
-        }];
+        let gap = serde_json::to_value(
+            core_prov::Provenance::new(
+                core_prov::Tier::Deterministic,
+                core_prov::ConfidenceTier::Gap,
+                vec![],
+                "t0.adapter-ts",
+                b"gap-fixture",
+            )
+            .expect("within ceiling"),
+        )
+        .expect("serializes");
+        let edges = vec![
+            Edge {
+                src: "svc:api".into(),
+                dst: "adr:3".into(),
+                label: "CONFLICTS".into(),
+                props: serde_json::json!({ "prov": confirmed }),
+            },
+            // An unresolved call emits a gap node AND a gap CALLS edge; the
+            // edge supports the same finding and must not double it (#241).
+            Edge {
+                src: "svc:api".into(),
+                dst: "gap:chan".into(),
+                label: "CALLS".into(),
+                props: serde_json::json!({
+                    "reason": "unresolved call target after import/type resolution",
+                    "prov": &gap,
+                }),
+            },
+            // An edge-only gap between two real facts (no gap node on either
+            // end) is a finding of its own — folding must not swallow it.
+            Edge {
+                src: "svc:api".into(),
+                dst: "sym:handler".into(),
+                label: "CALLS".into(),
+                props: serde_json::json!({
+                    "reason": "callee not statically resolvable",
+                    "prov": gap,
+                }),
+            },
+        ];
         let summary = super::summarize_register(&nodes, &edges, 2, 1);
-        assert_eq!(summary.gaps, 1);
-        // One drift finding: the CONFLICTS edge supports the drift node, it
-        // is not a second finding (parity with drift_register's count).
+        // One finding for the node+edge pair, one for the standalone edge.
+        assert_eq!(summary.gaps, 2);
+        // Drift keeps its own node-only rule: the CONFLICTS edge supports
+        // the drift node's finding (parity with drift_register's count).
         assert_eq!(summary.drift, 1);
         assert_eq!(summary.unsupported, 2);
         assert_eq!(summary.no_evidence, 1);
-        assert_eq!(summary.open_findings, 4); // 1 gap + 2 unsupported + 1 no-evidence
-        assert_eq!(summary.graph_facts, 4);
+        assert_eq!(summary.open_findings, 5); // 2 gaps + 2 unsupported + 1 no-evidence
+        assert_eq!(summary.graph_facts, 6);
     }
 
     #[test]
