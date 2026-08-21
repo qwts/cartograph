@@ -46,9 +46,10 @@ jobs:
     name: Action Policy
     if: github.event_name != 'workflow_call'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Authorize direct workflow event
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@5455a3f5939369ea843b1bbb4d2573739f4381a6
         with:
           authorization-only: 'true'
 
@@ -57,6 +58,7 @@ jobs:
     needs: policy
     if: always() && (github.event_name == 'workflow_call' || needs.policy.result == 'success')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
     steps:
@@ -76,20 +78,20 @@ jobs:
           PACKAGE_SHA: ${{ steps.commit.outputs.sha }}
         run: |
           queue_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$PACKAGE_SHA&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
           complete=false
           if [ -n "$queue_run" ]; then
             complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$queue_run/jobs?filter=latest&per_page=100" \
               --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
           else
             push_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=push&head_sha=$PACKAGE_SHA&per_page=100" \
-              --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+              --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
             if [ -n "$push_run" ]; then
               complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$push_run/jobs?filter=latest&per_page=100" \
                 --jq 'any(.jobs[]; .name == "Complete suite" and .conclusion == "success")')
             else
               manual_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&head_sha=$PACKAGE_SHA&per_page=100" \
-                --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+                --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
               if [ -n "$manual_run" ]; then
                 complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$manual_run/jobs?filter=latest&per_page=100" \
                   --jq 'any(.jobs[]; .name == "Complete suite" and .conclusion == "success")')
@@ -102,6 +104,7 @@ jobs:
     name: macOS universal bundle
     needs: evidence
     runs-on: macos-latest
+    timeout-minutes: 90
     outputs:
       signing_mode: ${{ steps.signing.outputs.mode }}
       artifact_name: ${{ steps.metadata.outputs.artifact_name }}
@@ -121,10 +124,26 @@ jobs:
             package-lock.json
             ui/package-lock.json
 
-      - name: Install locked dependencies
-        run: |
-          npm ci
-          npm --prefix ui ci
+      - name: Install locked root dependencies
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install locked root dependencies
+          executable: npm
+          arguments-json: '["ci"]'
+          timeout-seconds: '600'
+          attempts: '2'
+          retry-delay-seconds: '5'
+
+      - name: Install locked UI dependencies
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install locked UI dependencies
+          executable: npm
+          arguments-json: '["ci"]'
+          working-directory: ui
+          timeout-seconds: '600'
+          attempts: '2'
+          retry-delay-seconds: '5'
 
       - name: Install universal Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin

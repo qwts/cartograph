@@ -36,19 +36,21 @@ jobs:
     name: Action Policy
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       mode: ${{ steps.policy.outputs.mode }}
       run_full: ${{ steps.policy.outputs.run_full }}
       run_post_merge: ${{ steps.policy.outputs.run_post_merge }}
     steps:
       - id: policy
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@5455a3f5939369ea843b1bbb4d2573739f4381a6
 
   merge-evidence:
     name: Verify merged commit evidence
     needs: policy
     if: needs.policy.outputs.run_post_merge == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       validated: ${{ steps.evidence.outputs.validated }}
     steps:
@@ -58,7 +60,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$GITHUB_SHA&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
           validated=false
           if [ -n "$run_id" ]; then
             validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
@@ -71,6 +73,7 @@ jobs:
     needs: policy
     if: github.event_name == 'pull_request' && needs.policy.outputs.run_full == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       validated: ${{ steps.evidence.outputs.validated }}
     steps:
@@ -81,7 +84,7 @@ jobs:
           TARGET_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&head_sha=$TARGET_SHA&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .display_title == "CI workflow_dispatch purpose=exact-sha-preflight" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .display_title == "CI workflow_dispatch purpose=exact-sha-preflight" and .conclusion == "success") | .id) // empty')
           validated=false
           if [ -n "$run_id" ]; then
             validated=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
@@ -99,6 +102,7 @@ jobs:
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
       (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -135,6 +139,9 @@ jobs:
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
       (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
+    # A hung mirror must fail the job in minutes, never hold its runner
+    # slot to the 6-hour kill (#343; cold cargo builds finish well inside).
+    timeout-minutes: 45
     steps:
       - name: Checkout exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -142,11 +149,23 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      - name: Refresh apt metadata
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Refresh Tauri apt metadata
+          executable: sudo
+          arguments-json: '["apt-get","-o","Acquire::Retries=3","-o","Acquire::http::Timeout=30","-o","Acquire::https::Timeout=30","update"]'
+          timeout-seconds: '240'
+          attempts: '2'
+          retry-delay-seconds: '5'
+
       - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install Tauri system dependencies
+          executable: sudo
+          arguments-json: '["apt-get","-o","Acquire::Retries=3","-o","Acquire::http::Timeout=30","-o","Acquire::https::Timeout=30","install","-y","libwebkit2gtk-4.1-dev","build-essential","curl","wget","file","libxdo-dev","libssl-dev","libayatana-appindicator3-dev","librsvg2-dev"]'
+          timeout-seconds: '420'
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
@@ -176,6 +195,7 @@ jobs:
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
       (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,6 +220,9 @@ jobs:
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
       (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
+    # Playwright's --with-deps runs apt + a CDN download — same hang risk
+    # as the Tauri dependency step (#343).
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ui
@@ -218,10 +241,26 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install frontend dependencies
+          executable: npm
+          arguments-json: '["ci"]'
+          working-directory: ui
+          timeout-seconds: '300'
+          attempts: '2'
+          retry-delay-seconds: '5'
 
       - name: Install Playwright browser (for story tests)
-        run: npx playwright install --with-deps chromium
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@5455a3f5939369ea843b1bbb4d2573739f4381a6
+        with:
+          task: Install Playwright Chromium and system dependencies
+          executable: npx
+          arguments-json: '["playwright","install","--with-deps","chromium"]'
+          working-directory: ui
+          timeout-seconds: '300'
+          attempts: '2'
+          retry-delay-seconds: '5'
 
       - name: Lint
         run: npm run lint
@@ -249,14 +288,43 @@ jobs:
       security-events: write
     uses: ./.github/workflows/codeql.yml
 
-  complete:
-    name: Complete suite
-    needs: [policy, merge-evidence, preflight-evidence, docs, rust, compliance, frontend, codeql]
+  workflow-runtime:
+    name: Workflow runtime policy
+    needs: [policy, merge-evidence, preflight-evidence]
     if: >-
       always() && needs.policy.result == 'success' &&
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
       (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact validation commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Checkout pinned runtime checker
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: qwts/playbook-engineering
+          ref: 5455a3f5939369ea843b1bbb4d2573739f4381a6
+          path: .ci-runtime-policy
+          sparse-checkout: tools/ci-runtime
+          persist-credentials: false
+
+      - name: Enforce bounded workflow runtime
+        run: node .ci-runtime-policy/tools/ci-runtime/runtime-policy.mjs --root "$GITHUB_WORKSPACE"
+
+  complete:
+    name: Complete suite
+    needs: [policy, merge-evidence, preflight-evidence, docs, rust, compliance, frontend, codeql, workflow-runtime]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Verify every agreed complete-suite gate
         env:
@@ -265,18 +333,21 @@ jobs:
           COMPLIANCE: ${{ needs.compliance.result }}
           FRONTEND: ${{ needs.frontend.result }}
           CODEQL: ${{ needs.codeql.result }}
+          WORKFLOW_RUNTIME: ${{ needs.workflow-runtime.result }}
         run: |
           test "$DOCS" = success
           test "$RUST" = success
           test "$COMPLIANCE" = success
           test "$FRONTEND" = success
           test "$CODEQL" = success
+          test "$WORKFLOW_RUNTIME" = success
 
   post-merge:
     name: Post-merge smoke
     needs: [policy, merge-evidence]
     if: needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout exact merged commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -296,6 +367,7 @@ jobs:
     needs: [policy, merge-evidence, preflight-evidence, complete, codeql, post-merge]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Enforce the selected lifecycle lane
         env:

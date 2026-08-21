@@ -16,9 +16,10 @@ jobs:
   policy:
     name: Action Policy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Authorize direct workflow event
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@5455a3f5939369ea843b1bbb4d2573739f4381a6
         with:
           authorization-only: 'true'
 
@@ -30,6 +31,7 @@ jobs:
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
