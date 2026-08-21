@@ -29,6 +29,11 @@ updates:
       # TS 7.x is blocked until typescript-eslint's peer range admits it (#174).
       - dependency-name: typescript
         update-types: [version-update:semver-major]
+      # Cytoscape 3.34.1 dropped its npm provenance attestation (3.34.0 has
+      # one); held until a later release restores provenance or the
+      # regression is explicitly accepted (#328).
+      - dependency-name: cytoscape
+        versions: ["3.34.1"]
 
   - package-ecosystem: github-actions
     directory: /
