@@ -4,13 +4,15 @@ import path from 'node:path';
 import test from 'node:test';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const PLAYBOOK_RUNTIME_PIN = '5455a3f5939369ea843b1bbb4d2573739f4381a6';
 
 test('version-cut preserves review, evidence, and immutable-tag gates', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/version-cut.yml'), 'utf8');
   assert.match(workflow, /npm run changeset:version/u);
   assert.doesNotMatch(workflow, /gh workflow run ci\.yml/u);
   assert.match(workflow, /event=push&head_sha=\$cut_commit/u);
-  assert.match(workflow, /name == "CI" and \.conclusion == "success"/u);
+  assert.match(workflow, /select\(\.path == "\.github\/workflows\/ci\.yml"\)/u);
+  assert.doesNotMatch(workflow, /workflow_runs\[\].*\.name == "CI"/u);
   assert.match(workflow, /Manual recovery requires an existing \$tag tag/u);
   assert.match(workflow, /commits\/\$cut_commit\/pulls/u);
   assert.match(workflow, /\.head\.ref == "changeset-release\/main"/u);
@@ -37,7 +39,7 @@ test('CI enforces the governed lifecycle without draft jobs', () => {
   assert.match(workflow, /github\.event\.pull_request\.draft == false/u);
   assert.match(
     workflow,
-    /qwts\/playbook-engineering\/\.github\/actions\/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4/u,
+    new RegExp(`qwts/playbook-engineering/\\.github/actions/ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'),
   );
   assert.match(workflow, /head_sha=\$TARGET_SHA/u);
   assert.match(workflow, /head_sha=\$GITHUB_SHA/u);
@@ -53,7 +55,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
     '.github/workflows/version-cut.yml',
   ].map((file) => readFileSync(path.join(root, file), 'utf8'));
   for (const workflow of workflows) {
-    assert.match(workflow, /ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4/u);
+    assert.match(workflow, new RegExp(`ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'));
     assert.match(workflow, /authorization-only: 'true'/u);
     assert.match(workflow, /name: Action Policy/u);
     const policyPosition = workflow.indexOf('name: Action Policy');
@@ -68,7 +70,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
 test('the immutable policy action contract covers both actor fields and fork refusal', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
   const guidance = readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
-  assert.match(workflow, /ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4/u);
+  assert.match(workflow, new RegExp(`ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'));
   assert.match(guidance, /github\.triggering_actor/u);
   assert.match(guidance, /github\.actor/u);
   assert.match(guidance, /Public-fork workflows are\s+never approved or run/u);
@@ -93,6 +95,27 @@ test('complete suite retains every existing Cartograph gate', () => {
   for (const context of ['Docs & traceability', 'Rust', 'License & supply-chain', 'Frontend']) {
     assert.match(workflow, new RegExp(`name: ${context}`, 'u'));
   }
+});
+
+test('workflow runtime policy is pinned and installer processes are centrally bounded', () => {
+  const workflowNames = [
+    'ci.yml',
+    'close-linked-issues.yml',
+    'codeql.yml',
+    'package.yml',
+    'release.yml',
+    'version-cut.yml',
+  ];
+  const workflows = workflowNames.map((name) =>
+    readFileSync(path.join(root, '.github/workflows', name), 'utf8'),
+  );
+  const combined = workflows.join('\n');
+
+  assert.match(combined, new RegExp(`bounded-command@${PLAYBOOK_RUNTIME_PIN}`, 'u'));
+  assert.match(workflows[0], /name: Workflow runtime policy/u);
+  assert.match(workflows[0], new RegExp(`ref: ${PLAYBOOK_RUNTIME_PIN}`, 'u'));
+  assert.match(workflows[0], /runtime-policy\.mjs --root "\$GITHUB_WORKSPACE"/u);
+  assert.doesNotMatch(combined, /workflow_runs\[\].*\.name == "CI"/u);
 });
 
 test('Advanced CodeQL is governed, immutable, and preserves Rust coverage', () => {
