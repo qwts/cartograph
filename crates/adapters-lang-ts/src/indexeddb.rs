@@ -404,6 +404,7 @@ pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractErro
                     dst: gap_id.clone(),
                     label: op.label.into(),
                     props: serde_json::json!({
+                        "reason": "runtime-computed object-store identity",
                         "prov": prov_value(
                             id,
                             &op.path,
