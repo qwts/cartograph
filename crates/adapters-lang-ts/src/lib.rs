@@ -353,6 +353,7 @@ fn pending_call(
             dst: gap_id.clone(),
             label: "CALLS".into(),
             props: serde_json::json!({
+                "reason": reason,
                 "attempted_resolution": "directory-import-or-type",
                 "prov": cx.prov_with_confidence(
                     &call,
