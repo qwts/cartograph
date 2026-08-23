@@ -308,7 +308,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: qwts/playbook-engineering
-          ref: 5455a3f5939369ea843b1bbb4d2573739f4381a6
+          ref: df404e2ce63fc1566eb2a60c92a8fabe009955b0
           path: .ci-runtime-policy
           sparse-checkout: tools/ci-runtime
           persist-credentials: false
