@@ -2946,19 +2946,54 @@ export function evaluateCommand(command, { cwd = process.cwd(), depth = 0 } = {}
     }
     return false;
   };
-  // The wrapper's own tail after `--` is the wrapped command: classify it.
-  const wrappedCommandTokens = (executableSegment) => {
+  const inlineRuntimeTokens = (tokens) => commandAfterPrefixes(tokens.join(' '))
+    .split(/\s+/u)
+    .filter(Boolean);
+  // Parse the wrapper with the same grammar as run-guarded.mjs. `--` is
+  // optional: the wrapper treats its first non-option argument as the command,
+  // so looking only behind a separator would exempt `run-guarded.mjs node -e`.
+  // Keep the Node launcher separate as well — executable-program options on
+  // that process run before the wrapper script and are never sanctioned by it.
+  const wrappedInvocationTokens = (executableSegment) => {
     if (!WRAPPER_SEGMENT.test(executableSegment)) return null;
-    const separatorAt = executableSegment.split(/\s+/u).indexOf('--');
-    if (separatorAt < 0) return [];
-    return executableSegment.split(/\s+/u).slice(separatorAt + 1).filter(Boolean);
+    const tokens = executableSegment.split(/\s+/u).filter(Boolean);
+    const scriptAt = tokens.findIndex((token) => /^(?:\.\/)?(?:tools\/agent-guard|scripts)\/run-guarded\.mjs$/u.test(token));
+    if (scriptAt < 1) return { launcher: tokens, command: [] };
+    const args = tokens.slice(scriptAt + 1);
+    const wrapperOptionsWithOperands = new Set([
+      '--label',
+      '--rss-mb',
+      '--heap-mb',
+      '--timeout-s',
+      '--wait-s',
+    ]);
+    let commandAt = 0;
+    while (commandAt < args.length) {
+      const token = args[commandAt];
+      if (token === '--') {
+        commandAt += 1;
+        break;
+      }
+      if (wrapperOptionsWithOperands.has(token)) {
+        if (commandAt + 1 >= args.length) return { launcher: tokens.slice(0, scriptAt), command: [] };
+        commandAt += 2;
+        continue;
+      }
+      // run-guarded refuses an unknown long option before it spawns anything.
+      if (token.startsWith('--')) return { launcher: tokens.slice(0, scriptAt), command: [] };
+      break;
+    }
+    return {
+      launcher: tokens.slice(0, scriptAt),
+      command: args.slice(commandAt),
+    };
   };
   if (splitSegments(effective).some((segment) => {
     const executableSegment = commandAfterPrefixes(segment);
-    const wrapped = wrappedCommandTokens(executableSegment);
+    const wrapped = wrappedInvocationTokens(executableSegment);
     if (wrapped !== null) {
-      // The wrapper segment itself is exempt; its carried command is not.
-      return wrapped.length > 0 && inlineRuntimeDenied(wrapped);
+      return inlineRuntimeDenied(inlineRuntimeTokens(wrapped.launcher)) ||
+        inlineRuntimeDenied(inlineRuntimeTokens(wrapped.command));
     }
     return inlineRuntimeDenied(executableSegment.split(/\s+/u).filter(Boolean));
   })) {

@@ -344,6 +344,30 @@ describe('agent-guard conformance (ENG-0138)', () => {
     }
   });
 
+  test('the sanctioned wrapper never exempts inline runtime programs (#293)', () => {
+    for (const command of [
+      'node tools/agent-guard/run-guarded.mjs node -e payload',
+      'node tools/agent-guard/run-guarded.mjs --label x python3 -c payload',
+      'node tools/agent-guard/run-guarded.mjs --rss-mb 512 ruby -e payload',
+      'node --eval=payload tools/agent-guard/run-guarded.mjs -- true',
+      'node --require=payload tools/agent-guard/run-guarded.mjs -- true',
+      'node tools/agent-guard/run-guarded.mjs --label x env node -e payload',
+      'node tools/agent-guard/run-guarded.mjs -- command node -e payload',
+      'node tools/agent-guard/run-guarded.mjs -- env MODE=test python3 -c payload',
+    ]) {
+      assert.equal(evaluateCommand(command, { env }).allow, false, `expected the guard to deny: ${command}`);
+    }
+    // Preserve #237: flags on a non-Node wrapped command are not launcher
+    // eval/print flags, with or without the optional separator.
+    for (const command of [
+      'node tools/agent-guard/run-guarded.mjs --label test:e2e -- cargo test -p app -j 2',
+      'node tools/agent-guard/run-guarded.mjs --label test:e2e cargo test -p app -j 2',
+      'node tools/agent-guard/run-guarded.mjs -- env MODE=test cargo test -p app -j 2',
+    ]) {
+      assert.equal(evaluateCommand(command, { env }).allow, true, `expected the guard to allow: ${command}`);
+    }
+  });
+
   test('the guard denies tampering with its own controls', () => {
     for (const command of ['AGENT_GUARD_FORCE=1 npm run test:dom', 'AGENT_GUARD_ASSUME_HUMAN=1 npm run test:dom', 'node tools/agent-guard/arbiter.mjs grant e2e']) {
       assert.equal(evaluateCommand(command, { env }).allow, false, `expected the guard to deny: ${command}`);
