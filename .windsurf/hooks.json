@@ -1,0 +1,12 @@
+{
+  "description": "Machine memory guard (ENG-0138): deny heavy local suites and commands that bypass tools/agent-guard/run-guarded.mjs. Cascade blocks the command when a pre-hook exits 2.",
+  "hooks": {
+    "pre_run_command": [
+      {
+        "command": "node tools/agent-guard/guard-agent-command.mjs --protocol=windsurf",
+        "powershell": "node tools/agent-guard/guard-agent-command.mjs --protocol=windsurf",
+        "show_output": true
+      }
+    ]
+  }
+}

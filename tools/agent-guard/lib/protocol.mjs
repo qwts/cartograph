@@ -77,6 +77,16 @@ export function lanePeaksDir(env = process.env) {
   return path.join(stateDir(env), 'lane-peaks');
 }
 
+// Per-run diagnostics (last-run.json, history.jsonl) live here rather than in
+// a checkout: a `.guard/` directory inside the worktree dirtied every tree a
+// guarded run touched (#239), breaking signed-commit fail-closed checks and
+// risking machine-local telemetry being committed by `git add -A`. The
+// journal is per-repo state, not lease state, so it shares the machine state
+// directory's scope without touching the per-session lease namespace.
+export function journalDir(env = process.env) {
+  return path.join(stateDir(env), 'journal');
+}
+
 /**
  * A random identifier for "the state directory this machine is actually
  * using", minted once and stored beside the leases.
@@ -121,5 +131,6 @@ export function ensureStateDirs(env = process.env) {
   mkdirSync(leasesDir(env), { recursive: true });
   mkdirSync(grantsDir(env), { recursive: true });
   mkdirSync(lanePeaksDir(env), { recursive: true });
+  mkdirSync(journalDir(env), { recursive: true });
   return stateDir(env);
 }

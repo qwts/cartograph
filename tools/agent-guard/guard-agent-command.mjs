@@ -28,7 +28,7 @@
 // Fail-open by design: a malformed payload allows the command rather than
 // bricking every shell call.
 //
-// Protocols: --protocol=claude | cursor | codex
+// Protocols: --protocol=claude | cursor | codex | copilot | windsurf
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -2689,10 +2689,70 @@ function maskQuotedSeparators(command) {
   for (;;) {
     const match = QUOTED.exec(rest);
     if (!match) break;
-    scanned += rest.slice(0, match.index) + match[0].replace(/[;\n|&]/gu, ' ');
+    scanned += rest.slice(0, match.index) + maskQuotedWordSeparators(match[0]);
     rest = rest.slice(match.index + match[0].length);
   }
   return scanned + rest;
+}
+
+// Blank separators inside a quoted word, but only where they are inert text.
+// A double-quoted string still expands `$(…)` and backtick substitutions, and
+// a separator inside such a body is a real control operator of the nested
+// command (`echo "$(runner=npm; $runner run ci)"` runs `npm run ci`) — masking
+// it would hide an executable segment from the scanners (#237 review). Single
+// quotes are genuinely inert, so their whole content is masked.
+function maskQuotedWordSeparators(quoted) {
+  if (quoted.startsWith("'")) return quoted.replace(/[;\n|&]/gu, ' ');
+  const body = quoted.slice(1, -1);
+  let masked = '"';
+  let rest = body;
+  for (;;) {
+    const substitution = /`|\$\(/u.exec(rest);
+    if (!substitution) break;
+    const opener = substitution[0];
+    const openerAt = substitution.index;
+    masked += rest.slice(0, openerAt);
+    rest = rest.slice(openerAt + opener.length);
+    let depth = 1;
+    let end = rest.length;
+    let quote = null;
+    for (let i = 0; i < rest.length; i += 1) {
+      const character = rest[i];
+      if (character === '\\') {
+        i += 1;
+        continue;
+      }
+      if (quote !== null) {
+        if (character === quote) quote = null;
+        continue;
+      }
+      if (character === "'" || character === '"') {
+        quote = character;
+        continue;
+      }
+      if (opener === '`') {
+        if (character === '`') {
+          end = i;
+          depth = 0;
+          break;
+        }
+        if (character === '$' && rest[i + 1] === '(') depth += 1;
+      } else if (character === '(') {
+        depth += 1;
+      } else if (character === ')') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    const inner = rest.slice(0, end);
+    // The substitution body executes as shell: keep its separators visible.
+    masked += `${opener}${inner}`;
+    rest = rest.slice(end + (depth === 0 ? 1 : 0));
+  }
+  return `${masked}${rest.replace(/[;\n|&]/gu, ' ')}"`;
 }
 
 // A protected VAR=… is an override only where a shell or env-style wrapper
@@ -2745,6 +2805,14 @@ export function evaluateCommand(command, { cwd = process.cwd(), depth = 0 } = {}
     };
   }
   const dynamicCommand = maskNonShellHeredocs(command);
+  // splitSegments is quote-unaware; a separator inside a quoted argument would
+  // open a phantom segment whose first token can look executable — a jq
+  // program, or a backticked mention in a PR body (`a; \`x\``). Blank
+  // quoted separators up front so the dynamic-execution scans below see
+  // structural separators only (#237); maskQuotedSeparators already did this
+  // for the assignment scan, and the same correctness argument applies: text
+  // inside quotes is data, not control syntax.
+  const segmentedCommand = maskQuotedSeparators(dynamicCommand);
   const wrapperShellPayloads = unmodeledWrapperShellPayloads(dynamicCommand);
   if (hasUnmodeledEnvCommand(dynamicCommand)) {
     return {
@@ -2781,8 +2849,8 @@ export function evaluateCommand(command, { cwd = process.cwd(), depth = 0 } = {}
     };
   }
   if (
-    hasDynamicPackageScript(dynamicCommand) ||
-    hasDynamicExecutionPosition(dynamicCommand) ||
+    hasDynamicPackageScript(segmentedCommand) ||
+    hasDynamicExecutionPosition(segmentedCommand) ||
     wrapperShellPayloads.some((payload) => hasRuntimeShellExpansion(payload))
   ) {
     return {
@@ -2854,8 +2922,15 @@ export function evaluateCommand(command, { cwd = process.cwd(), depth = 0 } = {}
   // commands whose strings are not shell syntax. Static shell classification
   // cannot authenticate their contents, so agent commands must use checked-in
   // scripts rather than executable-program options.
-  if (splitSegments(effective).some((segment) => {
-    const tokens = commandAfterPrefixes(segment).split(/\s+/u).filter(Boolean);
+  //
+  // The sanctioned wrapper's own node options are not the wrapped command's:
+  // everything after `run-guarded.mjs --` is a separate executable command
+  // and keeps every check below. Skipping the whole segment let a wrapped
+  // `node -e "…"` through (#237 review), while NOT carving out at all misread
+  // a wrapped `cargo test -p app` as `node -p` (print mode) because cargo's
+  // package flag collides with node's eval-flag pattern (#237) — making a
+  // narrower test selection classify as heavier than the full workspace run.
+  const inlineRuntimeDenied = (tokens) => {
     const runtime = tokens[0]?.split('/').at(-1) ?? '';
     const options = tokens.slice(1);
     if (runtime === 'node') {
@@ -2870,6 +2945,22 @@ export function evaluateCommand(command, { cwd = process.cwd(), depth = 0 } = {}
       return !options.every((token) => /^(?:--help|--version|-W(?:help|version))$/u.test(token));
     }
     return false;
+  };
+  // The wrapper's own tail after `--` is the wrapped command: classify it.
+  const wrappedCommandTokens = (executableSegment) => {
+    if (!WRAPPER_SEGMENT.test(executableSegment)) return null;
+    const separatorAt = executableSegment.split(/\s+/u).indexOf('--');
+    if (separatorAt < 0) return [];
+    return executableSegment.split(/\s+/u).slice(separatorAt + 1).filter(Boolean);
+  };
+  if (splitSegments(effective).some((segment) => {
+    const executableSegment = commandAfterPrefixes(segment);
+    const wrapped = wrappedCommandTokens(executableSegment);
+    if (wrapped !== null) {
+      // The wrapper segment itself is exempt; its carried command is not.
+      return wrapped.length > 0 && inlineRuntimeDenied(wrapped);
+    }
+    return inlineRuntimeDenied(executableSegment.split(/\s+/u).filter(Boolean));
   })) {
     return {
       allow: false,
@@ -3009,6 +3100,26 @@ function respond(protocol, verdict) {
     process.stdout.write(`${JSON.stringify(body)}\n`);
     return;
   }
+  if (protocol === 'copilot') {
+    // Copilot's preToolUse contract puts the decision at the top level, not
+    // under hookSpecificOutput; silence means allow.
+    if (!verdict.allow) {
+      process.stdout.write(`${JSON.stringify({
+        permissionDecision: 'deny',
+        permissionDecisionReason: verdict.reason,
+      })}\n`);
+    }
+    return;
+  }
+  if (protocol === 'windsurf') {
+    // Cascade pre-hooks block on exit code 2; stdout reaches the user when the
+    // adapter sets show_output.
+    if (!verdict.allow) {
+      process.stdout.write(`${verdict.reason}\nBlocked by the machine memory guard (see ${GUARD_GUIDE}).\n`);
+      process.exitCode = 2;
+    }
+    return;
+  }
   if (!verdict.allow) {
     process.stdout.write(
       `${JSON.stringify({
@@ -3022,17 +3133,41 @@ function respond(protocol, verdict) {
   }
 }
 
+// Each harness hands the hook a different envelope; pull the shell command and
+// cwd out of the dialect. A non-shell tool call carries no command and stays
+// out of scope (undefined command → allow).
+export function extractHookPayload(protocol, input) {
+  if (protocol === 'cursor') return { command: input.command, cwd: input.cwd };
+  if (protocol === 'copilot') {
+    // Copilot CLI names the tool `shell`; the coding agent names it `bash` and
+    // may deliver toolArgs as a JSON-encoded string rather than an object.
+    const args = typeof input.toolArgs === 'string' ? JSON.parse(input.toolArgs) : input.toolArgs;
+    return {
+      command: input.toolName === 'shell' || input.toolName === 'bash' ? normalizeCommand(args?.command) : undefined,
+      cwd: input.cwd,
+    };
+  }
+  if (protocol === 'windsurf') {
+    return {
+      command: normalizeCommand(input.tool_info?.command_line),
+      cwd: input.tool_info?.cwd ?? input.cwd,
+    };
+  }
+  return { command: normalizeCommand(input.tool_input?.command), cwd: input.cwd };
+}
+
 async function main() {
-  const protocol = process.argv.includes('--protocol=cursor') ? 'cursor' : process.argv.includes('--protocol=codex') ? 'codex' : 'claude';
+  const protocolFlag = process.argv.find((arg) => arg.startsWith('--protocol='));
+  const protocol = protocolFlag ? protocolFlag.slice('--protocol='.length) : 'claude';
   // This script lives in the checkout it protects, so its own location is the
   // authoritative project dir (CLAUDE_PROJECT_DIR matches for Claude Code;
-  // Cursor and Codex set no equivalent).
+  // the other harnesses set no equivalent).
   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   let verdict = { allow: true };
   try {
     const input = JSON.parse(await readStdin());
-    const command = protocol === 'cursor' ? input.command : normalizeCommand(input.tool_input?.command);
-    verdict = evaluateHookInput({ command, cwd: input.cwd }, projectDir);
+    const { command, cwd } = extractHookPayload(protocol, input);
+    if (typeof command === 'string') verdict = evaluateHookInput({ command, cwd }, projectDir);
   } catch {
     // Fail open (see header).
   }

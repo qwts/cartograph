@@ -24,13 +24,15 @@
 //        AGENT_GUARDED=1 (set for children so nested guards pass through).
 
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
 import { clampCeiling, decideAdmission, deriveBudgetForMemory } from './lib/budget.mjs';
-import { acquireLease, heartbeatLease, leaseExists, psExecutable, readLeases, releaseLease, repositoryWorktreeRoot, retargetLease, withAdmissionLock } from './lib/leases.mjs';
+import { acquireLease, heartbeatLease, leaseExists, psExecutable, readLeases, releaseLease, repositoryIdentity, retargetLease, withAdmissionLock } from './lib/leases.mjs';
 import { evaluateLanePolicy, harnessName, isAgentSession } from './lib/policy.mjs';
+import { journalDir } from './lib/protocol.mjs';
 import { readMemoryStatus, topConsumers } from './lib/system-memory.mjs';
 
 export const POLL_MS = 250;
@@ -122,6 +124,16 @@ export function applyAutomaticLaneHistoryPolicy(request) {
   return request;
 }
 
+/**
+ * Per-run diagnostics live under the machine state directory, keyed by
+ * repository identity — never in the checkout (#239). A `.guard/` directory
+ * in the worktree dirtied every tree a guarded run touched, breaking
+ * signed-commit fail-closed checks and risking machine-local telemetry being
+ * committed. Keying by `repositoryIdentity` (Git's common dir, canonicalised)
+ * gives one journal per clone shared by all of its linked worktrees, and the
+ * SHA-256 filename mirrors `lanePeakFile`: full paths must not become
+ * filesystem component names.
+ */
 export function guardDiagnosticPaths(worktree, { env = process.env } = {}) {
   let cwd;
   try {
@@ -129,12 +141,15 @@ export function guardDiagnosticPaths(worktree, { env = process.env } = {}) {
   } catch {
     cwd = path.resolve(worktree);
   }
-  const guardDir = path.join(repositoryWorktreeRoot(cwd, { env }) ?? cwd, '.guard');
+  const identity = repositoryIdentity(cwd, { env });
+  const digest = createHash('sha256').update(identity).digest('hex');
+  const guardDir = path.join(journalDir(env), digest);
   const lastRunPath = path.join(guardDir, 'last-run.json');
   return {
     guardDir,
     lastRunPath,
-    lastRunDisplayPath: path.relative(cwd, lastRunPath) || lastRunPath,
+    // Outside the checkout, so an absolute path is the honest display form.
+    lastRunDisplayPath: lastRunPath,
   };
 }
 
@@ -305,9 +320,9 @@ async function main() {
   }
 
   const worktree = process.cwd();
-  // One diagnostic location per Git worktree: a run from a nested cwd must
-  // not scatter untracked files through nested directories. A non-Git or
-  // unresolvable cwd safely falls back to its own local diagnostics.
+  // One diagnostic location per clone, under the machine state directory: a
+  // run from any cwd of any linked worktree shares it, and nothing is ever
+  // written into the checkout itself (#239).
   const { guardDir, lastRunPath, lastRunDisplayPath } = guardDiagnosticPaths(worktree, { env: process.env });
   const nodeOptions = [process.env.NODE_OPTIONS, `--max-old-space-size=${request.heapMb}`].filter(Boolean).join(' ');
   // The live lease id is added after admission so nested guarded commands can
@@ -328,6 +343,7 @@ async function main() {
   });
   if (refused) fail(describeRefusal(decision, process.env));
 
+  // Created after admission so a refused run writes nothing anywhere.
   mkdirSync(guardDir, { recursive: true });
 
   const startedAt = Date.now();

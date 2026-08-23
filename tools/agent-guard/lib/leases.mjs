@@ -61,10 +61,9 @@ const TRANSITIVE_DISPATCHERS = new Set([
   'yarn',
   'yarnpkg',
 ]);
-const UNTRACKED_GUARD_DIAGNOSTICS = new Set([
-  '? .guard/history.jsonl',
-  '? .guard/last-run.json',
-]);
+// The guard's run journal moved under the machine state directory (#239), so
+// no wrapper-owned artifact is untracked in the worktree anymore: any
+// untracked entry fails closed, as it always should have.
 
 function canonicalWorktreePath(worktree) {
   try {
@@ -383,7 +382,7 @@ export function commandBehaviorIdentity(worktree, command, { env = process.env, 
       options,
     ).split('\0').filter(Boolean);
     const revision = status.find((entry) => entry.startsWith('# branch.oid '))?.slice('# branch.oid '.length);
-    const dirty = status.some((entry) => !entry.startsWith('# ') && !UNTRACKED_GUARD_DIAGNOSTICS.has(entry));
+    const dirty = status.some((entry) => !entry.startsWith('# '));
     if (!revision || revision === '(initial)' || dirty) return null;
 
     // status/diff intentionally trust index hints such as assume-unchanged and

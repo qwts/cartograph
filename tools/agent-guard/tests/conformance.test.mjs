@@ -99,6 +99,53 @@ describe('agent-guard conformance (ENG-0138)', () => {
     );
   });
 
+  test('Copilot registers the guard in .github/hooks (#290)', () => {
+    const hooks = json('.github/hooks/agent-guard.json');
+    assert.ok(
+      (hooks.hooks?.preToolUse ?? []).some((hook) => [hook.bash, hook.powershell].every((command) => (command ?? '').includes('guard-agent-command.mjs') && (command ?? '').includes('--protocol=copilot'))),
+      '.github/hooks/agent-guard.json must invoke the guard with --protocol=copilot on preToolUse, for bash and powershell hosts alike',
+    );
+  });
+
+  test('Windsurf (Devin desktop) registers it on pre_run_command (#290)', () => {
+    const hooks = json('.windsurf/hooks.json');
+    assert.ok(
+      (hooks.hooks?.pre_run_command ?? []).some((hook) => [hook.command, hook.powershell].every((command) => (command ?? '').includes('guard-agent-command.mjs') && (command ?? '').includes('--protocol=windsurf'))),
+      '.windsurf/hooks.json must invoke the guard with --protocol=windsurf on pre_run_command, for both shell hosts',
+    );
+  });
+
+  test('the copilot and windsurf dialects deny through their own contracts', () => {
+    const hook = path.join(root, 'tools/agent-guard/guard-agent-command.mjs');
+    const spawnHook = (protocol, payload) => spawnSync(process.execPath, [hook, `--protocol=${protocol}`], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, ...env, AGENT_GUARDED: '' },
+      input: JSON.stringify(payload),
+    });
+
+    // Copilot: JSON permissionDecision at the top level; silence means allow.
+    // The CLI names the tool `shell` with object toolArgs; the coding agent
+    // names it `bash` and JSON-encodes toolArgs — both must reach the guard.
+    const copilotDeny = spawnHook('copilot', { toolName: 'shell', toolArgs: { command: 'npm run ci' }, cwd: root });
+    assert.equal(copilotDeny.status, 0);
+    assert.equal(JSON.parse(copilotDeny.stdout).permissionDecision, 'deny');
+    const copilotAgentDeny = spawnHook('copilot', { toolName: 'bash', toolArgs: JSON.stringify({ command: 'npm run ci' }), cwd: root });
+    assert.equal(copilotAgentDeny.status, 0);
+    assert.equal(JSON.parse(copilotAgentDeny.stdout).permissionDecision, 'deny');
+    const copilotOtherTool = spawnHook('copilot', { toolName: 'str_replace_editor', toolArgs: {}, cwd: root });
+    assert.equal(copilotOtherTool.status, 0);
+    assert.equal(copilotOtherTool.stdout, '', 'a non-shell tool call is out of scope and must pass silently');
+
+    // Windsurf: exit code 2 blocks; the reason reaches the user via show_output.
+    const windsurfDeny = spawnHook('windsurf', { agent_action_name: 'pre_run_command', tool_info: { command_line: 'npm run ci', cwd: root } });
+    assert.equal(windsurfDeny.status, 2);
+    assert.match(windsurfDeny.stdout, /machine memory guard/u);
+    const windsurfAllow = spawnHook('windsurf', { agent_action_name: 'pre_run_command', tool_info: { command_line: 'git status --short', cwd: root } });
+    assert.equal(windsurfAllow.status, 0);
+    assert.equal(windsurfAllow.stdout, '');
+  });
+
   test('uninstalled identity adapters ship with the fleet harness', () => {
     const cursor = (json('.cursor/hooks.json').hooks?.beforeShellExecution ?? [])
       .map((hook) => hook.command ?? '');
