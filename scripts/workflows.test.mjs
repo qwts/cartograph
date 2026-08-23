@@ -78,6 +78,10 @@ test('the immutable policy action contract covers both actor fields and fork ref
 
 test('complete suite retains every existing Cartograph gate', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+  assert.match(
+    workflow,
+    /taiki-e\/install-action@288e746965032cfcc232e09af2daf5f23c14d780/u,
+  );
   const commands = [
     /node scripts\/check-traceability\.mjs/u,
     /npm run version:check/u,
@@ -142,6 +146,10 @@ test('Advanced CodeQL is governed, immutable, and preserves Rust coverage', () =
 test('macOS packaging is exact-SHA, universal, fail-closed, and verified', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/package.yml'), 'utf8');
 
+  assert.match(
+    workflow,
+    /taiki-e\/install-action@288e746965032cfcc232e09af2daf5f23c14d780/u,
+  );
   assert.match(workflow, /name: Verify exact CI evidence/u);
   assert.match(workflow, /head_sha=\$PACKAGE_SHA/u);
   assert.match(workflow, /ref: \$\{\{ needs\.evidence\.outputs\.sha \}\}/u);
