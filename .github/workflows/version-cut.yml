@@ -19,9 +19,10 @@ jobs:
   policy:
     name: Action Policy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Authorize direct workflow event
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@df404e2ce63fc1566eb2a60c92a8fabe009955b0
         with:
           authorization-only: 'true'
 
@@ -29,6 +30,7 @@ jobs:
     name: Version packages PR
     needs: policy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       has-releases: ${{ steps.version.outputs.has-releases }}
     permissions:
@@ -51,7 +53,14 @@ jobs:
           cache: npm
 
       - name: Install version tooling
-        run: npm ci --ignore-scripts
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@df404e2ce63fc1566eb2a60c92a8fabe009955b0
+        with:
+          task: Install version tooling
+          executable: npm
+          arguments-json: '["ci","--ignore-scripts"]'
+          timeout-seconds: '300'
+          attempts: '2'
+          retry-delay-seconds: '5'
 
       - name: Create the Version packages commit
         id: version
@@ -122,6 +131,10 @@ jobs:
     name: Tag version merges
     needs: [policy, version-pr]
     runs-on: ubuntu-latest
+    # The exact-commit CI poll is intentionally allowed to wait 70 minutes;
+    # leave setup and publication headroom without returning to GitHub's
+    # unbounded six-hour default.
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read
@@ -213,7 +226,7 @@ jobs:
           ci_run=''
           for _ in $(seq 1 140); do
             ci_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=push&head_sha=$cut_commit&per_page=100" \
-              --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml") | .id) // empty')
+              --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml") | .id) // empty')
             if [ -n "$ci_run" ]; then
               conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ci_run" --jq '.conclusion // empty')
               if [ "$conclusion" = success ]; then
