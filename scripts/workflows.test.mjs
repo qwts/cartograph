@@ -4,10 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-// ci-policy moved ahead of bounded-command/runtime-policy by one Dependabot
-// bump; the pins re-unify when the bounded-command bump lands.
-const CI_POLICY_PIN = 'df404e2ce63fc1566eb2a60c92a8fabe009955b0';
-const PLAYBOOK_RUNTIME_PIN = '5455a3f5939369ea843b1bbb4d2573739f4381a6';
+const PLAYBOOK_RUNTIME_PIN = 'df404e2ce63fc1566eb2a60c92a8fabe009955b0';
 
 test('version-cut preserves review, evidence, and immutable-tag gates', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/version-cut.yml'), 'utf8');
@@ -42,7 +39,7 @@ test('CI enforces the governed lifecycle without draft jobs', () => {
   assert.match(workflow, /github\.event\.pull_request\.draft == false/u);
   assert.match(
     workflow,
-    new RegExp(`qwts/playbook-engineering/\\.github/actions/ci-policy@${CI_POLICY_PIN}`, 'u'),
+    new RegExp(`qwts/playbook-engineering/\\.github/actions/ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'),
   );
   assert.match(workflow, /head_sha=\$TARGET_SHA/u);
   assert.match(workflow, /head_sha=\$GITHUB_SHA/u);
@@ -58,7 +55,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
     '.github/workflows/version-cut.yml',
   ].map((file) => readFileSync(path.join(root, file), 'utf8'));
   for (const workflow of workflows) {
-    assert.match(workflow, new RegExp(`ci-policy@${CI_POLICY_PIN}`, 'u'));
+    assert.match(workflow, new RegExp(`ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'));
     assert.match(workflow, /authorization-only: 'true'/u);
     assert.match(workflow, /name: Action Policy/u);
     const policyPosition = workflow.indexOf('name: Action Policy');
@@ -73,7 +70,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
 test('the immutable policy action contract covers both actor fields and fork refusal', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
   const guidance = readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
-  assert.match(workflow, new RegExp(`ci-policy@${CI_POLICY_PIN}`, 'u'));
+  assert.match(workflow, new RegExp(`ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'));
   assert.match(guidance, /github\.triggering_actor/u);
   assert.match(guidance, /github\.actor/u);
   assert.match(guidance, /Public-fork workflows are\s+never approved or run/u);
