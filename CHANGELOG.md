@@ -1,5 +1,13 @@
 # cartograph
 
+## 0.10.1
+
+### Patch Changes
+
+- 55043dc: Unresolved calls are no longer double-counted in the findings register: a gap edge that touches its gap node supports that node's finding (one finding per unresolved call, mirroring how drift counts), while an edge-only gap with no gap node on either end stays a finding of its own. The headline count, the Spec Workbench gap chip, and the gap lane all reconcile through one shared definition. Gap edges also carry the same `reason` as their gap node, so no register row renders a bare edge identity in the reason column.
+- d4cc91f: The Workspace outcome badge now states the confidence tier the recovered facts actually carry: a fully deterministic recovery with open gaps reads "Confirmed overall" instead of "InferredStrong overall" (gaps are explicit unresolved markers, not inferred assertions), and a recovery containing InferredWeak facts is no longer overstated as InferredStrong.
+- ced6452: Windows path canonicalization no longer leaks `\\?\` extended-length prefixes into stored graph facts: every ingest/evidence canonicalize call now goes through one normalization helper (dunce), so the same commit hashes identically across platforms and evidence lookups compare consistent path forms.
+
 ## 0.10.0
 
 ### Minor Changes
