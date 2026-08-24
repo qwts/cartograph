@@ -142,6 +142,13 @@ jobs:
     # A hung mirror must fail the job in minutes, never hold its runner
     # slot to the 6-hour kill (#343; cold cargo builds finish well inside).
     timeout-minutes: 45
+    # One PR-triggered Rust lane at a time: a main push that updates every
+    # open PR must not stampede the apt mirrors with identical concurrent
+    # installs (#347). A superseded pending lane is cancelled and reruns on
+    # the PR's next update; non-PR events keep a unique group.
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-lane-rust' || format('ci-lane-rust-{0}', github.run_id) }}
+      cancel-in-progress: false
     steps:
       - name: Checkout exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -223,6 +230,11 @@ jobs:
     # Playwright's --with-deps runs apt + a CDN download — same hang risk
     # as the Tauri dependency step (#343).
     timeout-minutes: 30
+    # Same backpressure as the Rust lane: never more than one PR-triggered
+    # Playwright/apt install in flight (#347).
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'ci-lane-frontend' || format('ci-lane-frontend-{0}', github.run_id) }}
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: ui
