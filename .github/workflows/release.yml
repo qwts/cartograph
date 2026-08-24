@@ -26,9 +26,10 @@ jobs:
   policy:
     name: Action Policy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Authorize direct workflow event
-        uses: qwts/playbook-engineering/.github/actions/ci-policy@68b920af61725d3107e9a7d4c151f7c06616bda4
+        uses: qwts/playbook-engineering/.github/actions/ci-policy@df404e2ce63fc1566eb2a60c92a8fabe009955b0
         with:
           authorization-only: 'true'
 
@@ -36,6 +37,7 @@ jobs:
     name: Validate reviewed release tag
     needs: policy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       actions: read
       contents: read
@@ -102,14 +104,14 @@ jobs:
           # the required queue is enabled, a rewritten main SHA must have run
           # the complete fallback rather than borrowing a tree-equivalent run.
           queue_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&head_sha=$tag_commit&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
           complete=false
           if [ -n "$queue_run" ]; then
             complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$queue_run/jobs?filter=latest&per_page=100" \
               --jq 'any(.jobs[]; .name == "CI" and .conclusion == "success")')
           else
             push_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=push&head_sha=$tag_commit&per_page=100" \
-              --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+              --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
             if [ -n "$push_run" ]; then
               complete=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$push_run/jobs?filter=latest&per_page=100" \
                 --jq 'any(.jobs[]; .name == "Complete suite" and .conclusion == "success")')
@@ -128,7 +130,7 @@ jobs:
           fi
           pr_head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$version_pr" --jq '.head.sha')
           pr_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=pull_request&head_sha=$pr_head&per_page=100" \
-            --jq 'first(.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
+            --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success") | .id) // empty')
           if [ -z "$pr_run" ]; then
             echo "::error::Version packages PR #$version_pr lacks ready-PR CI for exact head $pr_head."
             exit 1
@@ -158,6 +160,7 @@ jobs:
       - validate
       - build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read

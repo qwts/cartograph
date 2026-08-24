@@ -625,6 +625,14 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+// Lazy route chunks may be cold in a fresh Storybook browser. Keep that wait
+// explicitly bounded without making story order responsible for warming it.
+const waitForSpecWorkbench = (canvasElement: HTMLElement) =>
+  waitFor(
+    () => expect(within(canvasElement).getByText('9 artifacts')).toBeInTheDocument(),
+    { timeout: 5_000 },
+  );
+
 export const ConnectedToCore: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -635,7 +643,7 @@ export const ConnectedToCore: Story = {
 
     // Spec Workbench lives on its own surface now.
     await userEvent.click(canvas.getByRole('button', { name: 'Spec Workbench' }));
-    await waitFor(() => expect(canvas.getByText('9 artifacts')).toBeInTheDocument());
+    await waitForSpecWorkbench(canvasElement);
 
     // Lifecycle round-trip (#117/#111) on the seeded queued job: cancel,
     // then retry. No creation control ships on the surface (AC-0077).
@@ -952,7 +960,7 @@ export const WorkbenchCurationRoundTrip: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText('core v0.0.1')).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: 'Spec Workbench' }));
-    await waitFor(() => expect(canvas.getByText('9 artifacts')).toBeInTheDocument());
+    await waitForSpecWorkbench(canvasElement);
     await userEvent.click(canvas.getByRole('button', { name: /Architecture decisions/ }));
     await expect(canvas.getByText(FAKE_INFERRED.summary)).toBeInTheDocument();
     await userEvent.type(canvas.getByLabelText('Annotation'), 'Confirmed by system owner');

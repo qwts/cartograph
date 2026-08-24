@@ -215,6 +215,7 @@ impl ManifestCx<'_> {
                     dst: gap_id.clone(),
                     label: "ENTRY".into(),
                     props: serde_json::json!({
+                        "reason": reason,
                         "declared": declared,
                         "prov": prov_value(
                             self.id,
@@ -547,7 +548,7 @@ pub fn extract_manifests(
                             id: gap_id.clone(),
                             label: "Gap".into(),
                             props: serde_json::json!({
-                                "reason": reason,
+                                "reason": &reason,
                                 "attempted_tiers": ["T0"],
                                 "prov": prov_value(
                                     cx.id,
@@ -563,6 +564,7 @@ pub fn extract_manifests(
                             dst: gap_id.clone(),
                             label: "HANDLES".into(),
                             props: serde_json::json!({
+                                "reason": &reason,
                                 "prov": prov_value(
                                     cx.id,
                                     &cx.path,

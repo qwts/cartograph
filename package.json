@@ -1,7 +1,7 @@
 {
   "name": "cartograph",
   "private": true,
-  "version": "0.10.0",
+  "version": "0.10.1",
   "type": "module",
   "scripts": {
     "changeset": "changeset",
@@ -14,7 +14,7 @@
     "version:sync": "node scripts/version.mjs sync"
   },
   "devDependencies": {
-    "@changesets/cli": "3.0.0",
+    "@changesets/cli": "3.0.1",
     "@tauri-apps/cli": "^2.11.4"
   }
 }

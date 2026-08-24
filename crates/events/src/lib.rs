@@ -231,7 +231,7 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
                     id: gap_id.clone(),
                     label: "Gap".into(),
                     props: serde_json::json!({
-                        "reason": reason,
+                        "reason": &reason,
                         "raw": raw,
                         "kind": site.kind,
                         "attempted_tiers": ["T0"],
@@ -246,6 +246,7 @@ pub fn stitch(sites: &[EventSite], cfg: &ConfigIndex, id: &SourceId) -> Extracti
                     dst: gap_id.clone(),
                     label: edge_label.into(),
                     props: serde_json::json!({
+                        "reason": reason,
                         "registry": EVENT_SDK_VERSION,
                         "prov": prov(
                             id, &site.path, (site.byte_start, site.byte_end),
@@ -379,7 +380,7 @@ pub fn stitch_fetches(
                     id: gap_id.clone(),
                     label: "Gap".into(),
                     props: serde_json::json!({
-                        "reason": reason,
+                        "reason": &reason,
                         "attempted_tiers": ["T0"],
                         "prov": fetch_prov(ConfidenceTier::Gap, &format!("Gap {gap_id}")),
                     }),
@@ -389,6 +390,7 @@ pub fn stitch_fetches(
                     dst: gap_id.clone(),
                     label: "FETCHES".into(),
                     props: serde_json::json!({
+                        "reason": reason,
                         "method": site.method,
                         "prov": fetch_prov(ConfidenceTier::Gap, &format!("FETCHES -> {gap_id}")),
                     }),
