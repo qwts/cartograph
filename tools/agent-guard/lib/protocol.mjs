@@ -68,12 +68,23 @@ export function grantsDir(env = process.env) {
   return path.join(stateDir(env), 'grants');
 }
 
-// Per-lane measured peaks live IN the protected state store, not in the
-// worktree: a worktree file is agent-writable, and a fabricated low peak
-// would shrink the admission reservation (#203 review). The command hook
-// denies shell writes here the same way it does for leases.
+// Reserved for a future proven-peak design. The production runner currently
+// neither reads nor writes this dormant store: polling cannot prove a true
+// high-water mark, and arbitrary command inputs lack immutable provenance.
+// Keeping the protected namespace lets lower-level compatibility tests and a
+// future OS-backed implementation evolve without trusting worktree files.
 export function lanePeaksDir(env = process.env) {
   return path.join(stateDir(env), 'lane-peaks');
+}
+
+// Per-run diagnostics (last-run.json, history.jsonl) live here rather than in
+// a checkout: a `.guard/` directory inside the worktree dirtied every tree a
+// guarded run touched (#239), breaking signed-commit fail-closed checks and
+// risking machine-local telemetry being committed by `git add -A`. The
+// journal is per-repo state, not lease state, so it shares the machine state
+// directory's scope without touching the per-session lease namespace.
+export function journalDir(env = process.env) {
+  return path.join(stateDir(env), 'journal');
 }
 
 /**
@@ -120,5 +131,6 @@ export function ensureStateDirs(env = process.env) {
   mkdirSync(leasesDir(env), { recursive: true });
   mkdirSync(grantsDir(env), { recursive: true });
   mkdirSync(lanePeaksDir(env), { recursive: true });
+  mkdirSync(journalDir(env), { recursive: true });
   return stateDir(env);
 }

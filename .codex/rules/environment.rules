@@ -223,40 +223,6 @@ prefix_rule(
     not_match = ["gh workflow run release.yml --ref main", "gh workflow disable ci.yml"],
 )
 
-# Use the protected wrapper when a host does not expose gh on its initial PATH.
-# The protected script mirrors the non-destructive subcommand allowlist above.
-prefix_rule(
-    pattern = ["/bin/zsh", ".codex/scripts/gh.zsh"],
-    decision = "allow",
-    justification = "The protected GitHub CLI wrapper supplies the platform PATH.",
-    match = [
-        "/bin/zsh .codex/scripts/gh.zsh pr view 641",
-        "/bin/zsh .codex/scripts/gh.zsh run watch 12345 --exit-status",
-    ],
-    not_match = [
-        "/bin/zsh -lc 'gh pr view 641'",
-        "/bin/zsh .codex/scripts/git-with-nvm.zsh status",
-    ],
-)
-
-# Node-backed repository hooks may need nvm on PATH. The protected wrapper also
-# rejects destructive push forms so those commands retain normal approval.
-prefix_rule(
-    pattern = ["/bin/zsh", ".codex/scripts/git-with-nvm.zsh"],
-    decision = "allow",
-    justification = "The protected Git wrapper loads nvm for repository hooks.",
-    match = [
-        "/bin/zsh .codex/scripts/git-with-nvm.zsh status --short --branch",
-        "/bin/zsh .codex/scripts/git-with-nvm.zsh commit -m example",
-        "/bin/zsh .codex/scripts/git-with-nvm.zsh push origin example",
-    ],
-    not_match = [
-        "/bin/zsh -lc 'git status'",
-        "/bin/zsh .codex/scripts/git-with-nvm.zsh push --force origin example",
-        "/bin/zsh .codex/scripts/nvm.zsh use",
-    ],
-)
-
 # Node repositories load nvm through environment.toml. Trust version-management
 # operations while keeping arbitrary command runners under normal approval.
 prefix_rule(
@@ -291,22 +257,5 @@ prefix_rule(
     not_match = [
         "nvm exec 24.18.0 sh -c id",
         "nvm run 24.18.0 arbitrary-script",
-    ],
-)
-
-# nvm is a shell function rather than an executable. Allow its protected zsh
-# wrapper; the wrapper independently rejects exec, run, and unknown commands.
-prefix_rule(
-    pattern = ["/bin/zsh", ".codex/scripts/nvm.zsh"],
-    decision = "allow",
-    justification = "The protected NVM wrapper dispatches version-management commands only.",
-    match = [
-        "/bin/zsh .codex/scripts/nvm.zsh use",
-        "/bin/zsh .codex/scripts/nvm.zsh install 24.18.0",
-        "/bin/zsh .codex/scripts/nvm.zsh alias default 24.18.0",
-    ],
-    not_match = [
-        "/bin/zsh -lc 'nvm use'",
-        "/bin/zsh .codex/scripts/git-with-nvm.zsh status",
     ],
 )

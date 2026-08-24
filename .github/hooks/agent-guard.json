@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "Machine memory guard (ENG-0138): deny heavy local suites and commands that bypass tools/agent-guard/run-guarded.mjs. Copilot loads repository hooks from .github/hooks/ in the working directory.",
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "node tools/agent-guard/guard-agent-command.mjs --protocol=copilot",
+        "powershell": "node tools/agent-guard/guard-agent-command.mjs --protocol=copilot",
+        "timeoutSec": 30
+      }
+    ]
+  }
+}

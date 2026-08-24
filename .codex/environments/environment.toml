@@ -1,11 +1,60 @@
 # Shared Codex development environment for governed repositories. Keep changes
 # in review like any other agent-facing configuration.
+#
+# Project-scoped and Codex-specific only: machine and harness installation is
+# managed-machine's job, identity is agent-bot-identity's. Setup asserts and
+# uses what the host provides; it never installs tooling or writes outside the
+# worktree. A repository with extra setup needs owns them in its own
+# `harness:setup` npm script.
+#
+# The win32 sections run the same POSIX bodies through Git Bash. TOML cannot
+# share strings across tables, so each body appears twice; edit both copies
+# together.
 version = 1
 name = "agent-developer"
 
 [setup]
 script = '''
-bash .codex/scripts/setup.sh
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+if [ -f .nvmrc ]; then
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  [ -s "$NVM_DIR/nvm.sh" ] || { echo "ERROR: .nvmrc exists but nvm is missing; bootstrap the machine first" >&2; exit 1; }
+  . "$NVM_DIR/nvm.sh"
+  nvm install && nvm use
+fi
+
+# Resolve the agent-bot CLI. AGENT_BOT_BIN is authoritative when set and fails
+# hard when unusable; otherwise search PATH, then the installed location — a
+# non-login shell may not have sourced the profile that puts it on PATH.
+if [ -n "${AGENT_BOT_BIN:-}" ]; then
+  command -v "$AGENT_BOT_BIN" >/dev/null 2>&1 || { echo "ERROR: AGENT_BOT_BIN=$AGENT_BOT_BIN is not executable" >&2; exit 1; }
+  agent_bot="$AGENT_BOT_BIN"
+elif command -v agent-bot >/dev/null 2>&1; then
+  agent_bot="agent-bot"
+elif [ -x "$HOME/.local/bin/agent-bot" ]; then
+  agent_bot="$HOME/.local/bin/agent-bot"
+else
+  agent_bot=""
+  echo "agent-bot unavailable; worktree identity not configured" >&2
+fi
+[ -z "$agent_bot" ] || "$agent_bot" setup-worktree
+
+if [ -f package.json ]; then
+  if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+    npm ci --no-audit --no-fund
+  elif [ -f pnpm-lock.yaml ]; then
+    corepack pnpm install --frozen-lockfile
+  elif [ -f yarn.lock ]; then
+    corepack yarn install --immutable
+  elif [ -f bun.lock ] || [ -f bun.lockb ]; then
+    bun install --frozen-lockfile
+  else
+    npm install --no-audit --no-fund
+  fi
+  npm run --if-present harness:setup
+fi
 '''
 
 [setup.win32]
@@ -25,13 +74,60 @@ if (-not $bash) {
   throw "Git Bash was not found from git.exe ($gitExe) or git --exec-path ($gitExecPath)"
 }
 
-& $bash --noprofile --norc -c 'export PATH="/usr/bin:/bin:$PATH"; exec bash .codex/scripts/setup.sh'
+$body = @'
+export PATH="/usr/bin:/bin:$PATH"
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+if [ -f .nvmrc ]; then
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  [ -s "$NVM_DIR/nvm.sh" ] || { echo "ERROR: .nvmrc exists but nvm is missing; bootstrap the machine first" >&2; exit 1; }
+  . "$NVM_DIR/nvm.sh"
+  nvm install && nvm use
+fi
+
+# Resolve the agent-bot CLI. AGENT_BOT_BIN is authoritative when set and fails
+# hard when unusable; otherwise search PATH, then the installed location — a
+# non-login shell may not have sourced the profile that puts it on PATH.
+if [ -n "${AGENT_BOT_BIN:-}" ]; then
+  command -v "$AGENT_BOT_BIN" >/dev/null 2>&1 || { echo "ERROR: AGENT_BOT_BIN=$AGENT_BOT_BIN is not executable" >&2; exit 1; }
+  agent_bot="$AGENT_BOT_BIN"
+elif command -v agent-bot >/dev/null 2>&1; then
+  agent_bot="agent-bot"
+elif [ -x "$HOME/.local/bin/agent-bot" ]; then
+  agent_bot="$HOME/.local/bin/agent-bot"
+else
+  agent_bot=""
+  echo "agent-bot unavailable; worktree identity not configured" >&2
+fi
+[ -z "$agent_bot" ] || "$agent_bot" setup-worktree
+
+if [ -f package.json ]; then
+  if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+    npm ci --no-audit --no-fund
+  elif [ -f pnpm-lock.yaml ]; then
+    corepack pnpm install --frozen-lockfile
+  elif [ -f yarn.lock ]; then
+    corepack yarn install --immutable
+  elif [ -f bun.lock ] || [ -f bun.lockb ]; then
+    bun install --frozen-lockfile
+  else
+    npm install --no-audit --no-fund
+  fi
+  npm run --if-present harness:setup
+fi
+'@
+
+& $bash --noprofile --norc -c $body
 exit $LASTEXITCODE
 '''
 
 [cleanup]
 script = '''
-bash .codex/scripts/cleanup.sh
+cd "$(git rev-parse --show-toplevel)" 2>/dev/null || exit 0
+rm -rf tmp temp .tmp dist .test-dist coverage playwright-report test-results .eslintcache tsconfig.tsbuildinfo
+find . \( -name ".DS_Store" -o -name "Thumbs.db" -o -name "*.swp" -o -name "*.swo" \) -type f -delete 2>/dev/null || true
+exit 0
 '''
 
 [cleanup.win32]
@@ -51,6 +147,14 @@ if (-not $bash) {
   throw "Git Bash was not found from git.exe ($gitExe) or git --exec-path ($gitExecPath)"
 }
 
-& $bash --noprofile --norc -c 'export PATH="/usr/bin:/bin:$PATH"; exec bash .codex/scripts/cleanup.sh'
+$body = @'
+export PATH="/usr/bin:/bin:$PATH"
+cd "$(git rev-parse --show-toplevel)" 2>/dev/null || exit 0
+rm -rf tmp temp .tmp dist .test-dist coverage playwright-report test-results .eslintcache tsconfig.tsbuildinfo
+find . \( -name ".DS_Store" -o -name "Thumbs.db" -o -name "*.swp" -o -name "*.swo" \) -type f -delete 2>/dev/null || true
+exit 0
+'@
+
+& $bash --noprofile --norc -c $body
 exit $LASTEXITCODE
 '''
