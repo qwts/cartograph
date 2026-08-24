@@ -47,6 +47,25 @@ test('CI enforces the governed lifecycle without draft jobs', () => {
   assert.match(workflow, /name: CI/u);
 });
 
+test('a main-push fan-out cannot run identical heavy lanes concurrently (#347)', () => {
+  const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+  for (const lane of ['rust', 'frontend']) {
+    // PR-triggered lanes share one repo-wide group; other events keep a
+    // unique per-run group so evidence lanes are never superseded.
+    assert.match(
+      workflow,
+      new RegExp(
+        `github\\.event_name == 'pull_request' && 'ci-lane-${lane}' \\|\\| ` +
+          `format\\('ci-lane-${lane}-\\{0\\}', github\\.run_id\\)`,
+        'u',
+      ),
+    );
+  }
+  // A running suite is never cancelled by lane backpressure — pending runs
+  // are superseded instead, and rerun on the PR's next update.
+  assert.equal(workflow.match(/cancel-in-progress: false/gu)?.length, 2);
+});
+
 test('direct non-CI entrypoints authorize before checkout and reusable calls inherit policy', () => {
   const workflows = [
     '.github/workflows/close-linked-issues.yml',
