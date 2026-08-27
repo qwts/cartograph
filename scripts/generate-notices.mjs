@@ -11,16 +11,19 @@
 //   (no flag)  write the files
 //   --check    regenerate in memory and fail if the committed files are stale
 //
-// Requires: cargo-about on PATH, and `npm ci` already run in ui/.
+// Requires: cargo-about on PATH, and `npm ci` already run in ui/ (the JS
+// collector derives the inventory from ui/package-lock.json but reads each
+// package's license text from the installed copy).
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const NOTICES_PATH = join(ROOT, 'THIRD-PARTY-NOTICES.md');
 const TS_PATH = join(ROOT, 'ui', 'src', 'generated', 'thirdPartyNotices.ts');
+const LOCK_PATH = join(ROOT, 'ui', 'package-lock.json');
 const check = process.argv.includes('--check');
 
 function run(cmd, args, cwd) {
@@ -42,29 +45,63 @@ function rustNotices() {
   return out.trimEnd();
 }
 
-// --- JavaScript: walk the production dependency tree that ui/ actually ships. ---
-function collectJsPackages() {
-  const uiDir = join(ROOT, 'ui');
-  const raw = run('npm', ['ls', '--omit=dev', '--all', '--json'], uiDir);
-  const tree = JSON.parse(raw);
-  const found = new Map(); // name@version -> {name, version}
-  const walk = (deps) => {
-    for (const [name, info] of Object.entries(deps ?? {})) {
-      if (!info || info.version == null) continue;
-      const key = `${name}@${info.version}`;
-      if (!found.has(key)) found.set(key, { name, version: info.version });
-      walk(info.dependencies);
+// --- JavaScript: derive the production inventory from ui/package-lock.json. ---
+// The lockfile — not `npm ls` — is the source of truth: it is committed, so
+// the inventory cannot drift with the ambient npm major or a dirty
+// node_modules. The production closure is walked from the root manifest's
+// non-dev entry points (dependencies + optionalDependencies + installed
+// peers); devDependencies are never traversed. Install locations come from
+// lockfile keys, so no hoisting layout is assumed. Platform-gated optional
+// packages stay in the inventory even when not installed on the running
+// machine, keeping regeneration byte-identical across OSes and npm majors.
+export function collectJsPackages(lockJson) {
+  const packages = lockJson.packages ?? {};
+  const root = packages[''] ?? {};
+  const rootNames = [
+    ...Object.keys(root.dependencies ?? {}),
+    ...Object.keys(root.optionalDependencies ?? {}),
+    ...Object.keys(root.peerDependencies ?? {}),
+  ];
+
+  // Resolve `name` required by the package at `fromKey` the way npm does:
+  // nearest node_modules ancestor first. Lockfile keys are ui/-relative
+  // paths like "node_modules/a/node_modules/b".
+  const resolveName = (fromKey, name) => {
+    let dir = fromKey === '' ? '.' : fromKey;
+    for (;;) {
+      const candidate = join(dir, 'node_modules', name);
+      if (candidate in packages) return candidate;
+      if (dir === '.') return undefined;
+      dir = dirname(dir);
     }
   };
-  walk(tree.dependencies);
-  return [...found.values()].sort((a, b) =>
+
+  const closure = new Map(); // lockfile key -> {name, version, optional}
+  const stack = rootNames.map((name) => resolveName('', name));
+  while (stack.length > 0) {
+    const key = stack.pop();
+    if (key === undefined) continue;
+    const entry = packages[key];
+    if (!entry || entry.version == null || entry.dev === true) continue;
+    if (closure.has(key)) continue;
+    const name = key.split('node_modules/').pop();
+    closure.set(key, { name, version: entry.version, optional: entry.optional === true, lockKey: key });
+    const deps = {
+      ...(entry.dependencies ?? {}),
+      ...(entry.optionalDependencies ?? {}),
+      ...(entry.peerDependencies ?? {}),
+    };
+    for (const depName of Object.keys(deps)) stack.push(resolveName(key, depName));
+  }
+  return [...closure.values()].sort((a, b) =>
     a.name === b.name ? a.version.localeCompare(b.version) : a.name.localeCompare(b.name),
   );
 }
 
 function readJsLicense(pkg) {
-  // node_modules is hoisted, so the package almost always sits at the top level.
-  const dir = join(ROOT, 'ui', 'node_modules', pkg.name);
+  // The lockfile key is the exact install path relative to ui/, so nested
+  // duplicates resolve correctly without assuming hoisting.
+  const dir = join(ROOT, 'ui', pkg.lockKey);
   let spdx = 'See package';
   let text = '';
   const manifestPath = join(dir, 'package.json');
@@ -88,11 +125,11 @@ function readJsLicense(pkg) {
 }
 
 function jsNotices() {
-  const pkgs = collectJsPackages();
+  const pkgs = collectJsPackages(JSON.parse(readFileSync(LOCK_PATH, 'utf8')));
   const lines = [
     'Cartograph bundles the following npm packages in its web UI. Each is used',
     'under the terms of its declared license. This list is generated from the',
-    'production dependency tree by `npm ls`; do not edit by hand.',
+    'production dependency tree of `ui/package-lock.json`; do not edit by hand.',
     '',
   ];
   for (const pkg of pkgs) {
@@ -138,21 +175,26 @@ function tsModule(markdown) {
   );
 }
 
-const notices = build();
-const ts = tsModule(notices);
+// Only run the generator when invoked directly, so tests can import the
+// collector (same pattern as scripts/version.mjs).
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
+  const notices = build();
+  const ts = tsModule(notices);
 
-if (check) {
-  const staleNotices = !existsSync(NOTICES_PATH) || readFileSync(NOTICES_PATH, 'utf8') !== notices;
-  const staleTs = !existsSync(TS_PATH) || readFileSync(TS_PATH, 'utf8') !== ts;
-  if (staleNotices || staleTs) {
-    console.error(
-      'THIRD-PARTY-NOTICES is out of date. Run `node scripts/generate-notices.mjs` and commit the result.',
-    );
-    process.exit(1);
+  if (check) {
+    const staleNotices = !existsSync(NOTICES_PATH) || readFileSync(NOTICES_PATH, 'utf8') !== notices;
+    const staleTs = !existsSync(TS_PATH) || readFileSync(TS_PATH, 'utf8') !== ts;
+    if (staleNotices || staleTs) {
+      console.error(
+        'THIRD-PARTY-NOTICES is out of date. Run `node scripts/generate-notices.mjs` and commit the result.',
+      );
+      process.exit(1);
+    }
+    console.log('Third-party notices are up to date.');
+  } else {
+    writeFileSync(NOTICES_PATH, notices);
+    writeFileSync(TS_PATH, ts);
+    console.log(`Wrote ${NOTICES_PATH} and ${TS_PATH}.`);
   }
-  console.log('Third-party notices are up to date.');
-} else {
-  writeFileSync(NOTICES_PATH, notices);
-  writeFileSync(TS_PATH, ts);
-  console.log(`Wrote ${NOTICES_PATH} and ${TS_PATH}.`);
 }
