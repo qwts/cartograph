@@ -103,6 +103,7 @@ test('complete suite retains every existing Cartograph gate', () => {
   );
   const commands = [
     /node scripts\/check-traceability\.mjs/u,
+    /node scripts\/generate-notices\.mjs --check/u,
     /npm run version:check/u,
     /npm run test:version/u,
     /cargo fmt --all --check/u,
