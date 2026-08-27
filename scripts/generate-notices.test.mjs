@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
+import { join } from 'node:path';
 
-import { collectJsPackages } from './generate-notices.mjs';
+import { collectJsPackages, readJsLicense } from './generate-notices.mjs';
 
 // Synthetic lockfile exercising every inventory rule (#340): the production
 // closure starts at the root manifest's dependencies/optionalDependencies/
@@ -80,6 +83,56 @@ test('runtime optionals stay in the inventory even when platform-gated', () => {
   const opt = pkgs.find((p) => p.name === 'platform-opt');
   assert.ok(opt);
   assert.equal(opt.optional, true);
+});
+
+test('lockfile-key resolution only uses POSIX separators', () => {
+  // npm writes lockfile keys with "/" on every OS. Candidate keys must be
+  // built the same way (path.posix), otherwise resolution silently misses on
+  // Windows where path.join emits "\". Asserted via a deep nesting: the
+  // nearest node_modules ancestor must win over shallower duplicates.
+  const lock = lockFixture();
+  lock.packages['node_modules/deep'] = { version: '7.0.0', dependencies: { shared: '^3.0.0' } };
+  lock.packages[''].dependencies.deep = '^7.0.0';
+  const shared = collectJsPackages(lock).filter((p) => p.name === 'shared');
+  // `deep` has no nested copy, so it resolves the hoisted shared@3.5.0 while
+  // `hoisted` still ships its own shared@3.0.0 — both keys, both POSIX.
+  assert.ok(
+    shared.every((p) => p.lockKey.split('\\').length === 1),
+    `lockfile keys must contain no backslashes: ${shared.map((p) => p.lockKey)}`,
+  );
+  assert.deepEqual(
+    shared.map((p) => p.lockKey),
+    ['node_modules/hoisted/node_modules/shared', 'node_modules/shared'],
+  );
+});
+
+test('optionals never read the installed copy; regular packages do', () => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'notices-'));
+  try {
+    // The optional package IS installed here (as on its matching OS): the
+    // output must still be the stable annotated entry, not this copy's text.
+    const optDir = join(baseDir, 'node_modules', 'platform-opt');
+    mkdirSync(optDir, { recursive: true });
+    writeFileSync(join(optDir, 'package.json'), JSON.stringify({ license: 'MIT' }));
+    writeFileSync(join(optDir, 'LICENSE'), 'FAKE OPT LICENSE');
+    const regDir = join(baseDir, 'node_modules', 'regular');
+    mkdirSync(regDir, { recursive: true });
+    writeFileSync(join(regDir, 'package.json'), JSON.stringify({ license: 'Apache-2.0' }));
+    writeFileSync(join(regDir, 'LICENSE'), 'FAKE REG LICENSE');
+
+    assert.deepEqual(readJsLicense({ lockKey: 'node_modules/platform-opt', optional: true }, baseDir), {
+      spdx: 'See package',
+      text: '',
+      platformGated: true,
+    });
+    assert.deepEqual(readJsLicense({ lockKey: 'node_modules/regular', optional: false }, baseDir), {
+      spdx: 'Apache-2.0',
+      text: 'FAKE REG LICENSE',
+      platformGated: false,
+    });
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
 });
 
 test('the output is deterministically sorted by name then version', () => {

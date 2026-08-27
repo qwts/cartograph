@@ -18,6 +18,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { dirname as posixDirname, join as posixJoin } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -53,7 +54,9 @@ function rustNotices() {
 // peers); devDependencies are never traversed. Install locations come from
 // lockfile keys, so no hoisting layout is assumed. Platform-gated optional
 // packages stay in the inventory even when not installed on the running
-// machine, keeping regeneration byte-identical across OSes and npm majors.
+// machine, and their installed copy never feeds the output (see
+// readJsLicense), keeping regeneration byte-identical across OSes and npm
+// majors.
 export function collectJsPackages(lockJson) {
   const packages = lockJson.packages ?? {};
   const root = packages[''] ?? {};
@@ -65,14 +68,17 @@ export function collectJsPackages(lockJson) {
 
   // Resolve `name` required by the package at `fromKey` the way npm does:
   // nearest node_modules ancestor first. Lockfile keys are ui/-relative
-  // paths like "node_modules/a/node_modules/b".
+  // POSIX paths like "node_modules/a/node_modules/b" — always "/"-separated,
+  // on every OS — so candidate keys must be built with path.posix, never the
+  // platform-native join/dirname (which emit backslashes on Windows and
+  // would miss every lookup).
   const resolveName = (fromKey, name) => {
     let dir = fromKey === '' ? '.' : fromKey;
     for (;;) {
-      const candidate = join(dir, 'node_modules', name);
+      const candidate = posixJoin(dir, 'node_modules', name);
       if (candidate in packages) return candidate;
       if (dir === '.') return undefined;
-      dir = dirname(dir);
+      dir = posixDirname(dir);
     }
   };
 
@@ -98,10 +104,19 @@ export function collectJsPackages(lockJson) {
   );
 }
 
-function readJsLicense(pkg) {
+export function readJsLicense(pkg, baseDir = join(ROOT, 'ui')) {
+  // Platform-gated optional packages are absent from node_modules on the OSes
+  // they do not target, so their installed copy must never feed the output:
+  // on the matching platform it exists (real license text), elsewhere it does
+  // not ("See package"), and the same lockfile would regenerate differently
+  // per OS. Optionals always get the stable annotated entry instead; only
+  // packages every production install must have are read from disk.
+  if (pkg.optional) {
+    return { spdx: 'See package', text: '', platformGated: true };
+  }
   // The lockfile key is the exact install path relative to ui/, so nested
   // duplicates resolve correctly without assuming hoisting.
-  const dir = join(ROOT, 'ui', pkg.lockKey);
+  const dir = join(baseDir, pkg.lockKey);
   let spdx = 'See package';
   let text = '';
   const manifestPath = join(dir, 'package.json');
@@ -121,7 +136,7 @@ function readJsLicense(pkg) {
       /* no license file bundled */
     }
   }
-  return { spdx, text };
+  return { spdx, text, platformGated: false };
 }
 
 function jsNotices() {
@@ -133,9 +148,18 @@ function jsNotices() {
     '',
   ];
   for (const pkg of pkgs) {
-    const { spdx, text } = readJsLicense(pkg);
+    const { spdx, text, platformGated } = readJsLicense(pkg);
     lines.push(`## ${pkg.name} ${pkg.version}`, '', `License: ${spdx}`, '');
-    if (text) lines.push('```', text, '```', '');
+    if (platformGated) {
+      lines.push(
+        'Platform-gated optional dependency: it is installed only on the OSes',
+        'it targets, so its license text is not reproduced here. See the',
+        'package itself for its license terms.',
+        '',
+      );
+    } else if (text) {
+      lines.push('```', text, '```', '');
+    }
   }
   return lines.join('\n').trimEnd();
 }
