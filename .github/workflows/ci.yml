@@ -210,6 +210,35 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install locked UI dependencies
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@df404e2ce63fc1566eb2a60c92a8fabe009955b0
+        with:
+          task: Install locked UI dependencies
+          executable: npm
+          arguments-json: '["ci"]'
+          working-directory: ui
+          timeout-seconds: '300'
+          attempts: '2'
+          retry-delay-seconds: '5'
+
+      - name: Install cargo-about
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
+        with:
+          tool: cargo-about@0.9.1
+
+      # Drift gate for the committed THIRD-PARTY-NOTICES.md and the generated
+      # in-app acknowledgements module (#340): regenerate in memory from the
+      # locked crate graph and ui/package-lock.json and fail on any difference.
+      - name: Third-party notices drift check
+        run: |
+          cargo fetch --locked
+          node scripts/generate-notices.mjs --check
+
       - name: Install cargo-deny
         uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:

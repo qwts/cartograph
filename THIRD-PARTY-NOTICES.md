@@ -4413,7 +4413,7 @@ limitations under the License.
 
 Used by:
 - block-buffer 0.10.4 — https://github.com/RustCrypto/utils
-- chacha20 0.10.1 — https://github.com/RustCrypto/stream-ciphers
+- chacha20 0.10.2 — https://github.com/RustCrypto/stream-ciphers
 - cpufeatures 0.2.17 — https://github.com/RustCrypto/utils
 - cpufeatures 0.3.0 — https://github.com/RustCrypto/utils
 - crypto-common 0.1.7 — https://github.com/RustCrypto/traits
@@ -8551,7 +8551,7 @@ the following restrictions:
 
 Cartograph bundles the following npm packages in its web UI. Each is used
 under the terms of its declared license. This list is generated from the
-production dependency tree by `npm ls`; do not edit by hand.
+production dependency tree of `ui/package-lock.json`; do not edit by hand.
 
 ## @fontsource/inter 5.3.0
 
@@ -8991,7 +8991,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## cytoscape 3.34.0
+## cytoscape 3.34.1
 
 License: MIT
 
@@ -9017,7 +9017,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## material-symbols 0.45.10
+## material-symbols 0.46.0
 
 License: Apache-2.0
 
@@ -9338,7 +9338,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## zustand 5.0.14
+## zustand 5.0.15
 
 License: MIT
 
