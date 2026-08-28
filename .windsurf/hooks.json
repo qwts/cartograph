@@ -1,12 +1,6 @@
 {
-  "description": "Machine memory guard (ENG-0138): deny heavy local suites and commands that bypass tools/agent-guard/run-guarded.mjs. Cascade blocks the command when a pre-hook exits 2.",
+  "description": "Windsurf (Devin desktop) Cascade hooks. The machine memory guard entry was retracted (#331): its decision (ENG-0138) is still Proposed, and only accepted decisions ship.",
   "hooks": {
-    "pre_run_command": [
-      {
-        "command": "node tools/agent-guard/guard-agent-command.mjs --protocol=windsurf",
-        "powershell": "node tools/agent-guard/guard-agent-command.mjs --protocol=windsurf",
-        "show_output": true
-      }
-    ]
+    "pre_run_command": []
   }
 }
