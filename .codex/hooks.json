@@ -1,18 +1,7 @@
 {
-  "description": "Machine memory guard (ENG-0138): deny heavy local suites and commands that bypass tools/agent-guard/run-guarded.mjs. Requires one-time trust via /hooks.",
+  "description": "Codex harness hooks. The machine memory guard entry was retracted (#331): its decision (ENG-0138) is still Proposed, and only accepted decisions ship. Requires one-time trust via /hooks.",
   "hooks": {
     "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/tools/agent-guard/guard-agent-command.mjs\" --protocol=codex",
-            "timeout": 30,
-            "statusMessage": "Checking the command against the machine memory budget"
-          }
-        ]
-      },
       {
         "hooks": [
           {
