@@ -53,7 +53,7 @@ jobs:
           cache: npm
 
       - name: Install version tooling
-        uses: qwts/playbook-engineering/.github/actions/bounded-command@df404e2ce63fc1566eb2a60c92a8fabe009955b0
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@3ee164e32ad2708cac124b768d5b978bdb2728b8
         with:
           task: Install version tooling
           executable: npm
