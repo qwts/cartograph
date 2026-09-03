@@ -8993,7 +8993,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## cytoscape 3.34.1
+## cytoscape 3.34.2
 
 License: MIT
 
@@ -9019,7 +9019,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## material-symbols 0.46.0
+## material-symbols 0.47.0
 
 License: Apache-2.0
 
