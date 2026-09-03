@@ -38,3 +38,11 @@ updates:
       codeql-action:
         patterns:
           - github/codeql-action/*
+    ignore:
+      # ci-policy and bounded-command are authorization boundaries, not ordinary
+      # dependencies. Their immutable commit (see PLAYBOOK_RUNTIME_PIN in
+      # scripts/workflows.test.mjs) advances only via the governed harness sync
+      # with matching reviewed contract tests, and must never ride Dependabot
+      # (cf. qwts/overlook#1038).
+      - dependency-name: 'qwts/playbook-engineering/.github/actions/ci-policy'
+      - dependency-name: 'qwts/playbook-engineering/.github/actions/bounded-command'
