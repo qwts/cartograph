@@ -46,3 +46,8 @@ updates:
       # (cf. qwts/overlook#1038).
       - dependency-name: 'qwts/playbook-engineering/.github/actions/ci-policy'
       - dependency-name: 'qwts/playbook-engineering/.github/actions/bounded-command'
+      # codeql-action and install-action pins are likewise contract-tested
+      # (scripts/workflows.test.mjs) and advance only deliberately (#363, #364).
+      - dependency-name: 'github/codeql-action/init'
+      - dependency-name: 'github/codeql-action/analyze'
+      - dependency-name: 'taiki-e/install-action'
