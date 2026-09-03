@@ -16,7 +16,7 @@ adapters-fw = { workspace = true }
 iac = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-typescript = "0.23"
 streaming-iterator = "0.1"
 
