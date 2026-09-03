@@ -6,9 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "B=\"${AGENT_BOT_BIN:-agent-bot}\"; command -v \"$B\" >/dev/null 2>&1 || { echo \"agent-bot is not installed — install agent-bot-identity\" >&2; exit 127; }; exec \"$B\" claude-worktree-create",
+            "command": "case \"$(id -un)\" in qwts-*-agent) ;; *) exit 0;; esac; B=\"${AGENT_BOT_BIN:-agent-bot}\"; command -v \"$B\" >/dev/null 2>&1 || { echo \"agent-bot is not installed — install agent-bot-identity\" >&2; exit 127; }; exec \"$B\" claude-worktree-create",
             "timeout": 180,
-            "statusMessage": "Creating worktree with its bot identity…"
+            "statusMessage": "Creating worktree (pinned to its bot identity only inside an agent account)…"
           }
         ]
       }
