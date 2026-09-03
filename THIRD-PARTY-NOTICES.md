@@ -21,7 +21,6 @@ dependency lockfile by `cargo about`; do not edit by hand.
 - BSD 3-Clause "New" or "Revised" License (7 crate(s))
 - Mozilla Public License 2.0 (5 crate(s))
 - BSD Zero Clause License (1 crate(s))
-- BSD 2-Clause "Simplified" License (1 crate(s))
 - zlib License (1 crate(s))
 
 ## BSD Zero Clause License
@@ -5671,7 +5670,7 @@ Used by:
 - allocator-api2 0.2.21 — https://github.com/zakarumych/allocator-api2
 - anyhow 1.0.103 — https://github.com/dtolnay/anyhow
 - async-trait 0.1.89 — https://github.com/dtolnay/async-trait
-- blake3 1.8.6 — https://github.com/BLAKE3-team/BLAKE3
+- blake3 1.8.7 — https://github.com/BLAKE3-team/BLAKE3
 - constant_time_eq 0.4.2 — https://github.com/cesarb/constant_time_eq
 - cranelift-assembler-x64 0.135.1
 - cranelift-bitset 0.135.1 — https://github.com/bytecodealliance/wasmtime
@@ -5742,7 +5741,7 @@ Used by:
 - unic-ucd-ident 0.9.0 — https://github.com/open-i18n/rust-unic/
 - unic-ucd-version 0.9.0 — https://github.com/open-i18n/rust-unic/
 - unicode-ident 1.0.24 — https://github.com/dtolnay/unicode-ident
-- usearch 2.26.0 — https://github.com/unum-cloud/USearch
+- usearch 2.26.2 — https://github.com/unum-cloud/USearch
 - utf-8 0.7.6 — https://github.com/SimonSapin/rust-utf8
 - vecmap-rs 0.2.5 — https://github.com/martinohmann/vecmap-rs
 - wasmtime-internal-component-macro 48.0.1 — https://github.com/bytecodealliance/wasmtime
@@ -5832,41 +5831,6 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
-```
-
-## BSD 2-Clause "Simplified" License
-
-Used by:
-- arrayref 0.3.9 — https://github.com/droundy/arrayref
-
-```
-Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu>
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-1. Redistributions of source code must retain the above copyright
-   notice, this list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright
-   notice, this list of conditions and the following disclaimer in the
-   documentation and/or other materials provided with the
-   distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
