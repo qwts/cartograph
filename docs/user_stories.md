@@ -270,10 +270,10 @@
 - **AC-0102** Given item and serialized-response byte budgets, when a query returns a page, then the entire response fits both budgets and exposes continuation explicitly; invalid budgets or a next fact that cannot fit fail rather than silently skipping it.
 - **AC-0103** Given valid, absent, malformed, or ceiling-violating provenance, when a fact is returned, then only validated provenance is authoritative, invalid provenance is explicitly Gap, raw provenance is removed from properties, and inferred facts retain their confidence ceiling.
 - **AC-0104** Given a label or neighborhood selection, when queried, then exact labels and the bounded undirected neighborhood select deterministically; absent domain facts return no invented concepts and unknown anchors fail explicitly.
-- **AC-0105** Given the app context-query command, when invoked, then graph copying and query work run off the calling thread, return the recovered-graph view, and preserve graph contents without model or network calls.
+- **AC-0105** Given the app context-query command, when invoked, then graph copying and query work run off the calling thread, read nodes and edges in one database snapshot even across multiple app processes, return the recovered-graph view, and preserve graph contents without model or network calls.
 - **Security:** Read-only core API; no SQL, arbitrary filesystem paths, model execution, or transport-specific privilege in requests.
 - **Performance:** At most 500 facts, 1 MiB serialized response and three hops; large-graph snapshot caching/latency is a later measured gate, not guaranteed by output bounds.
-- **Trace:** H1 (SPEC-01) · `context-hub`, `app` · — · T-0101..0105
+- **Trace:** H1 (SPEC-01) · `context-hub`, `core-graph`, `app` · — · T-0101..0105
 
 ### US-0021 — Inspect and curate a persistent business-domain context
 - **Actor:** Human developer

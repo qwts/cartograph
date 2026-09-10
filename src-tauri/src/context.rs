@@ -1,7 +1,7 @@
 //! Shared recovered-context reads for the desktop transport (SPEC-01, H1).
 
 use context_hub::{ContextSnapshot, QueryRequest, QueryResponse};
-use core_graph::{GraphStore, SqliteGraphStore};
+use core_graph::SqliteGraphStore;
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -16,10 +16,7 @@ fn query_graph(
         .map_err(|error| error.to_string())?;
     let (nodes, edges) = {
         let graph = graph.lock().map_err(|error| error.to_string())?;
-        (
-            graph.all_nodes().map_err(|error| error.to_string())?,
-            graph.all_edges().map_err(|error| error.to_string())?,
-        )
+        graph.read_snapshot().map_err(|error| error.to_string())?
     };
     ContextSnapshot::new(nodes, edges)
         .and_then(|snapshot| snapshot.query(request))
@@ -43,7 +40,7 @@ pub(crate) async fn query_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_graph::{Edge, Node};
+    use core_graph::{Edge, GraphStore, Node};
     use std::sync::Arc;
 
     fn request() -> QueryRequest {
