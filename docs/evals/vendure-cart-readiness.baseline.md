@@ -16,6 +16,10 @@ full desktop ingestion pipeline or a market-readiness test.
 - Initial independently scored implementation: `c01c2e77b07d3a39b010cc5284972a3feed4b897`.
   The final revision reproduced identical graph, bundle, metadata and inventory
   bytes after the quoted-key and malformed-parser fixes.
+- Review follow-up: `c40a9b869a36fb15be5e14cc7e148d8a84a704f8` adds explicit
+  computed-name disclosure. Two further runs reproduced all four scored artifacts
+  byte-for-byte; all six runs agree. This does not execute the 41 decision cases
+  or change the zero-of-eight complete-rule result.
 - [Frozen expected set](vendure-cart-readiness.expected.json): five core rules,
   three supporting rules, 41 decision cases and ten negative claims. SHA-256:
   `dcd9833e8f9be2269a6711f8bd04119c83931f6de45e04d17d1b99da9d51295d`.
