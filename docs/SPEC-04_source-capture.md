@@ -88,7 +88,18 @@ An explicit host-owned `CaptureStore` stores manifests and deduplicated raw obje
 in a separate SQLite/WAL file. The caller supplies its private application storage
 location. A transaction publishes a manifest and all its byte objects together;
 failure or capacity rejection publishes neither. Repeated persistence of identical
-content is idempotent. Existing conflicting or corrupt rows fail rather than being
+content is idempotent. The effective `max_span_bytes` acquisition policy is retained
+separately from the canonical manifest and capture identity, including for empty
+captures. Re-persisting identical content atomically retains the stricter of the
+stored and incoming caps; it never widens future store reads. Reload and store
+span reads enforce that retained cap. Tightening does not revoke immutable buffers
+already returned to callers. This is a read bound, not an authorization token.
+
+The store schema is version 2; the capture manifest remains version 1, and capture
+file/range references are unchanged. Prototype version 1 stores lack recoverable
+read policy and are rejected explicitly, without a default cap or implicit
+migration. Missing, mistyped or out-of-range policy values fail closed before
+loading source payloads. Existing conflicting or corrupt rows fail rather than being
 repaired from new caller content. Stored schema versions, manifest identity,
 membership, object digests and actual lengths are revalidated on load, with limits
 checked before loading large payloads. Evidence comes from the validated buffer;
@@ -133,5 +144,6 @@ directed-slot proof, conflict handling and a shared curated projection.
 Tests exercise canonical membership, raw changes outside AST spans, distinct source
 identities, bounded and symlink-safe acquisition, exact Git objects versus checkout
 bytes, missing objects, strict encoding/ranges, atomic capacity failures, corrupt
-storage and restart, plus the real parser seam. Test IDs T-0132–0136 bind these
+storage and restart, retained caller span caps after reopen and duplicate
+persistence in both policy orders, plus the real parser seam. Test IDs T-0132–0136 bind these
 contracts; test counts do not imply full #385 or H3 completion.

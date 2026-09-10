@@ -25,6 +25,13 @@ Do not attach a verified flag to existing facts or globally certify an extractio
 because a source path happens to occur in a capture. Production adoption remains
 #385, with complete supporting-input accounting and reference-aware retention.
 
+Store the effective span-read cap as durable policy separate from canonical
+content identity. Duplicate persistence keeps the minimum cap atomically; restart
+cannot widen it. This limits future store reads without revoking already returned
+buffers. Use store schema version 2 and reject prototype version 1 stores whose
+original cap is unknowable; manifest version 1 and reference wire shapes remain
+unchanged.
+
 ## Consequences
 
 Restart and checkout mutation cannot silently substitute bytes for retained

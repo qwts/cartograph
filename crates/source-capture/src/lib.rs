@@ -281,6 +281,7 @@ pub struct Capture {
     id: String,
     manifest: CaptureManifest,
     files: BTreeMap<String, CapturedFile>,
+    max_span_bytes: u64,
 }
 
 impl fmt::Debug for Capture {
@@ -288,6 +289,7 @@ impl fmt::Debug for Capture {
         f.debug_struct("Capture")
             .field("id", &self.id)
             .field("manifest", &self.manifest)
+            .field("max_span_bytes", &self.max_span_bytes)
             .finish_non_exhaustive()
     }
 }
@@ -301,6 +303,12 @@ impl Capture {
     /// Metadata only; serializing this value never includes source bytes.
     pub fn manifest(&self) -> &CaptureManifest {
         &self.manifest
+    }
+
+    /// Effective span-read bound, separate from canonical byte identity.
+    /// Store persistence can tighten future loads without revoking this buffer.
+    pub fn max_span_bytes(&self) -> u64 {
+        self.max_span_bytes
     }
 
     /// Look up an exact selected path; absence makes no repository-wide claim.
@@ -497,6 +505,7 @@ fn assemble_capture(
         id,
         manifest,
         files,
+        max_span_bytes: limits.max_span_bytes,
     })
 }
 

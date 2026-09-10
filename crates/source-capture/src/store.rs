@@ -1,6 +1,6 @@
 use crate::{
     Capture, CaptureError, CaptureLimits, CaptureManifest, CaptureSpanRef, MAX_FILE_BYTES,
-    MAX_MANIFEST_BYTES, Result, assemble_capture, canonical_manifest, manifest_id,
+    MAX_MANIFEST_BYTES, MAX_SPAN_BYTES, Result, assemble_capture, canonical_manifest, manifest_id,
     validate_capture_id, validate_manifest,
 };
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
@@ -8,9 +8,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-const STORE_SCHEMA_VERSION: u32 = 1;
-const CAPTURES_SCHEMA: &str =
-    "CREATE TABLE captures (id TEXT PRIMARY KEY NOT NULL, manifest BLOB NOT NULL)";
+const STORE_SCHEMA_VERSION: u32 = 2;
+const CAPTURES_SCHEMA: &str = "CREATE TABLE captures (id TEXT PRIMARY KEY NOT NULL, manifest BLOB NOT NULL, max_span_bytes INTEGER NOT NULL CHECK (typeof(max_span_bytes) = 'integer' AND max_span_bytes BETWEEN 0 AND 262144))";
 const OBJECTS_SCHEMA: &str =
     "CREATE TABLE objects (digest TEXT PRIMARY KEY NOT NULL, bytes BLOB NOT NULL)";
 /// Hard logical-data bound, excluding SQLite pages, indexes and WAL overhead.
@@ -63,7 +62,8 @@ impl fmt::Debug for CaptureStore {
 }
 
 impl CaptureStore {
-    /// Open a host-owned SQLite/WAL path, creating a fresh version-one schema.
+    /// Open a host-owned SQLite/WAL path, creating a fresh version-two schema.
+    /// Prototype version-one stores lack retained read policy and are rejected.
     pub fn open(path: &Path, limits: StoreLimits) -> Result<Self> {
         limits.validate()?;
         Self::initialize(Connection::open(path)?, limits)
@@ -101,9 +101,15 @@ impl CaptureStore {
     }
 
     /// Atomically retain the manifest and deduplicated objects. Conflicting
-    /// existing rows fail; repeated identical persistence makes no changes.
+    /// existing rows fail; duplicate content retains the stricter span cap.
     pub fn persist(&mut self, capture: &Capture) -> Result<()> {
-        validate_manifest(capture.manifest(), CaptureLimits::default())?;
+        validate_manifest(
+            capture.manifest(),
+            CaptureLimits {
+                max_span_bytes: capture.max_span_bytes(),
+                ..CaptureLimits::default()
+            },
+        )?;
         let manifest = canonical_manifest(capture.manifest(), MAX_MANIFEST_BYTES)?;
         if manifest_id(&manifest) != capture.id() {
             return Err(CaptureError::Corrupt("capture identity mismatch"));
@@ -129,13 +135,26 @@ impl CaptureStore {
             {
                 return Err(CaptureError::Corrupt("conflicting existing capture"));
             }
+            // The write transaction serializes concurrent replays. Content
+            // identity stays immutable; retained policy can only tighten.
+            let retained_cap = stored.max_span_bytes().min(capture.max_span_bytes());
+            if retained_cap != stored.max_span_bytes() {
+                let changed = transaction.execute(
+                    "UPDATE captures SET max_span_bytes=?2 WHERE id=?1",
+                    params![capture.id(), retained_cap as i64],
+                )?;
+                if changed != 1 {
+                    return Err(CaptureError::Corrupt("capture policy update failed"));
+                }
+            }
             transaction.commit()?;
             return Ok(());
         }
         let invalid_storage: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM captures WHERE typeof(manifest) != 'blob' OR length(manifest) > ?1
+                 OR NOT (CASE WHEN typeof(max_span_bytes) = 'integer' THEN max_span_bytes BETWEEN 0 AND ?3 ELSE 0 END)
                  UNION ALL SELECT 1 FROM objects WHERE typeof(bytes) != 'blob' OR length(bytes) > ?2)",
-            params![MAX_MANIFEST_BYTES as i64, MAX_FILE_BYTES as i64], |row| row.get(0)
+            params![MAX_MANIFEST_BYTES as i64, MAX_FILE_BYTES as i64, MAX_SPAN_BYTES as i64], |row| row.get(0)
         )?;
         if invalid_storage {
             return Err(CaptureError::Corrupt(
@@ -184,14 +203,14 @@ impl CaptureStore {
             )?)?;
         }
         require_inserted(transaction.execute(
-            "INSERT INTO captures(id,manifest) VALUES (?1,?2)",
-            params![capture.id(), manifest],
+            "INSERT INTO captures(id,manifest,max_span_bytes) VALUES (?1,?2,?3)",
+            params![capture.id(), manifest, capture.max_span_bytes() as i64],
         )?)?;
         transaction.commit()?;
         Ok(())
     }
 
-    /// Load and revalidate bounded metadata and every retained raw file object.
+    /// Load and revalidate metadata, retained span policy and every raw object.
     pub fn load(&self, capture_id: &str) -> Result<Capture> {
         // A read transaction prevents another connection changing length/data
         // between the preallocation bound checks and the actual blob reads.
@@ -265,7 +284,7 @@ fn check_schema(connection: &Connection) -> Result<()> {
             "PRAGMA table_xinfo(objects)",
         ),
     ] {
-        // This is a new private v1 schema: accept exactly the DDL we create,
+        // This is a private versioned schema: accept exactly the DDL we create,
         // including conflict policies, rather than guessing compatibility from
         // visible columns. table_info alone hides generated columns.
         let exact: bool = connection.query_row(
@@ -289,10 +308,13 @@ fn check_schema(connection: &Connection) -> Result<()> {
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let expected = vec![
+        let mut expected = vec![
             (key.to_string(), "TEXT".to_string(), 1, None, 1, 0),
             (value.to_string(), "BLOB".to_string(), 1, None, 0, 0),
         ];
+        if table == "captures" {
+            expected.push(("max_span_bytes".into(), "INTEGER".into(), 1, None, 0, 0));
+        }
         if columns != expected {
             return Err(CaptureError::Corrupt("incompatible store columns or keys"));
         }
@@ -332,14 +354,22 @@ fn read_object(connection: &Connection, digest: &str) -> Result<Option<Vec<u8>>>
 fn load_capture(connection: &Connection, id: &str) -> Result<Capture> {
     check_version(connection)?;
     validate_capture_id(id)?;
-    let metadata: Option<(String, u64)> = connection
+    let metadata: Option<(String, u64, Option<i64>)> = connection
         .query_row(
-            "SELECT typeof(manifest),length(manifest) FROM captures WHERE id=?1",
+            // CASE never returns a malformed policy payload (for example an
+            // oversized BLOB). Check its type/range before fetching raw data.
+            "SELECT typeof(manifest),length(manifest),
+             CASE WHEN typeof(max_span_bytes) = 'integer' THEN max_span_bytes END
+             FROM captures WHERE id=?1",
             [id],
-            |row| Ok((row.get(0)?, nonnegative(row, 1)?)),
+            |row| Ok((row.get(0)?, nonnegative(row, 1)?, row.get(2)?)),
         )
         .optional()?;
-    let (kind, len) = metadata.ok_or(CaptureError::Missing("capture manifest"))?;
+    let (kind, len, cap) = metadata.ok_or(CaptureError::Missing("capture manifest"))?;
+    let max_span_bytes = cap
+        .and_then(|cap| u64::try_from(cap).ok())
+        .filter(|cap| *cap <= MAX_SPAN_BYTES)
+        .ok_or(CaptureError::Corrupt("invalid retained span policy"))?;
     if kind != "blob" || len > MAX_MANIFEST_BYTES {
         return Err(CaptureError::Corrupt(
             "invalid stored manifest type or length",
@@ -366,7 +396,14 @@ fn load_capture(connection: &Connection, id: &str) -> Result<Capture> {
         }
         buffers.insert(entry.path.clone(), bytes);
     }
-    let capture = assemble_capture(manifest, buffers, CaptureLimits::default())?;
+    let capture = assemble_capture(
+        manifest,
+        buffers,
+        CaptureLimits {
+            max_span_bytes,
+            ..CaptureLimits::default()
+        },
+    )?;
     if capture.id() != id {
         return Err(CaptureError::Corrupt("loaded capture identity mismatch"));
     }
@@ -379,13 +416,20 @@ mod tests {
     use crate::{SourceId, capture_working_tree};
 
     fn captured(name: &str, bytes: &[u8]) -> Capture {
+        captured_with_cap(name, bytes, MAX_SPAN_BYTES)
+    }
+
+    fn captured_with_cap(name: &str, bytes: &[u8], max_span_bytes: u64) -> Capture {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(name), bytes).unwrap();
         capture_working_tree(
             dir.path(),
             &SourceId::new("host-store-fixture").unwrap(),
             &[name.into()],
-            CaptureLimits::default(),
+            CaptureLimits {
+                max_span_bytes,
+                ..CaptureLimits::default()
+            },
         )
         .unwrap()
     }
@@ -428,6 +472,211 @@ mod tests {
         let mut wrong = span.clone();
         wrong.file.source_id = SourceId::new("other").unwrap();
         assert!(store.read_span(&wrong).is_err());
+    }
+
+    // AC-0135: read policy survives a real restart independently of canonical
+    // content identity, and either duplicate-persistence order retains the min.
+    #[test]
+    fn retained_span_policy_survives_restart_and_never_widens() {
+        let narrow = captured_with_cap("source", b"abcd", 2);
+        let broad = captured("source", b"abcd");
+        assert_eq!(narrow.id(), broad.id());
+        assert_eq!(narrow.manifest(), broad.manifest());
+        let allowed = narrow.file("source").unwrap().span(0, 2).unwrap();
+        let denied = broad.file("source").unwrap().span(0, 3).unwrap();
+        assert_eq!(
+            serde_json::to_value(narrow.file("source").unwrap().reference()).unwrap(),
+            serde_json::to_value(broad.file("source").unwrap().reference()).unwrap()
+        );
+        assert!(narrow.read_span(&denied).is_err());
+        for narrow_first in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("captures.sqlite");
+            let (first, second) = if narrow_first {
+                (&narrow, &broad)
+            } else {
+                (&broad, &narrow)
+            };
+            {
+                let mut store = CaptureStore::open(&path, StoreLimits::default()).unwrap();
+                store.persist(first).unwrap();
+                assert_eq!(store.read_span(&denied).is_err(), narrow_first);
+            }
+            {
+                let mut store = CaptureStore::open(&path, StoreLimits::default()).unwrap();
+                store.persist(second).unwrap();
+                assert_eq!(counts(&store), (1, 1));
+                assert_eq!(store.load(narrow.id()).unwrap().max_span_bytes(), 2);
+            }
+            let mut reopened = CaptureStore::open(&path, StoreLimits::default()).unwrap();
+            // Replaying either input after another restart never loosens policy.
+            reopened.persist(&broad).unwrap();
+            reopened.persist(&narrow).unwrap();
+            let loaded = reopened.load(narrow.id()).unwrap();
+            assert_eq!(loaded.id(), narrow.id());
+            assert_eq!(loaded.manifest(), narrow.manifest());
+            assert_eq!(loaded.max_span_bytes(), 2);
+            assert!(loaded.file("source").unwrap().span(0, 3).is_err());
+            assert!(loaded.read_span(&denied).is_err());
+            assert!(reopened.read_span(&denied).is_err());
+            assert!(reopened.read_text_span(&denied).is_err());
+            assert_eq!(reopened.read_span(&allowed).unwrap(), b"ab");
+            assert_eq!(reopened.read_text_span(&allowed).unwrap(), "ab");
+            assert_eq!(counts(&reopened), (1, 1));
+        }
+        // Tightening future store reads does not revoke previously returned
+        // immutable buffers or change what their content references identify.
+        assert_eq!(broad.read_span(&denied).unwrap(), b"abc");
+
+        let git_dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(git_dir.path()).unwrap();
+        let blob = repo.blob(b"abcd").unwrap();
+        let tree = {
+            let mut builder = repo.treebuilder(None).unwrap();
+            builder.insert("source", blob, 0o100644).unwrap();
+            repo.find_tree(builder.write().unwrap()).unwrap()
+        };
+        let signature =
+            git2::Signature::new("fixture", "fixture@example.invalid", &git2::Time::new(1, 0))
+                .unwrap();
+        let commit = repo
+            .commit(None, &signature, &signature, "fixture", &tree, &[])
+            .unwrap();
+        let git_capture = crate::capture_git(
+            git_dir.path(),
+            &SourceId::new("host-git-policy-fixture").unwrap(),
+            &commit.to_string(),
+            &["source".into()],
+            CaptureLimits {
+                max_span_bytes: 2,
+                ..CaptureLimits::default()
+            },
+        )
+        .unwrap();
+        let allowed = git_capture.file("source").unwrap().span(0, 2).unwrap();
+        let mut denied = allowed.clone();
+        denied.byte_end = 3;
+        let store_dir = tempfile::tempdir().unwrap();
+        let path = store_dir.path().join("captures.sqlite");
+        {
+            let mut store = CaptureStore::open(&path, StoreLimits::default()).unwrap();
+            store.persist(&git_capture).unwrap();
+        }
+        let reopened = CaptureStore::open(&path, StoreLimits::default()).unwrap();
+        assert_eq!(reopened.load(git_capture.id()).unwrap().max_span_bytes(), 2);
+        assert_eq!(reopened.read_span(&allowed).unwrap(), b"ab");
+        assert!(reopened.read_span(&denied).is_err());
+    }
+
+    // AC-0135: even an empty capture retains its policy; an absent, mistyped or
+    // invalid cap cannot be replaced by a default or repaired from a replay.
+    #[test]
+    fn empty_capture_policy_and_invalid_stored_caps_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = SourceId::new("host-empty-policy-fixture").unwrap();
+        let empty = |max_span_bytes| {
+            capture_working_tree(
+                dir.path(),
+                &source,
+                &[],
+                CaptureLimits {
+                    max_span_bytes,
+                    ..CaptureLimits::default()
+                },
+            )
+            .unwrap()
+        };
+        let no_spans = empty(0);
+        let broad = empty(MAX_SPAN_BYTES);
+        assert_eq!(no_spans.id(), broad.id());
+        let path = dir.path().join("captures.sqlite");
+        {
+            let mut store = CaptureStore::open(&path, StoreLimits::default()).unwrap();
+            store.persist(&broad).unwrap();
+            store.persist(&no_spans).unwrap();
+        }
+        let mut reopened = CaptureStore::open(&path, StoreLimits::default()).unwrap();
+        reopened.persist(&broad).unwrap();
+        assert_eq!(reopened.load(no_spans.id()).unwrap().max_span_bytes(), 0);
+        assert_eq!(counts(&reopened), (1, 0));
+        let zero_file = captured_with_cap("source", b"abcd", 0);
+        let reference = captured("source", b"abcd")
+            .file("source")
+            .unwrap()
+            .span(0, 1)
+            .unwrap();
+        reopened.persist(&zero_file).unwrap();
+        assert!(reopened.read_span(&reference).is_err());
+
+        let good = captured_with_cap("source", b"abcd", 2);
+        for invalid in [
+            "-1",
+            "262145",
+            "2.5",
+            "'not-a-policy'",
+            "zeroblob(16777217)",
+        ] {
+            let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+            store.persist(&good).unwrap();
+            // Model external corruption without weakening the required DDL.
+            store
+                .connection
+                .pragma_update(None, "ignore_check_constraints", true)
+                .unwrap();
+            store
+                .connection
+                .execute(
+                    &format!("UPDATE captures SET max_span_bytes={invalid}, manifest=X'7B7D'"),
+                    [],
+                )
+                .unwrap();
+            // The policy error must precede even manifest identity validation,
+            // and therefore all raw source object reads.
+            assert!(matches!(
+                store.load(good.id()),
+                Err(CaptureError::Corrupt("invalid retained span policy"))
+            ));
+            assert!(matches!(
+                store.persist(&good),
+                Err(CaptureError::Corrupt("invalid retained span policy"))
+            ));
+            assert!(store.persist(&captured("other", b"other")).is_err());
+            assert_eq!(counts(&store), (1, 1));
+        }
+
+        for version in [1, STORE_SCHEMA_VERSION] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("prototype.sqlite");
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch("CREATE TABLE captures (id TEXT PRIMARY KEY NOT NULL, manifest BLOB NOT NULL); CREATE TABLE objects (digest TEXT PRIMARY KEY NOT NULL, bytes BLOB NOT NULL);").unwrap();
+            connection
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            let manifest = canonical_manifest(good.manifest(), MAX_MANIFEST_BYTES).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO captures(id,manifest) VALUES (?1,?2)",
+                    params![good.id(), manifest],
+                )
+                .unwrap();
+            drop(connection);
+            assert!(CaptureStore::open(&path, StoreLimits::default()).is_err());
+            let connection = Connection::open(&path).unwrap();
+            assert_eq!(
+                connection
+                    .pragma_query_value::<u32, _>(None, "user_version", |row| row.get(0))
+                    .unwrap(),
+                version
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT count(*) FROM captures", [], |row| nonnegative(
+                        row, 0
+                    ))
+                    .unwrap(),
+                1
+            );
+        }
     }
 
     // AC-0135: logical-byte and count exhaustion publish neither partial objects
@@ -548,8 +797,8 @@ mod tests {
             store
                 .connection
                 .execute(
-                    "INSERT INTO captures(id,manifest) VALUES (?1,?2)",
-                    params![id, bytes],
+                    "INSERT INTO captures(id,manifest,max_span_bytes) VALUES (?1,?2,?3)",
+                    params![id, bytes, MAX_SPAN_BYTES as i64],
                 )
                 .unwrap();
             assert!(store.load(&id).is_err());
@@ -565,23 +814,37 @@ mod tests {
         assert!(store.persist(&capture).is_err());
     }
 
-    // AC-0135: a lookalike v1 database, view, missing key or sqliteX-prefixed
+    // AC-0135: a lookalike database, view, missing key or sqliteX-prefixed
     // trigger must not be trusted or repaired as an ordinary capture store.
     #[test]
     fn incompatible_schema_and_disguised_triggers_fail_closed() {
+        let missing_key =
+            CAPTURES_SCHEMA.replace("id TEXT PRIMARY KEY NOT NULL", "id TEXT NOT NULL");
+        let generated = format!(
+            "{}, suppression INTEGER GENERATED ALWAYS AS (0) VIRTUAL UNIQUE ON CONFLICT IGNORE)",
+            CAPTURES_SCHEMA.strip_suffix(')').unwrap()
+        );
+        let ignored_conflict = CAPTURES_SCHEMA.replace(
+            "PRIMARY KEY NOT NULL",
+            "PRIMARY KEY ON CONFLICT IGNORE NOT NULL",
+        );
         for schema in [
-            "PRAGMA user_version=2;",
-            "PRAGMA user_version=1;",
-            "CREATE TABLE captures(id TEXT PRIMARY KEY NOT NULL,manifest BLOB NOT NULL); CREATE VIEW objects AS SELECT 'digest' AS digest, randomblob(20) AS bytes; PRAGMA user_version=1;",
-            "CREATE TABLE captures(id TEXT NOT NULL,manifest BLOB NOT NULL); CREATE TABLE objects(digest TEXT PRIMARY KEY NOT NULL,bytes BLOB NOT NULL); PRAGMA user_version=1;",
-            "CREATE TABLE captures (id TEXT PRIMARY KEY NOT NULL, manifest BLOB NOT NULL, suppression INTEGER GENERATED ALWAYS AS (0) VIRTUAL UNIQUE ON CONFLICT IGNORE); CREATE TABLE objects (digest TEXT PRIMARY KEY NOT NULL, bytes BLOB NOT NULL); PRAGMA user_version=1;",
-            "CREATE TABLE captures (id TEXT PRIMARY KEY ON CONFLICT IGNORE NOT NULL, manifest BLOB NOT NULL); CREATE TABLE objects (digest TEXT PRIMARY KEY NOT NULL, bytes BLOB NOT NULL); PRAGMA user_version=1;",
-            "CREATE TABLE sqliteXhidden(x TEXT);",
+            format!("PRAGMA user_version={};", STORE_SCHEMA_VERSION + 1),
+            format!("PRAGMA user_version={STORE_SCHEMA_VERSION};"),
+            format!(
+                "{CAPTURES_SCHEMA}; CREATE VIEW objects AS SELECT 'digest' AS digest, randomblob(20) AS bytes; PRAGMA user_version={STORE_SCHEMA_VERSION};"
+            ),
+            format!("{missing_key}; {OBJECTS_SCHEMA}; PRAGMA user_version={STORE_SCHEMA_VERSION};"),
+            format!("{generated}; {OBJECTS_SCHEMA}; PRAGMA user_version={STORE_SCHEMA_VERSION};"),
+            format!(
+                "{ignored_conflict}; {OBJECTS_SCHEMA}; PRAGMA user_version={STORE_SCHEMA_VERSION};"
+            ),
+            "CREATE TABLE sqliteXhidden(x TEXT);".into(),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("bad.sqlite");
             let connection = Connection::open(&path).unwrap();
-            connection.execute_batch(schema).unwrap();
+            connection.execute_batch(&schema).unwrap();
             let version: u32 = connection
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
