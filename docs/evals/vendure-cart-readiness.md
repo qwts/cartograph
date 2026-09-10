@@ -10,6 +10,10 @@ and ten negative claims. Its SHA-256 is
 Benchmark acceptance cases have not been executed. Source review establishes
 expectations; it does not establish Cartograph recovery coverage or a pass.
 
+The [first measured source-observation baseline](vendure-cart-readiness.baseline.md)
+records 0/8 complete matches, six relevant local exit anchors and deterministic
+outputs. Decision cases remain unexecuted; H2 remains incomplete.
+
 Codex context_tests performed the second source review on 2026-09-10 against the
 clean pinned checkout, before accessing or generating any recovered benchmark
 output. This is **agent review, not human approval**. The reviewer contributed
