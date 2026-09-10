@@ -139,6 +139,148 @@ fn staging_binds_complete_content_and_omits_raw_task_source() {
 }
 
 #[test]
+fn staging_rejects_task_text_replay_before_durable_writes() {
+    // AC-0126: all original task material is checked, not only cited/selected
+    // material. Rejection must not archive canaries in a row, database or WAL.
+    let mut task = task();
+    task.candidates.push(AgentCandidate {
+        node_id: "symbol:unselected".into(),
+        label: "Symbol".into(),
+        summary: "raw-unselected-summary-marker-85379".into(),
+        evidence_ids: vec!["extra".into()],
+    });
+    let omitted: Vec<_> = task
+        .evidence
+        .iter()
+        .map(|item| item.text.clone())
+        .chain(task.candidates.iter().map(|item| item.summary.clone()))
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("proposals.sqlite");
+    let mut store = ProposalStore::open(&path).unwrap();
+    let valid = standard_proposal(&task);
+    let baseline = store.stage(&task, &valid, 1, "snapshot:one").unwrap();
+    for text in &omitted {
+        for annotation in [text.clone(), format!("Rationale: `{text}`; see citations.")] {
+            // The broker accepts this output; durable admission must reject it.
+            let replay = proposal(&task, &annotation, &["source", "target"]);
+            let changes = store.conn.total_changes();
+            let error = store.stage(&task, &replay, 2, "snapshot:one").unwrap_err();
+            assert!(matches!(error, StagingError::AnnotationReplaysTaskText));
+            assert_eq!(
+                error.to_string(),
+                "proposal annotation replays supplied task text"
+            );
+            assert_eq!(format!("{error:?}"), "AnnotationReplaysTaskText");
+            assert_eq!(store.conn.total_changes(), changes);
+            assert_eq!(store.list(50, None).unwrap().items, vec![baseline.clone()]);
+        }
+    }
+    let check_files = || {
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            for text in &omitted {
+                assert!(
+                    !bytes
+                        .windows(text.len())
+                        .any(|part| part == text.as_bytes())
+                );
+            }
+        }
+    };
+    check_files(); // Includes the live WAL, before checkpoint/connection close.
+    drop(store);
+    let store = ProposalStore::open(&path).unwrap();
+    assert_eq!(store.list(50, None).unwrap().items, vec![baseline]);
+    check_files();
+}
+
+#[test]
+fn staging_replay_guard_handles_normalization_excerpts_and_short_items() {
+    // AC-0126: whitespace changes cannot replay full items or 48-scalar excerpts.
+    // Short complete overlaps intentionally reject; case/encoding inference is
+    // outside this deterministic admission contract.
+    let mut task = task();
+    task.evidence[2] = evidence("extra", "config.ts", "if (ready) {\r\n  execute();\n}");
+    let replay = proposal(
+        &task,
+        "Observed: if(ready){execute();}",
+        &["source", "target"],
+    );
+    assert!(matches!(
+        store().stage(&task, &replay, 1, "snapshot:one"),
+        Err(StagingError::AnnotationReplaysTaskText)
+    ));
+
+    let excerpt: String = (0..48)
+        .map(|index| char::from_u32(0x4e00 + index).unwrap())
+        .collect();
+    task.evidence[2] = evidence("extra", "config.ts", &format!("before{excerpt}after"));
+    let spaced: String = excerpt
+        .chars()
+        .map(|character| format!("{character}\u{2003}"))
+        .collect();
+    let replay = proposal(&task, &format!("Excerpt: {spaced}"), &["source", "target"]);
+    assert!(matches!(
+        store().stage(&task, &replay, 1, "snapshot:one"),
+        Err(StagingError::AnnotationReplaysTaskText)
+    ));
+    let shorter: String = excerpt.chars().take(47).collect();
+    let bounded = proposal(&task, &format!("Excerpt: {shorter}"), &["source", "target"]);
+    assert!(store().stage(&task, &bounded, 1, "snapshot:one").is_ok());
+
+    task.candidates[0].summary = "a".into();
+    let common = standard_proposal(&task);
+    assert!(matches!(
+        store().stage(&task, &common, 1, "snapshot:one"),
+        Err(StagingError::AnnotationReplaysTaskText)
+    ));
+    task.candidates[0].summary = "\r\n\u{2003}".into();
+    task.evidence[2] = evidence("extra", "config.ts", "\t ");
+    let benign = standard_proposal(&task);
+    assert!(store().stage(&task, &benign, 1, "snapshot:one").is_ok());
+}
+
+#[test]
+fn staging_replay_inputs_are_bounded_and_accepted_text_is_unchanged() {
+    // AC-0126: validate resource bounds before basis hashing/normalization, and
+    // leave accepted annotations and post-review idempotence byte-for-byte intact.
+    let mut task = task();
+    let original = standard_proposal(&task);
+    let mut huge_annotation = original.clone();
+    huge_annotation.annotation = "x".repeat(MAX_STAGED_RECORD_BYTES + 1);
+    let mut store = store();
+    assert!(matches!(
+        store.stage(&task, &huge_annotation, 1, "snapshot:one"),
+        Err(StagingError::RecordTooLarge { .. })
+    ));
+    let mut large_task = task.clone();
+    large_task.candidates[0].summary = "x".repeat(MAX_STAGED_RECORD_BYTES / 2 + 1);
+    let mut second = large_task.candidates[0].clone();
+    second.node_id = "symbol:second".into();
+    large_task.candidates.push(second);
+    assert!(matches!(
+        store.stage(&large_task, &original, 1, "snapshot:one"),
+        Err(StagingError::TaskSummariesTooLarge)
+    ));
+    assert!(store.list(50, None).unwrap().items.is_empty());
+
+    task.candidates[0].summary = "x".repeat(MAX_STAGED_RECORD_BYTES);
+    let accepted_text = "Possible  call\n target — see citations.";
+    let valid = proposal(&task, accepted_text, &["source", "target"]);
+    let staged = store.stage(&task, &valid, 1, "snapshot:one").unwrap();
+    assert_eq!(staged.proposal.annotation, accepted_text);
+    let reviewed = store
+        .review(&staged.proposal_id, 0, ProposalDecision::Accepted, None)
+        .unwrap();
+    assert_eq!(
+        reviewed,
+        store.stage(&task, &valid, 1, "snapshot:one").unwrap()
+    );
+    assert_eq!(reviewed.proposal, valid);
+}
+
+#[test]
 fn staging_rejects_results_outside_original_task_contract() {
     // AC-0126: validation proves candidate, citation and provenance membership
     // against the original host task, not a caller's self-consistent fact hash.
