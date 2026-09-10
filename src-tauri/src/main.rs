@@ -13,6 +13,9 @@ mod graph_projection_tests;
 mod jobs;
 mod metrics;
 mod paths;
+mod primary_source;
+#[cfg(test)]
+mod primary_source_tests;
 mod proposals;
 #[cfg(test)]
 mod registered_source_tests;
@@ -43,6 +46,7 @@ struct AppState {
     extraction_caches: Mutex<ExtractionCaches>,
     /// Durable, host-owned authority for operational source locations.
     sources: Arc<Mutex<SourceRegistry>>,
+    primary_sources: primary_source::PrimarySourceStore,
     metrics: Mutex<metrics::MetricsStore>,
 }
 
@@ -690,6 +694,7 @@ fn extract_tree_with_summary(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn extract_tree_incremental(
     root: &std::path::Path,
     repo: &str,
@@ -702,6 +707,39 @@ fn extract_tree_incremental(
     cache: &mut RepoExtractionCache,
     plugins: &[ActivePlugin],
     on_file: &mut dyn FnMut(&str),
+) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown, DeltaSummary), String> {
+    extract_tree_with_primary(
+        root,
+        repo,
+        commit,
+        layers,
+        manifest_env,
+        state_json,
+        pulumi_json,
+        otel_jsonl,
+        cache,
+        plugins,
+        on_file,
+        None,
+        &mut Vec::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_tree_with_primary(
+    root: &std::path::Path,
+    repo: &str,
+    commit: &str,
+    layers: &[String],
+    manifest_env: &std::collections::BTreeMap<String, String>,
+    state_json: Option<&std::path::Path>,
+    pulumi_json: Option<&std::path::Path>,
+    otel_jsonl: &[std::path::PathBuf],
+    cache: &mut RepoExtractionCache,
+    plugins: &[ActivePlugin],
+    on_file: &mut dyn FnMut(&str),
+    primary: Option<&source_capture::Capture>,
+    receipts: &mut Vec<adapters_lang_ts::captured::Receipt>,
 ) -> Result<(adapters_lang_ts::Extraction, LayerBreakdown, DeltaSummary), String> {
     // Layer hints gate extractors (AC-0002): empty means everything; the
     // The TS pass covers server/events/client plus Pulumi infra/cloud; the HCL
@@ -724,13 +762,25 @@ fn extract_tree_incremental(
             "Reading infrastructure (Pulumi)"
         };
         let mut ts_progress = |path: &str| on_file(&format!("{ts_phase} — {path}"));
-        let (mut extraction, stats) = adapters_lang_ts::extract_dir_incremental_with_progress(
-            root,
-            &ts_id,
-            &mut cache.ts,
-            &mut ts_progress,
-        )
-        .map_err(|e| e.to_string())?;
+        let (mut extraction, stats) = if let Some(capture) = primary {
+            let (extraction, produced, stats) = adapters_lang_ts::captured::extract_captured_dir(
+                root,
+                &ts_id,
+                capture,
+                &mut ts_progress,
+            )
+            .map_err(|e| e.to_string())?;
+            receipts.extend(produced);
+            (extraction, stats)
+        } else {
+            adapters_lang_ts::extract_dir_incremental_with_progress(
+                root,
+                &ts_id,
+                &mut cache.ts,
+                &mut ts_progress,
+            )
+            .map_err(|e| e.to_string())?
+        };
         delta.add(
             stats.recomputed_files,
             stats.reused_files,
@@ -1111,12 +1161,24 @@ fn edge_key(edge: &Edge) -> (String, String, String) {
     (edge.src.clone(), edge.dst.clone(), edge.label.clone())
 }
 
+#[cfg(test)]
 fn load_into_graph(
     graph: &mut SqliteGraphStore,
     extraction: &adapters_lang_ts::Extraction,
     repo: &str,
     _root: &std::path::Path,
     commit: &str,
+) -> Result<ReconcileStats, String> {
+    load_into_graph_with_bindings(graph, extraction, repo, _root, commit, &[])
+}
+
+fn load_into_graph_with_bindings(
+    graph: &mut SqliteGraphStore,
+    extraction: &adapters_lang_ts::Extraction,
+    repo: &str,
+    _root: &std::path::Path,
+    commit: &str,
+    bindings: &[core_graph::source::SourceBinding],
 ) -> Result<ReconcileStats, String> {
     let repo_prov = core_prov::Provenance::new(
         core_prov::Tier::Deterministic,
@@ -1147,25 +1209,27 @@ fn load_into_graph(
         .cloned()
         .map(|edge| (edge_key(&edge), edge))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let existing_nodes = graph
-        .all_nodes()
-        .map_err(|error| error.to_string())?
-        .into_iter()
+    let expected = graph.read_snapshot().map_err(|error| error.to_string())?;
+    let existing_nodes = expected
+        .0
+        .iter()
+        .cloned()
         .map(|node| (node.id.clone(), node))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let existing_edges = graph
-        .all_edges()
-        .map_err(|error| error.to_string())?
-        .into_iter()
+    let existing_edges = expected
+        .1
+        .iter()
+        .cloned()
         .map(|edge| (edge_key(&edge), edge))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let mut patch = core_graph::GraphPatch::default();
     let mut stats = ReconcileStats::default();
     let mut remaining_edge_keys = std::collections::BTreeSet::new();
     for (key, edge) in &existing_edges {
         if fact_owned_by_repo(&edge.props, repo) && !current_edges.contains_key(key) {
-            graph
-                .delete_edge(&edge.src, &edge.dst, &edge.label)
-                .map_err(|error| error.to_string())?;
+            patch
+                .delete_edges
+                .push((edge.src.clone(), edge.dst.clone(), edge.label.clone()));
             stats.deleted += 1;
         } else {
             remaining_edge_keys.insert(key.clone());
@@ -1185,7 +1249,7 @@ fn load_into_graph(
         if (owned && (id_explicitly_owned_by_repo(id, repo) || !has_remaining_incident))
             || orphan_placeholder
         {
-            graph.delete_node(id).map_err(|error| error.to_string())?;
+            patch.delete_node_ids.push(id.clone());
             stats.deleted += 1;
         }
     }
@@ -1193,7 +1257,7 @@ fn load_into_graph(
         if existing_nodes.get(&node.id) == Some(node) {
             stats.unchanged += 1;
         } else {
-            graph.put_node(node).map_err(|e| e.to_string())?;
+            patch.upsert_nodes.push(node.clone());
             stats.inserted_or_updated += 1;
         }
     }
@@ -1201,9 +1265,15 @@ fn load_into_graph(
         if existing_edges.get(key) == Some(edge) {
             stats.unchanged += 1;
         } else {
-            graph.put_edge(edge).map_err(|e| e.to_string())?;
+            patch.upsert_edges.push(edge.clone());
             stats.inserted_or_updated += 1;
         }
+    }
+    if !graph
+        .apply_patch_with_source_bindings_if_snapshot_matches(&expected, &patch, repo, bindings)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Graph changed during recovery publication; recover the source again.".into());
     }
     Ok(stats)
 }
@@ -2253,13 +2323,18 @@ fn run_ingest(
     report_progress(app, state, job_id, "extract", 15.0)?;
     let active_plugins = active_plugins_for_root(app, state, root).map_err(&fail)?;
     let mut on_file = detail_throttle(app, job_id);
+    let primary = state
+        .primary_sources
+        .prepare(source, root, &[])
+        .map_err(&fail)?;
+    let mut receipts = Vec::new();
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
             .lock()
             .map_err(|e| fail(e.to_string()))?;
         let cache = caches.repos.entry(repo.clone()).or_default();
-        extract_tree_incremental(
+        extract_tree_with_primary(
             root,
             &repo,
             "workdir",
@@ -2271,15 +2346,23 @@ fn run_ingest(
             cache,
             &active_plugins,
             &mut on_file,
+            primary.capture.as_ref(),
+            &mut receipts,
         )
         .map_err(fail)?
     };
 
     cancelled()?;
+    state
+        .primary_sources
+        .persist(&primary, source, &receipts)
+        .map_err(&fail)?;
+    let bindings = primary_source::matching_bindings(&extraction, &receipts);
     report_progress(app, state, job_id, "load", 70.0)?;
     {
         let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
-        load_into_graph(&mut graph, &extraction, &repo, root, "workdir").map_err(&fail)?;
+        load_into_graph_with_bindings(&mut graph, &extraction, &repo, root, "workdir", &bindings)
+            .map_err(&fail)?;
         report_progress(app, state, job_id, "stitch", 90.0)?;
 
         stitch_backings(&mut graph).map_err(&fail)?;
@@ -2526,13 +2609,18 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
     let active_plugins =
         active_plugins_for_root(&app, &state, root).map_err(|e| fail(e, &state, job_id))?;
     let mut on_file = detail_throttle(&app, job_id);
+    let primary = state
+        .primary_sources
+        .prepare(&source, root, &[])
+        .map_err(|e| fail(e, &state, job_id))?;
+    let mut receipts = Vec::new();
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
             .lock()
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
         let cache = caches.repos.entry(source.repo_key.clone()).or_default();
-        extract_tree_incremental(
+        extract_tree_with_primary(
             root,
             &source.repo_key,
             &cloned.commit_sha,
@@ -2544,23 +2632,31 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
             cache,
             &active_plugins,
             &mut on_file,
+            primary.capture.as_ref(),
+            &mut receipts,
         )
         .map_err(|e| fail(e, &state, job_id))?
     };
     if job_cancelled(&state, job_id) {
         return Err("cancelled".to_string());
     }
+    state
+        .primary_sources
+        .persist(&primary, &source, &receipts)
+        .map_err(|e| fail(e, &state, job_id))?;
+    let bindings = primary_source::matching_bindings(&extraction, &receipts);
     {
         let mut graph = state
             .graph
             .lock()
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        load_into_graph(
+        load_into_graph_with_bindings(
             &mut graph,
             &extraction,
             &source.repo_key,
             root,
             &cloned.commit_sha,
+            &bindings,
         )
         .map_err(|e| fail(e, &state, job_id))?;
 
@@ -2715,13 +2811,18 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
             entry.otel_jsonl.iter().map(|p| base.join(p)).collect();
         let active_plugins =
             active_plugins_for_root(&app, &state, root).map_err(|e| fail(e, &state, job_id))?;
+        let primary = state
+            .primary_sources
+            .prepare(source, root, &entry.layers)
+            .map_err(|e| fail(e, &state, job_id))?;
+        let mut receipts = Vec::new();
         let (extraction, repo_layers, repo_delta) = {
             let mut caches = state
                 .extraction_caches
                 .lock()
                 .map_err(|e| fail(e.to_string(), &state, job_id))?;
             let cache = caches.repos.entry(repo.clone()).or_default();
-            extract_tree_incremental(
+            extract_tree_with_primary(
                 root,
                 &repo,
                 &commit,
@@ -2733,9 +2834,16 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
                 cache,
                 &active_plugins,
                 &mut on_file,
+                primary.capture.as_ref(),
+                &mut receipts,
             )
             .map_err(|e| fail(e, &state, job_id))?
         };
+        state
+            .primary_sources
+            .persist(&primary, source, &receipts)
+            .map_err(|e| fail(e, &state, job_id))?;
+        let bindings = primary_source::matching_bindings(&extraction, &receipts);
         files += repo_layers.files();
         nodes += extraction.nodes.len() as u64;
         edges += extraction.edges.len() as u64;
@@ -2750,7 +2858,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
                 .graph
                 .lock()
                 .map_err(|e| fail(e.to_string(), &state, job_id))?;
-            load_into_graph(&mut graph, &extraction, &repo, root, &commit)
+            load_into_graph_with_bindings(&mut graph, &extraction, &repo, root, &commit, &bindings)
                 .map_err(|e| fail(e, &state, job_id))?;
         }
         let sha12: String = commit.chars().take(12).collect();
@@ -3124,6 +3232,8 @@ fn main() {
                 proposals: Mutex::new(staged_proposals),
                 extraction_caches: Mutex::new(ExtractionCaches::default()),
                 sources: Arc::new(Mutex::new(sources)),
+                primary_sources: primary_source::PrimarySourceStore::open(&data_dir)
+                    .map_err(std::io::Error::other)?,
                 metrics: Mutex::new(recovery_metrics),
             });
             Ok(())
@@ -3169,6 +3279,11 @@ fn main() {
             atlas_snapshot,
             context::query_context,
             read_evidence,
+            primary_source::describe_captured_source,
+            primary_source::read_captured_source,
+            primary_source::list_retained_sources,
+            primary_source::preview_forget_source,
+            primary_source::forget_retained_source,
             export_topology,
             export_flows,
             list_flows,
@@ -5759,6 +5874,10 @@ export function App() {
                 agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
             ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
+            primary_sources: super::primary_source::PrimarySourceStore::open(
+                state_path.parent().unwrap(),
+            )
+            .unwrap(),
             sources: test_source_registry(&state_path, &roots),
             metrics: std::sync::Mutex::new(
                 super::metrics::MetricsStore::open(&state_path).unwrap(),
@@ -5862,6 +5981,10 @@ export function App() {
                 agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
             ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
+            primary_sources: super::primary_source::PrimarySourceStore::open(
+                state_path.parent().unwrap(),
+            )
+            .unwrap(),
             sources: test_source_registry(&state_path, &std::collections::BTreeSet::new()),
             metrics: std::sync::Mutex::new(
                 super::metrics::MetricsStore::open(&state_path).unwrap(),
@@ -5951,6 +6074,10 @@ export function App() {
                 agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
             ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
+            primary_sources: super::primary_source::PrimarySourceStore::open(
+                state_path.parent().unwrap(),
+            )
+            .unwrap(),
             sources: test_source_registry(&state_path, &std::collections::BTreeSet::new()),
             metrics: std::sync::Mutex::new(
                 super::metrics::MetricsStore::open(&state_path).unwrap(),
@@ -6132,6 +6259,10 @@ export function App() {
                 agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
             ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
+            primary_sources: super::primary_source::PrimarySourceStore::open(
+                state_path.parent().unwrap(),
+            )
+            .unwrap(),
             sources: test_source_registry(
                 &state_path,
                 &std::collections::BTreeSet::from([

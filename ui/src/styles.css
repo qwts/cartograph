@@ -3841,3 +3841,12 @@ button.register-row:hover {
 .proposal-history-list > li { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-width: 0; }
 .proposal-history-list code, .proposal-card code { overflow-wrap: anywhere; }
 .proposal-annotation { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Captured source and retention use independent, explicit evidence identities. */
+.captured-source { border-bottom: 1px solid var(--border, #d7dce4); padding-bottom: 1rem; margin-bottom: 1rem; }
+.captured-source select { display: block; width: 100%; margin: .5rem 0; }
+.captured-source pre, .captured-source code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.captured-source pre { max-height: 24rem; overflow: auto; }
+.source-retention { margin-top: 1.5rem; }
+.source-retention li { margin: .75rem 0; overflow-wrap: anywhere; }
+.source-retention [role="group"] { border: 1px solid var(--border, #d7dce4); padding: 1rem; margin-top: 1rem; }

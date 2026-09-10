@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import App from './App';
+import { usePrimarySourceStore, type CapturedDescription, type FactKey } from './primarySourceStore';
 import {
   useAppStore,
   type AssertionDecisionRecord,
@@ -172,6 +173,7 @@ function stagedFixture(proposalId = 'proposal:host-result', decision: 'accepted'
 let reviewRequests: Record<string, unknown>[] = [];
 let historyRequests: { limit: number; cursor: string | null }[] = [];
 let evidenceRequests: Record<string, unknown>[] = [];
+let capturedDescriptionRequests: Record<string, unknown>[] = [];
 let repoRootLookups = 0;
 
 function installFakeCore(options: {
@@ -183,11 +185,14 @@ function installFakeCore(options: {
   historyGate?: Promise<void>;
   runGate?: Promise<void>;
   unavailableEvidence?: boolean;
+  evidenceGate?: Promise<void>;
+  capturedDescriptions?: boolean;
 } = {}) {
   let staged = [...(options.staged ?? [])];
   reviewRequests = [];
   historyRequests = [];
   evidenceRequests = [];
+  capturedDescriptionRequests = [];
   repoRootLookups = 0;
   // The fake core boots with one queued job: the production surface offers
   // no job-creation control (AC-0077), so lifecycle stories act on it.
@@ -263,7 +268,20 @@ function installFakeCore(options: {
       case 'read_evidence':
         evidenceRequests.push(args as Record<string, unknown>);
         if (options.unavailableEvidence) throw new Error('registered source unavailable');
+        if (options.evidenceGate) return options.evidenceGate.then(() => ({ text: FAKE_SOURCE, window_start: 0, truncated: false }));
         return { text: FAKE_SOURCE, window_start: 0, truncated: false };
+      case 'describe_captured_source': {
+        if (!options.capturedDescriptions) return null;
+        const request = args as Record<string, unknown>;
+        capturedDescriptionRequests.push(request);
+        return {
+          fact: request.fact as FactKey,
+          receipt_id: `receipt:selection-${capturedDescriptionRequests.length}`,
+          emitted_fact_digest: 'fact-digest', source_id: 'src_fixture', repo_key: 'local',
+          ranges: [{ index: 0, path: 'src/app.ts', byte_start: SPAN_START, byte_end: SPAN_END }],
+          scope: 'primary_source_only', input_closure: 'input_closure_not_established',
+        } satisfies CapturedDescription;
+      }
       case 'export_flows':
         return '# Flow dossier\n\n## GET /users — Verified (score 1.00)\n';
       case 'list_flows':
@@ -1021,6 +1039,44 @@ export const UnavailableEvidenceNeverFallsBackToAnotherRepository: Story = {
     await expect(drawer.getByText(`bytes ${SPAN_START}–${SPAN_END}`)).toBeInTheDocument();
     await expect(drawer.getByText('workdir')).toBeInTheDocument();
     await expect(drawer.getByTestId('content-hash')).toHaveTextContent(FAKE_PROVENANCE.content_hash);
+  },
+};
+
+export const SameFactReselectionRefreshesCapturedSource: Story = {
+  // AC-0154: exercise the real App effect; same-object reselection requests a
+  // new receipt, while settling its live-source request must not restart it.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('/users')).toBeInTheDocument());
+    let releaseEvidence = () => {};
+    const evidenceGate = new Promise<void>((resolve) => { releaseEvidence = resolve; });
+    installFakeCore({ capturedDescriptions: true, evidenceGate });
+    usePrimarySourceStore.getState().clear();
+    try {
+      await userEvent.click(canvas.getByText('/users'));
+      await waitFor(() => expect(capturedDescriptionRequests).toHaveLength(1));
+      const subject = useAppStore.getState().selected?.node;
+      const firstToken = useAppStore.getState().selected?.requestVersion;
+      await userEvent.click(canvas.getByText('/users'));
+      await waitFor(() => expect(capturedDescriptionRequests).toHaveLength(2));
+      await expect(useAppStore.getState().selected?.node).toBe(subject);
+      await expect(useAppStore.getState().selected?.requestVersion).not.toBe(firstToken);
+      await expect(capturedDescriptionRequests[1]).toEqual({
+        fact: { kind: 'node', id: FAKE_ENDPOINT.id }, expectedNode: FAKE_ENDPOINT, expectedEdge: null,
+      });
+      await waitFor(() => expect(usePrimarySourceStore.getState().description?.receipt_id).toBe('receipt:selection-2'));
+      releaseEvidence();
+      await waitFor(() => expect(canvasElement.querySelector('.evidence-source mark')?.textContent).toBe(SPAN_TEXT));
+      // Let both React's passive effect turn and a following render settle;
+      // the completed live read changes selected.source, never its token.
+      await userEvent.click(canvas.getByText('Capture reference'));
+      await expect(capturedDescriptionRequests).toHaveLength(2);
+      await expect(usePrimarySourceStore.getState().description?.receipt_id).toBe('receipt:selection-2');
+    } finally {
+      releaseEvidence();
+      useAppStore.getState().clearSelection();
+      usePrimarySourceStore.getState().clear();
+    }
   },
 };
 
