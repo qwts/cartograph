@@ -5,8 +5,8 @@
 
 use crate::{SpecAssertion, provenance};
 use core_graph::rules::{
-    BranchPolarity, DependencyResolution, GuardedExitEvidence, KnownLiteral, LiteralEvidence,
-    LocalExit, SourceExpression,
+    BranchPolarity, DefinitionExpressionKind, DependencyResolution, GuardedExitEvidence,
+    KnownLiteral, LiteralEvidence, LocalExit, SourceExpression,
 };
 use core_graph::{Edge, Node};
 use core_prov::EvidenceRef;
@@ -90,6 +90,123 @@ fn reference(id: &str, visible: &BTreeMap<&str, &Node>) -> String {
         }
     } else {
         "Unavailable in this export".into()
+    }
+}
+
+fn resolution(value: &DependencyResolution, visible: &BTreeMap<&str, &Node>) -> String {
+    match value {
+        DependencyResolution::Binding {
+            binding_id,
+            declaration,
+        } => format!(
+            "Binding {} declared at {}",
+            text(binding_id),
+            source(declaration)
+        ),
+        DependencyResolution::Target { node_id } => {
+            format!("Target {}", reference(node_id, visible))
+        }
+        DependencyResolution::Unresolved { gap_id } => {
+            format!("Unresolved: {}", reference(gap_id, visible))
+        }
+    }
+}
+
+fn definition_shape(value: &DefinitionExpressionKind, visible: &BTreeMap<&str, &Node>) -> String {
+    match value {
+        DefinitionExpressionKind::Literal => "Literal syntax".into(),
+        DefinitionExpressionKind::Identifier { dependency } => {
+            format!("Identifier read; dependency {dependency}; runtime value unresolved")
+        }
+        DefinitionExpressionKind::PropertyName => "Property-name syntax".into(),
+        DefinitionExpressionKind::Member {
+            object,
+            property,
+            computed,
+            optional,
+            dependency,
+        } => format!(
+            "Member read; object {object}; property {property}; computed {computed}; optional {optional}; dependency {dependency}; runtime value unresolved"
+        ),
+        DefinitionExpressionKind::Parenthesized { value } => format!("Parentheses around {value}"),
+        DefinitionExpressionKind::Unary { operator, operand } => {
+            format!("Unary {operator:?}; operand {operand}")
+        }
+        DefinitionExpressionKind::Binary {
+            operator,
+            left,
+            right,
+        } => format!("Binary {operator:?}; left {left}; right {right}"),
+        DefinitionExpressionKind::Logical {
+            operator,
+            left,
+            right,
+        } => format!("Logical {operator:?}; left {left}; right {right}; short-circuit syntax"),
+        DefinitionExpressionKind::Unsupported { gap_id } => {
+            format!("Unsupported: {}", reference(gap_id, visible))
+        }
+    }
+}
+
+fn local_definitions(
+    output: &mut String,
+    rule: &GuardedExitEvidence,
+    visible: &BTreeMap<&str, &Node>,
+) {
+    output.push_str("\n### Local const initializers\n\nInitializer as written; value at use and business meaning are not established.\n\n");
+    let Some(definitions) = &rule.local_definitions else {
+        output.push_str(
+            "Local-definition evidence was not collected in this version 1 observation.\n\n",
+        );
+        return;
+    };
+    if definitions.is_empty() {
+        output.push_str("No local const initializer evidence was captured; completeness is not established.\n\n");
+    }
+    for (index, definition) in definitions.iter().enumerate() {
+        writeln!(
+            output,
+            "#### Definition {index}\n\nBinding: {}\n\nDeclaration source: {}\n\nUse sources:\n",
+            text(&definition.binding_id),
+            source(&definition.declaration)
+        )
+        .expect("write to string");
+        for usage in &definition.uses {
+            writeln!(output, "- {}", source(usage)).expect("write to string");
+        }
+        output.push_str("\nStored initializer:\n\n");
+        expression(output, &definition.initializer);
+        writeln!(output, "Structured expression evidence (root {}):\n\n| Node | Shape | Stored expression | Capture | Literal | Source |\n|---|---|---|---|---|---|", definition.expression.root).expect("write to string");
+        for (node_index, node) in definition.expression.nodes.iter().enumerate() {
+            writeln!(
+                output,
+                "| {} | {} | {} | {:?} | {} | {} |",
+                node_index,
+                definition_shape(&node.kind, visible),
+                text(node.expression.display.as_str()),
+                node.expression.capture,
+                literal(&node.expression.literal),
+                source(&node.expression.source)
+            )
+            .expect("write to string");
+        }
+        output.push_str(
+            "\nInitializer dependencies:\n\n| Index | Resolution | Source |\n|---|---|---|\n",
+        );
+        for (dependency_index, dependency) in definition.dependencies.iter().enumerate() {
+            writeln!(
+                output,
+                "| {} | {} | {} |",
+                dependency_index,
+                resolution(&dependency.resolution, visible),
+                source(&dependency.source)
+            )
+            .expect("write to string");
+        }
+        if definition.dependencies.is_empty() {
+            output.push_str("| — | No initializer dependencies captured; runtime value remains unestablished | — |\n");
+        }
+        output.push('\n');
     }
 }
 
@@ -186,27 +303,11 @@ pub(crate) fn inventory(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAs
         }
         output.push_str("### Dependencies\n\n| Role | Resolution | Source |\n|---|---|---|\n");
         for dependency in &rule.dependencies {
-            let resolved = match &dependency.resolution {
-                DependencyResolution::Binding {
-                    binding_id,
-                    declaration,
-                } => format!(
-                    "Binding {} declared at {}",
-                    text(binding_id),
-                    source(declaration)
-                ),
-                DependencyResolution::Target { node_id } => {
-                    format!("Target {}", reference(node_id, &visible))
-                }
-                DependencyResolution::Unresolved { gap_id } => {
-                    format!("Unresolved: {}", reference(gap_id, &visible))
-                }
-            };
             writeln!(
                 output,
                 "| {:?} | {} | {} |",
                 dependency.role,
-                resolved,
+                resolution(&dependency.resolution, &visible),
                 source(&dependency.source)
             )
             .expect("write to string");
@@ -216,6 +317,7 @@ pub(crate) fn inventory(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAs
                 "| — | No dependencies captured; completeness is not established | — |\n",
             );
         }
+        local_definitions(&mut output, &rule, &visible);
         output.push_str("\nInterpretation gaps:\n\n");
         if rule.interpretation.gap_ids.is_empty() {
             output.push_str("- No gap references supplied; behavioral interpretation remains not established.\n");
@@ -307,7 +409,7 @@ mod tests {
             }),
         };
         GuardedExitEvidence {
-            schema_version: RULE_EVIDENCE_SCHEMA_VERSION,
+            schema_version: 1,
             kind: RuleKind::GuardedExit,
             owner_id: "sym:owner".into(),
             exit_source: evidence(),
@@ -354,6 +456,7 @@ mod tests {
                 gap_ids: vec!["gap:consumer".into()],
             },
             redactions: vec![],
+            local_definitions: None,
         }
     }
 
@@ -659,6 +762,54 @@ mod tests {
             assert!(!output.content.contains("options.enabled"));
             assert_eq!(output.assertions.len(), 1);
         }
+    }
+
+    #[test]
+    fn rule_inventory_distinguishes_legacy_and_empty_definition_evidence() {
+        // AC-0170: readable v1 evidence stays absent, rather than appearing as
+        // a new v2 analysis which happened to find no eligible initializer.
+        let mut nodes = base();
+        let legacy = rule_node(
+            "rule:legacy",
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+        );
+        let original = serde_json::to_vec(&legacy).unwrap();
+        let mut current = rule_node(
+            "rule:current",
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+        );
+        let mut current_payload = payload();
+        current_payload.schema_version = RULE_EVIDENCE_SCHEMA_VERSION;
+        current_payload.local_definitions = Some(vec![]);
+        current.props["rule"] = serde_json::to_value(current_payload).unwrap();
+        nodes.extend([legacy, current]);
+        let bundle = compile_spec(&nodes, &[], &[], ExportMode::VerifiedOnly, &BTreeSet::new());
+        let output = artifact(&bundle);
+        assert!(output.content.contains(
+            "Local-definition evidence was not collected in this version 1 observation."
+        ));
+        assert!(output.content.contains(
+            "No local const initializer evidence was captured; completeness is not established."
+        ));
+        assert_eq!(
+            output
+                .content
+                .matches(
+                    "Initializer as written; value at use and business meaning are not established."
+                )
+                .count(),
+            2
+        );
+        assert_eq!(output.assertions.len(), 2);
+        assert!(output.assertions.iter().all(|assertion| assertion.summary
+            == "Guarded local exit observation; behavioral interpretation not established"));
+        assert_eq!(
+            serde_json::to_vec(nodes.iter().find(|node| node.id == "rule:legacy").unwrap())
+                .unwrap(),
+            original
+        );
     }
 
     #[test]

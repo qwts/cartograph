@@ -447,6 +447,43 @@ that no design exists. **Fail:** any conflation or tier upgrade. Retain the fixt
 identities, four record/citation pairs, and screenshots/context responses for both
 the conflicting-intent and missing-document cases.
 
+## MT-H2-03 — Cited local-definition assessment (AC-0171, T-0171)
+
+This source-only analyst procedure can use an independent review agent; record
+the reviewer kind and audit scope. It does not execute the human desktop H2
+procedures above or establish the complete domain-truth gate.
+
+1. Freeze the [local-definition review plan](evals/vendure-cart-readiness.local-definitions.review-plan.md)
+   before output, retaining the existing Vendure oracle, eight-rule denominator,
+   41 decision cases, target commit and 17-file input manifest. Verify exact input
+   membership and every file hash; keep the oracle, tests and output outside input.
+2. At the recorded implementation commit, run the source-only
+   `recover_source_rules` example twice into fresh directories. Compare graph,
+   bundle, inventory and metadata bytes; record hashes, sizes and revisions in a
+   separate local-definitions baseline. Do not install or execute target code.
+3. Have an independent reviewer compare the emitted declarations, admitted uses,
+   initializer structure and dependencies to original source. The checked-in
+   `scripts/audit-local-definitions.cjs` uses the installed UI TypeScript 6.0.3
+   parser/binder independently of the producer. Run
+   `node scripts/audit-local-definitions.cjs SOURCE_ROOT INPUT_MANIFEST OUTPUT_DIR NEW_AUDIT_JSON`
+   with the staged root, frozen manifest and each output directory; retain its
+   result and script hash. It never executes target modules or resolves imports.
+   Audit the tracking condition and mutated-array negative cases in the frozen
+   plan separately. State any syntax or semantics not covered by those checks.
+4. Retain separate score JSON and Markdown describing source-evidence gains,
+   remaining gaps, unexpected claims and review limits. Preserve historical
+   baseline/score files. A changed complete-rule score requires the entire frozen
+   oracle's proof; initializer counts alone do not satisfy a rule or decision case.
+5. Record captured-parser receipt integrity through its integration regressions
+   separately; retrospective source matching by this example is not input-closure
+   or production-capture proof. Record the assessment and artifacts on issue #398.
+
+**Pass:** input and oracle remain unchanged, both runs agree, cited gains survive
+the stated source audit and no unsupported value/business claim is counted.
+**Fail:** changed/contaminated input, unequal output, incorrect source evidence or
+inflated rule/case claims. Passing this bounded assessment leaves H2, full #385,
+curated context and the market pilot open.
+
 ## MT-H3-01 — Shared curation and stale-evidence reconciliation (AC-0108, T-0108)
 
 **Gate: H3 PLANNED. Procedure: UNEXECUTED.**

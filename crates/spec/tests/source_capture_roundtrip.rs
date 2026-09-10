@@ -2,7 +2,7 @@
 //! production ingestion or attaching verification to legacy provenance.
 
 use adapters_lang_ts::{SourceId as ParserSourceId, extract_source};
-use context_hub::{ContextSnapshot, QueryRequest};
+use context_hub::{ContextSnapshot, FactReference, QueryRequest};
 use core_graph::rules::{GuardedExitEvidence, InterpretationStatus};
 use core_graph::{GraphStore, SqliteGraphStore};
 use core_prov::EvidenceRef;
@@ -11,6 +11,280 @@ use source_capture::{
 };
 use spec::{ExportMode, compile_spec};
 use std::collections::BTreeSet;
+
+#[test]
+fn captured_local_definitions_retain_original_conditions_citations_and_export_limits() {
+    // AC-0169/AC-0170: the real captured producer's definition evidence crosses
+    // receipt validation, durable capture/graph storage, context and both export
+    // modes. This fixture does not establish complete production input closure.
+    use adapters_lang_ts::captured::{Receipt, extract_file};
+    use core_graph::GraphPatch;
+    use core_graph::source::SourceBinding;
+    use core_prov::{ConfidenceTier, Tier};
+
+    let source = concat!(
+        "// café — definition-source-comment-canary\n",
+        "function decide(item: { enabled: boolean }, ready: boolean) {\n",
+        "  const allowed = item.enabled !== false && ready;\n",
+        "  if (allowed) return false;\n",
+        "}\n",
+        "function privateValue() {\n",
+        "  const credential = \"\\x67hp_definitiontoken1234\";\n",
+        "  if (credential) return false;\n",
+        "}\n",
+        "function markup() {\n",
+        "  const label = \"<mark> harmless | text </mark>\";\n",
+        "  if (label) return false;\n",
+        "}\n",
+        "function accumulated() {\n",
+        "  const values = []; values.push(1);\n",
+        "  if (values.length) return false;\n",
+        "}\n",
+    )
+    .as_bytes();
+    let checkout = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let source_path = checkout.path().join("source.ts");
+    std::fs::write(&source_path, source).unwrap();
+    let source_id = CaptureSourceId::new("src_11111111111111111111111111111111").unwrap();
+    let repo = "local/src_11111111111111111111111111111111";
+    let capture = capture_working_tree(
+        checkout.path(),
+        &source_id,
+        &["source.ts".into()],
+        CaptureLimits::default(),
+    )
+    .unwrap();
+    std::fs::write(
+        &source_path,
+        "function replacement() { return 'later-definition-source-canary'; }",
+    )
+    .unwrap();
+    let (extracted, receipts) = extract_file(
+        capture.file("source.ts").unwrap(),
+        &ParserSourceId {
+            repo,
+            commit: "workdir",
+        },
+    )
+    .unwrap();
+    let rules: Vec<_> = extracted
+        .nodes
+        .iter()
+        .filter(|node| node.label == "BusinessRule")
+        .collect();
+    assert_eq!(rules.len(), 4);
+    for node in &rules {
+        let rule = GuardedExitEvidence::from_value(node.props["rule"].clone()).unwrap();
+        assert_eq!(rule.schema_version, 2);
+        assert_eq!(
+            rule.interpretation.execution_predicate,
+            InterpretationStatus::NotEstablished
+        );
+        assert_eq!(
+            rule.interpretation.consumer_effect,
+            InterpretationStatus::NotEstablished
+        );
+        let definitions = rule.local_definitions.as_ref().unwrap();
+        assert!(!definitions.is_empty());
+        let receipt = receipts
+            .iter()
+            .find(|receipt| receipt.matches_node(node))
+            .expect("bounded direct rule retains a whole receipt");
+        receipt.validate().unwrap();
+        for definition in definitions {
+            for evidence in std::iter::once(&definition.declaration)
+                .chain(definition.uses.iter())
+                .chain(std::iter::once(&definition.initializer.source))
+                .chain(
+                    definition
+                        .expression
+                        .nodes
+                        .iter()
+                        .map(|node| &node.expression.source),
+                )
+                .chain(
+                    definition
+                        .dependencies
+                        .iter()
+                        .map(|dependency| &dependency.source),
+                )
+            {
+                assert!(
+                    receipt
+                        .ranges()
+                        .iter()
+                        .any(|range| &range.evidence == evidence),
+                    "nested definition source is absent from producer receipt"
+                );
+            }
+            assert!(
+                receipt
+                    .ranges()
+                    .iter()
+                    .filter(|range| range.evidence == definition.initializer.source)
+                    .count()
+                    >= 2,
+                "initializer and arena-root occurrences must both remain in the inventory"
+            );
+        }
+    }
+    let observed = rules
+        .iter()
+        .find(|node| {
+            node.props["rule"]["conditions"][0]["expression"]["display"]
+                .as_str()
+                .is_some_and(|display| display.contains("allowed"))
+        })
+        .unwrap();
+    let observed = GuardedExitEvidence::from_value(observed.props["rule"].clone()).unwrap();
+    let condition = observed.conditions[0].expression.display.as_str();
+    assert!(condition.contains("allowed"));
+    assert!(
+        !condition.contains("item.enabled"),
+        "initializer was substituted into the condition"
+    );
+    assert!(
+        observed
+            .local_definitions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|definition| definition.initializer.display.as_str()
+                == "item.enabled !== false && ready")
+    );
+
+    let capture_path = storage.path().join("captures.sqlite");
+    {
+        let mut captures = CaptureStore::open(&capture_path, StoreLimits::default()).unwrap();
+        captures.persist(&capture).unwrap();
+    }
+    // Persist immutable receipt wire independently; the app's private receipt
+    // store and admission/retention guards have their own integration coverage.
+    let receipt_path = storage.path().join("receipts.json");
+    let wires: Vec<_> = receipts
+        .iter()
+        .map(|receipt| receipt.to_json().unwrap())
+        .collect();
+    std::fs::write(&receipt_path, serde_json::to_vec(&wires).unwrap()).unwrap();
+    let bindings: Vec<_> = receipts
+        .iter()
+        .map(|receipt| SourceBinding {
+            fact: receipt.fact_key().clone(),
+            repo_key: repo.into(),
+            receipt_id: receipt.id().into(),
+            emitted_fact_digest: receipt.fact_digest().into(),
+        })
+        .collect();
+    let graph_path = storage.path().join("graph.sqlite");
+    {
+        let mut graph = SqliteGraphStore::open(&graph_path).unwrap();
+        let expected = graph.read_snapshot().unwrap();
+        let patch = GraphPatch {
+            upsert_nodes: extracted.nodes.clone(),
+            upsert_edges: extracted.edges.clone(),
+            ..GraphPatch::default()
+        };
+        assert!(
+            graph
+                .apply_patch_with_source_bindings_if_snapshot_matches(
+                    &expected, &patch, repo, &bindings
+                )
+                .unwrap()
+        );
+    }
+    drop(capture);
+    std::fs::remove_file(&source_path).unwrap();
+    let graph = SqliteGraphStore::open(&graph_path).unwrap();
+    let captures = CaptureStore::open(&capture_path, StoreLimits::default()).unwrap();
+    let wires: Vec<String> = serde_json::from_slice(&std::fs::read(receipt_path).unwrap()).unwrap();
+    for wire in &wires {
+        let receipt = Receipt::from_json(wire).unwrap();
+        let binding = graph
+            .current_source_binding(receipt.fact_key())
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.receipt_id, receipt.id());
+        assert_eq!(binding.emitted_fact_digest, receipt.fact_digest());
+        assert!(wire.contains("primary_source_only"));
+        assert!(wire.contains("input_closure_not_established"));
+        for range in receipt.ranges() {
+            assert_eq!(
+                captures.read_text_span(&range.captured).unwrap().as_bytes(),
+                &source[range.evidence.byte_start as usize..range.evidence.byte_end as usize]
+            );
+        }
+    }
+    let (nodes, edges) = graph.read_snapshot().unwrap();
+    let snapshot = ContextSnapshot::new(nodes.clone(), edges.clone()).unwrap();
+    let page = snapshot
+        .query(QueryRequest {
+            labels: vec!["BusinessRule".into()],
+            ..QueryRequest::default()
+        })
+        .unwrap();
+    assert_eq!(page.facts.len(), 4);
+    assert!(page.next_cursor.is_none());
+    for fact in &page.facts {
+        let FactReference::Node { id } = &fact.reference else {
+            panic!("the rule selection returned a non-node fact");
+        };
+        let original = nodes.iter().find(|node| &node.id == id).unwrap();
+        assert_eq!(fact.properties["rule"], original.props["rule"]);
+        assert_eq!(fact.provenance.as_ref().unwrap().tier, Tier::Deterministic);
+        assert_eq!(fact.confidence_tier, ConfidenceTier::Confirmed);
+    }
+    for mode in [ExportMode::VerifiedOnly, ExportMode::BestEffort] {
+        let bundle = compile_spec(&nodes, &edges, &[], mode, &BTreeSet::new());
+        let inventory = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.file_name == "rule-evidence.md")
+            .unwrap();
+        for phrase in [
+            "Local const initializers",
+            "Initializer as written; value at use and business meaning are not established.",
+            "Use sources:",
+            "Structured expression evidence",
+            "runtime value unresolved",
+            "Initializer dependencies:",
+            "Consumer effect: not established",
+            "&lt;mark&gt; harmless \\| text &lt;/mark&gt;",
+            "Unsupported:",
+        ] {
+            assert!(
+                inventory.content.contains(phrase),
+                "inventory omitted {phrase}"
+            );
+        }
+        assert!(!inventory.content.contains("<mark>"));
+        assert!(
+            inventory
+                .content
+                .contains("item.enabled \\!== false &amp;&amp; ready")
+        );
+        assert!(inventory.content.contains("values.length"));
+        assert!(
+            inventory
+                .assertions
+                .iter()
+                .filter(|assertion| assertion.subject_kind == "BusinessRule")
+                .all(|assertion| assertion.summary
+                    == "Guarded local exit observation; behavioral interpretation not established")
+        );
+        let surfaces = serde_json::to_string(&(&nodes, &edges, &page, &bundle, &wires)).unwrap();
+        for canary in [
+            "definition-source-comment-canary",
+            "definitiontoken1234",
+            "later-definition-source-canary",
+        ] {
+            assert!(
+                !surfaces.contains(canary),
+                "withheld original source escaped a display or metadata surface"
+            );
+        }
+    }
+}
 
 #[test]
 fn retained_capture_drives_real_ts_rules_and_restart_reads_without_surface_disclosure() {

@@ -543,18 +543,27 @@ impl<'tree> Bindings<'tree> {
         index
     }
 
-    fn key(&self, mut site: TsNode<'_>, name: &str) -> Option<(usize, String)> {
+    fn key(&self, site: TsNode<'_>, name: &str) -> Option<(usize, String)> {
+        self.key_bounded(site, name, usize::MAX).ok().flatten()
+    }
+
+    fn key_bounded(
+        &self,
+        mut site: TsNode<'_>,
+        name: &str,
+        max_steps: usize,
+    ) -> Result<Option<(usize, String)>, ()> {
         let mut child = None;
         let mut decorator = false;
-        loop {
+        for _ in 0..max_steps {
             if site.kind() == "with_statement" {
-                return None;
+                return Ok(None);
             }
             let key = (site.id(), name.to_owned());
             let participates = !is_callable(site)
                 || (child.is_none_or(|child| executes_child(site, child)) && !decorator);
             if participates && self.entries.contains_key(&key) {
-                return Some(key);
+                return Ok(Some(key));
             }
             if is_callable(site) || matches!(site.kind(), "class_declaration" | "class") {
                 decorator = false;
@@ -562,8 +571,25 @@ impl<'tree> Bindings<'tree> {
                 decorator |= site.kind() == "decorator";
             }
             child = Some(site);
-            site = site.parent()?;
+            let Some(parent) = site.parent() else {
+                return Ok(None);
+            };
+            site = parent;
         }
+        Err(())
+    }
+
+    /// Bounded lexical lookup for initializer recovery. This exposes declaration
+    /// and invalidation observations, not const eligibility or before-use proof.
+    pub(super) fn definition_binding(
+        &self,
+        site: TsNode<'_>,
+        name: &str,
+    ) -> Result<Option<(TsNode<'tree>, bool)>, ()> {
+        Ok(self
+            .key_bounded(site, name, 256)?
+            .and_then(|key| self.entries.get(&key))
+            .map(|binding| (binding.declaration, binding.invalidated)))
     }
 
     pub(super) fn local_target(&self, site: TsNode<'_>, name: &str) -> Option<String> {

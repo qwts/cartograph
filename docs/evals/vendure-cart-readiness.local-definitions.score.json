@@ -1,0 +1,376 @@
+{
+  "schema": "cartograph.eval.local-definition-score.v1",
+  "schema_version": 1,
+  "benchmark_id": "vendure-cart-readiness",
+  "status": "bounded_source_only_assessment_passed_complete_rule_acceptance_not_passed",
+  "review": {
+    "reviewer": "Codex context_review",
+    "reviewer_kind": "agent",
+    "human_approval": false,
+    "date_utc": "2026-09-10",
+    "method": "Frozen-plan source comparison plus an independent TypeScript AST/lexical binder over the fixed production inputs. No target execution, imported target modules, cloud calls, source edits, or builds.",
+    "independence_limit": "Reviewer contributed the generic projection and roundtrip fixtures; this is not independent human approval. TypeScript syntax/binding checks are separate from the tree-sitter producer.",
+    "frozen_plan_path": "docs/evals/vendure-cart-readiness.local-definitions.review-plan.md",
+    "frozen_plan_sha256": "2cabc121c62bcd0b8cb002d513ec55c80c4db9c565dc3659afd999f11eb7df88"
+  },
+  "target": {
+    "repo": "vendurehq/vendure",
+    "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+    "oracle_path": "docs/evals/vendure-cart-readiness.expected.json",
+    "oracle_sha256": "dcd9833e8f9be2269a6711f8bd04119c83931f6de45e04d17d1b99da9d51295d",
+    "input_manifest_path": "docs/evals/vendure-cart-readiness.input.json",
+    "input_manifest_sha256": "96d2595907c4b1ea05991c7f0f2460df2f7b75267c486d5ee3e96c3d6ae49b83",
+    "production_input_file_count": 17,
+    "exact_membership": true,
+    "all_input_bytes_match_pinned_checkout": true,
+    "symlinks_in_input": false,
+    "file_sha256": {
+      "packages/core/src/api/resolvers/shop/shop-order.resolver.ts": "1fbcee5fda93e57498ae65d5b9987821e92ccebb89a921cdf64d4dd2134bca0d",
+      "packages/core/src/common/finite-state-machine/finite-state-machine.ts": "eb275983f0d4d35a5aa71720ff9789789cb58269512a364b95c4a1d5d3c8725f",
+      "packages/core/src/common/finite-state-machine/merge-transition-definitions.ts": "528601807a75a032184b7cc124092277a04ab9f7e9c0f5e46e8c015146cebe97",
+      "packages/core/src/common/finite-state-machine/types.ts": "b22cb7276ff11aa7a06e71a056224054c9e1dca9cd6d63db1d4347996cc653d4",
+      "packages/core/src/common/finite-state-machine/validate-transition-definition.ts": "76033e1e98e003c1c51eb9dff04f3c37bc9d724275054f3453f91911c893c05a",
+      "packages/core/src/config/catalog/multi-channel-stock-location-strategy.ts": "82fcda7a83265be981cd44849050539c433cdcd6e7a69d4c570b8c00f90675f4",
+      "packages/core/src/config/default-config.ts": "a126d8a594d6a44c4f04ab31de020965940ea624daaa29f62ece9e5eb57b77be",
+      "packages/core/src/config/order/default-order-placed-strategy.ts": "c4377652a48d55c69cbe99edb788e1130c74b9fcee30b91e9f13716071be77ad",
+      "packages/core/src/config/order/default-order-process.ts": "2de47767c358523a6620f9cfaea96c3e2f946a04dad62e8d92ea9862fd50d41f",
+      "packages/core/src/config/order/default-stock-allocation-strategy.ts": "f905be97d657c93d57905d6245657465aba6615ea868ac4b0a0dc16d01f97493",
+      "packages/core/src/service/helpers/order-state-machine/order-state-machine.ts": "444b6793f629798e1e8353072f2bb786ec67149c5266473ced5ca049fe4ce90d",
+      "packages/core/src/service/helpers/order-state-machine/order-state.ts": "99edc14942897af3ff089569e3dc4abd43f8126171e739b2a47f0b307dd295e4",
+      "packages/core/src/service/services/global-settings.service.ts": "77eb8331a07e4d00108e1fcf2af0fbc050cab96b30f1a15b7f2c838c8bb6cde8",
+      "packages/core/src/service/services/order.service.ts": "c0343924f6454cc4ac565a9adda04eb7a8ca0bd10c155c2172a27b58ab036db3",
+      "packages/core/src/service/services/product-variant.service.ts": "69dba7be26a6e5e66dee009667156edf1b67c420e1604fc4c29d2e379392b864",
+      "packages/core/src/service/services/stock-level.service.ts": "ae299bd90820dedb2deef8de5b4072d3c8a337ca8dfba93d7dee24e5070032f0",
+      "packages/core/src/service/services/stock-location.service.ts": "eedf4e4aeec0c1cd0da72fe775e3b724f224ec1186e206bdb413a85c65b06e67"
+    },
+    "expected_labels_and_review_plan_in_input": false,
+    "source_dependency_closure": "incomplete; unchanged from the frozen baseline"
+  },
+  "implementation": {
+    "commit_sha": "3b146ce0425648b447c477e3a4e8f67bc6673d8a",
+    "working_tree_clean_at_run": true,
+    "status": "Two fresh runs at the recorded committed implementation; extraction artifacts are byte-identical to the independently audited preliminary output."
+  },
+  "output": {
+    "run_id": "vendure-local-definitions-final-1",
+    "snapshot_id": "context-v1:5aff6823e95070e9ce6fd13019d0afe617c96efa4d48c3aa591f5bd1d5493c1b",
+    "scope": "source-only TypeScript adapter and stored-fact spec projection; no full ingest, flow inference, target execution or acceptance scoring",
+    "artifacts": {
+      "bundle.json": {
+        "bytes": 6481417,
+        "sha256": "5300d6e9ae5fd1d5dad77f410adfd60f2d0b554ec3bdab8a203882a95b6f2384"
+      },
+      "graph.json": {
+        "bytes": 3927045,
+        "sha256": "76b1fa5731bb70b03fb67613a00a5760f68206dec225964c99830c7c79405e56"
+      },
+      "metadata.json": {
+        "bytes": 3285,
+        "sha256": "aa0886cb0c4ee3578163b732ce9c758d2bdcf64c53890155a8a5b055de9f9a78"
+      },
+      "rule-evidence.md": {
+        "bytes": 1544228,
+        "sha256": "3713ce4a993e2ac2dcf164783be39e8bf23c2271f6beed12f67c8c802e9baac9"
+      }
+    },
+    "repeat_comparison": {
+      "status": "passed",
+      "runs_compared": 2,
+      "run_ids": [
+        "vendure-local-definitions-final-1",
+        "vendure-local-definitions-final-2"
+      ],
+      "byte_identical": true,
+      "byte_identical_to_independently_audited_preliminary_output": true
+    }
+  },
+  "score": {
+    "full_confirmed_rule_matches": {
+      "core_entry_guards": {
+        "matched": 0,
+        "expected": 5
+      },
+      "supporting_stock_rules": {
+        "matched": 0,
+        "expected": 3
+      },
+      "total": {
+        "matched": 0,
+        "expected": 8
+      }
+    },
+    "complete_business_rule_claims": 0,
+    "full_rule_precision": {
+      "status": "not_estimable",
+      "value": null
+    },
+    "decision_cases": {
+      "status": "not_executed",
+      "executed": 0,
+      "total": 41,
+      "passed": null,
+      "failed": null
+    },
+    "acceptance_result": "not_passed",
+    "reason": "Initializer syntax adds local source evidence, not complete execution predicates, consumer effects, full dependency closure, or executed cases."
+  },
+  "local_evidence": {
+    "guarded_exit_observations": 139,
+    "observations_with_local_definitions": 101,
+    "observations_without_local_definitions": 38,
+    "definition_records": 117,
+    "distinct_definition_bindings": 99,
+    "arena_nodes": 250,
+    "initializer_dependency_occurrences": 70,
+    "unsupported_arena_nodes": 106,
+    "definitions_with_unsupported_root": 102,
+    "original_rule_ids_and_fields_unchanged": [
+      "conditions",
+      "effect",
+      "exit_source",
+      "owner_id",
+      "source_order"
+    ],
+    "original_rule_ids_unchanged": true,
+    "all_rule_nodes_producing_tier": "Deterministic",
+    "all_rule_nodes_source_confidence": "Confirmed",
+    "all_execution_predicates": "not_established",
+    "all_consumer_effects": "not_established",
+    "qualification_banner_occurrences": 139,
+    "metric_kind": "local_source_evidence_presence_not_complete_rule_recall"
+  },
+  "citation_audit": {
+    "tool": "TypeScript 6.0.3 AST and lexical binder; no target code execution",
+    "scope": "All new definition records and nested citation/expression occurrences in both final graphs. Counts retain repeated occurrences across different rules.",
+    "counts": {
+      "rules": 139,
+      "definitions": 117,
+      "uses": 135,
+      "source_refs": 723,
+      "expressions": 367,
+      "complete_syntax_expressions": 339,
+      "redacted_expressions": 2,
+      "unsupported_expressions": 26,
+      "arena_nodes": 250,
+      "initializer_dependencies": 70,
+      "admitted_uses_symbol_resolved": 135,
+      "admitted_uses_order_verified": 135,
+      "unsupported_nodes": 106,
+      "explicit_gap_links_checked": 142
+    },
+    "explicit_gap_links_checked": 142,
+    "mismatches_found": 0,
+    "issues": [],
+    "checks": [
+      "Every cited repo/commit/path belongs to the unchanged 17-file input and each byte span is valid UTF-8 source syntax.",
+      "All 117 definitions match simple const declaration/initializer AST spans in the same actual callable as their rule exit.",
+      "All 135 admitted uses resolve to the recorded declaration under the independent lexical binder and meet statement/block order; each is justified by a recorded binding dependency.",
+      "All 250 arena shapes, child edges, exact operators, member computed/optional flags, and root/initializer equality agree with the independent AST.",
+      "All 34 initializer Binding dependencies match original-site lexical declarations; destructured bindings correctly cite their containing declaration/parameter rather than becoming admitted local definitions.",
+      "All 339 complete-syntax expression displays equal their exact raw source spans. Two redacted and 26 unsupported expression occurrences remain explicitly qualified; no global secret-detection completeness claim.",
+      "Every new Unsupported or unresolved arena/member dependency points to an existing explicit Gap and a rule DEPENDS_ON link."
+    ],
+    "script_path": "scripts/audit-local-definitions.cjs",
+    "script_sha256": "2a1d56b8b8b1944033715d5982464455a1a6f0f628c43688157a404e7d6f6822",
+    "result_path": "docs/evals/vendure-cart-readiness.local-definitions.audit.json",
+    "result_sha256": "6ef5c1997c9f229f3170cb1e70828f73956305b9d9e58476220e0a71ebc05df2",
+    "both_final_audits_byte_identical": true,
+    "negative_control": {
+      "changed_operator_rejected": true,
+      "missing_gap_edge_rejected": true,
+      "changed_display_rejected": true,
+      "source_canary_absent_from_diagnostics": true
+    }
+  },
+  "positive_review": {
+    "expected_rule_id": "VEN-READY-06",
+    "full_confirmed_match": false,
+    "observation_id": "rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869",
+    "owner_id": "sym:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#ProductVariantService.getSaleableStockLevel",
+    "original_condition": {
+      "capture": "complete_syntax",
+      "display": "(inventoryNotTracked)",
+      "literal": null,
+      "source": {
+        "byte_end": 13854,
+        "byte_start": 13833,
+        "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+        "path": "packages/core/src/service/services/product-variant.service.ts",
+        "repo": "vendurehq/vendure"
+      },
+      "syntax_kind": "parenthesized_expression"
+    },
+    "local_return": {
+      "kind": "return",
+      "value": {
+        "capture": "complete_syntax",
+        "display": "Number.MAX_SAFE_INTEGER",
+        "literal": null,
+        "source": {
+          "byte_end": 13899,
+          "byte_start": 13876,
+          "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+          "path": "packages/core/src/service/services/product-variant.service.ts",
+          "repo": "vendurehq/vendure"
+        },
+        "syntax_kind": "member_expression"
+      }
+    },
+    "definition_binding_id": "binding:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#declaration@13652",
+    "declaration": {
+      "byte_end": 13820,
+      "byte_start": 13652,
+      "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+      "path": "packages/core/src/service/services/product-variant.service.ts",
+      "repo": "vendurehq/vendure"
+    },
+    "uses": [
+      {
+        "byte_end": 13853,
+        "byte_start": 13834,
+        "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+        "path": "packages/core/src/service/services/product-variant.service.ts",
+        "repo": "vendurehq/vendure"
+      }
+    ],
+    "initializer": {
+      "capture": "complete_syntax",
+      "display": "variant.trackInventory === GlobalFlag.FALSE ||\n            (variant.trackInventory === GlobalFlag.INHERIT && trackInventory === false)",
+      "literal": null,
+      "source": {
+        "byte_end": 13820,
+        "byte_start": 13686,
+        "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+        "path": "packages/core/src/service/services/product-variant.service.ts",
+        "repo": "vendurehq/vendure"
+      },
+      "syntax_kind": "binary_expression"
+    },
+    "arena_nodes": 20,
+    "initializer_dependencies": 9,
+    "observed_improvement": "The initializer now retains variant.trackInventory === GlobalFlag.FALSE || (variant.trackInventory === GlobalFlag.INHERIT && trackInventory === false) as typed source syntax, including strict equality, disjunction, grouping, conjunction and known literal false. The if condition stays inventoryNotTracked.",
+    "unestablished": [
+      "GlobalFlag import identity does not establish enum-property values.",
+      "Property reads remain runtime_value_unknown.",
+      "trackInventory resolves to the original awaited/destructured settings declaration, which is not an admitted initializer definition or established runtime/configuration value.",
+      "No numeric value or builtin identity is established for Number.MAX_SAFE_INTEGER.",
+      "The original return remains a local observation; reachability, configured consumer behavior, and complete rule meaning are not established."
+    ],
+    "gap_ids": [
+      "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:consumer_semantics_unknown",
+      "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:definition_binding_unsupported",
+      "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:definition_scope_unsupported",
+      "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:execution_predicate_unknown",
+      "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:runtime_value_unknown",
+      "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:unresolved_binding"
+    ]
+  },
+  "negative_reviews": [
+    {
+      "case": "Mutated stock collection",
+      "observation_id": "rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034",
+      "definition_binding_id": "binding:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#declaration@13412",
+      "declaration": {
+        "byte_end": 13472,
+        "byte_start": 13412,
+        "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+        "path": "packages/core/src/config/order/default-order-process.ts",
+        "repo": "vendurehq/vendure"
+      },
+      "initializer": {
+        "capture": "complete_syntax",
+        "display": "[]",
+        "literal": null,
+        "source": {
+          "byte_end": 13472,
+          "byte_start": 13470,
+          "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+          "path": "packages/core/src/config/order/default-order-process.ts",
+          "repo": "vendurehq/vendure"
+        },
+        "syntax_kind": "array"
+      },
+      "uses": [
+        {
+          "byte_end": 13999,
+          "byte_start": 13962,
+          "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+          "path": "packages/core/src/config/order/default-order-process.ts",
+          "repo": "vendurehq/vendure"
+        }
+      ],
+      "result": "The original [] initializer is retained with Unsupported arena root and explicit local_definition_unsupported Gap. The later .push inside the loop is visible in pinned source; the output retains mutation and loop gaps. The original .length condition is not replaced by zero or a constant outcome.",
+      "full_confirmed_match": false,
+      "gap_ids": [
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:consumer_semantics_unknown",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:definition_binding_unsupported",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:definition_scope_unsupported",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:execution_predicate_unknown",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:local_definition_unsupported",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:loop_dependency",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:mutation",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:preceding_exit",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:redacted_expression",
+        "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:unresolved_call"
+      ]
+    },
+    {
+      "case": "Awaited and destructured settings",
+      "result": "A binding citation to the original destructured await is retained, with binding/scope limitations. No runtime configuration value or settings initializer expansion is claimed."
+    },
+    {
+      "case": "Enum property values",
+      "result": "GlobalFlag.FALSE and GlobalFlag.INHERIT remain property reads with unresolved runtime dependency; the scalar false literal is preserved separately."
+    },
+    {
+      "case": "Unguarded tracked-stock arithmetic",
+      "source": {
+        "repo": "vendurehq/vendure",
+        "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+        "path": "packages/core/src/service/services/product-variant.service.ts",
+        "byte_start": 14227,
+        "byte_end": 14294
+      },
+      "result": "No new BusinessRule observation was emitted for the unguarded stockOnHand - stockAllocated - effectiveOutOfStockThreshold return; absence is not an absent-feature claim."
+    },
+    {
+      "case": "Configured consumer behavior",
+      "result": "All 139 observations retain consumer_effect and execution_predicate not_established. The source-only benchmark does not prove configured composition, first-rejection precedence, or consumer actions."
+    }
+  ],
+  "unexpected_claims": {
+    "actionable_false_claims_found_in_audited_scope": 0,
+    "missing_required_citations_found": 0,
+    "exhaustive_domain_precision_audit": false
+  },
+  "limits": [
+    "No target code or frozen decision case executed; all 41 remain unexecuted.",
+    "This audit checks local syntax/citations/lexical bindings, not runtime values, mutable object state, behavior of imported calls or full business rules.",
+    "The previous six relevant local anchors and all original conditions/effects remain unchanged; unrelated graph facts did not receive a new full semantic audit.",
+    "No complete proof of secrecy for arbitrary upstream source or unsupported expression internals is inferred from these source checks. Generic canary and redaction tests are a separate implementation gate.",
+    "No maximum-bound stress case is established by this target: observed maxima are 4 definitions, 20 arena nodes, 9 initializer dependencies and 22483 compact UTF-8 payload bytes per rule. Generic cap tests are separate.",
+    "The ordinary extraction benchmark does not produce or verify durable captured-source receipts. Retrospective matching input bytes is not complete producer input closure or a source attestation."
+  ],
+  "bounded_procedure": {
+    "id": "MT-H2-03",
+    "result": "passed",
+    "complete_H2_gate": "not_passed"
+  },
+  "release_recheck": {
+    "cartograph_commit": "5e4eb4ba69b6fa67d150d4b2af3a05d16bc7144f",
+    "application_version": "0.12.0",
+    "runs": [
+      "vendure-local-definitions-final-3",
+      "vendure-local-definitions-final-4"
+    ],
+    "wall_seconds": [
+      27.26,
+      13.48
+    ],
+    "all_four_artifacts_byte_identical_to_scored_runs": true,
+    "both_audits_byte_identical_to_recorded_audit": true,
+    "input_membership_and_hashes_unchanged": true,
+    "oracle_unchanged": true,
+    "working_tree_clean_at_run": true
+  }
+}

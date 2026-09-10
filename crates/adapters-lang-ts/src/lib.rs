@@ -2991,6 +2991,7 @@ pub mod captured;
 pub mod chrome_messaging;
 pub(crate) mod const_resolution;
 pub mod indexeddb;
+mod local_definitions;
 pub(crate) mod resolution;
 mod rule_evidence;
 mod source_expression;

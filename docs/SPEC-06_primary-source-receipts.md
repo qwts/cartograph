@@ -157,3 +157,10 @@ publication, inspection and retention contract, not a standalone receipt API.
 
 Reserved T-0148–0155 trace parser invocation, receipt integrity, atomic association,
 production ownership, captured inspection, retention, UI and compatibility.
+
+## Local-definition extension
+
+[SPEC-08](SPEC-08_local-rule-definitions.md), tracked in #398, specifies v2
+producer receipts for new local initializer citations while retaining the exact
+v1 receipt contract and immutable history. Its expanded citations do not change
+this specification's primary-source or incomplete-input-closure boundaries.

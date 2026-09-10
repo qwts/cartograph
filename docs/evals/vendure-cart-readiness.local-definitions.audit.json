@@ -1,0 +1,26 @@
+{
+  "status": "source_syntax_binding_checks_passed",
+  "scope": "Source-only syntax and lexical binding; no runtime, complete input closure, secrecy, or captured-source receipt proof.",
+  "typescript_version": "6.0.3",
+  "staged_source_files": 17,
+  "staged_source_bytes": 270721,
+  "counts": {
+    "rules": 139,
+    "definitions": 117,
+    "uses": 135,
+    "source_refs": 723,
+    "expressions": 367,
+    "complete_syntax_expressions": 339,
+    "redacted_expressions": 2,
+    "unsupported_expressions": 26,
+    "arena_nodes": 250,
+    "initializer_dependencies": 70,
+    "admitted_uses_symbol_resolved": 135,
+    "admitted_uses_order_verified": 135,
+    "unsupported_nodes": 106,
+    "explicit_gap_links_checked": 142
+  },
+  "issue_count": 0,
+  "diagnostics_truncated": false,
+  "issues": []
+}

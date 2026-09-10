@@ -14,7 +14,17 @@ use core_prov::EvidenceRef;
 use serde::{Deserialize, Serialize};
 
 /// Supported version of the source-rule payload, independent of graph storage.
-pub const RULE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+pub const RULE_EVIDENCE_SCHEMA_VERSION: u32 = 2;
+
+mod definitions;
+pub use definitions::{
+    BinaryOperator, DefinitionDependency, DefinitionExpression, DefinitionExpressionKind,
+    DefinitionExpressionNode, LocalDefinition, LogicalOperator, MAX_DEFINITION_CHAIN_DEPTH,
+    MAX_DEFINITION_EXPRESSION_DEPTH, MAX_DEFINITION_NODES, MAX_INITIALIZER_DEPENDENCIES,
+    MAX_LOCAL_DEFINITIONS, MAX_RULE_PAYLOAD_BYTES, UnaryOperator,
+};
+#[cfg(test)]
+mod definition_tests;
 
 /// An observed guarded local exit, with explicitly incomplete interpretation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +50,14 @@ pub struct GuardedExitEvidence {
     pub interpretation: Interpretation,
     /// Withheld source locations and fixed reasons, never original secret text.
     pub redactions: Vec<SourceRedaction>,
+    /// Cited initializer evidence; absent for v1, required (possibly empty) for v2.
+    /// A present null is rejected rather than normalized to absent history.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "definitions::present_definitions"
+    )]
+    pub local_definitions: Option<Vec<LocalDefinition>>,
 }
 
 /// Supported source observation kinds.
@@ -292,6 +310,18 @@ pub enum RedactionReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleGapReason {
+    /// Initializer syntax has no supported structural representation.
+    LocalDefinitionUnsupported,
+    /// A local definition or traversal budget was exhausted.
+    DefinitionLimit,
+    /// A read's runtime value has not been established.
+    RuntimeValueUnknown,
+    /// Structured declaration-before-use proof was unavailable.
+    DefinitionOrderUnproven,
+    /// Definition and use cross an unsupported execution/control scope.
+    DefinitionScopeUnsupported,
+    /// The binding is outside the admitted directly initialized const subset.
+    DefinitionBindingUnsupported,
     /// Parser recovery could not produce a valid cited source observation.
     UnsupportedRuleSyntax,
     /// A condition, expression, rule or per-file analysis bound was reached.
@@ -343,6 +373,12 @@ pub enum RuleValidationError {
     /// A withheld literal cannot claim to have retained complete syntax.
     #[error("withheld source-rule literal claims complete syntax")]
     InconsistentCapture,
+    /// A bounded v2 collection, text, depth or serialized-size limit was exceeded.
+    #[error("source-rule limit exceeded: {0}")]
+    Limit(&'static str),
+    /// A v2 arena, declaration or reference is internally inconsistent.
+    #[error("invalid source-rule definition: {0}")]
+    InvalidDefinition(&'static str),
 }
 
 impl GuardedExitEvidence {
@@ -373,6 +409,26 @@ impl GuardedExitEvidence {
                 visitor(declaration);
             }
         }
+        if let Some(definitions) = &mut self.local_definitions {
+            for definition in definitions {
+                visitor(&mut definition.declaration);
+                for usage in &mut definition.uses {
+                    visitor(usage);
+                }
+                visitor(&mut definition.initializer.source);
+                for node in &mut definition.expression.nodes {
+                    visitor(&mut node.expression.source);
+                }
+                for dependency in &mut definition.dependencies {
+                    visitor(&mut dependency.source);
+                    if let DependencyResolution::Binding { declaration, .. } =
+                        &mut dependency.resolution
+                    {
+                        visitor(declaration);
+                    }
+                }
+            }
+        }
         for redaction in &mut self.redactions {
             visitor(&mut redaction.source);
         }
@@ -384,6 +440,20 @@ impl GuardedExitEvidence {
     /// unexpected input values. Deserializing with serde directly is possible,
     /// but callers must then invoke [`Self::validate`] before using the fact.
     pub fn from_value(value: serde_json::Value) -> Result<Self, RuleValidationError> {
+        let version = value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|version| u32::try_from(version).ok())
+            .ok_or(RuleValidationError::MalformedPayload)?;
+        match version {
+            1 => {
+                if value.get("local_definitions").is_some() {
+                    return Err(RuleValidationError::MalformedPayload);
+                }
+            }
+            2 => definitions::preflight(&value)?,
+            other => return Err(RuleValidationError::UnsupportedVersion(other)),
+        }
         let rule: Self =
             serde_json::from_value(value).map_err(|_| RuleValidationError::MalformedPayload)?;
         rule.validate()?;
@@ -395,8 +465,11 @@ impl GuardedExitEvidence {
     /// This does not verify sanitization, cited source contents, graph target
     /// existence, scope membership, or behavioral correctness.
     pub fn validate(&self) -> Result<(), RuleValidationError> {
-        if self.schema_version != RULE_EVIDENCE_SCHEMA_VERSION {
-            return Err(RuleValidationError::UnsupportedVersion(self.schema_version));
+        match self.schema_version {
+            1 if self.local_definitions.is_none() => {}
+            1 => return Err(RuleValidationError::MalformedPayload),
+            2 => definitions::collection_bounds(self)?,
+            version => return Err(RuleValidationError::UnsupportedVersion(version)),
         }
         identity(&self.owner_id, "owner_id")?;
         span(&self.exit_source, "exit_source")?;
@@ -433,6 +506,9 @@ impl GuardedExitEvidence {
         }
         for redaction in &self.redactions {
             span(&redaction.source, "redaction.source")?;
+        }
+        if self.schema_version == 2 {
+            definitions::validate(self)?;
         }
         Ok(())
     }
@@ -481,7 +557,8 @@ mod tests {
 
     fn rule() -> GuardedExitEvidence {
         GuardedExitEvidence {
-            schema_version: RULE_EVIDENCE_SCHEMA_VERSION,
+            schema_version: 1,
+            local_definitions: None,
             kind: RuleKind::GuardedExit,
             owner_id: "sym:example/project@src/process.ts#run".into(),
             exit_source: source(100, 113),
@@ -566,10 +643,10 @@ mod tests {
         // AC-0122/AC-0125 groundwork: a reader cannot silently accept a future
         // schema or upgrade a source observation through an unknown wire value.
         let mut wire = serde_json::to_value(rule()).unwrap();
-        wire["schema_version"] = 2.into();
+        wire["schema_version"] = 3.into();
         assert_eq!(
             GuardedExitEvidence::from_value(wire),
-            Err(RuleValidationError::UnsupportedVersion(2))
+            Err(RuleValidationError::UnsupportedVersion(3))
         );
         let mut wire = serde_json::to_value(rule()).unwrap();
         wire["interpretation"]["consumer_effect"] = "established_rejection".into();

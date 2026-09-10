@@ -37,6 +37,8 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0028 | AC-0148..0155 | adapters-lang-ts, source-capture, core-graph, app, ui | H3 | — | ADR-0024 | T-0148..0155 |
 | US-0029 | AC-0156..0163 | app (durable Windows NTFS job storage), ui | post-M10 | — | ADR-0025 | T-0156..0163 |
 
+| US-0030 | AC-0164..0171 | adapters-lang-ts, core-graph, spec, context-hub, app, ui | H2 | — | ADR-0020, ADR-0024, ADR-0026 | T-0164..0171 |
+
 ## Coverage assertions
 - Every Must-priority US is anchored to an original milestone, post-M10 work, or a SPEC-01 delivery gate; a milestone label alone does not establish completion.
 - Every AC has at least one test ID reserved (T-XXXX), to be authored alongside the AC (test-trace mapping standard).
@@ -71,3 +73,5 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0024 | Producer receipts and explicit current source associations |
 
 | ADR-0025 | Execution ownership and attempt-fenced job transitions |
+
+| ADR-0026 | Local definition evidence without value substitution |
