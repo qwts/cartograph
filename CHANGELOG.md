@@ -1,5 +1,21 @@
 # cartograph
 
+## 0.11.0
+
+### Minor Changes
+
+- ff6a79c: Persist agent proposals before reporting success and resume their review after restart. Reviews bind to an immutable staged result and retain Agentic/InferredWeak confidence. Accepted results await shared-context reconciliation, and current working-tree evidence remains explicitly unverified against its cited revision.
+- cc2ac87: Add bounded, revision-bound recovered-context queries for the desktop app and future agent integrations, preserving provenance and explicit pagination with nodes and edges read from one database snapshot.
+  
+  Reject proposal annotations that replay supplied source spans, summaries or substantial whitespace-normalized excerpts before writing durable records.
+- cc2ac87: Recover cited TypeScript guarded returns and throws with correct lexical owners, sanitized source expressions, and explicit dependency and interpretation gaps. Add a source rule evidence inventory to the Spec Workbench and exports. Computed callable names are explicitly omitted and their runtime keys marked unresolved. Nested Nest controller endpoints retain their actual lexical handler identities, and malformed guarded exits produce explicit omission gaps. These observations preserve local syntax without claiming complete business-rule recovery.
+  
+  Repositories require re-ingestion after upgrade: the disposable graph cache is invalidated so old ambiguous ownership links cannot remain visible.
+
+### Patch Changes
+
+- e95854e: Keep Atlas, specification, flow, topology, findings, metrics and semantic-preview graph reads consistent when another application process writes to the graph. Each projection now reads one database revision while preserving its existing label selection; graph counts also come from one coherent query.
+
 ## 0.10.3
 
 ### Patch Changes
