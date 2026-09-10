@@ -19,6 +19,14 @@ exists, not that its AC or delivery gate has passed.
 
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
+| T-0172 | AC-0172 | reserved | — | #401 / SPEC-09 implementation; H3 remains open |
+| T-0173 | AC-0173 | reserved | — | #401 / SPEC-09 implementation; H3 remains open |
+| T-0174 | AC-0174 | reserved | — | #401 / SPEC-09 implementation; H3 remains open |
+| T-0175 | AC-0175 | reserved | — | #401 / SPEC-09 implementation; H3 remains open |
+| T-0176 | AC-0176 | reserved | — | #401 / SPEC-09 implementation; H3 remains open |
+| T-0177 | AC-0177 | reserved | — | #401 / SPEC-09 implementation; H3 remains open |
+| T-0178 | AC-0178 | reserved | — | #401 / SPEC-09 implementation; H3 remains open |
+| T-0179 | AC-0179 | reserved | — | #401 / SPEC-09 implementation; H3 remains open |
 | T-0164 | AC-0164 | rust | core-graph::local_definition_versions_preserve_v1_and_reject_null_or_unknown_contracts, adapters-lang-ts::receipt_v1_wire_identity_and_order_remain_unchanged, adapters-lang-ts::legacy_guarded_exit_receipt_keeps_all_v1_roles_and_rejects_v2_rules | Exact v1 meaning/bytes and explicit v2 version/field contract |
 | T-0165 | AC-0165 | rust | adapters-lang-ts::local_const_definitions_recover_original_predicate_structure_and_reads, adapters-lang-ts::local_definitions_reject_tdz_control_captures_and_non_const_bindings, adapters-lang-ts::local_definition_dependencies_resolve_at_original_read_before_later_shadow | Same-callable const eligibility, original-read scope, before-use proof and explicit non-admitted binding gaps |
 | T-0166 | AC-0166 | rust | adapters-lang-ts::local_definition_operators_preserve_closed_source_forms_without_evaluation, adapters-lang-ts::local_definition_unsupported_and_mutated_collection_values_remain_unknown, core-graph::local_definition_arenas_reject_incoherent_structure_and_links | Cited expression arenas retain operators and grouping without substitution, runtime values or invented dependency links |
