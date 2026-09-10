@@ -28,6 +28,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0022 | AC-0110..0114 | context-hub, agents, app, ui | H4–H5 | — | ADR-0019 | T-0110..0114 |
 | US-0023 | AC-0115..0118 | context-hub, agents, app, ui | H6–H7 | — | ADR-0019 | T-0115..0118 |
 | US-0024 | AC-0119..0125 | adapters-lang-ts (lexical handlers and fail-closed syntax), core-graph, core-prov, core-redact, spec, context-hub, app | H2 | — | ADR-0003, ADR-0019, ADR-0020 | T-0119..0125 |
+| US-0025 | AC-0126..0131 | agents (bounded replay admission), core-graph, app, ui | H3 | — | ADR-0019, ADR-0021 | T-0126..0131 |
 
 ## Coverage assertions
 - Every Must-priority US is anchored to an original milestone, post-M10 work, or a SPEC-01 delivery gate; a milestone label alone does not establish completion.
@@ -57,3 +58,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0018 | Multi-platform port scope: Windows now, mobile not pursued |
 | ADR-0019 | Domain context hub with shared reads and MCP/ACP orchestration |
 | ADR-0020 | Source rule evidence and deterministic redaction |
+| ADR-0021 | Durable host-owned proposal staging before curated projection |

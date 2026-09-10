@@ -325,13 +325,21 @@ export const ClassEscalatesAsOneBatch: Story = {
     flowGapIds: Array.from({ length: 40 }, (_, index) => `gap:call-${index}`),
     onEscalateClass: fn(async (gapIds: string[]) => ({
       proposals: gapIds.slice(0, 2).map((gapId) => ({
+        proposal_id: `proposal:${gapId}`,
+        review_revision: 0,
+        review_decision: null,
+        review_note: null,
+        evidence_binding: 'working_tree_unverified' as const,
+        context_status: 'awaiting_reconciliation' as const,
+        created_at: '2026-09-10T12:00:00Z',
+        reviewed_at: null,
         gap_id: gapId,
         source_id: 'sym:App#import',
         target_id: 'sym:util#helper',
         edge_label: 'CALLS',
         annotation: 'names align',
         basis_hash: `basis-${gapId}`,
-        provenance: gapProvenance('Agentic'),
+        provenance: { ...gapProvenance('Agentic'), confidence_tier: 'InferredWeak' as const },
       })),
       failures: [{ gap_id: gapIds[2] ?? 'gap:none', error: 'no candidates' }],
       cancelled: false,
@@ -404,5 +412,26 @@ export const CleanRegister: Story = {
     await expect(canvas.getByText('None recorded.')).toBeInTheDocument();
     await userEvent.click(canvas.getByRole('tab', { name: 'Drift' }));
     await expect(canvas.getByText('No ADR/code conflicts recovered.')).toBeInTheDocument();
+  },
+};
+
+export const FailedBatchReviewKeepsProposalPending: Story = {
+  // AC-0129: a failed host write keeps the instance reviewable and displays the failure.
+  args: {
+    ...ClassEscalatesAsOneBatch.args,
+    onDecideProposal: fn(async () => false),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const classes = within(canvas.getByLabelText('Gap classes'));
+    await userEvent.click(classes.getAllByRole('button', { expanded: false })[0]);
+    await userEvent.click(classes.getByRole('button', { name: /Escalate class locally \(40 instances\)/ }));
+    const proposals = within(await canvas.findByRole('list', { name: 'Staged class proposals' }));
+    await expect(proposals.getAllByText('Inferred (weak)')).toHaveLength(2);
+    await userEvent.click(proposals.getAllByRole('button', { name: 'Accept' })[0]);
+    await expect(args.onDecideProposal).toHaveBeenCalledTimes(1);
+    await expect(await canvas.findByRole('alert')).toHaveTextContent('Review was not saved');
+    await expect(proposals.getAllByRole('button', { name: 'Accept' })).toHaveLength(2);
+    await expect(proposals.getAllByRole('button', { name: 'Accept' })[0]).toBeEnabled();
   },
 };

@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+pub mod staging;
+pub use staging::{
+    CandidateBasis, ContextStatus, EvidenceBasis, EvidenceBinding, ProposalStore, StagedProposal,
+    StagedProposalPage, StagingError, TaskBasisManifest,
+};
+
 /// Stable extractor identifier carried by every T3 proposal.
 pub const AGENT_EXTRACTOR_ID: &str = "t3.agent-broker";
 

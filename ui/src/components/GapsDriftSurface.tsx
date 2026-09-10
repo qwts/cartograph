@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { GROUP_THRESHOLD, groupGapClasses, nextTier, type GapClass } from '../gapClasses';
 import { HelpTip } from './HelpTip';
+import { TierBadge } from './TierBadge';
+import { ProposalHistory, type ProposalHistoryProps } from './ProposalHistory';
 import type {
-  AgentProposal,
+  StagedProposal,
   ClassEscalationOutcome,
   FindingsSummary,
   RegisterFinding,
@@ -22,6 +24,7 @@ export interface GapsDriftSurfaceProps {
   /** Open a gap's evidence/resolution view (the Resolution Strategy modal
    *  takes over this seam with #113). */
   onOpenGap: (assertion: SpecAssertion) => void;
+  proposalHistory?: ProposalHistoryProps;
   /** Gap ids that truncate traced flows (#167): flow-blocking classes rank
    *  first. */
   flowGapIds?: string[];
@@ -29,12 +32,12 @@ export interface GapsDriftSurfaceProps {
   onEscalateClass?: (gapIds: string[]) => Promise<ClassEscalationOutcome | null>;
   /** Record accept/reject for one staged proposal from a batch run. */
   onDecideProposal?: (
-    proposal: AgentProposal,
+    proposal: StagedProposal,
     decision: 'accepted' | 'rejected',
   ) => Promise<boolean>;
 }
 
-type Tab = 'lanes' | 'tiers' | 'drift';
+type Tab = 'lanes' | 'tiers' | 'drift' | 'proposals';
 
 /** Stable presentational gap ids (G-01…) over the register's sorted order. */
 function gapId(index: number): string {
@@ -79,13 +82,15 @@ function GapClassRow({
   onOpenGap: (assertion: SpecAssertion) => void;
   onEscalateClass?: (gapIds: string[]) => Promise<ClassEscalationOutcome | null>;
   onDecideProposal?: (
-    proposal: AgentProposal,
+    proposal: StagedProposal,
     decision: 'accepted' | 'rejected',
   ) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState(CLASS_PAGE);
   const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<ClassEscalationOutcome | null>(null);
   const [decided, setDecided] = useState<ReadonlyMap<string, 'accepted' | 'rejected'>>(new Map());
 
@@ -93,20 +98,35 @@ function GapClassRow({
     if (!onEscalateClass || running) return;
     setRunning(true);
     setOutcome(null);
+    setError(null);
     setDecided(new Map());
     try {
-      setOutcome(await onEscalateClass(gapClass.members.map((member) => member.subject_id)));
+      const result = await onEscalateClass(gapClass.members.map((member) => member.subject_id));
+      if (!result) throw new Error('No saved class result was returned.');
+      setOutcome(result);
+    } catch (e) {
+      setError(String(e));
     } finally {
       setRunning(false);
     }
   };
-  const decide = async (proposal: AgentProposal, decision: 'accepted' | 'rejected') => {
-    if (!onDecideProposal) return;
-    if (await onDecideProposal(proposal, decision)) {
-      setDecided((map) => new Map([...map, [proposal.gap_id, decision]]));
+  const decide = async (proposal: StagedProposal, decision: 'accepted' | 'rejected') => {
+    if (!onDecideProposal || reviewing) return;
+    setReviewing(proposal.proposal_id);
+    setError(null);
+    try {
+      if (!await onDecideProposal(proposal, decision)) {
+        throw new Error('Review was not saved. Refresh proposal history before retrying.');
+      }
+      setDecided((map) => new Map([...map, [proposal.proposal_id, decision]]));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setReviewing(null);
     }
   };
-  const undecided = outcome?.proposals.filter((proposal) => !decided.has(proposal.gap_id)) ?? [];
+  const undecided = outcome?.proposals.filter((proposal) =>
+    proposal.review_decision === null && !decided.has(proposal.proposal_id)) ?? [];
   // Only Gap-node classes can batch-escalate: the runner assembles tasks
   // from real Gap nodes, while an edge gap resolves per instance from its
   // own evidence (#194 review).
@@ -143,12 +163,13 @@ function GapClassRow({
                   : `Escalate class locally (${gapClass.members.length} instances)`}
               </button>
               <span className="muted">
-                One durable job, one proposal per instance — staged only, nothing joins the
-                graph unaccepted. Cloud escalation stays per-instance (consent binds to one
+                One durable job, one proposal per instance. Accepted reviews await context
+                reconciliation; source binding remains unverified. Cloud escalation stays per-instance (consent binds to one
                 exact payload).
               </span>
             </div>
           )}
+          {error && <p className="error-text" role="alert">{error}</p>}
           {outcome && (
             <div className="class-escalation-outcome" role="status">
               <p>
@@ -159,14 +180,15 @@ function GapClassRow({
               {undecided.length > 0 && (
                 <ul className="class-proposals" aria-label="Staged class proposals">
                   {undecided.map((proposal) => (
-                    <li key={proposal.gap_id}>
+                    <li key={proposal.proposal_id}>
                       <span className="register-text">
                         {proposal.source_id} —{proposal.edge_label}→ {proposal.target_id}
                       </span>
-                      <button type="button" onClick={() => void decide(proposal, 'accepted')}>
+                      <TierBadge tier={proposal.provenance.confidence_tier} />
+                      <button type="button" disabled={reviewing !== null} onClick={() => void decide(proposal, 'accepted')}>
                         Accept
                       </button>
-                      <button type="button" onClick={() => void decide(proposal, 'rejected')}>
+                      <button type="button" disabled={reviewing !== null} onClick={() => void decide(proposal, 'rejected')}>
                         Reject
                       </button>
                     </li>
@@ -213,7 +235,7 @@ function GapClassRows({
   onOpenGap: (assertion: SpecAssertion) => void;
   onEscalateClass?: (gapIds: string[]) => Promise<ClassEscalationOutcome | null>;
   onDecideProposal?: (
-    proposal: AgentProposal,
+    proposal: StagedProposal,
     decision: 'accepted' | 'rejected',
   ) => Promise<boolean>;
 }) {
@@ -243,6 +265,7 @@ export function GapsDriftSurface({
   registerFindings,
   onOpenGap,
   flowGapIds,
+  proposalHistory,
   onEscalateClass,
   onDecideProposal,
 }: GapsDriftSurfaceProps) {
@@ -299,6 +322,7 @@ export function GapsDriftSurface({
             ['lanes', 'Lanes'],
             ['tiers', 'By escalation tier'],
             ['drift', 'Drift'],
+            ...(proposalHistory ? [['proposals', 'Proposal history']] : []),
           ] as [Tab, string][]
         ).map(([id, label]) => (
           <button
@@ -313,6 +337,8 @@ export function GapsDriftSurface({
           </button>
         ))}
       </div>
+
+      {tab === 'proposals' && proposalHistory && <ProposalHistory {...proposalHistory} />}
 
       {tab === 'lanes' && (
         <div className="register-lanes">

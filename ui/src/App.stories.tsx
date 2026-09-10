@@ -8,6 +8,7 @@ import {
   type Provenance,
   type SpecAssertion,
   type SpecBundle,
+  type StagedProposal,
 } from './store';
 
 /**
@@ -144,7 +145,44 @@ interface MockTier {
   consented_at: string | null;
 }
 
-function installFakeCore() {
+function stagedFixture(proposalId = 'proposal:host-result', decision: 'accepted' | 'rejected' | null = null): StagedProposal {
+  return {
+    proposal_id: proposalId,
+    review_revision: decision ? 1 : 0,
+    review_decision: decision,
+    review_note: null,
+    evidence_binding: 'working_tree_unverified',
+    context_status: 'awaiting_reconciliation',
+    created_at: '2026-09-10T12:00:00Z',
+    reviewed_at: decision ? '2026-09-10T13:00:00Z' : null,
+    gap_id: 'gap:sync',
+    source_id: 'sym:capture',
+    target_id: FAKE_ENDPOINT.id,
+    edge_label: 'CALLS',
+    annotation: `Saved annotation for ${proposalId}.`,
+    basis_hash: 'b'.repeat(64),
+    provenance: {
+      ...FAKE_PROVENANCE,
+      tier: 'Agentic', confidence_tier: 'InferredWeak', extractor_id: 't3.agent',
+    },
+  };
+}
+
+let reviewRequests: Record<string, unknown>[] = [];
+let historyRequests: { limit: number; cursor: string | null }[] = [];
+
+function installFakeCore(options: {
+  staged?: StagedProposal[];
+  pageSize?: number;
+  reviewFailure?: 'stale' | 'null';
+  reviewGate?: Promise<void>;
+  unstagedResult?: boolean;
+  historyGate?: Promise<void>;
+  runGate?: Promise<void>;
+} = {}) {
+  let staged = [...(options.staged ?? [])];
+  reviewRequests = [];
+  historyRequests = [];
   // The fake core boots with one queued job: the production surface offers
   // no job-creation control (AC-0077), so lifecycle stories act on it.
   let jobs: MockJob[] = [
@@ -339,30 +377,47 @@ function installFakeCore() {
               est_usd: null,
               latency: 'seconds on-device',
               privacy: 'payload never leaves the device',
-              export_impact: 'Best-effort only until accepted (R-INT-5).',
+              export_impact: 'Accepted reviews await context reconciliation. T3/InferredWeak is preserved.',
               available: true,
               unavailable_reason: null,
             },
           ],
         };
-      case 'run_escalation':
-        return {
-          gap_id: (args as { gapId: string }).gapId,
-          source_id: 'sym:capture',
-          target_id: FAKE_ENDPOINT.id,
-          edge_label: 'CALLS',
-          annotation: 'capture() resolves to the users endpoint per E1.',
-          basis_hash: 'b'.repeat(64),
-          provenance: {
-            ...FAKE_PROVENANCE,
-            tier: 'Agentic',
-            confidence_tier: 'InferredWeak',
-            extractor_id: 't3.agent',
-          },
+      case 'run_escalation': {
+        const proposal = { ...stagedFixture(), gap_id: (args as { gapId: string }).gapId };
+        if (options.unstagedResult) return { ...proposal, proposal_id: undefined };
+        staged = [proposal, ...staged.filter((item) => item.proposal_id !== proposal.proposal_id)];
+        return options.runGate ? options.runGate.then(() => proposal) : proposal;
+      }
+      case 'list_staged_proposals': {
+        const input = args as { limit: number; cursor: string | null };
+        historyRequests.push(input);
+        const start = input.cursor ? staged.findIndex((item) => item.proposal_id === input.cursor) + 1 : 0;
+        const items = staged.slice(start, start + Math.min(input.limit, options.pageSize ?? input.limit));
+        const page = {
+          items,
+          next_cursor: start + items.length < staged.length ? items.at(-1)?.proposal_id ?? null : null,
         };
+        return options.historyGate ? options.historyGate.then(() => page) : page;
+      }
       case 'record_agent_decision': {
-        const input = args as { decision: string };
-        return { decision: input.decision, recorded_at: '2026-07-14T22:00:00Z' };
+        const input = args as {
+          proposalId: string; expectedRevision: number; decision: 'accepted' | 'rejected'; note: string | null;
+        };
+        reviewRequests.push({ ...input });
+        if (options.reviewFailure === 'null') return null;
+        const proposal = staged.find((item) => item.proposal_id === input.proposalId);
+        if (!proposal) throw new Error('unknown staged proposal');
+        if (options.reviewFailure === 'stale' || proposal.review_revision !== input.expectedRevision) {
+          throw new Error('stale review revision; reload proposal history');
+        }
+        const reviewed = {
+          ...proposal, review_revision: proposal.review_revision + 1,
+          review_decision: input.decision, review_note: input.note,
+          reviewed_at: '2026-09-10T13:00:00Z',
+        };
+        staged = staged.map((item) => item.proposal_id === reviewed.proposal_id ? reviewed : item);
+        return options.reviewGate ? options.reviewGate.then(() => reviewed) : reviewed;
       }
       case 'extractor_coverage':
         return [
@@ -612,6 +667,10 @@ const meta = {
       coverage: [],
       evals: [],
       escalation: null,
+      stagedProposals: [],
+      stagedNextCursor: null,
+      stagedLoading: false,
+      stagedError: null,
       tierSettings: [],
       egress: null,
       disclosures: {},
@@ -770,7 +829,7 @@ export const EscalationRoundTrip: Story = {
 
     await userEvent.click(canvas.getByRole('button', { name: 'Run locally' }));
     await waitFor(() => expect(canvas.getByTestId('proposal-card')).toBeInTheDocument());
-    await expect(canvas.getByText(/never joins the spec until accepted/)).toBeInTheDocument();
+    await expect(canvas.getByText(/Accepted proposals await context reconciliation/)).toBeInTheDocument();
 
     await userEvent.click(canvas.getByRole('button', { name: 'Accept as InferredWeak' }));
     await waitFor(() =>
@@ -989,5 +1048,178 @@ export const ClearGraphPreservesJobs: Story = {
 
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
     await expect(canvas.getByText('ingest:/seed')).toBeInTheDocument();
+  },
+};
+
+export const SavedProposalReviewResumesAfterUiReset: Story = {
+  // AC-0129: pending/reviewed history comes from durable host records, with explicit paging.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await waitFor(() => expect(useAppStore.getState().stagedLoading).toBe(false));
+    installFakeCore({ staged: [
+      stagedFixture('proposal:pending'), stagedFixture('proposal:accepted', 'accepted'),
+      stagedFixture('proposal:older', 'rejected'),
+    ], pageSize: 2 });
+    useAppStore.setState({ escalation: null, stagedProposals: [], stagedNextCursor: null });
+    await useAppStore.getState().loadStagedProposals();
+    await userEvent.click(canvas.getByRole('button', { name: 'Gaps & Drift' }));
+    await userEvent.click(canvas.getByRole('tab', { name: 'Proposal history' }));
+    await expect(canvas.getByText('Pending review')).toBeInTheDocument();
+    await expect(canvas.getByText('Accepted · awaiting context reconciliation')).toBeInTheDocument();
+    await expect(canvas.queryByText('Saved annotation for proposal:older.')).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole('button', { name: 'Load more proposals' }));
+    await waitFor(() => expect(canvas.getByText('Saved annotation for proposal:older.')).toBeInTheDocument());
+    await expect(historyRequests).toEqual([
+      { limit: 20, cursor: null }, { limit: 20, cursor: 'proposal:accepted' },
+    ]);
+    await expect(canvas.queryByRole('button', { name: 'Load more proposals' })).not.toBeInTheDocument();
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Review proposal' }));
+    const dialog = within(canvas.getByRole('dialog'));
+    await expect(dialog.getByText('Saved annotation for proposal:pending.')).toBeInTheDocument();
+    await expect(dialog.getByText(/Source binding unverified:/)).toBeInTheDocument();
+    await userEvent.click(dialog.getByRole('button', { name: 'Accept as InferredWeak' }));
+    await waitFor(() => expect(dialog.getByTestId('decision-recorded')).toHaveTextContent('Awaiting context reconciliation'));
+    await expect(reviewRequests).toEqual([{
+      proposalId: 'proposal:pending', expectedRevision: 0, decision: 'accepted', note: null,
+    }]);
+    await userEvent.click(dialog.getByRole('button', { name: 'Close resolution strategy' }));
+
+    // Lose all in-memory review history; the host still returns the reviewed record.
+    useAppStore.setState({ stagedProposals: [], stagedNextCursor: null, escalation: null });
+    await userEvent.click(canvas.getByRole('button', { name: 'Refresh proposal history' }));
+    await waitFor(() => expect(canvas.getAllByText('Accepted · awaiting context reconciliation')).toHaveLength(2));
+    await expect(canvas.queryByRole('button', { name: 'Review proposal' })).not.toBeInTheDocument();
+    await expect(useAppStore.getState().stagedProposals[0].review_revision).toBe(1);
+  },
+};
+
+export const StaleProposalReviewIsNotRecorded: Story = {
+  // AC-0129: compare-and-set rejection must leave the proposal reviewable, never accepted locally.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await waitFor(() => expect(useAppStore.getState().stagedLoading).toBe(false));
+    installFakeCore({ staged: [stagedFixture()], reviewFailure: 'stale' });
+    await useAppStore.getState().loadStagedProposals();
+    useAppStore.getState().openStagedProposal(useAppStore.getState().stagedProposals[0]);
+    const dialog = within(await canvas.findByRole('dialog'));
+    await userEvent.click(dialog.getByRole('button', { name: 'Accept as InferredWeak' }));
+    await waitFor(() => expect(dialog.getByRole('alert')).toHaveTextContent('stale review revision'));
+    await expect(dialog.queryByTestId('decision-recorded')).not.toBeInTheDocument();
+    await expect(useAppStore.getState().stagedProposals[0].review_decision).toBeNull();
+    await expect(dialog.getByRole('button', { name: 'Accept as InferredWeak' })).toBeEnabled();
+  },
+};
+
+export const MissingReviewReceiptIsNotSuccess: Story = {
+  // AC-0129: a null invoke response is not evidence that a review was persisted.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await waitFor(() => expect(useAppStore.getState().stagedLoading).toBe(false));
+    installFakeCore({ staged: [stagedFixture()], reviewFailure: 'null' });
+    await useAppStore.getState().loadStagedProposals();
+    useAppStore.getState().openStagedProposal(useAppStore.getState().stagedProposals[0]);
+    const dialog = within(await canvas.findByRole('dialog'));
+    await userEvent.click(dialog.getByRole('button', { name: 'Reject' }));
+    await waitFor(() => expect(dialog.getByRole('alert')).toHaveTextContent('No review was recorded'));
+    await expect(dialog.queryByTestId('decision-recorded')).not.toBeInTheDocument();
+    await expect(useAppStore.getState().stagedProposals[0].review_revision).toBe(0);
+  },
+};
+
+export const UnstagedBrokerBodyCannotBeReviewed: Story = {
+  // AC-0129: an unstaged broker body has no host ID and must not expose acceptance actions.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await waitFor(() => expect(useAppStore.getState().stagedLoading).toBe(false));
+    installFakeCore({ unstagedResult: true });
+    await useAppStore.getState().openResolution('gap:sync');
+    const dialog = within(await canvas.findByRole('dialog'));
+    await userEvent.click(dialog.getByRole('button', { name: 'Run locally' }));
+    await waitFor(() => expect(dialog.getByRole('alert')).toHaveTextContent('did not return a saved proposal'));
+    await expect(dialog.queryByTestId('proposal-card')).not.toBeInTheDocument();
+    await expect(dialog.queryByRole('button', { name: /Accept as/ })).not.toBeInTheDocument();
+  },
+};
+
+export const OlderHistoryResponsePreservesNewReview: Story = {
+  // AC-0129: an in-flight page cannot roll back a newer host review receipt.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await waitFor(() => expect(useAppStore.getState().stagedLoading).toBe(false));
+    let releaseHistory!: () => void;
+    const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    const proposal = stagedFixture();
+    installFakeCore({ staged: [proposal], historyGate });
+    useAppStore.setState({ stagedProposals: [proposal] });
+    const pendingRead = useAppStore.getState().loadStagedProposals();
+    await waitFor(() => expect(historyRequests).toHaveLength(1));
+    useAppStore.getState().openStagedProposal(proposal);
+    const dialog = within(await canvas.findByRole('dialog'));
+    await userEvent.click(dialog.getByRole('button', { name: 'Accept as InferredWeak' }));
+    await waitFor(() => expect(dialog.getByTestId('decision-recorded')).toBeInTheDocument());
+    releaseHistory();
+    await pendingRead;
+    await expect(useAppStore.getState().stagedProposals[0].review_revision).toBe(1);
+    await expect(useAppStore.getState().stagedProposals[0].review_decision).toBe('accepted');
+  },
+};
+
+export const CompletedRunPreservesOpenedHistoryRecord: Story = {
+  // AC-0129: a new stage enters history without replacing another opened record of the same gap.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await waitFor(() => expect(useAppStore.getState().stagedLoading).toBe(false));
+    let releaseRun!: () => void;
+    const runGate = new Promise<void>((resolve) => { releaseRun = resolve; });
+    const earlier = stagedFixture('proposal:earlier', 'rejected');
+    installFakeCore({ staged: [earlier], runGate });
+    await useAppStore.getState().openResolution(earlier.gap_id);
+    const pendingRun = useAppStore.getState().runStrategy('local-slm');
+    useAppStore.getState().openStagedProposal(earlier);
+    releaseRun();
+    await pendingRun;
+    const dialog = within(await canvas.findByRole('dialog'));
+    await expect(dialog.getByText(earlier.annotation)).toBeInTheDocument();
+    await expect(dialog.getByTestId('decision-recorded')).toHaveTextContent('rejected');
+    await expect(useAppStore.getState().escalation?.proposal?.proposal_id).toBe(earlier.proposal_id);
+    await expect(useAppStore.getState().stagedProposals.some((proposal) =>
+      proposal.proposal_id === 'proposal:host-result')).toBe(true);
+  },
+};
+
+export const DelayedReviewReceiptPreservesNewestOpenedRevision: Story = {
+  // AC-0129: an older review receipt cannot replace a newer decision loaded from the host.
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await waitFor(() => expect(useAppStore.getState().stagedLoading).toBe(false));
+    let releaseReview!: () => void;
+    const reviewGate = new Promise<void>((resolve) => { releaseReview = resolve; });
+    const pending = stagedFixture();
+    installFakeCore({ staged: [pending], reviewGate });
+    useAppStore.getState().openStagedProposal(pending);
+    const delayedReview = useAppStore.getState().decideProposal('accepted');
+    await waitFor(() => expect(reviewRequests).toHaveLength(1));
+
+    // A different reviewer records revision 2 before revision 1 reaches this UI.
+    const newer = { ...stagedFixture(pending.proposal_id, 'rejected'), review_revision: 2 };
+    installFakeCore({ staged: [newer] });
+    await useAppStore.getState().loadStagedProposals();
+    useAppStore.getState().openStagedProposal(useAppStore.getState().stagedProposals[0]);
+    releaseReview();
+    await delayedReview;
+    const dialog = within(await canvas.findByRole('dialog'));
+    await expect(dialog.getByTestId('decision-recorded')).toHaveTextContent('Decision recorded: rejected');
+    await expect(dialog.getByTestId('decision-recorded')).not.toHaveTextContent('Decision recorded: accepted');
+    await expect(useAppStore.getState().escalation?.proposal?.review_revision).toBe(2);
+    await expect(useAppStore.getState().stagedProposals[0].review_revision).toBe(2);
+    await expect(useAppStore.getState().stagedProposals[0].review_decision).toBe('rejected');
   },
 };

@@ -3833,3 +3833,11 @@ button.register-row:hover {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Durable proposal review history (AC-0129). */
+.proposal-history { display: grid; gap: 1rem; margin-top: 1.25rem; }
+.proposal-history-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.proposal-history-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; }
+.proposal-history-list > li { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-width: 0; }
+.proposal-history-list code, .proposal-card code { overflow-wrap: anywhere; }
+.proposal-annotation { white-space: pre-wrap; overflow-wrap: anywhere; }

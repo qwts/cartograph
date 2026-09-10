@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within } from 'storybook/test';
 import { ResolutionStrategyModal } from './ResolutionStrategyModal';
-import type { AgentProposal, EscalationState, GapStrategyReport } from '../store';
+import type { StagedProposal, EscalationState, GapStrategyReport } from '../store';
 
 const REPORT: GapStrategyReport = {
   gap_id: 'gap:sync',
@@ -21,7 +21,7 @@ const REPORT: GapStrategyReport = {
       latency: 'seconds to a minute on-device',
       privacy: 'payload never leaves the device',
       export_impact:
-        'Accepted proposals enter best-effort exports as InferredWeak with cited evidence; verified-only exports are unaffected (R-INT-5). T0/T1 facts are never modified (R-INT-1).',
+        'Accepted proposals await context reconciliation. Source binding is unverified; review does not yet change context or exports. T3/InferredWeak is preserved.',
       available: true,
       unavailable_reason: null,
     },
@@ -35,7 +35,7 @@ const REPORT: GapStrategyReport = {
       latency: 'a few seconds via API',
       privacy: 'redacted payload leaves the device after a per-payload grant',
       export_impact:
-        'Accepted proposals enter best-effort exports as InferredWeak with cited evidence; verified-only exports are unaffected (R-INT-5). T0/T1 facts are never modified (R-INT-1).',
+        'Accepted proposals await context reconciliation. Source binding is unverified; review does not yet change context or exports. T3/InferredWeak is preserved.',
       available: false,
       unavailable_reason:
         'T3 is not consented to cloud — enable the provider and grant consent in Settings (cloud fails closed)',
@@ -43,7 +43,15 @@ const REPORT: GapStrategyReport = {
   ],
 };
 
-const PROPOSAL: AgentProposal = {
+const PROPOSAL: StagedProposal = {
+  proposal_id: 'proposal:sync',
+  review_revision: 0,
+  review_decision: null,
+  review_note: null,
+  evidence_binding: 'working_tree_unverified',
+  context_status: 'awaiting_reconciliation',
+  created_at: '2026-09-10T12:00:00Z',
+  reviewed_at: null,
   gap_id: 'gap:sync',
   source_id: 'sym:capture',
   target_id: 'ch:events',
@@ -76,6 +84,7 @@ function state(overrides: Partial<EscalationState> = {}): EscalationState {
     running: false,
     preview: null,
     proposal: null,
+    reviewing: false,
     decided: null,
     ...overrides,
   };
@@ -194,7 +203,7 @@ export const ProposalNeverAutoJoins: Story = {
     await expect(canvas.getByTestId('proposal-card')).toBeInTheDocument();
     await expect(canvas.getByText('Inferred (weak)')).toBeInTheDocument();
     await expect(
-      canvas.getByText(/never joins the spec until accepted, and never overwrites T0\/T1/),
+      canvas.getByText(/Accepted proposals await context reconciliation/),
     ).toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: 'Accept as InferredWeak' }));
     await expect(args.onDecide).toHaveBeenCalledWith('accepted');
@@ -202,7 +211,10 @@ export const ProposalNeverAutoJoins: Story = {
 };
 
 export const DecisionRecordedState: Story = {
-  args: { state: state({ proposal: PROPOSAL, decided: 'rejected' }) },
+  args: { state: state({
+    proposal: { ...PROPOSAL, review_revision: 1, review_decision: 'rejected', reviewed_at: '2026-09-10T13:00:00Z' },
+    decided: 'rejected',
+  }) },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId('decision-recorded')).toHaveTextContent(
@@ -222,5 +234,31 @@ export const RunFailureIsExplicit: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(/cloud escalation stays closed/)).toBeInTheDocument();
+  },
+};
+
+export const AcceptedReviewAwaitsReconciliation: Story = {
+  // AC-0129: reviewed history never claims source freshness or export activation.
+  args: { state: state({
+    proposal: { ...PROPOSAL, review_revision: 1, review_decision: 'accepted', reviewed_at: '2026-09-10T13:00:00Z' },
+    decided: 'accepted',
+  }) },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId('decision-recorded')).toHaveTextContent('Awaiting context reconciliation');
+    await expect(canvas.getByText(/Acceptance does not certify evidence freshness/)).toBeInTheDocument();
+    await expect(canvas.getByText('Inferred (weak)')).toBeInTheDocument();
+    await expect(canvas.queryByRole('button', { name: /Accept as/ })).not.toBeInTheDocument();
+  },
+};
+
+export const ReviewInFlightCannotSubmitTwice: Story = {
+  // AC-0129: no success or additional decision while the host write is pending.
+  args: { state: state({ proposal: PROPOSAL, reviewing: true }) },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('button', { name: 'Saving review…' })).toBeDisabled();
+    await expect(canvas.getByRole('button', { name: 'Reject' })).toBeDisabled();
+    await expect(canvas.queryByTestId('decision-recorded')).not.toBeInTheDocument();
   },
 };

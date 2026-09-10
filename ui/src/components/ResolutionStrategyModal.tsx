@@ -16,7 +16,7 @@ export interface ResolutionStrategyModalProps {
 /** Resolution Strategy modal (handoff §Resolution Strategy, screenshot 11):
  *  one component reused for every gap. Shows the escalation ladder, why T0
  *  stopped, and runnable strategy cards; a run yields a staged proposal for
- *  Accept/Reject — proposals never auto-join the spec (R-INT-3). */
+ *  Accept/Reject — accepted reviews still await context reconciliation. */
 export function ResolutionStrategyModal({
   state,
   onRun,
@@ -65,8 +65,8 @@ export function ResolutionStrategyModal({
         </header>
 
         {state.loading && <p className="muted">Deriving strategies from provenance…</p>}
-        {state.error && <p className="error-text">{state.error}</p>}
-        {!state.loading && !state.error && !report && (
+        {state.error && <p className="error-text" role="alert">{state.error}</p>}
+        {!state.loading && !state.error && !report && !proposal && (
           <p className="muted">
             No strategy report — the core could not assemble context for this gap.
           </p>
@@ -151,21 +151,39 @@ export function ResolutionStrategyModal({
             </p>
             <p className="muted">{proposal.annotation}</p>
             <p className="muted">
-              Cited evidence and the original Gap are preserved; this proposal never joins the
-              spec until accepted, and never overwrites T0/T1 (R-INT-1/R-INT-3).
+              Review preserves T3 / InferredWeak. Accepted proposals await context reconciliation;
+              review does not yet change context or exports, and never overwrites T0/T1.
             </p>
+            <p className="muted">
+              Source binding unverified: captured working-tree spans have not been verified
+              against the cited revisions. Acceptance does not certify evidence freshness.
+            </p>
+            <details>
+              <summary>Cited evidence ({proposal.provenance.evidence.length})</summary>
+              <ul className="consent-notes">
+                {proposal.provenance.evidence.map((reference, index) => (
+                  <li key={index}>
+                    <code>{reference.repo}:{reference.path}</code>
+                    {' · bytes '}{reference.byte_start}..{reference.byte_end}
+                    {' · cited revision '}<code>{reference.commit_sha}</code>
+                  </li>
+                ))}
+              </ul>
+            </details>
+            {proposal.review_note && <p className="muted">Review note: {proposal.review_note}</p>}
             {state.decided ? (
               <p className="consent-status" data-testid="decision-recorded">
-                Decision recorded: {state.decided}. Re-ingest re-applies it while the evidence
-                basis holds.
+                Decision recorded: {state.decided}.
+                {state.decided === 'accepted' && ' Awaiting context reconciliation.'}
+                {' Source binding remains unverified.'}
               </p>
             ) : (
               <footer className="egress-actions">
-                <button type="button" className="secondary-button" onClick={() => onDecide('rejected')}>
+                <button type="button" className="secondary-button" disabled={state.reviewing} onClick={() => onDecide('rejected')}>
                   Reject
                 </button>
-                <button type="button" onClick={() => onDecide('accepted')}>
-                  Accept as {proposal.provenance.confidence_tier}
+                <button type="button" disabled={state.reviewing} onClick={() => onDecide('accepted')}>
+                  {state.reviewing ? 'Saving review…' : `Accept as ${proposal.provenance.confidence_tier}`}
                 </button>
               </footer>
             )}

@@ -135,6 +135,12 @@ export default function App() {
     decideProposal,
     runClassEscalation,
     recordProposalDecision,
+    stagedProposals,
+    stagedNextCursor,
+    stagedLoading,
+    stagedError,
+    loadStagedProposals,
+    openStagedProposal,
   } = useAppStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -376,6 +382,15 @@ export default function App() {
             gaps={registerArtifact('gap_register.md')}
             drift={registerArtifact('drift_register.md')}
             registerFindings={registerFindings}
+            proposalHistory={{
+              proposals: stagedProposals,
+              loading: stagedLoading,
+              error: stagedError,
+              hasMore: stagedNextCursor !== null,
+              onRefresh: () => void loadStagedProposals(),
+              onLoadMore: () => void loadStagedProposals(true),
+              onOpen: openStagedProposal,
+            }}
             flowGapIds={flowList.flatMap((flow) =>
               flow.hops
                 .filter((hop) => hop.gap_reason !== null || hop.confidence === 'Gap')
