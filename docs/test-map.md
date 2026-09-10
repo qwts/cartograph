@@ -18,6 +18,14 @@ proves that a procedure exists, not that its AC or delivery gate has passed.
 
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
+| T-0156 | AC-0156 | reserved | — | Job execution ownership #393; SPEC-07 |
+| T-0157 | AC-0157 | reserved | — | Job execution ownership #393; SPEC-07 |
+| T-0158 | AC-0158 | reserved | — | Job execution ownership #393; SPEC-07 |
+| T-0159 | AC-0159 | reserved | — | Job execution ownership #393; SPEC-07 |
+| T-0160 | AC-0160 | reserved | — | Job execution ownership #393; SPEC-07 |
+| T-0161 | AC-0161 | reserved | — | Job execution ownership #393; SPEC-07 |
+| T-0162 | AC-0162 | reserved | — | Job execution ownership #393; SPEC-07 |
+| T-0163 | AC-0163 | reserved | — | Job execution ownership #393; SPEC-07 |
 | T-0148 | AC-0148 | rust | adapters-lang-ts::captured_parser_uses_original_bytes_after_target_mutation, adapters-lang-ts::captured_enumeration_preserves_selection_and_enforces_budgets, adapters-lang-ts::captured_enumeration_rejects_symlinks_and_non_utf8_paths | Actual captured parser and bounded exact no-follow selection |
 | T-0149 | AC-0149 | rust | adapters-lang-ts::equal_complete_facts_keep_distinct_raw_capture_receipts, adapters-lang-ts::captured_rule_inventory_binds_every_nested_source_and_redaction, adapters-lang-ts::captured_directory_preserves_completion_but_excludes_eval_and_derived_facts, adapters-lang-ts::receipt_grammar_and_complete_fact_changes_are_explicit, adapters-lang-ts::captured_receipts_reject_tampering_versions_and_bounds, adapters-lang-ts::rehashed_invalid_receipt_contracts_and_ranges_are_rejected, adapters-lang-ts::oversized_primary_ranges_remain_without_truncated_receipts | Producer invocation and complete metadata/range contract without semantic upgrade |
 | T-0150 | AC-0150 | rust | core-graph::identical_facts_switch_receipts_atomically_without_changing_other_repos, core-graph::ordinary_graph_mutations_invalidate_touched_source_associations, core-graph::raw_second_connection_writes_invalidate_without_foreign_key_pragmas, core-graph::source_publication_rolls_back_facts_and_bindings_on_validation_or_write_failure, core-graph::source_publication_rejects_stale_duplicate_and_cross_repo_bindings, app::primary_matching_uses_final_duplicate_fact_winners | Atomic repository publication and mutation invalidation; schema4 facts preserved |
