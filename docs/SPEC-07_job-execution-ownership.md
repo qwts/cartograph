@@ -96,8 +96,13 @@ explicit invalid transitions.
 Cancellation is cooperative. Worker boundaries check the exact attempt and stop
 before launching further work; already-completed side effects are not rolled back.
 Clear-finished keeps its existing terminal-row policy. If a cancelled row is
-cleared while its worker is alive, later checks stop and writes fail; historical
-proposal rows and the persistent lock file remain independent of job cleanup.
+cleared while its worker is alive, later checks stop and lifecycle writes fail;
+historical proposal rows and the persistent lock file remain independent of job
+cleanup. An already-started model call may still durably stage its completed
+result using its retained execution after explicit missing-row detection. That
+narrow persistence exception requires valid retained ownership and does not
+permit another model call, graph publication or job transition; stale, foreign,
+interrupted or invalid ownership still fails.
 
 ## Recovery
 

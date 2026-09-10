@@ -306,17 +306,37 @@ mod tests {
         )
         .unwrap();
         let job = jobs.enqueue("escalate:restart:local").unwrap();
-        jobs.set_status(job.id, "running").unwrap();
+        let locks = crate::job_execution_host_tests::locks(&state_path);
+        let execution = crate::job_execution_host_tests::claim(
+            &mut jobs,
+            &locks,
+            job.id,
+            crate::jobs::ClaimMode::StartQueued,
+        );
         let staged = store.stage(&task, &proposal, job.id, &snapshot()).unwrap();
         jobs.cancel(job.id).unwrap();
         let interrupted = jobs.enqueue("escalate:interrupted:local").unwrap();
-        jobs.set_status(interrupted.id, "running").unwrap();
+        let interrupted_execution = crate::job_execution_host_tests::claim(
+            &mut jobs,
+            &locks,
+            interrupted.id,
+            crate::jobs::ClaimMode::StartQueued,
+        );
+        drop(execution);
+        drop(interrupted_execution);
         drop(store);
         drop(jobs);
-        let mut jobs = crate::jobs::JobStore::open(&state_path).unwrap();
-        assert_eq!(jobs.recover_interrupted().unwrap(), vec![interrupted.id]);
-        jobs.clear_finished().unwrap();
-        assert!(jobs.get(job.id).is_err());
+        let jobs = std::sync::Mutex::new(crate::jobs::JobStore::open(&state_path).unwrap());
+        assert_eq!(
+            crate::recover_jobs(&jobs, &locks)
+                .unwrap()
+                .into_iter()
+                .map(|job| job.id)
+                .collect::<Vec<_>>(),
+            vec![interrupted.id]
+        );
+        jobs.lock().unwrap().clear_finished().unwrap();
+        assert!(jobs.lock().unwrap().get(job.id).is_err());
         let mut restored = ProposalStore::open(&stage_path).unwrap();
         let accepted = restored
             .review(&staged.proposal_id, 0, ProposalDecision::Accepted, None)

@@ -26,6 +26,7 @@ import { EvidencePanel } from './components/EvidencePanel';
 import { CapturedSource } from './components/CapturedSource';
 import { SourceRetention } from './components/SourceRetention';
 import { sameFactKey, usePrimarySourceStore } from './primarySourceStore';
+import { hasRecordedExecution, selectRecoveryJob } from './jobPresentation';
 import { TopologyCard } from './components/TopologyCard';
 import type { Job, SpecArtifact, SpecBundle } from './store';
 
@@ -69,6 +70,7 @@ export default function App() {
   const {
     view,
     recoverJobId,
+    jobActionError,
     backend,
     version,
     stats,
@@ -276,7 +278,7 @@ export default function App() {
   }, [navigate, view]);
 
   const busy =
-    ingestBusy || specBusy || clearBusy || jobs.some((job) => job.status === 'running');
+    ingestBusy || specBusy || clearBusy || jobs.some((job) => hasRecordedExecution(job) && job.status === 'running');
   const scope: Scope = selected
     ? { kind: 'trail', label: 'Single evidence trail' }
     : view === 'atlas' && atlasLayer !== 'All layers'
@@ -450,6 +452,7 @@ export default function App() {
         return (
           <JobsSurface
             jobs={jobs}
+            actionError={jobActionError}
             canClear={backend === 'up'}
             onClearFinished={() => void clearFinishedJobs()}
             onCancel={(id) => void cancelJob(id)}
@@ -485,12 +488,8 @@ export default function App() {
       case 'recover':
         return (
           <RecoverSurface
-            job={
-              (recoverJobId != null
-                ? jobs.find((job) => job.id === recoverJobId)
-                : jobs.find((job) => job.status === 'running' || job.status === 'queued')) ?? null
-            }
-            busy={ingestBusy}
+            job={selectRecoveryJob(jobs, recoverJobId)}
+            busy={recoverJobId === null && ingestBusy}
             error={ingestError}
             onBack={() => navigate('connect')}
             onBackground={() => navigate('jobs')}

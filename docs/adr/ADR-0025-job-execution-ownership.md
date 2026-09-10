@@ -25,6 +25,9 @@ Keep ownerless legacy rows unchanged and explicitly unknown. Do not reuse their
 job IDs; require fresh operations instead of inferring death or offering forced
 takeover. Preserve stable job IDs for tracked retries and all proposal/review
 identity. Add a tracking-state response field without claiming actual liveness.
+An already-started model call retains the right to stage its completed proposal
+after the cancelled job row is cleared, provided its execution guard remains
+valid; missing history stops further work and all lifecycle writes.
 
 ## Consequences
 

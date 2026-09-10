@@ -10,6 +10,9 @@ mod evidence;
 mod findings;
 #[cfg(test)]
 mod graph_projection_tests;
+mod job_execution;
+#[cfg(test)]
+mod job_execution_host_tests;
 mod jobs;
 mod metrics;
 mod paths;
@@ -25,7 +28,10 @@ mod sources;
 
 use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
 use findings::{Finding, FindingStore, NewFinding};
-use jobs::{EvalResult, Job, JobStore};
+use job_execution::{JobExecution, JobExecutionLocks};
+use jobs::{
+    ClaimMode, EvalResult, ExecutionCheck, ExecutionUpdate, Job, JobStore, JobTransitionError,
+};
 use llm::LlmProvider;
 use serde::Serialize;
 use source_access::SourceOperation;
@@ -39,6 +45,7 @@ use tauri::{Emitter, Manager, State};
 struct AppState {
     graph: Mutex<SqliteGraphStore>,
     jobs: Mutex<JobStore>,
+    job_execution_locks: JobExecutionLocks,
     findings: Mutex<FindingStore>,
     settings: Mutex<settings::SettingsStore>,
     decisions: Mutex<agents::DecisionLog>,
@@ -362,20 +369,12 @@ async fn run_plugin_gate(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let job_id = {
-        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs
-            .enqueue(&format!("plugin-gate:{plugin_id}"))
-            .map_err(|e| e.to_string())?;
-        jobs.set_status(job.id, "running")
-            .map_err(|e| e.to_string())?;
-        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
-        emit_job(&app, &running);
-        job.id
-    };
-    tauri::async_runtime::spawn_blocking(move || plugin_gate_blocking(&plugin_id, job_id, &app))
-        .await
-        .map_err(|e| e.to_string())?
+    let (running, execution) = start_job(&state, &format!("plugin-gate:{plugin_id}"))?;
+    emit_job(&app, &running);
+    off_ui_thread_for_job(execution, move |execution| {
+        plugin_gate_blocking(&plugin_id, execution, &app)
+    })
+    .await
 }
 
 /// The gate pipeline behind one already-running `plugin-gate:{id}` job —
@@ -385,16 +384,20 @@ async fn run_plugin_gate(
 /// artifact state.
 fn plugin_gate_blocking<R: tauri::Runtime>(
     plugin_id: &str,
-    job_id: i64,
+    execution: &JobExecution,
     app: &tauri::AppHandle<R>,
 ) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
     let fail = |error: String| -> String {
-        report_failure(app, &state, job_id, &error);
+        report_failure(app, &state, execution, &error);
         error
     };
 
-    report_progress(app, &state, job_id, "discover", 10.0).map_err(&fail)?;
+    if job_cancelled(&state, execution)? {
+        return Err("cancelled".into());
+    }
+
+    report_progress(app, &state, execution, "discover", 10.0).map_err(&fail)?;
     let plugin = discover_session_plugins(app, &state)
         .map_err(&fail)?
         .into_iter()
@@ -402,10 +405,11 @@ fn plugin_gate_blocking<R: tauri::Runtime>(
         .ok_or_else(|| fail(format!("no discovered plugin with id {plugin_id}")))?;
     // Hash the bytes actually gated, not the discovery-time snapshot: the
     // verdict must bind to what ran even if the file changed in between.
+    ensure_running_job(&state, execution)?;
     let wasm_bytes = std::fs::read(&plugin.path).map_err(|e| fail(e.to_string()))?;
     let content_hash = core_prov::content_hash(&wasm_bytes);
 
-    report_progress(app, &state, job_id, "gate", 30.0).map_err(&fail)?;
+    report_progress(app, &state, execution, "gate", 30.0).map_err(&fail)?;
     let corpus_path = plugin.path.with_extension("golden.json");
     let report = match std::fs::read_to_string(&corpus_path)
         .map_err(|e| e.to_string())
@@ -414,6 +418,7 @@ fn plugin_gate_blocking<R: tauri::Runtime>(
                 .map_err(|e| e.to_string())
         }) {
         Ok(corpus) => {
+            ensure_running_job(&state, execution)?;
             let host = adapters_plugin_host::PluginHost::new().map_err(|e| fail(e.to_string()))?;
             adapters_plugin_host::gate::run_gate(
                 &host,
@@ -439,14 +444,15 @@ fn plugin_gate_blocking<R: tauri::Runtime>(
     // A cancel that landed while the gate ran wins outright: the job row
     // stays cancelled and the verdict is discarded, so the visible job
     // outcome and the trusted artifact state never diverge (#206 review).
-    if job_cancelled(&state, job_id) {
+    if job_cancelled(&state, execution)? {
         return Err("cancelled".to_string());
     }
 
-    report_progress(app, &state, job_id, "record", 90.0).map_err(&fail)?;
+    report_progress(app, &state, execution, "record", 90.0).map_err(&fail)?;
     let report_json = serde_json::to_value(&report).map_err(|e| fail(e.to_string()))?;
     {
         let mut settings_store = state.settings.lock().map_err(|e| e.to_string())?;
+        ensure_running_job(&state, execution)?;
         settings_store
             .record_plugin_gate(
                 plugin_id,
@@ -458,13 +464,12 @@ fn plugin_gate_blocking<R: tauri::Runtime>(
     }
 
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let job = jobs
-        .finish(job_id, &[format!("gate:{plugin_id}@{content_hash}")])
-        .map_err(|e| e.to_string())?;
+    let job = updated_job(
+        jobs.finish_execution(execution, &[format!("gate:{plugin_id}@{content_hash}")])
+            .map_err(|e| e.to_string())?,
+    );
     emit_job(app, &job);
-    if job.status != "done" {
-        return Err("cancelled".to_string());
-    }
+    completed_job(&job)?;
     Ok(report_json)
 }
 
@@ -1345,7 +1350,12 @@ fn stitch_backings(graph: &mut SqliteGraphStore) -> Result<u64, String> {
 /// A rescan first drops links previously owned by that repo's found ADRs and
 /// removes ADR nodes whose source file disappeared, so re-ingest cannot retain
 /// declarations that are no longer present.
-fn relink_found_adrs(state: &AppState, operation: &SourceOperation) -> Result<u64, String> {
+fn relink_found_adrs(
+    state: &AppState,
+    operation: &SourceOperation,
+    execution: &JobExecution,
+) -> Result<u64, String> {
+    ensure_running_job(state, execution)?;
     let snapshot = state
         .graph
         .lock()
@@ -1354,9 +1364,13 @@ fn relink_found_adrs(state: &AppState, operation: &SourceOperation) -> Result<u6
         .map_err(|e| e.to_string())?;
     // Source guards were acquired before recovery. Root-dependent reads run
     // without a graph mutex and cannot recursively lock an exclusive owner.
-    let updates = collect_found_adrs(&snapshot.0, |repo| operation.root(repo))?;
+    let updates = collect_found_adrs(&snapshot.0, |repo| {
+        ensure_running_job(state, execution)?;
+        operation.root(repo)
+    })?;
     let (patch, linked) = found_adr_patch(&snapshot.0, &snapshot.1, updates);
     let mut graph = state.graph.lock().map_err(|e| e.to_string())?;
+    ensure_running_job(state, execution)?;
     if !graph
         .apply_patch_if_snapshot_matches(&snapshot, &patch)
         .map_err(|e| e.to_string())?
@@ -1876,26 +1890,20 @@ async fn run_escalation(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<agents::StagedProposal, String> {
-    let job_id = {
-        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs
-            .enqueue(&format!("escalate:{gap_id}:{mode}"))
-            .map_err(|e| e.to_string())?;
-        jobs.set_status(job.id, "running")
-            .map_err(|e| e.to_string())?;
-        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
-        emit_job(&app, &running);
-        job.id
-    };
+    let (running, execution) = start_job(&state, &format!("escalate:{gap_id}:{mode}"))?;
+    emit_job(&app, &running);
     let fail = |error: String| -> String {
-        report_failure(&app, &state, job_id, &error);
+        report_failure(&app, &state, &execution, &error);
         error
     };
 
-    report_progress(&app, &state, job_id, "context", 20.0).map_err(&fail)?;
+    report_progress(&app, &state, &execution, "context", 20.0).map_err(&fail)?;
     let context_app = app.clone();
-    let (task, graph_snapshot_id) = off_ui_thread(move || {
+    let (task, graph_snapshot_id) = off_ui_thread_for_job(execution.clone(), move |execution| {
         let state = context_app.state::<AppState>();
+        if job_cancelled(&state, execution)? {
+            return Err("cancelled".into());
+        }
         let (nodes, edges, reader) = graph_and_reader(&state)?;
         let task = escalation::assemble_task(
             &nodes,
@@ -1911,7 +1919,7 @@ async fn run_escalation(
     .await
     .map_err(&fail)?;
 
-    report_progress(&app, &state, job_id, "model", 70.0).map_err(&fail)?;
+    report_progress(&app, &state, &execution, "model", 70.0).map_err(&fail)?;
     let policy = (|| {
         let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
         settings_store.egress_policy().map_err(|e| e.to_string())
@@ -1953,13 +1961,13 @@ async fn run_escalation(
     // Cooperative cancellation: a cancel that landed after context assembly
     // must stop the run before any provider is invoked — for cloud, before
     // the consented payload could leave the device.
-    if job_cancelled(&state, job_id) {
+    if job_cancelled(&state, &execution)? {
         return Err("cancelled".to_string());
     }
     let staging_app = app.clone();
-    let proposal = tauri::async_runtime::spawn_blocking(move || {
+    let proposal = off_ui_thread_for_job(execution.clone(), move |execution| {
         let state = staging_app.state::<AppState>();
-        if job_cancelled(&state, job_id) {
+        if job_cancelled(&state, execution)? {
             return Err("cancelled".to_string());
         }
         let proposal = broker
@@ -1967,18 +1975,12 @@ async fn run_escalation(
             .map_err(|error| error.to_string())?;
         // Persist even if cancellation arrived during the model call. The job
         // remains cancelled, but its completed result is available for review.
-        state
-            .proposals
-            .lock()
-            .map_err(|error| error.to_string())?
-            .stage(&task, &proposal, job_id, &graph_snapshot_id)
-            .map_err(|error| error.to_string())
+        stage_completed_job_proposal(&state, execution, &task, &proposal, &graph_snapshot_id)
     })
     .await
-    .map_err(|e| fail(e.to_string()))?
     .map_err(&fail)?;
 
-    report_progress(&app, &state, job_id, "validate", 90.0).map_err(&fail)?;
+    report_progress(&app, &state, &execution, "validate", 90.0).map_err(&fail)?;
     if payload_bytes > 0 {
         (|| {
             let mut settings_store = state.settings.lock().map_err(|e| e.to_string())?;
@@ -1990,11 +1992,11 @@ async fn run_escalation(
     }
     let job = (|| {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        jobs.finish(job_id, std::slice::from_ref(&proposal.proposal_id))
+        jobs.finish_execution(&execution, std::slice::from_ref(&proposal.proposal_id))
             .map_err(|e| e.to_string())
     })()
     .map_err(&fail)?;
-    emit_job(&app, &job);
+    emit_job(&app, &updated_job(job));
     Ok(proposal)
 }
 
@@ -2021,28 +2023,23 @@ async fn run_class_escalation(
     if gap_ids.is_empty() {
         return Err("no gap instances to escalate".to_string());
     }
-    let job_id = {
-        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs
-            .enqueue(&format!("escalate-class:{}:{mode}", gap_ids.len()))
-            .map_err(|e| e.to_string())?;
-        jobs.set_status(job.id, "running")
-            .map_err(|e| e.to_string())?;
-        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
-        emit_job(&app, &running);
-        job.id
-    };
+    let (running, execution) =
+        start_job(&state, &format!("escalate-class:{}:{mode}", gap_ids.len()))?;
+    emit_job(&app, &running);
     let fail = |error: String| -> String {
-        report_failure(&app, &state, job_id, &error);
+        report_failure(&app, &state, &execution, &error);
         error
     };
 
-    report_progress(&app, &state, job_id, "context", 5.0).map_err(&fail)?;
+    report_progress(&app, &state, &execution, "context", 5.0).map_err(&fail)?;
     // Capture one coherent graph on a worker; no graph lock spans a model call.
     // Per-instance assembly errors join the outcome instead of aborting it.
     let context_app = app.clone();
-    let (tasks, graph_snapshot_id) = off_ui_thread(move || {
+    let (tasks, graph_snapshot_id) = off_ui_thread_for_job(execution.clone(), move |execution| {
         let state = context_app.state::<AppState>();
+        if job_cancelled(&state, execution)? {
+            return Err("cancelled".into());
+        }
         let (nodes, edges, reader) = graph_and_reader(&state)?;
         let tasks: Vec<(String, Result<agents::AgentTask, String>)> = gap_ids
             .iter()
@@ -2074,45 +2071,38 @@ async fn run_class_escalation(
     let broker = agents::AgentBroker::bounded_default();
 
     let batch_app = app.clone();
-    let mut outcome = tauri::async_runtime::spawn_blocking(move || {
+    let mut outcome = off_ui_thread_for_job(execution.clone(), move |execution| {
         let state = batch_app.state::<AppState>();
         let total = tasks.len();
-        proposals::run_staged_batch(
+        run_job_staged_batch(
+            &state,
+            execution,
             tasks,
-            || job_cancelled(&state, job_id),
             |index, _| {
-                let _ = report_progress(
+                report_progress(
                     &batch_app,
                     &state,
-                    job_id,
+                    execution,
                     &format!("escalate {}/{total}", index + 1),
                     5.0 + (index as f64 / total as f64) * 90.0,
-                );
+                )
             },
             |task| {
-                if job_cancelled(&state, job_id) {
-                    return Err("cancelled".into());
-                }
                 let proposal = broker
                     .propose(provider.as_ref(), &firewall, task, None)
                     .map_err(|error| error.to_string())?;
-                state
-                    .proposals
-                    .lock()
-                    .map_err(|error| error.to_string())?
-                    .stage(task, &proposal, job_id, &graph_snapshot_id)
-                    .map_err(|error| error.to_string())
+                stage_completed_job_proposal(&state, execution, task, &proposal, &graph_snapshot_id)
             },
         )
     })
     .await
-    .map_err(|e| fail(e.to_string()))?;
+    .map_err(&fail)?;
 
     let job = (|| {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         if outcome.proposals.is_empty() && !outcome.failures.is_empty() {
-            jobs.fail(
-                job_id,
+            jobs.fail_execution(
+                &execution,
                 "No instance produced a durable proposal; inspect the batch failures.",
             )
         } else {
@@ -2122,11 +2112,12 @@ async fn run_class_escalation(
                 .map(|proposal| proposal.proposal_id.clone())
                 .collect();
             artifacts.push(format!("failures:{}", outcome.failures.len()));
-            jobs.finish(job_id, &artifacts)
+            jobs.finish_execution(&execution, &artifacts)
         }
         .map_err(|e| e.to_string())
     })()
     .map_err(&fail)?;
+    let job = updated_job(job);
     outcome.cancelled |= job.status == "cancelled";
     emit_job(&app, &job);
     // A cancelled batch still returns its partial outcome (#194 review):
@@ -2139,6 +2130,143 @@ async fn run_class_escalation(
 /// and the global progress bar stay live without polling (#117).
 fn emit_job<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job: &Job) {
     let _ = app.emit("job://changed", job);
+}
+
+fn claim_job(state: &AppState, plan: &jobs::ClaimPlan) -> Result<(Job, JobExecution), String> {
+    // The plan is owned data: no store mutex spans the OS reservation.
+    let reservation = state
+        .job_execution_locks
+        .try_reserve(plan.lock_target())
+        .map_err(|error| error.to_string())?;
+    state
+        .jobs
+        .lock()
+        .map_err(|error| error.to_string())?
+        .claim_execution(plan, reservation)
+        .map_err(|error| error.to_string())
+}
+
+fn start_job(state: &AppState, kind: &str) -> Result<(Job, JobExecution), String> {
+    let plan = {
+        let mut jobs = state.jobs.lock().map_err(|error| error.to_string())?;
+        let job = jobs.enqueue(kind).map_err(|error| error.to_string())?;
+        jobs.claim_plan(job.id, ClaimMode::StartQueued)
+            .map_err(|error| error.to_string())?
+    };
+    claim_job(state, &plan)
+}
+
+fn updated_job(update: ExecutionUpdate) -> Job {
+    match update {
+        ExecutionUpdate::Applied(job) | ExecutionUpdate::Unchanged(job) => job,
+    }
+}
+
+fn completed_job(job: &Job) -> Result<(), String> {
+    match job.status.as_str() {
+        "done" => Ok(()),
+        "cancelled" => Err("cancelled".into()),
+        _ => Err("Job execution has already finished without completing this work.".into()),
+    }
+}
+
+fn stage_completed_job_proposal(
+    state: &AppState,
+    execution: &JobExecution,
+    task: &agents::AgentTask,
+    proposal: &agents::AgentProposal,
+    graph_snapshot_id: &str,
+) -> Result<agents::StagedProposal, String> {
+    // A completed model result remains reviewable even if the cancelled job was
+    // cleared during that call. The retained opaque execution supplies its
+    // original identity; this exception never authorizes another model call or
+    // a worker lifecycle write through a missing row.
+    match state
+        .jobs
+        .lock()
+        .map_err(|error| error.to_string())?
+        .check_execution(execution)
+    {
+        Ok(ExecutionCheck::Running | ExecutionCheck::Cancelled)
+        | Err(JobTransitionError::Missing) => {}
+        Ok(ExecutionCheck::Terminal) => return Err("Job execution has already finished.".into()),
+        Err(error) => return Err(error.to_string()),
+    }
+    state
+        .proposals
+        .lock()
+        .map_err(|error| error.to_string())?
+        .stage(task, proposal, execution.id(), graph_snapshot_id)
+        .map_err(|error| error.to_string())
+}
+
+fn run_job_staged_batch(
+    state: &AppState,
+    execution: &JobExecution,
+    tasks: Vec<(String, Result<agents::AgentTask, String>)>,
+    mut progress: impl FnMut(usize, usize) -> Result<(), String>,
+    mut execute_and_stage: impl FnMut(&agents::AgentTask) -> Result<agents::StagedProposal, String>,
+) -> Result<proposals::StagedBatchOutcome, String> {
+    // The broker's bool cancellation callback must stop on ownership errors,
+    // while the host preserves their distinct cause in the returned failure.
+    let stop_error = std::cell::RefCell::new(None);
+    let outcome = proposals::run_staged_batch(
+        tasks,
+        || match job_cancelled(state, execution) {
+            Ok(cancelled) => cancelled || stop_error.borrow().is_some(),
+            Err(error) => {
+                *stop_error.borrow_mut() = Some(error);
+                true
+            }
+        },
+        |index, total| {
+            if let Err(error) = progress(index, total) {
+                *stop_error.borrow_mut() = Some(error);
+            }
+        },
+        |task| {
+            if let Some(error) = stop_error.borrow().as_ref() {
+                return Err(error.clone());
+            }
+            match job_cancelled(state, execution) {
+                Ok(false) => execute_and_stage(task),
+                Ok(true) => Err("cancelled".into()),
+                Err(error) => {
+                    *stop_error.borrow_mut() = Some(error.clone());
+                    Err(error)
+                }
+            }
+        },
+    );
+    if let Some(error) = stop_error.into_inner() {
+        return Err(error);
+    }
+    Ok(outcome)
+}
+
+fn recover_jobs(jobs: &Mutex<JobStore>, locks: &JobExecutionLocks) -> Result<Vec<Job>, String> {
+    let candidates = jobs
+        .lock()
+        .map_err(|error| error.to_string())?
+        .recovery_candidates()
+        .map_err(|error| error.to_string())?;
+    let mut recovered = Vec::new();
+    for candidate in candidates {
+        let reservation = match locks.try_reserve(candidate.lock_target()) {
+            Ok(reservation) => reservation,
+            Err(JobTransitionError::Busy) => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        if let Some(job) = jobs
+            .lock()
+            .map_err(|error| error.to_string())?
+            .recover_reserved(&candidate, reservation)
+            .map_err(|error| error.to_string())?
+        {
+            recovered.push(job);
+        }
+    }
+    Ok(recovered)
 }
 
 /// A live "what it's doing right now" ping (#209) — current adapter/file
@@ -2178,14 +2306,15 @@ fn detail_throttle<R: tauri::Runtime>(
 fn report_progress<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
-    job_id: i64,
+    execution: &JobExecution,
     stage: &str,
     percent: f64,
 ) -> Result<(), String> {
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let job = jobs
-        .set_progress(job_id, stage, percent)
-        .map_err(|e| e.to_string())?;
+    let job = updated_job(
+        jobs.progress_execution(execution, stage, percent)
+            .map_err(|e| e.to_string())?,
+    );
     emit_job(app, &job);
     Ok(())
 }
@@ -2194,64 +2323,70 @@ fn report_progress<R: tauri::Runtime>(
 fn report_failure<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
-    job_id: i64,
+    execution: &JobExecution,
     error: &str,
 ) {
     let Ok(mut jobs) = state.jobs.lock() else {
         return;
     };
-    if let Ok(job) = jobs.fail(job_id, error) {
-        emit_job(app, &job);
+    if let Ok(update) = jobs.fail_execution(execution, error) {
+        emit_job(app, &updated_job(update));
     }
 }
 
-/// True when the user cancelled the job — long work checks this between
-/// stages and stops at the next safe boundary (content-addressed delta
-/// ingest keeps the graph consistent, ADR-0014).
-/// Complete `job_id` unless a concurrent cancel already won: `finish` only
-/// transitions queued/running rows, so a cancelled job stays cancelled and
-/// the pipeline reports it instead of returning a success summary (#166
-/// review — with the UI responsive during adds, Cancel can race the worker).
-fn finish_or_cancelled(
+/// Finish this running attempt, preserving a winning cancellation. Invalid or
+/// missing ownership stays an explicit error rather than a cancellation result.
+fn finish_or_cancelled<R: tauri::Runtime>(
     state: &AppState,
-    app: &tauri::AppHandle,
-    job_id: i64,
+    app: &tauri::AppHandle<R>,
+    execution: &JobExecution,
 ) -> Result<(), String> {
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let done = jobs.finish(job_id, &[]).map_err(|e| e.to_string())?;
-    if done.status != "done" {
-        return Err("cancelled".to_string());
-    }
+    let done = updated_job(
+        jobs.finish_execution(execution, &[])
+            .map_err(|e| e.to_string())?,
+    );
+    completed_job(&done)?;
     emit_job(app, &done);
     Ok(())
 }
 
-fn finish_source_operation(
+fn finish_source_operation<R: tauri::Runtime>(
     state: &AppState,
-    app: &tauri::AppHandle,
-    job_id: i64,
+    app: &tauri::AppHandle<R>,
+    execution: &JobExecution,
     operation: &SourceOperation,
 ) -> Result<(), String> {
-    if job_cancelled(state, job_id) {
+    if job_cancelled(state, execution)? {
         return Err("cancelled".into());
     }
     // Settle the cancellation race before publishing readiness. A failed final
     // availability transaction leaves all managed sources unavailable, even if
     // the historical job has already recorded its completed recovery work.
-    finish_or_cancelled(state, app, job_id)?;
+    finish_or_cancelled(state, app, execution)?;
     operation.set_writes_ready(&state.sources, true)
 }
 
-fn job_cancelled(state: &AppState, job_id: i64) -> bool {
-    state
+fn job_cancelled(state: &AppState, execution: &JobExecution) -> Result<bool, String> {
+    match state
         .jobs
         .lock()
-        .ok()
-        .and_then(|jobs| jobs.is_cancelled(job_id).ok())
-        // Fail closed: an unreadable spine stops the worker too (#157
-        // review) — a cancellation guard that defaults to "keep going"
-        // is no guard at all.
-        .unwrap_or(true)
+        .map_err(|error| error.to_string())?
+        .check_execution(execution)
+        .map_err(|error| error.to_string())?
+    {
+        ExecutionCheck::Running => Ok(false),
+        ExecutionCheck::Cancelled => Ok(true),
+        ExecutionCheck::Terminal => Err("Job execution has already finished.".into()),
+    }
+}
+
+fn ensure_running_job(state: &AppState, execution: &JobExecution) -> Result<(), String> {
+    if job_cancelled(state, execution)? {
+        Err("cancelled".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn register_local_source(
@@ -2298,16 +2433,17 @@ fn source_operation(
 fn run_ingest(
     source: &RegisteredSource,
     operation: &SourceOperation,
-    job_id: i64,
+    execution: &JobExecution,
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<IngestSummary, String> {
+    let job_id = execution.id();
     let fail = |error: String| -> String {
-        report_failure(app, state, job_id, &error);
+        report_failure(app, state, execution, &error);
         error
     };
     let cancelled = || -> Result<(), String> {
-        if job_cancelled(state, job_id) {
+        if job_cancelled(state, execution)? {
             // Cancelled by the user: status is already `cancelled`; the
             // pipeline just stops. Not a failure.
             return Err("cancelled".to_string());
@@ -2315,12 +2451,12 @@ fn run_ingest(
         Ok(())
     };
 
-    report_progress(app, state, job_id, "scan", 5.0)?;
+    report_progress(app, state, execution, "scan", 5.0)?;
     let root = operation.root(&source.repo_key).map_err(&fail)?;
     let repo = source.repo_key.clone();
 
     cancelled()?;
-    report_progress(app, state, job_id, "extract", 15.0)?;
+    report_progress(app, state, execution, "extract", 15.0)?;
     let active_plugins = active_plugins_for_root(app, state, root).map_err(&fail)?;
     let mut on_file = detail_throttle(app, job_id);
     let primary = state
@@ -2333,6 +2469,7 @@ fn run_ingest(
             .extraction_caches
             .lock()
             .map_err(|e| fail(e.to_string()))?;
+        ensure_running_job(state, execution)?;
         let cache = caches.repos.entry(repo.clone()).or_default();
         extract_tree_with_primary(
             root,
@@ -2358,18 +2495,21 @@ fn run_ingest(
         .persist(&primary, source, &receipts)
         .map_err(&fail)?;
     let bindings = primary_source::matching_bindings(&extraction, &receipts);
-    report_progress(app, state, job_id, "load", 70.0)?;
+    report_progress(app, state, execution, "load", 70.0)?;
     {
         let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
+        ensure_running_job(state, execution)?;
         load_into_graph_with_bindings(&mut graph, &extraction, &repo, root, "workdir", &bindings)
             .map_err(&fail)?;
-        report_progress(app, state, job_id, "stitch", 90.0)?;
+        report_progress(app, state, execution, "stitch", 90.0)?;
 
+        ensure_running_job(state, execution)?;
         stitch_backings(&mut graph).map_err(&fail)?;
     }
 
-    relink_found_adrs(state, operation).map_err(&fail)?;
+    relink_found_adrs(state, operation, execution).map_err(&fail)?;
 
+    ensure_running_job(state, execution)?;
     record_ingest_metrics(
         state,
         job_id,
@@ -2384,13 +2524,12 @@ fn run_ingest(
     // guarded to only transition a running job, so whichever outcome hit
     // the store first wins — read the row back to learn which.
     let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let job = jobs
-        .finish(job_id, &[format!("graph:{repo}@workdir")])
-        .map_err(|e| e.to_string())?;
+    let job = updated_job(
+        jobs.finish_execution(execution, &[format!("graph:{repo}@workdir")])
+            .map_err(|e| e.to_string())?,
+    );
     emit_job(app, &job);
-    if job.status != "done" {
-        return Err("cancelled".to_string());
-    }
+    completed_job(&job)?;
     Ok(IngestSummary {
         job_id,
         files: layers.files(),
@@ -2415,6 +2554,15 @@ async fn off_ui_thread<T: Send + 'static>(
         .map_err(|e| e.to_string())?
 }
 
+/// The blocking worker owns an execution clone independently of its async
+/// waiter. Aborting the waiter cannot release a worker that is still running.
+async fn off_ui_thread_for_job<T: Send + 'static>(
+    execution: JobExecution,
+    work: impl FnOnce(&JobExecution) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    off_ui_thread(move || work(&execution)).await
+}
+
 #[tauri::command]
 async fn ingest_path(path: String, app: tauri::AppHandle) -> Result<IngestSummary, String> {
     off_ui_thread(move || ingest_path_blocking(path, app)).await
@@ -2424,18 +2572,9 @@ fn ingest_path_blocking(path: String, app: tauri::AppHandle) -> Result<IngestSum
     let state = app.state::<AppState>();
     let source = register_local_source(&state, std::path::Path::new(&path))?;
     let operation = source_operation(&state, vec![(source.clone(), false)])?;
-    let job_id = {
-        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs
-            .enqueue(&source.ingest_job_kind())
-            .map_err(|e| e.to_string())?;
-        jobs.set_status(job.id, "running")
-            .map_err(|e| e.to_string())?;
-        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
-        emit_job(&app, &running);
-        job.id
-    };
-    run_ingest(&source, &operation, job_id, &app, &state)
+    let (running, execution) = start_job(&state, &source.ingest_job_kind())?;
+    emit_job(&app, &running);
+    run_ingest(&source, &operation, &execution, &app, &state)
 }
 
 /// Cancel a queued or running job; running work stops at its next stage
@@ -2448,8 +2587,8 @@ fn cancel_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     Ok(job)
 }
 
-/// Retry a failed or cancelled job, or resume an interrupted one: re-queues
-/// the same row, then re-dispatches execution for kinds the shell can re-run
+/// Retry a failed or cancelled job, or resume an interrupted one: claim a new
+/// running attempt on the same row for kinds the shell can re-run
 /// (`ingest-source-v1:*` reuses the content-addressed cache, so a resume recomputes
 /// only what the interrupted run didn't finish — ADR-0014).
 #[tauri::command]
@@ -2480,42 +2619,39 @@ fn retry_source(state: &AppState, kind: &str) -> Result<Option<RegisteredSource>
 fn prepare_job_retry(
     state: &AppState,
     id: i64,
-) -> Result<(Job, Option<RegisteredSource>, Option<SourceOperation>), String> {
-    let kind = state
+) -> Result<
+    (
+        Job,
+        JobExecution,
+        Option<RegisteredSource>,
+        Option<SourceOperation>,
+    ),
+    String,
+> {
+    let plan = state
         .jobs
         .lock()
         .map_err(|e| e.to_string())?
-        .get(id)
-        .map_err(|e| e.to_string())?
-        .kind;
+        .claim_plan(id, ClaimMode::RetryTerminal)
+        .map_err(|e| e.to_string())?;
     // Validate the supported binding and complete source guard plan before the
-    // retry transition. Historical/unavailable jobs remain byte-for-byte intact.
-    let source = retry_source(state, &kind)?;
+    // retry claim. Historical/unavailable jobs remain byte-for-byte intact.
+    let source = retry_source(state, &plan.job().kind)?;
     let operation = source
         .as_ref()
         .map(|source| source_operation(state, vec![(source.clone(), false)]))
         .transpose()?;
-    let job = state
-        .jobs
-        .lock()
-        .map_err(|e| e.to_string())?
-        .retry(id)
-        .map_err(|e| e.to_string())?;
-    Ok((job, source, operation))
+    let (job, execution) = claim_job(state, &plan)?;
+    Ok((job, execution, source, operation))
 }
 
 fn retry_job_blocking(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
     let state = app.state::<AppState>();
-    let (job, source, operation) = prepare_job_retry(&state, id)?;
+    let (job, execution, source, operation) = prepare_job_retry(&state, id)?;
     emit_job(&app, &job);
     let kind = job.kind;
     if let (Some(source), Some(operation)) = (source, operation) {
-        {
-            let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-            jobs.set_status(id, "running").map_err(|e| e.to_string())?;
-            emit_job(&app, &jobs.get(id).map_err(|e| e.to_string())?);
-        }
-        run_ingest(&source, &operation, id, &app, &state)?;
+        run_ingest(&source, &operation, &execution, &app, &state)?;
         return state
             .jobs
             .lock()
@@ -2527,19 +2663,16 @@ fn retry_job_blocking(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
     // to whatever bytes are on disk now, which is exactly what a retry
     // after an interrupt or a fixed corpus should do.
     if let Some(plugin_id) = kind.strip_prefix("plugin-gate:") {
-        {
-            let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-            jobs.set_status(id, "running").map_err(|e| e.to_string())?;
-            let running = jobs.get(id).map_err(|e| e.to_string())?;
-            emit_job(&app, &running);
-        }
-        plugin_gate_blocking(plugin_id, id, &app)?;
+        plugin_gate_blocking(plugin_id, &execution, &app)?;
         let jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         return jobs.get(id).map_err(|e| e.to_string());
     }
     if kind == "noop" {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs.finish(id, &[]).map_err(|e| e.to_string())?;
+        let job = updated_job(
+            jobs.finish_execution(&execution, &[])
+                .map_err(|e| e.to_string())?,
+        );
         emit_job(&app, &job);
         return Ok(job);
     }
@@ -2547,7 +2680,7 @@ fn retry_job_blocking(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
     // behind the same job-id seam; until then the caller is told explicitly
     // rather than silently doing nothing.
     let error = format!("retry re-dispatch not yet supported for kind '{kind}' — re-run the add");
-    report_failure(&app, &state, id, &error);
+    report_failure(&app, &state, &execution, &error);
     Err(error)
 }
 
@@ -2580,45 +2713,38 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         .map_err(|e| e.to_string())?
         .reserve_managed(&url)?;
     let mut operation = source_operation(&state, vec![(source.clone(), true)])?;
-    let job_id = {
-        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs
-            .enqueue(&format!("add-repo:{url}"))
-            .map_err(|e| e.to_string())?;
-        jobs.set_status(job.id, "running")
-            .map_err(|e| e.to_string())?;
-        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
-        emit_job(&app, &running);
-        job.id
-    };
-    let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
-        report_failure(&app, state, job_id, &e);
+    let (running, execution) = start_job(&state, &format!("add-repo:{url}"))?;
+    let job_id = execution.id();
+    emit_job(&app, &running);
+    let fail = |e: String| -> String {
+        report_failure(&app, &state, &execution, &e);
         e
     };
 
+    if job_cancelled(&state, &execution)? {
+        return Err("cancelled".into());
+    }
     let token = ingest::discover_token();
     let cloned = operation
         .clone_source(&source, token.as_deref())
-        .map_err(|e| fail(e, &state, job_id))?;
-    if job_cancelled(&state, job_id) {
+        .map_err(&fail)?;
+    if job_cancelled(&state, &execution)? {
         return Err("cancelled".into());
     }
-    let root = operation
-        .root(&source.repo_key)
-        .map_err(|e| fail(e, &state, job_id))?;
-    let active_plugins =
-        active_plugins_for_root(&app, &state, root).map_err(|e| fail(e, &state, job_id))?;
+    let root = operation.root(&source.repo_key).map_err(&fail)?;
+    let active_plugins = active_plugins_for_root(&app, &state, root).map_err(&fail)?;
     let mut on_file = detail_throttle(&app, job_id);
     let primary = state
         .primary_sources
         .prepare(&source, root, &[])
-        .map_err(|e| fail(e, &state, job_id))?;
+        .map_err(&fail)?;
     let mut receipts = Vec::new();
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
             .lock()
-            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+            .map_err(|e| fail(e.to_string()))?;
+        ensure_running_job(&state, &execution)?;
         let cache = caches.repos.entry(source.repo_key.clone()).or_default();
         extract_tree_with_primary(
             root,
@@ -2635,21 +2761,19 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
             primary.capture.as_ref(),
             &mut receipts,
         )
-        .map_err(|e| fail(e, &state, job_id))?
+        .map_err(&fail)?
     };
-    if job_cancelled(&state, job_id) {
+    if job_cancelled(&state, &execution)? {
         return Err("cancelled".to_string());
     }
     state
         .primary_sources
         .persist(&primary, &source, &receipts)
-        .map_err(|e| fail(e, &state, job_id))?;
+        .map_err(&fail)?;
     let bindings = primary_source::matching_bindings(&extraction, &receipts);
     {
-        let mut graph = state
-            .graph
-            .lock()
-            .map_err(|e| fail(e.to_string(), &state, job_id))?;
+        let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
+        ensure_running_job(&state, &execution)?;
         load_into_graph_with_bindings(
             &mut graph,
             &extraction,
@@ -2658,11 +2782,13 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
             &cloned.commit_sha,
             &bindings,
         )
-        .map_err(|e| fail(e, &state, job_id))?;
+        .map_err(&fail)?;
 
-        stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
+        ensure_running_job(&state, &execution)?;
+        stitch_backings(&mut graph).map_err(&fail)?;
     }
-    relink_found_adrs(&state, &operation).map_err(|e| fail(e, &state, job_id))?;
+    relink_found_adrs(&state, &operation, &execution).map_err(&fail)?;
+    ensure_running_job(&state, &execution)?;
     record_ingest_metrics(
         &state,
         job_id,
@@ -2671,8 +2797,8 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         &layers,
         &std::collections::BTreeSet::from([source.repo_key.clone()]),
     )
-    .map_err(|e| fail(e, &state, job_id))?;
-    finish_source_operation(&state, &app, job_id, &operation)?;
+    .map_err(&fail)?;
+    finish_source_operation(&state, &app, &execution, &operation)?;
     Ok(AddRepoSummary {
         job_id,
         repo: source.repo_key,
@@ -2725,7 +2851,10 @@ async fn add_system(path: String, app: tauri::AppHandle) -> Result<AddSystemSumm
     off_ui_thread(move || add_system_blocking(path, app)).await
 }
 
-fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemSummary, String> {
+fn add_system_blocking<R: tauri::Runtime>(
+    path: String,
+    app: tauri::AppHandle<R>,
+) -> Result<AddSystemSummary, String> {
     let state = app.state::<AppState>();
     let manifest_path = paths::canonicalize(&path).map_err(|e| e.to_string())?;
     let manifest =
@@ -2748,19 +2877,11 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
             .collect::<Result<Vec<_>, String>>()?
     };
     let mut operation = source_operation(&state, admitted.clone())?;
-    let job_id = {
-        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs
-            .enqueue(&format!("add-system:{path}"))
-            .map_err(|e| e.to_string())?;
-        jobs.set_status(job.id, "running")
-            .map_err(|e| e.to_string())?;
-        let running = jobs.get(job.id).map_err(|e| e.to_string())?;
-        emit_job(&app, &running);
-        job.id
-    };
-    let fail = |e: String, state: &State<'_, AppState>, job_id: i64| -> String {
-        report_failure(&app, state, job_id, &e);
+    let (running, execution) = start_job(&state, &format!("add-system:{path}"))?;
+    let job_id = execution.id();
+    emit_job(&app, &running);
+    let fail = |e: String| -> String {
+        report_failure(&app, &state, &execution, &e);
         e
     };
 
@@ -2771,12 +2892,12 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
             && let std::collections::btree_map::Entry::Vacant(entry) =
                 cloned_commits.entry(source.source_id.clone())
         {
-            if job_cancelled(&state, job_id) {
+            if job_cancelled(&state, &execution)? {
                 return Err("cancelled".into());
             }
             let cloned = operation
                 .clone_source(source, token.as_deref())
-                .map_err(|e| fail(e, &state, job_id))?;
+                .map_err(&fail)?;
             entry.insert(cloned.commit_sha);
         }
     }
@@ -2788,12 +2909,10 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
     let mut delta = DeltaSummary::default();
     let mut on_file = detail_throttle(&app, job_id);
     for (entry, (source, remote)) in manifest.repos.iter().zip(&admitted) {
-        if job_cancelled(&state, job_id) {
+        if job_cancelled(&state, &execution)? {
             return Err("cancelled".to_string());
         }
-        let root = operation
-            .root(&source.repo_key)
-            .map_err(|e| fail(e, &state, job_id))?;
+        let root = operation.root(&source.repo_key).map_err(&fail)?;
         let repo = source.repo_key.clone();
         let commit = if *remote {
             cloned_commits
@@ -2809,18 +2928,18 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
         let pulumi_path = entry.pulumi_json.as_ref().map(|p| base.join(p));
         let trace_paths: Vec<std::path::PathBuf> =
             entry.otel_jsonl.iter().map(|p| base.join(p)).collect();
-        let active_plugins =
-            active_plugins_for_root(&app, &state, root).map_err(|e| fail(e, &state, job_id))?;
+        let active_plugins = active_plugins_for_root(&app, &state, root).map_err(&fail)?;
         let primary = state
             .primary_sources
             .prepare(source, root, &entry.layers)
-            .map_err(|e| fail(e, &state, job_id))?;
+            .map_err(&fail)?;
         let mut receipts = Vec::new();
         let (extraction, repo_layers, repo_delta) = {
             let mut caches = state
                 .extraction_caches
                 .lock()
-                .map_err(|e| fail(e.to_string(), &state, job_id))?;
+                .map_err(|e| fail(e.to_string()))?;
+            ensure_running_job(&state, &execution)?;
             let cache = caches.repos.entry(repo.clone()).or_default();
             extract_tree_with_primary(
                 root,
@@ -2837,12 +2956,13 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
                 primary.capture.as_ref(),
                 &mut receipts,
             )
-            .map_err(|e| fail(e, &state, job_id))?
+            .map_err(&fail)?
         };
+        ensure_running_job(&state, &execution)?;
         state
             .primary_sources
             .persist(&primary, source, &receipts)
-            .map_err(|e| fail(e, &state, job_id))?;
+            .map_err(&fail)?;
         let bindings = primary_source::matching_bindings(&extraction, &receipts);
         files += repo_layers.files();
         nodes += extraction.nodes.len() as u64;
@@ -2854,12 +2974,10 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
             repo_delta.deleted_files,
         );
         {
-            let mut graph = state
-                .graph
-                .lock()
-                .map_err(|e| fail(e.to_string(), &state, job_id))?;
+            let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
+            ensure_running_job(&state, &execution)?;
             load_into_graph_with_bindings(&mut graph, &extraction, &repo, root, &commit, &bindings)
-                .map_err(|e| fail(e, &state, job_id))?;
+                .map_err(&fail)?;
         }
         let sha12: String = commit.chars().take(12).collect();
         repos.push(format!("{repo}@{sha12}"));
@@ -2868,16 +2986,14 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
     {
         // After every repo is in: infra from one repo can back channels
         // published by another.
-        let mut graph = state
-            .graph
-            .lock()
-            .map_err(|e| fail(e.to_string(), &state, job_id))?;
-
-        stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
+        let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
+        ensure_running_job(&state, &execution)?;
+        stitch_backings(&mut graph).map_err(&fail)?;
     }
-    relink_found_adrs(&state, &operation).map_err(|e| fail(e, &state, job_id))?;
+    relink_found_adrs(&state, &operation, &execution).map_err(&fail)?;
     // One history record for the whole system; the per-repo identities are
     // the record's identity (a system has no single commit).
+    ensure_running_job(&state, &execution)?;
     record_ingest_metrics(
         &state,
         job_id,
@@ -2886,8 +3002,8 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
         &layers,
         &repo_identities,
     )
-    .map_err(|e| fail(e, &state, job_id))?;
-    finish_source_operation(&state, &app, job_id, &operation)?;
+    .map_err(&fail)?;
+    finish_source_operation(&state, &app, &execution, &operation)?;
     Ok(AddSystemSummary {
         job_id,
         repos,
@@ -3212,10 +3328,13 @@ fn main() {
             std::fs::create_dir_all(&data_dir)?;
             let graph = SqliteGraphStore::open(data_dir.join("graph.db"))?;
             let state_path = data_dir.join("state.db");
-            let mut jobs = JobStore::open(&state_path)?;
-            // Jobs left running by a dead process become explicit
-            // `interrupted` rows — resumable, never silently stuck (#117).
-            jobs.recover_interrupted()?;
+            let jobs = JobStore::open(&state_path)?;
+            let job_execution_locks =
+                JobExecutionLocks::open(&data_dir, jobs.execution_namespace())?;
+            let jobs = Mutex::new(jobs);
+            // Only unchanged recorded attempts whose OS ownership is available
+            // are interrupted. Live and legacy-unknown jobs remain untouched.
+            recover_jobs(&jobs, &job_execution_locks).map_err(std::io::Error::other)?;
             let findings = FindingStore::open(&state_path)?;
             let sources =
                 SourceRegistry::open(&state_path, &data_dir).map_err(std::io::Error::other)?;
@@ -3225,7 +3344,8 @@ fn main() {
             let recovery_metrics = metrics::MetricsStore::open(&state_path)?;
             app.manage(AppState {
                 graph: Mutex::new(graph),
-                jobs: Mutex::new(jobs),
+                jobs,
+                job_execution_locks,
                 findings: Mutex::new(findings),
                 settings: Mutex::new(tier_settings),
                 decisions: Mutex::new(decisions),
@@ -4748,16 +4868,17 @@ resource "aws_sqs_queue" "orders" {
     fn clearing_a_live_cancelled_job_still_stops_the_worker() {
         // #157 review (P1): a cancelled job can be cleared while its worker
         // is still between cancellation checks. The guard must fail closed —
-        // a missing row reads as cancelled, so the worker stops instead of
+        // a missing row stops the exact execution, instead of
         // continuing to write graph facts after cancellation.
         let dir = tempfile::tempdir().unwrap();
-        let mut jobs = crate::jobs::JobStore::open(dir.path().join("state.db")).unwrap();
-        let job = jobs.enqueue("ingest:/big").unwrap();
-        jobs.set_status(job.id, "running").unwrap();
-        jobs.cancel(job.id).unwrap();
-        assert_eq!(jobs.clear_finished().unwrap(), 1);
-        // The worker's next boundary check on the vanished row: cancelled.
-        assert!(jobs.is_cancelled(job.id).unwrap());
+        let state = super::registered_source_tests::app_state(dir.path());
+        let (job, execution) = super::start_job(&state, "ingest:/big").unwrap();
+        state.jobs.lock().unwrap().cancel(job.id).unwrap();
+        assert_eq!(state.jobs.lock().unwrap().clear_finished().unwrap(), 1);
+        assert_eq!(
+            super::job_cancelled(&state, &execution).unwrap_err(),
+            super::JobTransitionError::Missing.to_string()
+        );
     }
 
     #[test]
@@ -4766,18 +4887,45 @@ resource "aws_sqs_queue" "orders" {
         // the worker. The terminal transition must be atomic — a cancelled
         // job stays cancelled and the pipeline reports it, never a success.
         let dir = tempfile::tempdir().unwrap();
-        let mut jobs = crate::jobs::JobStore::open(dir.path().join("state.db")).unwrap();
-        let job = jobs.enqueue("add-repo:https://example.test/a").unwrap();
-        jobs.set_status(job.id, "running").unwrap();
-        jobs.cancel(job.id).unwrap();
+        let state = super::registered_source_tests::app_state(dir.path());
+        let (job, execution) = super::start_job(&state, "add-repo:https://example.test/a").unwrap();
+        state.jobs.lock().unwrap().cancel(job.id).unwrap();
         // The worker's completion attempt must not overwrite the cancel.
-        let after = jobs.finish(job.id, &[]).unwrap();
+        let after = super::updated_job(
+            state
+                .jobs
+                .lock()
+                .unwrap()
+                .finish_execution(&execution, &[])
+                .unwrap(),
+        );
         assert_eq!(after.status, "cancelled");
 
         // And an uncancelled run completes normally through the same path.
-        let ok = jobs.enqueue("add-repo:https://example.test/b").unwrap();
-        jobs.set_status(ok.id, "running").unwrap();
-        assert_eq!(jobs.finish(ok.id, &[]).unwrap().status, "done");
+        let (_, execution) = super::start_job(&state, "add-repo:https://example.test/b").unwrap();
+        assert_eq!(
+            super::updated_job(
+                state
+                    .jobs
+                    .lock()
+                    .unwrap()
+                    .finish_execution(&execution, &[])
+                    .unwrap()
+            )
+            .status,
+            "done"
+        );
+
+        let (_, failed_execution) = super::start_job(&state, "noop").unwrap();
+        let failed = super::updated_job(
+            state
+                .jobs
+                .lock()
+                .unwrap()
+                .fail_execution(&failed_execution, "fixture failure")
+                .unwrap(),
+        );
+        assert_ne!(super::completed_job(&failed).unwrap_err(), "cancelled");
     }
 
     #[test]
@@ -5865,6 +6013,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
                 super::settings::SettingsStore::open(&state_path).unwrap(),
@@ -5888,14 +6037,10 @@ export function App() {
         let hash = core_prov::content_hash(OK_ADAPTER);
 
         // Enqueue a gate job, then cancel before the pipeline runs.
-        let job_id = {
-            let mut jobs = state.jobs.lock().unwrap();
-            let job = jobs.enqueue("plugin-gate:t0.plugin-fixture").unwrap();
-            jobs.set_status(job.id, "running").unwrap();
-            jobs.cancel(job.id).unwrap();
-            job.id
-        };
-        let result = super::plugin_gate_blocking("t0.plugin-fixture", job_id, &handle);
+        let (job, execution) = super::start_job(&state, "plugin-gate:t0.plugin-fixture").unwrap();
+        let job_id = job.id;
+        state.jobs.lock().unwrap().cancel(job_id).unwrap();
+        let result = super::plugin_gate_blocking("t0.plugin-fixture", &execution, &handle);
         assert_eq!(result.unwrap_err(), "cancelled");
         // The cancel won outright: no verdict, job row still cancelled.
         assert!(
@@ -5912,15 +6057,11 @@ export function App() {
             "cancelled"
         );
 
-        // Retry re-queues the same durable row and re-dispatches the gate
-        // (the `plugin-gate:` branch of retry_job_blocking runs exactly
-        // this sequence over the same helper).
-        {
-            let mut jobs = state.jobs.lock().unwrap();
-            jobs.retry(job_id).unwrap();
-            jobs.set_status(job_id, "running").unwrap();
-        }
-        super::plugin_gate_blocking("t0.plugin-fixture", job_id, &handle)
+        // Retry claims the next attempt only after the old execution exits;
+        // the production retry preparation then dispatches the same gate helper.
+        drop(execution);
+        let (_, execution, _, _) = super::prepare_job_retry(&state, job_id).unwrap();
+        super::plugin_gate_blocking("t0.plugin-fixture", &execution, &handle)
             .expect("retried gate runs");
         assert_eq!(
             state.jobs.lock().unwrap().get(job_id).unwrap().status,
@@ -5972,6 +6113,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
                 super::settings::SettingsStore::open(&state_path).unwrap(),
@@ -6065,6 +6207,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
                 super::settings::SettingsStore::open(&state_path).unwrap(),
@@ -6124,13 +6267,8 @@ export function App() {
         );
 
         // Gate the artifact (the request lane lands it here), then accept.
-        let job_id = {
-            let mut jobs = state.jobs.lock().unwrap();
-            let job = jobs.enqueue("plugin-gate:t0.plugin-fixture").unwrap();
-            jobs.set_status(job.id, "running").unwrap();
-            job.id
-        };
-        let report = super::plugin_gate_blocking("t0.plugin-fixture", job_id, &handle).unwrap();
+        let (_, execution) = super::start_job(&state, "plugin-gate:t0.plugin-fixture").unwrap();
+        let report = super::plugin_gate_blocking("t0.plugin-fixture", &execution, &handle).unwrap();
         assert_eq!(report["passed"], serde_json::json!(true));
         let hash = core_prov::content_hash(OK_ADAPTER);
         state
@@ -6250,6 +6388,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
                 super::settings::SettingsStore::open(&state_path).unwrap(),

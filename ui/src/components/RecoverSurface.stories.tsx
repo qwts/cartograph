@@ -5,8 +5,9 @@ import type { Job } from '../store';
 
 const RUNNING: Job = {
   id: 12,
-  kind: 'ingest:/repos/image-trail',
+  kind: 'ingest-source-v1:src_image_trail',
   status: 'running',
+  execution_tracking: 'recorded',
   stage: 'extract',
   progress: 15,
   created_at: '2026-07-14T10:00:00Z',
@@ -93,5 +94,42 @@ export const Failed: Story = {
     await expect(canvas.getByText('clone failed: repository not found')).toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: 'Back' }));
     await expect(args.onBack).toHaveBeenCalled();
+  },
+};
+
+export const LegacyPinnedRecordIsNotLive: Story = {
+  // AC-0162: even an explicit pin and an in-flight command cannot transform
+  // an old running row into tracked live recovery.
+  args: { job: { ...RUNNING, execution_tracking: 'legacy_unknown', detail: 'STALE DETAIL' } },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('status')).toHaveTextContent('Execution ownership unknown');
+    await expect(canvas.getByText('Stored status: running')).toBeVisible();
+    await expect(canvas.queryByTestId('recover-spinner')).not.toBeInTheDocument();
+    await expect(canvas.queryByRole('progressbar')).not.toBeInTheDocument();
+    await expect(canvas.queryByText('STALE DETAIL')).not.toBeInTheDocument();
+    await expect(canvas.queryByRole('button', { name: 'Run in background' })).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole('button', { name: 'Start a fresh recovery' }));
+    await expect(args.onBack).toHaveBeenCalledOnce();
+  },
+};
+
+export const OlderCoreOwnershipIsUnknown: Story = {
+  // AC-0162: absent tracking metadata has the same meaning as legacy_unknown.
+  args: { job: { ...RUNNING, execution_tracking: undefined }, busy: false },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('status')).toHaveTextContent('Start a fresh operation');
+    await expect(canvas.queryByTestId('recover-spinner')).not.toBeInTheDocument();
+  },
+};
+
+export const NoEligibleRecoveryDoesNotSpin: Story = {
+  // AC-0162: a missing eligible row without an active command is not live work.
+  args: { job: null, busy: false },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText('No active recovery selected')).toBeVisible();
+    await expect(canvas.queryByTestId('recover-spinner')).not.toBeInTheDocument();
   },
 };

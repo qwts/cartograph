@@ -5,6 +5,7 @@ import type { Job } from '../store';
 
 function job(overrides: Partial<Job> & Pick<Job, 'id' | 'kind' | 'status'>): Job {
   return {
+    execution_tracking: 'recorded',
     created_at: '2026-07-14T10:00:00Z',
     updated_at: '2026-07-14T10:05:00Z',
     ...overrides,
@@ -12,8 +13,8 @@ function job(overrides: Partial<Job> & Pick<Job, 'id' | 'kind' | 'status'>): Job
 }
 
 const ALL_STATES: Job[] = [
-  job({ id: 5, kind: 'ingest:/repo', status: 'running', stage: 'extract', progress: 40 }),
-  job({ id: 4, kind: 'ingest:/queued', status: 'queued' }),
+  job({ id: 5, kind: 'ingest-source-v1:src_live', status: 'running', stage: 'extract', progress: 40 }),
+  job({ id: 4, kind: 'ingest-source-v1:src_queued', status: 'queued' }),
   job({
     id: 3,
     kind: 'ingest:/repo',
@@ -110,7 +111,7 @@ export const NothingToClear: Story = {
   // With no terminal jobs the clear control is disabled, not hidden.
   args: {
     jobs: [
-      job({ id: 2, kind: 'ingest:/repo', status: 'running', stage: 'extract', progress: 10 }),
+      job({ id: 2, kind: 'ingest-source-v1:src_live', status: 'running', stage: 'extract', progress: 10 }),
       job({ id: 1, kind: 'ingest-source-v1:src_33333333333333333333333333333333', status: 'interrupted' }),
     ],
   },
@@ -138,7 +139,7 @@ export const ViewLiveOnRecoveryJobs: Story = {
     jobs: [
       job({
         id: 6,
-        kind: 'ingest:/repo',
+        kind: 'ingest-source-v1:src_live',
         status: 'running',
         stage: 'extract',
         progress: 40,
@@ -165,7 +166,7 @@ export const ViewLiveOnRecoveryJobs: Story = {
 export const PreV2CoreDegradesGracefully: Story = {
   // A core without #117 sends no stage/progress/error/artifacts — rows
   // still render with status and timestamps.
-  args: { jobs: [job({ id: 1, kind: 'noop', status: 'done' })] },
+  args: { jobs: [job({ id: 1, kind: 'noop', status: 'done', execution_tracking: undefined })] },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText('noop')).toBeInTheDocument();
@@ -181,26 +182,69 @@ export const RegisteredAndHistoricalRecoveryJobs: Story = {
     jobs: [
       job({ id: 8, kind: 'ingest-source-v1:src_88888888888888888888888888888888', status: 'running' }),
       job({ id: 7, kind: 'ingest-source-v1:src_77777777777777777777777777777777', status: 'interrupted' }),
-      job({ id: 6, kind: 'ingest:/historical', status: 'interrupted' }),
-      job({ id: 5, kind: 'ingest:/live-history', status: 'queued' }),
+      job({ id: 6, kind: 'ingest:/historical', status: 'interrupted', execution_tracking: 'legacy_unknown' }),
+      job({ id: 5, kind: 'ingest:/live-history', status: 'queued', execution_tracking: undefined }),
     ],
     onViewLive: fn(),
   },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     const live = canvas.getAllByRole('button', { name: 'View live' });
-    await expect(live).toHaveLength(2);
+    await expect(live).toHaveLength(1);
     await userEvent.click(live[0]);
     await expect(args.onViewLive).toHaveBeenCalledWith(8);
-    await userEvent.click(live[1]);
-    await expect(args.onViewLive).toHaveBeenCalledWith(5);
     const resume = canvas.getAllByRole('button', { name: 'Resume' });
     await expect(resume[0]).toBeEnabled();
     await userEvent.click(resume[0]);
     await expect(args.onRetry).toHaveBeenCalledWith(7);
     await expect(resume[1]).toBeDisabled();
     await expect(canvas.getByText(/ingest:\/historical/)).toBeInTheDocument();
-    await expect(canvas.getByText(/This historical job has no registered source/)).toBeInTheDocument();
+    await expect(canvas.getAllByText(/Execution ownership unknown/)).toHaveLength(2);
     await expect(args.onRetry).not.toHaveBeenCalledWith(6);
+  },
+};
+
+export const LegacyOwnershipIsHistory: Story = {
+  // AC-0162: a supported kind does not make a legacy row retryable or live;
+  // missing metadata from an older core receives the same honest treatment.
+  args: {
+    jobs: [
+      job({ id: 91, kind: 'ingest-source-v1:src_running', status: 'running', execution_tracking: 'legacy_unknown', stage: 'extract', progress: 45, detail: 'STALE LIVE DETAIL' }),
+      job({ id: 92, kind: 'add-repo:owner/project', status: 'failed', execution_tracking: undefined, error: 'stored failure' }),
+      job({ id: 93, kind: 'plugin-gate:fixture', status: 'interrupted', execution_tracking: 'legacy_unknown' }),
+    ],
+    onViewLive: fn(),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText('running')).toBeVisible();
+    await expect(canvas.getByText('stored failure')).toBeVisible();
+    await expect(canvas.getByText(/Stored progress: 45%/)).toBeVisible();
+    await expect(canvas.queryByText('STALE LIVE DETAIL')).not.toBeInTheDocument();
+    await expect(canvas.queryByRole('progressbar')).not.toBeInTheDocument();
+    await expect(canvasElement.querySelector('.spinning')).not.toBeInTheDocument();
+    await expect(canvas.queryByRole('button', { name: 'View live' })).not.toBeInTheDocument();
+    await expect(canvas.getByRole('button', { name: 'Retry' })).toBeDisabled();
+    await expect(canvas.getByRole('button', { name: 'Resume' })).toBeDisabled();
+    await expect(canvas.getAllByText(/Start a fresh operation from its source/)).toHaveLength(3);
+    await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
+    await expect(args.onCancel).toHaveBeenCalledWith(91);
+    await expect(args.onRetry).not.toHaveBeenCalled();
+  },
+};
+
+export const RejectedActionRemainsVisible: Story = {
+  // AC-0162: an ownership rejection does not invent a new status or remove
+  // retry controls; the user can wait for the owner to finish and try again.
+  args: {
+    jobs: [job({ id: 94, kind: 'ingest-source-v1:src_recorded', status: 'cancelled' })],
+    actionError: 'Retry for job #94 was not confirmed: execution is busy. Wait for the current worker to stop, then refresh Jobs and try again.',
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('alert')).toHaveTextContent('execution is busy');
+    await expect(canvas.getByText('cancelled')).toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: 'Retry' }));
+    await expect(args.onRetry).toHaveBeenCalledWith(94);
   },
 };

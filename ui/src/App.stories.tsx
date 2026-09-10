@@ -22,6 +22,7 @@ interface MockJob {
   id: number;
   kind: string;
   status: string;
+  execution_tracking: 'recorded' | 'legacy_unknown';
   created_at: string;
   updated_at: string;
 }
@@ -187,8 +188,11 @@ function installFakeCore(options: {
   unavailableEvidence?: boolean;
   evidenceGate?: Promise<void>;
   capturedDescriptions?: boolean;
+  rejectJobActionOnce?: boolean;
+  legacyRunningJob?: boolean;
 } = {}) {
   let staged = [...(options.staged ?? [])];
+  let rejectJobAction = options.rejectJobActionOnce ?? false;
   reviewRequests = [];
   historyRequests = [];
   evidenceRequests = [];
@@ -200,7 +204,8 @@ function installFakeCore(options: {
     {
       id: 1,
       kind: 'ingest-source-v1:src_11111111111111111111111111111111',
-      status: 'queued',
+      status: options.legacyRunningJob ? 'running' : 'queued',
+      execution_tracking: options.legacyRunningJob ? 'legacy_unknown' : 'recorded',
       created_at: '2026-07-05T19:00:00Z',
       updated_at: '2026-07-05T19:00:00Z',
     },
@@ -638,6 +643,10 @@ function installFakeCore(options: {
         };
       case 'cancel_job': {
         const id = (args as { id: number }).id;
+        if (rejectJobAction) {
+          rejectJobAction = false;
+          throw new Error('execution ownership is busy');
+        }
         jobs = jobs.map((job) => (job.id === id ? { ...job, status: 'cancelled' } : job));
         return jobs.find((job) => job.id === id);
       }
@@ -707,6 +716,8 @@ const meta = {
       egress: null,
       disclosures: {},
       settingsError: null,
+      recoverJobId: null,
+      jobActionError: null,
       selected: null,
     });
     return () => clearMocks();
@@ -751,6 +762,48 @@ export const ConnectedToCore: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Clear finished' }));
     await userEvent.click(canvas.getByRole('button', { name: 'Confirm clear' }));
     await waitFor(() => expect(canvas.getByText('No jobs yet.')).toBeInTheDocument());
+  },
+};
+
+export const RejectedJobActionIsVisibleWithoutChangingHistory: Story = {
+  // AC-0162: the real store catches rejection and the Jobs surface renders it;
+  // a subsequent confirmed action updates the record and clears that error.
+  beforeEach: () => installFakeCore({ rejectJobActionOnce: true }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
+    const before = useAppStore.getState().jobs;
+    await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('execution ownership is busy'));
+    await expect(useAppStore.getState().jobs).toEqual(before);
+    await expect(canvas.getByText('queued')).toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(canvas.getByText('cancelled')).toBeVisible());
+    await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+
+export const LegacyRunningJobCannotBecomeLiveRecovery: Story = {
+  // AC-0162: real App wiring neither auto-selects nor animates a legacy row;
+  // an explicit pin shows its stored history without substituting live work.
+  beforeEach: () => installFakeCore({ legacyRunningJob: true }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    const history = useAppStore.getState().jobs;
+    await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
+    await expect(canvas.getByText('running')).toBeVisible();
+    await expect(canvas.queryByRole('button', { name: 'View live' })).not.toBeInTheDocument();
+    await expect(canvasElement.querySelector('.status-bar .spinning')).not.toBeInTheDocument();
+    useAppStore.getState().setView('recover');
+    await waitFor(() => expect(canvas.getByText('No active recovery selected')).toBeVisible());
+    await expect(canvas.queryByTestId('recover-spinner')).not.toBeInTheDocument();
+    useAppStore.getState().viewRecoveryJob(1);
+    await waitFor(() => expect(canvas.getByText('Historical recovery record')).toBeVisible());
+    await expect(canvas.getByText('Stored status: running')).toBeVisible();
+    await expect(canvas.queryByTestId('recover-spinner')).not.toBeInTheDocument();
+    await expect(useAppStore.getState().jobs).toEqual(history);
   },
 };
 

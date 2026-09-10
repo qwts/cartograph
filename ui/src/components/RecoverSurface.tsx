@@ -1,5 +1,6 @@
 import type { Job } from '../store';
 import { stageLabel } from '../stageLabels';
+import { hasRecordedExecution } from '../jobPresentation';
 
 export interface RecoverSurfaceProps {
   /** The pipeline job driving this recovery, once its first event lands. */
@@ -20,6 +21,17 @@ export function RecoverSurface({ job, busy, error, onBack, onBackground }: Recov
   const stage = stageLabel(job?.stage);
   const progress = typeof job?.progress === 'number' ? Math.round(job.progress) : null;
 
+  if (job && !hasRecordedExecution(job)) {
+    return <section className="ingest-flow recover-center" aria-label="Historical recovery record">
+      <h2>Historical recovery record</h2>
+      <p>Job #{job.id} · {job.kind}</p>
+      <p>Stored status: {job.status}</p>
+      <p role="status">Execution ownership unknown. This legacy record does not establish live recovery. Start a fresh operation from its source.</p>
+      <button type="button" onClick={onBack}>Start a fresh recovery</button>
+      <button type="button" className="secondary-button" onClick={onBackground}>View in Jobs</button>
+    </section>;
+  }
+
   if (failed) {
     return (
       <section className="ingest-flow recover-center" aria-label="Recovery failed">
@@ -38,6 +50,15 @@ export function RecoverSurface({ job, busy, error, onBack, onBackground }: Recov
         </footer>
       </section>
     );
+  }
+
+  if (job ? !['running', 'queued'].includes(job.status) : !busy) {
+    return <section className="ingest-flow recover-center" aria-label="Recovery record">
+      <h2>{job ? 'Recovery record' : 'No active recovery selected'}</h2>
+      {job && <p>Job #{job.id} · stored status: {job.status}</p>}
+      <button type="button" onClick={onBack}>Start a fresh recovery</button>
+      <button type="button" className="secondary-button" onClick={onBackground}>View in Jobs</button>
+    </section>;
   }
 
   return (

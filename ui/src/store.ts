@@ -16,6 +16,9 @@ export interface Job {
   kind: string;
   /** queued | running | done | failed | cancelled | interrupted. */
   status: string;
+  /** Ownership protocol participation, never proof of a live worker. Older
+   * cores omit this field; those records have unknown execution ownership. */
+  execution_tracking?: 'recorded' | 'legacy_unknown';
   /** Current pipeline stage while running. */
   stage?: string | null;
   /** Percent complete (0–100). */
@@ -527,6 +530,8 @@ export interface AppStore {
    *  is currently running/queued (the only kind `startRecovery` itself can
    *  reach, since the id isn't known until the first `job://changed` lands). */
   recoverJobId: number | null;
+  /** Last rejected job action, scoped in its message to the action and row. */
+  jobActionError: string | null;
   /** Backend liveness: unknown until the first ping resolves. */
   backend: 'unknown' | 'up' | 'browser';
   version: string | null;
@@ -683,10 +688,12 @@ async function loadEndpoints(): Promise<GraphNode[]> {
 }
 
 let evidenceRequestVersion = 0;
+let jobActionVersion = 0;
 
 export const useAppStore = create<AppStore>((set, get) => ({
   view: 'workspace',
   recoverJobId: null,
+  jobActionError: null,
   backend: 'unknown',
   version: null,
   stats: null,
@@ -963,15 +970,40 @@ export const useAppStore = create<AppStore>((set, get) => ({
   viewRecoveryJob: (id) => set({ view: 'recover', recoverJobId: id, selected: null }),
 
   cancelJob: async (id) => {
-    const job = await invokeOr<Job | null>('cancel_job', null, { id });
-    if (job) get().applyJobEvent(job);
+    const version = ++jobActionVersion;
+    try {
+      const job = await invokeOr<Job | null>('cancel_job', null, { id });
+      if (!job || job.id !== id) throw new Error('The backend did not confirm a job transition.');
+      get().applyJobEvent(job);
+      if (version === jobActionVersion) set({ jobActionError: null });
+    } catch (error) {
+      if (version === jobActionVersion) set({ jobActionError: `Cancel for job #${id} was not confirmed: ${String(error)} Refresh Jobs before trying again. Cancellation does not immediately stop a worker.` });
+    }
   },
 
   retryJob: async (id) => {
-    const job = await invokeOr<Job | null>('retry_job', null, { id });
-    if (job) get().applyJobEvent(job);
-    // A retried ingest may have rebuilt graph artifacts — refresh everything.
-    await get().refresh();
+    const version = ++jobActionVersion;
+    const existing = get().jobs.find((job) => job.id === id);
+    if (existing && (existing.execution_tracking !== 'recorded' || existing.kind.startsWith('ingest:'))) {
+      set({ jobActionError: `Job #${id} cannot resume this historical execution. Start a fresh operation from its source instead.` });
+      return;
+    }
+    try {
+      const job = await invokeOr<Job | null>('retry_job', null, { id });
+      if (!job || job.id !== id) throw new Error('The backend did not confirm a job transition.');
+      get().applyJobEvent(job);
+      if (version === jobActionVersion) set({ jobActionError: null });
+    } catch (error) {
+      if (version === jobActionVersion) set({ jobActionError: `Retry for job #${id} was not confirmed: ${String(error)} Wait for the current worker to stop, then refresh Jobs and try again. Legacy records require a fresh operation.` });
+      return;
+    }
+    // Refresh only after a confirmed action. A refresh error must not suggest
+    // that an already-confirmed retry failed or restore an older job row.
+    try {
+      await get().refresh();
+    } catch {
+      if (version === jobActionVersion) set({ jobActionError: `Retry for job #${id} was confirmed, but refreshed results are unavailable. Refresh Jobs to check the current state.` });
+    }
   },
 
   applyJobEvent: (job) =>
