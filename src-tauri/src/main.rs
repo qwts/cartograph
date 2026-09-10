@@ -8,6 +8,8 @@ mod context;
 mod escalation;
 mod evidence;
 mod findings;
+#[cfg(test)]
+mod graph_projection_tests;
 mod jobs;
 mod metrics;
 mod paths;
@@ -126,10 +128,8 @@ fn ping() -> PingReply {
 #[tauri::command]
 fn graph_stats(state: State<'_, AppState>) -> Result<GraphStats, String> {
     let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    Ok(GraphStats {
-        nodes: graph.node_count().map_err(|e| e.to_string())?,
-        edges: graph.edge_count().map_err(|e| e.to_string())?,
-    })
+    let (nodes, edges) = graph.fact_counts().map_err(|e| e.to_string())?;
+    Ok(GraphStats { nodes, edges })
 }
 
 /// One discovered plugin with its per-project lifecycle state (#198) and
@@ -1185,21 +1185,14 @@ fn deterministic_graph_hashes(graph: &impl GraphStore) -> Result<Vec<String>, St
             .then(|| props["prov"]["content_hash"].as_str())
             .flatten()
     }
-    let mut hashes = graph
-        .all_nodes()
-        .map_err(|error| error.to_string())?
+    let (nodes, edges) = graph.read_snapshot().map_err(|error| error.to_string())?;
+    let mut hashes = nodes
         .into_iter()
         .filter_map(|node| hash(&node.props).map(|hash| format!("node:{}:{hash}", node.id)))
-        .chain(
-            graph
-                .all_edges()
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .filter_map(|edge| {
-                    hash(&edge.props)
-                        .map(|hash| format!("edge:{}:{}:{}:{hash}", edge.src, edge.dst, edge.label))
-                }),
-        )
+        .chain(edges.into_iter().filter_map(|edge| {
+            hash(&edge.props)
+                .map(|hash| format!("edge:{}:{}:{}:{hash}", edge.src, edge.dst, edge.label))
+        }))
         .collect::<Vec<_>>();
     hashes.sort();
     Ok(hashes)
@@ -1365,10 +1358,7 @@ fn summarize_register(
 fn findings_summary(state: State<'_, AppState>) -> Result<FindingsSummary, String> {
     let (nodes, edges) = {
         let graph = state.graph.lock().map_err(|e| e.to_string())?;
-        (
-            graph.all_nodes().map_err(|e| e.to_string())?,
-            graph.all_edges().map_err(|e| e.to_string())?,
-        )
+        graph.read_snapshot().map_err(|e| e.to_string())?
     };
     let (unsupported, no_evidence) = {
         let findings = state.findings.lock().map_err(|e| e.to_string())?;
@@ -1572,10 +1562,7 @@ fn record_ingest_metrics(
 ) -> Result<(), String> {
     let (nodes, edges) = {
         let graph = state.graph.lock().map_err(|e| e.to_string())?;
-        (
-            graph.all_nodes().map_err(|e| e.to_string())?,
-            graph.all_edges().map_err(|e| e.to_string())?,
-        )
+        graph.read_snapshot().map_err(|e| e.to_string())?
     };
     // Only layers this ingest actually contained are in scope — a
     // zero-file layer's extractor did not run, so it reports null
@@ -2635,18 +2622,14 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
 /// a given graph.
 #[tauri::command]
 fn export_topology(state: State<'_, AppState>) -> Result<String, String> {
-    let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    let mut nodes = graph
-        .nodes_with_label("Resource")
-        .map_err(|e| e.to_string())?;
-    nodes.extend(
-        graph
-            .nodes_with_label("Channel")
-            .map_err(|e| e.to_string())?,
-    );
-    let edges = graph
-        .edges_with_labels(spec::TOPOLOGY_EDGE_LABELS)
-        .map_err(|e| e.to_string())?;
+    let (nodes, edges) = {
+        let graph = state.graph.lock().map_err(|e| e.to_string())?;
+        read_filtered_graph(
+            &*graph,
+            &["Resource", "Channel"],
+            spec::TOPOLOGY_EDGE_LABELS,
+        )?
+    };
     Ok(spec::topology_mermaid(&nodes, &edges))
 }
 
@@ -2654,14 +2637,7 @@ fn export_topology(state: State<'_, AppState>) -> Result<String, String> {
 /// every T0-traceable flow with per-hop tiers, Gap truncation, and score.
 #[tauri::command]
 fn export_flows(state: State<'_, AppState>) -> Result<String, String> {
-    let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    let mut nodes = Vec::new();
-    for label in flowtracer::FLOW_NODE_LABELS {
-        nodes.extend(graph.nodes_with_label(label).map_err(|e| e.to_string())?);
-    }
-    let edges = graph
-        .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
-        .map_err(|e| e.to_string())?;
+    let (nodes, edges) = read_flow_graph(&state.graph)?;
     let flows = flowtracer::trace(&nodes, &edges);
     Ok(spec::flow_dossier(&flows))
 }
@@ -2670,14 +2646,7 @@ fn export_flows(state: State<'_, AppState>) -> Result<String, String> {
 /// surfaces status and score per R-INT-2 without parsing the dossier.
 #[tauri::command]
 fn list_flows(state: State<'_, AppState>) -> Result<Vec<flowtracer::Flow>, String> {
-    let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    let mut nodes = Vec::new();
-    for label in flowtracer::FLOW_NODE_LABELS {
-        nodes.extend(graph.nodes_with_label(label).map_err(|e| e.to_string())?);
-    }
-    let edges = graph
-        .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
-        .map_err(|e| e.to_string())?;
+    let (nodes, edges) = read_flow_graph(&state.graph)?;
     Ok(flowtracer::trace(&nodes, &edges))
 }
 
@@ -2685,15 +2654,39 @@ fn list_flows(state: State<'_, AppState>) -> Result<Vec<flowtracer::Flow>, Strin
 /// a zero-flow Inspector names what recovery looked for (#165, R-INT-4).
 #[tauri::command]
 fn list_flow_anchors(state: State<'_, AppState>) -> Result<Vec<flowtracer::AnchorProbe>, String> {
-    let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    let mut nodes = Vec::new();
-    for label in flowtracer::FLOW_NODE_LABELS {
-        nodes.extend(graph.nodes_with_label(label).map_err(|e| e.to_string())?);
-    }
-    let edges = graph
-        .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
-        .map_err(|e| e.to_string())?;
+    let (nodes, edges) = read_flow_graph(&state.graph)?;
     Ok(flowtracer::anchor_probes(&nodes, &edges))
+}
+
+/// Copy the flow selection before tracing or rendering.
+fn read_flow_graph(graph: &Mutex<SqliteGraphStore>) -> Result<(Vec<Node>, Vec<Edge>), String> {
+    let graph = graph.lock().map_err(|e| e.to_string())?;
+    read_filtered_graph(
+        &*graph,
+        flowtracer::FLOW_NODE_LABELS,
+        flowtracer::FLOW_EDGE_LABELS,
+    )
+}
+
+/// Preserve the legacy sequence of label queries without mixing database
+/// revisions. The stable label-rank sort happens after the read transaction;
+/// within each label, nodes keep the snapshot's stable id order. Edge order
+/// remains (src, dst, label), as it was for the original filtered edge query.
+fn read_filtered_graph(
+    graph: &impl GraphStore,
+    node_labels: &[&str],
+    edge_labels: &[&str],
+) -> Result<(Vec<Node>, Vec<Edge>), String> {
+    let (mut nodes, edges) = graph
+        .read_snapshot_filtered(Some(node_labels), Some(edge_labels))
+        .map_err(|e| e.to_string())?;
+    nodes.sort_by_key(|node| {
+        node_labels
+            .iter()
+            .position(|label| *label == node.label)
+            .unwrap_or(usize::MAX)
+    });
+    Ok((nodes, edges))
 }
 
 #[derive(Serialize)]
@@ -2747,26 +2740,12 @@ async fn semantic_preview(
 ) -> Result<SemanticPreview, String> {
     let (nodes, edges) = {
         let graph = state.graph.lock().map_err(|error| error.to_string())?;
-        let mut nodes = Vec::new();
-        for label in flowtracer::FLOW_NODE_LABELS {
-            nodes.extend(
-                graph
-                    .nodes_with_label(label)
-                    .map_err(|error| error.to_string())?,
-            );
-        }
         // Computed channel gaps can be backed only by a T0 IaC Resource.
         // Resources are semantic candidates, not flow nodes, and any Channel
         // they imply is materialized only in the ephemeral approved overlay.
-        nodes.extend(
-            graph
-                .nodes_with_label("Resource")
-                .map_err(|error| error.to_string())?,
-        );
-        let edges = graph
-            .edges_with_labels(flowtracer::FLOW_EDGE_LABELS)
-            .map_err(|error| error.to_string())?;
-        (nodes, edges)
+        let mut node_labels = flowtracer::FLOW_NODE_LABELS.to_vec();
+        node_labels.push("Resource");
+        read_filtered_graph(&*graph, &node_labels, flowtracer::FLOW_EDGE_LABELS)?
     };
     let mut preview = tauri::async_runtime::spawn_blocking(move || {
         let provider = llm::OllamaProvider::local_default().map_err(|error| error.to_string())?;
@@ -2792,8 +2771,7 @@ fn build_spec_bundle(
     decisions: &agents::DecisionLog,
     mode: spec::ExportMode,
 ) -> Result<spec::SpecBundle, String> {
-    let nodes = graph.all_nodes().map_err(|error| error.to_string())?;
-    let edges = graph.all_edges().map_err(|error| error.to_string())?;
+    let (nodes, edges) = graph.read_snapshot().map_err(|error| error.to_string())?;
     let flows = flowtracer::trace(&nodes, &edges);
     let rejected_hashes = decisions
         .list_assertions()
@@ -2838,10 +2816,8 @@ struct AtlasSnapshot {
 }
 
 fn build_atlas_snapshot(graph: &impl GraphStore) -> Result<AtlasSnapshot, String> {
-    Ok(AtlasSnapshot {
-        nodes: graph.all_nodes().map_err(|error| error.to_string())?,
-        edges: graph.all_edges().map_err(|error| error.to_string())?,
-    })
+    let (nodes, edges) = graph.read_snapshot().map_err(|error| error.to_string())?;
+    Ok(AtlasSnapshot { nodes, edges })
 }
 
 #[tauri::command]
