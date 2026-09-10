@@ -23,9 +23,13 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0017 | AC-0068..0070, AC-0093 | adapters-*, ingest, app, ui | post-M10 | — | ADR-0003, ADR-0017 | T-0068..0070, T-0093 |
 | US-0018 | AC-0090..0092 | app, ui, scripts | post-M10 | — | ADR-0002 | T-0090..0092 |
 | US-0019 | AC-0096..0097 | ingest, core-graph, spec, app, ui | post-M10 | — | ADR-0003 | T-0096..0097 |
+| US-0020 | AC-0101..0105 | context-hub, app | H1 | — | ADR-0019 | T-0101..0105 |
+| US-0021 | AC-0106..0109 | context-hub, agents, spec, app, ui | H2–H3 | — | ADR-0019 | T-0106..0109 |
+| US-0022 | AC-0110..0114 | context-hub, agents, app, ui | H4–H5 | — | ADR-0019 | T-0110..0114 |
+| US-0023 | AC-0115..0118 | context-hub, agents, app, ui | H6–H7 | — | ADR-0019 | T-0115..0118 |
 
 ## Coverage assertions
-- Every Must-priority US is anchored to a milestone ≤ M10.
+- Every Must-priority US is anchored to an original milestone, post-M10 work, or a SPEC-01 delivery gate; a milestone label alone does not establish completion.
 - Every AC has at least one test ID reserved (T-XXXX), to be authored alongside the AC (test-trace mapping standard).
 - Integrity rules R-INT-1..5 are covered by US-0007 (AC-0019, AC-0020), US-0006 (AC-0016), US-0012 (AC-0034).
 
@@ -50,3 +54,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0016 | Fail-closed macOS Developer ID distribution |
 | ADR-0017 | Runtime-loadable, AI-authorable adapter plugins (WASM) |
 | ADR-0018 | Multi-platform port scope: Windows now, mobile not pursued |
+| ADR-0019 | Domain context hub with shared reads and MCP/ACP orchestration |

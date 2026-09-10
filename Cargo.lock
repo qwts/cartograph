@@ -191,6 +191,7 @@ dependencies = [
  "adapters-lang-ts",
  "adapters-plugin-host",
  "agents",
+ "context-hub",
  "core-graph",
  "core-prov",
  "dunce",
@@ -639,6 +640,18 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
+name = "context-hub"
+version = "0.10.3"
+dependencies = [
+ "blake3",
+ "core-graph",
+ "core-prov",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "cookie"

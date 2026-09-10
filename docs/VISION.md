@@ -1,10 +1,10 @@
 # Cartograph — Vision (beyond SPEC-00 v1)
 
-> SPEC-00 defines what we are building *now*: a cross-layer spec-recovery
-> engine whose deliverable is a trustworthy specification. This document
-> records where it goes *next*, so v1 decisions leave the door open without
-> letting scope creep in early. Governed by
-> [ADR-0007](adr/ADR-0007-agentic-sdlc-dogfood.md).
+> The staged roadmap below records the original ADR-0007 sequencing.
+> [ADR-0019](adr/ADR-0019-domain-context-and-agent-interoperability.md) supersedes
+> that sequencing for the owner's clarified domain context hub. Current work and
+> delivery gates are defined in [SPEC-01](SPEC-01_context-hub.md); the integrity
+> principles below continue to apply.
 
 ## The thesis
 
@@ -62,7 +62,7 @@ implementation modernizes underneath them.
 
 ## Revisiting NG2
 
-NG2 ("no code regeneration/scaffolding") is revisited by a superseding ADR only
-after: (a) M10's exit gates pass (determinism, export modes), and (b) Stage 2's
-starter-kit export has been exercised on at least one real external system.
-Until then, any feature that writes code into a target system is out of scope.
+ADR-0019 supersedes the starter-kit prerequisite for building shared domain
+context and agent investigations. It does not authorize writing the ingested
+target: future modernization execution requires a separately authorized external
+checkout and re-ingestion against approved acceptance criteria.

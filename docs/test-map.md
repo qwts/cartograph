@@ -14,6 +14,24 @@ rows in the same PR (see AGENTS.md).
 
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
+| T-0101 | AC-0101 | rust | context-hub::snapshot_identity_tracks_full_content_and_ignores_input_order, context-hub::duplicate_fact_identities_are_rejected, context-hub::cursors_bind_snapshot_and_normalized_selection | H1: canonical full-content identity, duplicate rejection, revision/selection-bound paging |
+| T-0102 | AC-0102 | rust | context-hub::paging_honors_item_and_entire_response_byte_budgets, context-hub::oversized_next_fact_returns_an_explicit_budget_error | H1: serialized envelope and cursor fit the budget; no skipped oversized fact |
+| T-0103 | AC-0103 | rust | context-hub::invalid_provenance_is_gap_and_never_leaks_raw_metadata, context-hub::inferred_provenance_remains_inferred | H1: provenance ceilings and fail-closed metadata |
+| T-0104 | AC-0104 | rust | context-hub::neighborhood_is_bounded_undirected_and_induced, context-hub::unsupported_domain_labels_return_no_fabricated_facts, context-hub::invalid_limits_and_missing_anchors_fail_explicitly | H1: deterministic bounded selection, explicit missing anchors and unsupported domain coverage |
+| T-0105 | AC-0105 | rust | app::context_query_reads_on_worker_without_mutating_graph, app::context_query_propagates_errors_without_mutating_graph, app::context_query_rejects_invalid_request_before_graph_access | H1: desktop storage adapter uses worker boundary, recovered view, read-only paging, and validation before storage access |
+| T-0106 | AC-0106 | reserved | — | H2: pinned Vendure recovery and independently reviewed expected set |
+| T-0107 | AC-0107 | reserved | — | H2: implemented behavior, documented intent, inference and future design views |
+| T-0108 | AC-0108 | reserved | — | H3: accepted-proposal projection and stale-evidence reconciliation |
+| T-0109 | AC-0109 | reserved | — | H3: persistent named project/domain isolation |
+| T-0110 | AC-0110 | reserved | — | H4: shared durable specialist coordinator |
+| T-0111 | AC-0111 | reserved | — | H4–H5: ACP capability, environment and egress enforcement |
+| T-0112 | AC-0112 | reserved | — | H4–H5: cancellation, reconnect, restart and uncertain-outcome reconciliation |
+| T-0113 | AC-0113 | reserved | — | H5: bounded nested delegation and loop prevention |
+| T-0114 | AC-0114 | reserved | — | H5: real MCP caller and ACP runtime interoperability |
+| T-0115 | AC-0115 | reserved | — | H6: cited structural measurements and coverage accounting |
+| T-0116 | AC-0116 | reserved | — | H6: contextual god-file evaluation with justified-large-file counterexamples |
+| T-0117 | AC-0117 | reserved | — | H6–H7: authorized external implementation and re-ingested acceptance evidence |
+| T-0118 | AC-0118 | reserved | — | H7: independently completed market pilot with measured outcomes |
 | T-0001 | AC-0001 | rust | ingest::clone_lists_repo_with_commit_sha, ingest::repo_urls_parse_to_identities, app::identical_repos_do_not_collide_in_one_graph | offline file:// fixtures; SHA listed in UI, plus story:Shell/IngestCard/WithClonedRepo, live clone manual at the milestone boundary |
 | T-0002 | AC-0002 | rust | ingest::manifest_parses_repos_layers_and_env, ingest::manifest_rejects_unknown_layers, app::manifest_local_paths_beat_owner_name_shorthand, events::manifest_identities_override_env_files, app::system_manifest_applies_hints_and_identities_at_ingest | layer hints + identities applied at ingest; UI listing, plus story:Shell/IngestCard/WithSystemManifest |
 | T-0003 | AC-0003 | rust | ingest::failed_clone_leaves_nothing_behind, ingest::auth_errors_carry_remediation | typed remediation; live 401 path manual at the milestone boundary |

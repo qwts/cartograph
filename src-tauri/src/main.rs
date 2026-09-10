@@ -4,6 +4,7 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod context;
 mod escalation;
 mod evidence;
 mod findings;
@@ -2996,6 +2997,7 @@ fn main() {
             run_class_escalation,
             list_nodes,
             atlas_snapshot,
+            context::query_context,
             read_evidence,
             export_topology,
             export_flows,
