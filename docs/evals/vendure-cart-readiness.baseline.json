@@ -88,13 +88,13 @@
     }
   },
   "determinism": {
-    "runs": 4,
+    "runs": 6,
     "runs_per_implementation_revision": 2,
     "graph_equal": true,
     "bundle_equal": true,
     "metadata_equal": true,
     "inventory_equal": true,
-    "comparison": "byte-for-byte comparisons across all four runs; all outputs unchanged after quoted-key and malformed-parser fixes"
+    "comparison": "byte-for-byte comparisons across all six runs; outputs unchanged after quoted-key, malformed-parser and computed-name disclosure fixes"
   },
   "timing": {
     "run_1_wall_seconds": 10.36,
@@ -104,7 +104,8 @@
     "performance_gate": false,
     "run_3_wall_seconds": 8.31,
     "run_3_includes_build": true,
-    "run_4_wall_seconds": 6.19
+    "run_4_wall_seconds": 6.19,
+    "run_6_wall_seconds": 10.9
   },
   "scoring_status": "independently_scored_output_reproduced_at_final_implementation_revision",
   "decision_cases": {
@@ -129,5 +130,14 @@
     "total_observations": 139,
     "other_observations_not_fully_audited": 133,
     "is_semantic_recall": false
+  },
+  "computed_name_disclosure_recheck": {
+    "cartograph_commit": "c40a9b869a36fb15be5e14cc7e148d8a84a704f8",
+    "runs": [
+      5,
+      6
+    ],
+    "all_artifacts_byte_identical_to_scored_baseline": true,
+    "decision_cases_executed": false
   }
 }
