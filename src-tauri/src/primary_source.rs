@@ -67,11 +67,13 @@ fn private_dir(parent: &Dir, name: &str) -> Result<Dir, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        // Linux directory handles may use O_PATH; the rooted API reopens "."
+        // with a permission-capable handle while preserving directory identity.
         directory
-            .try_clone()
-            .map_err(storage_error)?
-            .into_std_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .set_permissions(
+                ".",
+                cap_std::fs::Permissions::from_std(std::fs::Permissions::from_mode(0o700)),
+            )
             .map_err(storage_error)?;
     }
     Ok(directory)
