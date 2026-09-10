@@ -192,9 +192,9 @@ export interface PlannedAdapter {
 }
 
 /** One class-level batch escalation outcome (#167): per-instance staged
- * proposals and failures — nothing joins the graph unaccepted. */
+ * proposals and failures; review awaits context reconciliation. */
 export interface ClassEscalationOutcome {
-  proposals: AgentProposal[];
+  proposals: StagedProposal[];
   failures: { gap_id: string; error: string }[];
   cancelled: boolean;
 }
@@ -419,7 +419,7 @@ export interface GapStrategyReport {
   strategies: StrategyCard[];
 }
 
-/** A staged propose-only escalation result (`run_escalation`, #120). */
+/** Immutable propose-only content produced by the bounded agent broker. */
 export interface AgentProposal {
   gap_id: string;
   source_id: string;
@@ -428,6 +428,45 @@ export interface AgentProposal {
   annotation: string;
   basis_hash: string;
   provenance: Provenance;
+}
+
+/** Host-persisted proposal returned by staging and revision-checked review. */
+export interface StagedProposal extends AgentProposal {
+  proposal_id: string;
+  review_revision: number;
+  review_decision: 'accepted' | 'rejected' | null;
+  review_note: string | null;
+  evidence_binding: 'working_tree_unverified';
+  context_status: 'awaiting_reconciliation';
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+export interface StagedProposalPage {
+  items: StagedProposal[];
+  next_cursor: string | null;
+}
+
+/** A broker body alone is not a successful durable stage or review response. */
+function requireStagedProposal(proposal: StagedProposal | null): StagedProposal {
+  if (!proposal?.proposal_id || !Number.isSafeInteger(proposal.review_revision) ||
+      proposal.review_revision < 0) {
+    throw new Error('The core did not return a saved proposal. No review was recorded.');
+  }
+  return proposal;
+}
+
+const PROPOSAL_PAGE_SIZE = 20;
+
+function mergeStagedProposals(current: StagedProposal[], incoming: StagedProposal[]): StagedProposal[] {
+  const byId = new Map(current.map((proposal) => [proposal.proposal_id, proposal]));
+  for (const proposal of incoming) {
+    const previous = byId.get(proposal.proposal_id);
+    if (!previous || proposal.review_revision >= previous.review_revision) {
+      byId.set(proposal.proposal_id, proposal);
+    }
+  }
+  return [...byId.values()];
 }
 
 /** UI state of the Resolution Strategy modal (#113). */
@@ -439,7 +478,8 @@ export interface EscalationState {
   running: boolean;
   /** Cloud one-action consent step: the exact preview awaiting a grant. */
   preview: EgressPreview | null;
-  proposal: AgentProposal | null;
+  proposal: StagedProposal | null;
+  reviewing: boolean;
   /** Set once the user accepted/rejected the proposal. */
   decided: 'accepted' | 'rejected' | null;
 }
@@ -543,6 +583,11 @@ export interface AppStore {
   evals: EvalResult[];
   /** Resolution Strategy modal state; null while closed (#113). */
   escalation: EscalationState | null;
+  /** Bounded host history, restored independently of jobs and graph content. */
+  stagedProposals: StagedProposal[];
+  stagedNextCursor: string | null;
+  stagedLoading: boolean;
+  stagedError: string | null;
   /** Persisted tier configuration (T1/T2/T3; T0 is always-on, not stored). */
   tierSettings: TierSettings[];
   /** Live status-bar egress line; null with no backend (shown as local-only). */
@@ -612,6 +657,8 @@ export interface AppStore {
   /** Open the Resolution Strategy modal for a gap and load its report. */
   openResolution: (gapId: string) => Promise<void>;
   closeResolution: () => void;
+  openStagedProposal: (proposal: StagedProposal) => void;
+  loadStagedProposals: (loadMore?: boolean) => Promise<void>;
   /** Run a strategy. Local runs immediately; cloud first loads the exact
    *  egress preview so the one-action consent dialog can show it. */
   runStrategy: (strategyId: 'local-slm' | 'cloud-opus') => Promise<void>;
@@ -625,7 +672,7 @@ export interface AppStore {
   runClassEscalation: (gapIds: string[]) => Promise<ClassEscalationOutcome | null>;
   /** Record accept/reject for one staged proposal (batch triage path). */
   recordProposalDecision: (
-    proposal: AgentProposal,
+    proposal: StagedProposal,
     decision: 'accepted' | 'rejected',
   ) => Promise<boolean>;
 }
@@ -680,6 +727,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   coverage: [],
   evals: [],
   escalation: null,
+  stagedProposals: [],
+  stagedNextCursor: null,
+  stagedLoading: false,
+  stagedError: null,
   tierSettings: [],
   egress: null,
   disclosures: {},
@@ -712,6 +763,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
         evals: [],
         tierSettings: [],
         egress: null,
+        stagedProposals: [],
+        stagedNextCursor: null,
+        stagedLoading: false,
+        stagedError: null,
       });
       return;
     }
@@ -766,6 +821,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       egress,
       disclosures: { T2: disclosureT2 ?? undefined, T3: disclosureT3 ?? undefined },
     });
+    await get().loadStagedProposals();
   },
 
   setPluginEnabled: async (plugin: PluginStatus, enabled: boolean) => {
@@ -1023,31 +1079,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   openResolution: async (gapId) => {
-    set({
-      escalation: {
-        gapId,
-        report: null,
-        loading: true,
-        error: null,
-        running: false,
-        preview: null,
-        proposal: null,
-        decided: null,
-      },
-    });
+    const opening: EscalationState = {
+      gapId,
+      report: null,
+      loading: true,
+      error: null,
+      running: false,
+      preview: null,
+      proposal: null,
+      reviewing: false,
+      decided: null,
+    };
+    set({ escalation: opening });
     try {
       const report = await invokeOr<GapStrategyReport | null>('gap_strategies', null, {
         gapId,
       });
       set((state) =>
-        state.escalation?.gapId === gapId
-          ? { escalation: { ...state.escalation, report, loading: false } }
+        state.escalation === opening
+          ? { escalation: { ...opening, report, loading: false } }
           : {},
       );
     } catch (e) {
       set((state) =>
-        state.escalation?.gapId === gapId
-          ? { escalation: { ...state.escalation, error: String(e), loading: false } }
+        state.escalation === opening
+          ? { escalation: { ...opening, error: String(e), loading: false } }
           : {},
       );
     }
@@ -1055,22 +1111,71 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   closeResolution: () => set({ escalation: null }),
 
+  openStagedProposal: (proposal) => set({
+    escalation: {
+      gapId: proposal.gap_id,
+      report: null,
+      loading: false,
+      error: null,
+      running: false,
+      reviewing: false,
+      preview: null,
+      proposal,
+      decided: proposal.review_decision,
+    },
+  }),
+
+  loadStagedProposals: async (loadMore = false) => {
+    if (get().stagedLoading) return;
+    const cursor = loadMore ? get().stagedNextCursor : null;
+    if (loadMore && !cursor) return;
+    const beforeRead = new Map(get().stagedProposals.map((proposal) => [proposal.proposal_id, proposal]));
+    set({ stagedLoading: true, stagedError: null });
+    try {
+      const page = await invokeOr<StagedProposalPage | null>('list_staged_proposals', null, {
+        limit: PROPOSAL_PAGE_SIZE,
+        cursor,
+      });
+      if (!page) throw new Error('Proposal history is unavailable. Connect to the core and retry.');
+      const items = page.items.map(requireStagedProposal);
+      set((state) => {
+        // A page may have been read before a concurrent stage/review completed.
+        // Keep those newer receipts, without retaining unrelated older pages on refresh.
+        const newStages = state.stagedProposals.filter((proposal) =>
+          !beforeRead.has(proposal.proposal_id) &&
+          !items.some((item) => item.proposal_id === proposal.proposal_id));
+        const newerVersions = state.stagedProposals.filter((proposal) =>
+          items.some((item) => item.proposal_id === proposal.proposal_id &&
+            proposal.review_revision > item.review_revision));
+        return {
+          stagedProposals: loadMore ? mergeStagedProposals(state.stagedProposals, items)
+            : mergeStagedProposals([...newStages, ...items], newerVersions),
+          stagedNextCursor: page.next_cursor,
+          stagedLoading: false,
+        };
+      });
+    } catch (e) {
+      set({ stagedLoading: false, stagedError: String(e) });
+    }
+  },
+
   runStrategy: async (strategyId) => {
     const current = get().escalation;
-    if (!current) return;
-    // Results attach only to the gap that started them — the user may have
-    // closed this modal and opened another gap before the run resolves.
+    if (!current || current.running || current.proposal) return;
     const gapId = current.gapId;
+    // An opened history record may share this gap ID. Only the originating
+    // modal receives this run; every successful stage still enters history.
+    let active = current;
     const patch = (fields: Partial<EscalationState>) =>
-      set((state) =>
-        state.escalation?.gapId === gapId
-          ? { escalation: { ...state.escalation, ...fields } }
-          : {},
-      );
+      set((state) => {
+        if (state.escalation !== active) return {};
+        active = { ...active, ...fields };
+        return { escalation: active };
+      });
     if (strategyId === 'cloud-opus') {
       // Cloud never runs from this click: load the exact preview so the
       // one-action consent dialog can show precisely what would leave.
-      set({ escalation: { ...current, error: null } });
+      patch({ error: null });
       try {
         const preview = await invokeOr<EgressPreview | null>('escalation_preview', null, {
           gapId,
@@ -1081,14 +1186,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       return;
     }
-    set({ escalation: { ...current, running: true, error: null } });
+    patch({ running: true, error: null });
     try {
-      const proposal = await invokeOr<AgentProposal | null>('run_escalation', null, {
+      const proposal = requireStagedProposal(await invokeOr<StagedProposal | null>('run_escalation', null, {
         gapId,
         mode: 'local',
         approvedPayloadHash: null,
-      });
-      patch({ proposal, running: false });
+      }));
+      set((state) => ({ stagedProposals: mergeStagedProposals([proposal], state.stagedProposals) }));
+      patch({ proposal, running: false, decided: proposal.review_decision });
     } catch (e) {
       patch({ error: String(e), running: false });
     }
@@ -1096,24 +1202,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   consentAndRun: async (preview) => {
     const current = get().escalation;
-    if (!current) return;
+    if (!current || current.running || current.proposal) return;
     const gapId = current.gapId;
+    let active = current;
     const patch = (fields: Partial<EscalationState>) =>
-      set((state) =>
-        state.escalation?.gapId === gapId
-          ? { escalation: { ...state.escalation, ...fields } }
-          : {},
-      );
-    set({ escalation: { ...current, preview: null, running: true, error: null } });
+      set((state) => {
+        if (state.escalation !== active) return {};
+        active = { ...active, ...fields };
+        return { escalation: active };
+      });
+    patch({ preview: null, running: true, error: null });
     try {
-      const proposal = await invokeOr<AgentProposal | null>('run_escalation', null, {
+      const proposal = requireStagedProposal(await invokeOr<StagedProposal | null>('run_escalation', null, {
         gapId,
         mode: 'cloud',
         approvedPayloadHash: preview.payload_hash,
-      });
+      }));
+      set((state) => ({ stagedProposals: mergeStagedProposals([proposal], state.stagedProposals) }));
       const egress = await invokeOr<EgressSummary | null>('egress_summary', null);
       set({ egress });
-      patch({ proposal, running: false });
+      patch({ proposal, running: false, decided: proposal.review_decision });
     } catch (e) {
       patch({ error: String(e), running: false });
     }
@@ -1129,40 +1237,67 @@ export const useAppStore = create<AppStore>((set, get) => ({
       gapIds,
       mode: 'local',
     });
-    return outcome;
+    if (!outcome) throw new Error('The core did not return a saved class result.');
+    const proposals = outcome.proposals.map(requireStagedProposal);
+    set((state) => ({ stagedProposals: mergeStagedProposals(proposals, state.stagedProposals) }));
+    return { ...outcome, proposals };
   },
 
-  recordProposalDecision: async (proposal: AgentProposal, decision: 'accepted' | 'rejected') => {
-    const result = await invokeOr<unknown>('record_agent_decision', null, {
-      proposal,
-      decision,
-      note: null,
-    });
-    if (result === null) return false;
-    // Accepted proposals change best-effort exports — refresh them.
-    await get().refresh();
-    return true;
+  recordProposalDecision: async (proposal, decision) => {
+    const proposalId = proposal.proposal_id;
+    try {
+      requireStagedProposal(proposal);
+      const result = requireStagedProposal(await invokeOr<StagedProposal | null>(
+        'record_agent_decision', null, {
+          proposalId,
+          expectedRevision: proposal.review_revision,
+          decision,
+          note: null,
+        },
+      ));
+      if (result.proposal_id !== proposalId || result.review_decision !== decision ||
+          result.review_revision !== proposal.review_revision + 1) {
+        throw new Error('The core did not confirm this review. Refresh proposal history before retrying.');
+      }
+      // Review is durable; context and exports still await reconciliation.
+      set((state) => {
+        const opened = state.escalation?.proposal;
+        const stagedProposals = mergeStagedProposals(state.stagedProposals, [
+          result,
+          ...(opened?.proposal_id === proposalId ? [opened] : []),
+        ]);
+        // Another review may have committed while this receipt was in flight.
+        // History and an opened record both keep the highest known host revision.
+        const latest = stagedProposals.find((item) => item.proposal_id === proposalId) ?? result;
+        return {
+          stagedProposals,
+          stagedError: null,
+          ...(state.escalation?.proposal?.proposal_id === proposalId ? {
+            escalation: { ...state.escalation, proposal: latest, decided: latest.review_decision, error: null },
+          } : {}),
+        };
+      });
+      return true;
+    } catch (e) {
+      const error = String(e);
+      set((state) => ({
+        stagedError: error,
+        ...(state.escalation?.proposal?.proposal_id === proposalId ? {
+          escalation: { ...state.escalation, error },
+        } : {}),
+      }));
+      return false;
+    }
   },
 
   decideProposal: async (decision) => {
     const current = get().escalation;
-    if (!current?.proposal) return;
-    try {
-      await invokeOr('record_agent_decision', null, {
-        proposal: current.proposal,
-        decision,
-        note: null,
-      });
-      set((state) =>
-        state.escalation ? { escalation: { ...state.escalation, decided: decision } } : {},
-      );
-      // An accepted proposal changes best-effort exports — refresh them.
-      await get().refresh();
-    } catch (e) {
-      set((state) =>
-        state.escalation ? { escalation: { ...state.escalation, error: String(e) } } : {},
-      );
-    }
+    if (!current?.proposal || current.reviewing || current.decided) return;
+    const proposalId = current.proposal.proposal_id;
+    set({ escalation: { ...current, reviewing: true, error: null } });
+    await get().recordProposalDecision(current.proposal, decision);
+    set((state) => state.escalation?.proposal?.proposal_id === proposalId
+      ? { escalation: { ...state.escalation, reviewing: false } } : {});
   },
 
   revokeCloudConsent: async (tier) => {

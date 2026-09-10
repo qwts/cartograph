@@ -11,6 +11,7 @@ mod findings;
 mod jobs;
 mod metrics;
 mod paths;
+mod proposals;
 mod settings;
 
 use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
@@ -30,6 +31,7 @@ struct AppState {
     findings: Mutex<FindingStore>,
     settings: Mutex<settings::SettingsStore>,
     decisions: Mutex<agents::DecisionLog>,
+    proposals: Mutex<agents::ProposalStore>,
     extraction_caches: Mutex<ExtractionCaches>,
     /// Resolved filesystem roots of every ingested target this session —
     /// plugin discovery scans these, never the raw Connect input (#203).
@@ -554,28 +556,15 @@ fn list_evals(state: State<'_, AppState>) -> Result<Vec<EvalResult>, String> {
     jobs.list_evals().map_err(|error| error.to_string())
 }
 
-/// Persist one human accept/reject decision for a staged T3 proposal.
-#[tauri::command]
-fn record_agent_decision(
-    proposal: agents::AgentProposal,
-    decision: agents::ProposalDecision,
-    note: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<agents::DecisionRecord, String> {
-    let mut decisions = state.decisions.lock().map_err(|error| error.to_string())?;
-    decisions
-        .record(&proposal, decision, note.as_deref())
-        .map_err(|error| error.to_string())
-}
-
-/// All durable T3 curation decisions, newest first.
+/// Legacy decision history; these caller-body records are not staged proposals.
 #[tauri::command]
 fn list_agent_decisions(state: State<'_, AppState>) -> Result<Vec<agents::DecisionRecord>, String> {
     let decisions = state.decisions.lock().map_err(|error| error.to_string())?;
     decisions.list().map_err(|error| error.to_string())
 }
 
-/// Decisions whose exact evidence/candidate basis still matches a re-ingest.
+/// Historical decisions matching a legacy basis digest. This lookup cannot
+/// establish source freshness or activate a proposal in curated context.
 #[tauri::command]
 fn reapply_agent_decisions(
     basis_hash: String,
@@ -1772,7 +1761,7 @@ async fn run_escalation(
     approved_payload_hash: Option<String>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-) -> Result<agents::AgentProposal, String> {
+) -> Result<agents::StagedProposal, String> {
     let job_id = {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         let job = jobs
@@ -1790,26 +1779,30 @@ async fn run_escalation(
     };
 
     report_progress(&app, &state, job_id, "context", 20.0).map_err(&fail)?;
-    // Scoped so the span reader (non-trivial capture) drops before any await.
-    let (task, facts_before) = {
-        let (nodes, edges, reader) = graph_and_reader(&state).map_err(&fail)?;
-        let facts = nodes.len() + edges.len();
+    let context_app = app.clone();
+    let (task, graph_snapshot_id) = off_ui_thread(move || {
+        let state = context_app.state::<AppState>();
+        let (nodes, edges, reader) = graph_and_reader(&state)?;
         let task = escalation::assemble_task(
             &nodes,
             &edges,
             &gap_id,
             &format!("escalate:{gap_id}"),
             &reader,
-        )
-        .map_err(&fail)?;
-        (task, facts)
-    };
+        )?;
+        let snapshot =
+            context_hub::ContextSnapshot::new(nodes, edges).map_err(|error| error.to_string())?;
+        Ok((task, snapshot.id().to_string()))
+    })
+    .await
+    .map_err(&fail)?;
 
     report_progress(&app, &state, job_id, "model", 70.0).map_err(&fail)?;
-    let policy = {
+    let policy = (|| {
         let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
-        settings_store.egress_policy().map_err(|e| e.to_string())?
-    };
+        settings_store.egress_policy().map_err(|e| e.to_string())
+    })()
+    .map_err(&fail)?;
     let provider = escalation_provider(&mode).map_err(&fail)?;
     let firewall = llm::EgressFirewall::new(policy);
     let broker = agents::AgentBroker::bounded_default();
@@ -1849,9 +1842,22 @@ async fn run_escalation(
     if job_cancelled(&state, job_id) {
         return Err("cancelled".to_string());
     }
+    let staging_app = app.clone();
     let proposal = tauri::async_runtime::spawn_blocking(move || {
-        broker
+        let state = staging_app.state::<AppState>();
+        if job_cancelled(&state, job_id) {
+            return Err("cancelled".to_string());
+        }
+        let proposal = broker
             .propose(provider.as_ref(), &firewall, &task, consent.as_ref())
+            .map_err(|error| error.to_string())?;
+        // Persist even if cancellation arrived during the model call. The job
+        // remains cancelled, but its completed result is available for review.
+        state
+            .proposals
+            .lock()
+            .map_err(|error| error.to_string())?
+            .stage(&task, &proposal, job_id, &graph_snapshot_id)
             .map_err(|error| error.to_string())
     })
     .await
@@ -1860,30 +1866,21 @@ async fn run_escalation(
 
     report_progress(&app, &state, job_id, "validate", 90.0).map_err(&fail)?;
     if payload_bytes > 0 {
-        let mut settings_store = state.settings.lock().map_err(|e| e.to_string())?;
-        settings_store
-            .record_egress(&proposal.provenance.extractor_id, payload_bytes)
-            .map_err(|e| e.to_string())?;
+        (|| {
+            let mut settings_store = state.settings.lock().map_err(|e| e.to_string())?;
+            settings_store
+                .record_egress(&proposal.proposal.provenance.extractor_id, payload_bytes)
+                .map_err(|e| e.to_string())
+        })()
+        .map_err(&fail)?;
     }
-    // Propose-only, provably: the graph projection is unchanged.
-    {
-        let graph = state.graph.lock().map_err(|e| e.to_string())?;
-        let after = graph.all_nodes().map_err(|e| e.to_string())?.len()
-            + graph.all_edges().map_err(|e| e.to_string())?.len();
-        debug_assert_eq!(
-            facts_before, after,
-            "escalation must never mutate the graph"
-        );
-    }
-
-    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let job = jobs
-        .finish(job_id, &[format!("proposal:{gap_id}")])
-        .map_err(|e| e.to_string())?;
+    let job = (|| {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        jobs.finish(job_id, &[proposal.proposal_id.clone()])
+            .map_err(|e| e.to_string())
+    })()
+    .map_err(&fail)?;
     emit_job(&app, &job);
-    if job.status != "done" {
-        return Err("cancelled".to_string());
-    }
     Ok(proposal)
 }
 
@@ -1899,7 +1896,7 @@ async fn run_class_escalation(
     mode: String,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-) -> Result<agents::BatchOutcome, String> {
+) -> Result<proposals::StagedBatchOutcome, String> {
     if mode != "local" {
         return Err(
             "class escalation runs local-only: a cloud consent grant binds to one exact \
@@ -1927,12 +1924,12 @@ async fn run_class_escalation(
     };
 
     report_progress(&app, &state, job_id, "context", 5.0).map_err(&fail)?;
-    // Assemble every instance's task up front (the span reader borrows the
-    // graph snapshot); per-instance assembly errors join the outcome as
-    // failures instead of aborting the class.
-    let (tasks, facts_before) = {
-        let (nodes, edges, reader) = graph_and_reader(&state).map_err(&fail)?;
-        let facts = nodes.len() + edges.len();
+    // Capture one coherent graph on a worker; no graph lock spans a model call.
+    // Per-instance assembly errors join the outcome instead of aborting it.
+    let context_app = app.clone();
+    let (tasks, graph_snapshot_id) = off_ui_thread(move || {
+        let state = context_app.state::<AppState>();
+        let (nodes, edges, reader) = graph_and_reader(&state)?;
         let tasks: Vec<(String, Result<agents::AgentTask, String>)> = gap_ids
             .iter()
             .map(|gap_id| {
@@ -1946,24 +1943,27 @@ async fn run_class_escalation(
                 (gap_id.clone(), task)
             })
             .collect();
-        (tasks, facts)
-    };
+        let snapshot =
+            context_hub::ContextSnapshot::new(nodes, edges).map_err(|error| error.to_string())?;
+        Ok((tasks, snapshot.id().to_string()))
+    })
+    .await
+    .map_err(&fail)?;
 
-    let policy = {
+    let policy = (|| {
         let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
-        settings_store.egress_policy().map_err(|e| e.to_string())?
-    };
+        settings_store.egress_policy().map_err(|e| e.to_string())
+    })()
+    .map_err(&fail)?;
     let provider = escalation_provider(&mode).map_err(&fail)?;
     let firewall = llm::EgressFirewall::new(policy);
     let broker = agents::AgentBroker::bounded_default();
 
     let batch_app = app.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
+    let mut outcome = tauri::async_runtime::spawn_blocking(move || {
         let state = batch_app.state::<AppState>();
         let total = tasks.len();
-        broker.propose_batch(
-            provider.as_ref(),
-            &firewall,
+        proposals::run_staged_batch(
             tasks,
             || job_cancelled(&state, job_id),
             |index, _| {
@@ -1975,33 +1975,45 @@ async fn run_class_escalation(
                     5.0 + (index as f64 / total as f64) * 90.0,
                 );
             },
+            |task| {
+                if job_cancelled(&state, job_id) {
+                    return Err("cancelled".into());
+                }
+                let proposal = broker
+                    .propose(provider.as_ref(), &firewall, task, None)
+                    .map_err(|error| error.to_string())?;
+                state
+                    .proposals
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .stage(task, &proposal, job_id, &graph_snapshot_id)
+                    .map_err(|error| error.to_string())
+            },
         )
     })
     .await
     .map_err(|e| fail(e.to_string()))?;
 
-    // Propose-only, provably: the graph projection is unchanged.
-    {
-        let graph = state.graph.lock().map_err(|e| e.to_string())?;
-        let after = graph.all_nodes().map_err(|e| e.to_string())?.len()
-            + graph.all_edges().map_err(|e| e.to_string())?.len();
-        debug_assert_eq!(
-            facts_before, after,
-            "class escalation must never mutate the graph"
-        );
-    }
-
-    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let job = jobs
-        .finish(
-            job_id,
-            &[format!(
-                "proposals:{} failures:{}",
-                outcome.proposals.len(),
-                outcome.failures.len()
-            )],
-        )
-        .map_err(|e| e.to_string())?;
+    let job = (|| {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        if outcome.proposals.is_empty() && !outcome.failures.is_empty() {
+            jobs.fail(
+                job_id,
+                "No instance produced a durable proposal; inspect the batch failures.",
+            )
+        } else {
+            let mut artifacts: Vec<String> = outcome
+                .proposals
+                .iter()
+                .map(|proposal| proposal.proposal_id.clone())
+                .collect();
+            artifacts.push(format!("failures:{}", outcome.failures.len()));
+            jobs.finish(job_id, &artifacts)
+        }
+        .map_err(|e| e.to_string())
+    })()
+    .map_err(&fail)?;
+    outcome.cancelled |= job.status == "cancelled";
     emit_job(&app, &job);
     // A cancelled batch still returns its partial outcome (#194 review):
     // completed instances are real staged proposals the user can triage,
@@ -2946,6 +2958,7 @@ fn main() {
             let findings = FindingStore::open(&state_path)?;
             let tier_settings = settings::SettingsStore::open(&state_path)?;
             let decisions = agents::DecisionLog::open(&state_path)?;
+            let staged_proposals = agents::ProposalStore::open(data_dir.join("proposals.sqlite"))?;
             let recovery_metrics = metrics::MetricsStore::open(&state_path)?;
             app.manage(AppState {
                 graph: Mutex::new(graph),
@@ -2953,6 +2966,7 @@ fn main() {
                 findings: Mutex::new(findings),
                 settings: Mutex::new(tier_settings),
                 decisions: Mutex::new(decisions),
+                proposals: Mutex::new(staged_proposals),
                 extraction_caches: Mutex::new(ExtractionCaches::default()),
                 project_roots: Mutex::new(std::collections::BTreeSet::new()),
                 metrics: Mutex::new(recovery_metrics),
@@ -2971,7 +2985,8 @@ fn main() {
             clear_finished_jobs,
             list_jobs,
             list_evals,
-            record_agent_decision,
+            proposals::record_agent_decision,
+            proposals::list_staged_proposals,
             list_agent_decisions,
             reapply_agent_decisions,
             record_assertion_decision,
@@ -5546,6 +5561,9 @@ export function App() {
                 super::settings::SettingsStore::open(&state_path).unwrap(),
             ),
             decisions: std::sync::Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
+            proposals: std::sync::Mutex::new(
+                agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
+            ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
             project_roots: std::sync::Mutex::new(roots),
             metrics: std::sync::Mutex::new(
@@ -5646,6 +5664,9 @@ export function App() {
                 super::settings::SettingsStore::open(&state_path).unwrap(),
             ),
             decisions: std::sync::Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
+            proposals: std::sync::Mutex::new(
+                agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
+            ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
             project_roots: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             metrics: std::sync::Mutex::new(
@@ -5732,6 +5753,9 @@ export function App() {
                 super::settings::SettingsStore::open(&state_path).unwrap(),
             ),
             decisions: std::sync::Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
+            proposals: std::sync::Mutex::new(
+                agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
+            ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
             project_roots: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             metrics: std::sync::Mutex::new(
@@ -5906,6 +5930,9 @@ export function App() {
                 super::settings::SettingsStore::open(&state_path).unwrap(),
             ),
             decisions: std::sync::Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
+            proposals: std::sync::Mutex::new(
+                agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
+            ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
             project_roots: std::sync::Mutex::new(std::collections::BTreeSet::from([
                 root_a.display().to_string(),

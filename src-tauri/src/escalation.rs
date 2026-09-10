@@ -231,9 +231,10 @@ pub fn strategies(
     cloud_allowed: bool,
     payload_bytes: u64,
 ) -> GapStrategyReport {
-    let export_impact = "Accepted proposals enter best-effort exports as InferredWeak with cited \
-                         evidence; verified-only exports are unaffected (R-INT-5). T0/T1 facts \
-                         are never modified (R-INT-1)."
+    let export_impact = "Review decisions are saved with the staged proposal. Accepted proposals \
+                         await shared-context reconciliation; they do not yet change exports. \
+                         Working-tree evidence is unverified against its cited revision. \
+                         Proposals retain T3/InferredWeak and never modify T0/T1 facts."
         .to_string();
     let disclosure = llm::anthropic::disclosure(llm::anthropic::ClaudeLane::Opus);
     let strategies = vec![

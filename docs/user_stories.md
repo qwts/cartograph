@@ -326,3 +326,17 @@
 - **Security:** No model or source execution; no new raw predicate/return text stored before the redaction contract is implemented.
 - **Performance:** Ownership and rule passes share the parsed tree; unsupported complexity remains bounded and explicit.
 - **Trace:** H2 (SPEC-01/SPEC-02) · `adapters-lang-ts`, `core-graph`, `core-prov`, `core-redact`, `spec`, `context-hub`, `app` · — · T-0119..0125
+
+### US-0025 — Resume review of immutable agent proposals
+- **Actor:** Human developer
+- **As a** developer **I want** agent results staged durably and reviewed by identity **so that** I can resume after restart and know the exact evidence and interpretation I accepted.
+- **Priority:** Must · **Status:** In-Progress
+- **AC-0126** Given a bounded host task and broker result, when staged, then complete proposal content, provenance, task/run identity, graph snapshot and a versioned basis manifest determine an immutable identity; validation rejects unsupported candidate/citation changes, repeated identical staging is idempotent, and raw task source is not persisted.
+- **AC-0127** Given a staged proposal, when reviewed by ID and expected review revision, then the host atomically records the decision without changing proposal content; unknown IDs and stale revisions fail, and both pending and reviewed records survive restart.
+- **AC-0128** Given single or class escalation, when a result completes, then it is durably staged before reported success; failed persistence is a failed result and cancellation preserves already completed staged instances.
+- **AC-0129** Given staged history after restart, when the review surface opens, then pending and reviewed results can be retrieved with bounded explicit pagination and reviewed by ID; accepted status states that shared-context reconciliation is pending.
+- **AC-0130** Given current working-tree evidence assembly, when its task is staged or accepted, then fingerprints bind the exact supplied text while the record explicitly retains unverified source binding and pending reconciliation; a commit-shaped citation, unchanged snapshot or human acceptance cannot certify freshness.
+- **AC-0131** Given staging and human review, when recovered graph/context/export state and legacy decisions are compared, then recovered facts and producing tiers remain unchanged and legacy caller-body decisions are not activated as staged proposals; full H3 projection remains an explicit later gate.
+- **Security:** No raw task-source archive, caller-body review authority, source writes or model execution from staging/review.
+- **Performance:** Staged records have a 128 KiB payload cap; history reads have bounded pages and explicit continuation.
+- **Trace:** H3 prerequisite (SPEC-01/SPEC-03) · `agents`, `app`, `ui` · — · T-0126..0131
