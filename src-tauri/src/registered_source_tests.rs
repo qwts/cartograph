@@ -22,6 +22,7 @@ pub(crate) fn app_state(app_data: &Path) -> AppState {
     AppState {
         graph: Mutex::new(SqliteGraphStore::open(app_data.join("graph.db")).unwrap()),
         jobs: Mutex::new(JobStore::open(&state_path).unwrap()),
+        job_execution_locks: crate::job_execution_host_tests::locks(&state_path),
         findings: Mutex::new(findings),
         settings: Mutex::new(settings::SettingsStore::open(&state_path).unwrap()),
         decisions: Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
@@ -37,6 +38,7 @@ pub(crate) fn app_state(app_data: &Path) -> AppState {
 
 fn recover(state: &AppState, source: &RegisteredSource) -> (DeltaSummary, ReconcileStats) {
     let operation = source_operation(state, vec![(source.clone(), false)]).unwrap();
+    let (job, execution) = start_job(state, &source.ingest_job_kind()).unwrap();
     let root = operation.root(&source.repo_key).unwrap();
     let (extraction, layers, delta) = {
         let mut caches = state.extraction_caches.lock().unwrap();
@@ -64,13 +66,7 @@ fn recover(state: &AppState, source: &RegisteredSource) -> (DeltaSummary, Reconc
         "workdir",
     )
     .unwrap();
-    relink_found_adrs(state, &operation).unwrap();
-    let job = state
-        .jobs
-        .lock()
-        .unwrap()
-        .enqueue(&source.ingest_job_kind())
-        .unwrap();
+    relink_found_adrs(state, &operation, &execution).unwrap();
     record_ingest_metrics(
         state,
         job.id,
@@ -80,6 +76,12 @@ fn recover(state: &AppState, source: &RegisteredSource) -> (DeltaSummary, Reconc
         &BTreeSet::from([source.repo_key.clone()]),
     )
     .unwrap();
+    state
+        .jobs
+        .lock()
+        .unwrap()
+        .finish_execution(&execution, &[])
+        .unwrap();
     (delta, reconciled)
 }
 
@@ -427,11 +429,14 @@ fn repo_facts_keep_operational_roots_out_of_identity() {
 }
 
 fn failed_job(state: &AppState, kind: &str) -> Job {
+    let (_, execution) = start_job(state, kind).unwrap();
     let mut jobs = state.jobs.lock().unwrap();
-    let job = jobs.enqueue(kind).unwrap();
-    jobs.set_status(job.id, "running").unwrap();
-    jobs.set_progress(job.id, "extract", 42.0).unwrap();
-    jobs.fail(job.id, "preserve historical failure").unwrap()
+    jobs.progress_execution(&execution, "extract", 42.0)
+        .unwrap();
+    updated_job(
+        jobs.fail_execution(&execution, "preserve historical failure")
+            .unwrap(),
+    )
 }
 
 #[test]
@@ -468,16 +473,18 @@ fn source_bound_retry_preserves_legacy_job_history() {
             serialized(old)
         );
     }
-    let (queued, resolved, operation) = prepare_job_retry(&restarted, bound.id).unwrap();
+    let (running, execution, resolved, operation) =
+        prepare_job_retry(&restarted, bound.id).unwrap();
     let resolved = resolved.unwrap();
     assert_eq!(resolved.source_id, source.source_id);
     assert_eq!(resolved.repo_key, source.repo_key);
     assert_eq!(operation.unwrap().root(&source.repo_key).unwrap(), root);
-    assert_eq!(queued.id, bound.id);
-    assert_eq!(queued.kind, bound.kind);
-    assert_eq!(queued.created_at, bound.created_at);
-    assert_eq!(queued.status, "queued");
-    assert!(queued.error.is_none() && queued.stage.is_none() && queued.progress.is_none());
+    assert_eq!(running.id, bound.id);
+    assert_eq!(running.kind, bound.kind);
+    assert_eq!(running.created_at, bound.created_at);
+    assert_eq!(running.status, "running");
+    assert!(running.error.is_none() && running.stage.is_none() && running.progress.is_none());
+    drop(execution);
     let unavailable = failed_job(&restarted, &source.ingest_job_kind());
     std::fs::remove_dir_all(&root).unwrap();
     assert!(prepare_job_retry(&restarted, unavailable.id).is_err());
@@ -644,10 +651,10 @@ fn source_identity_migration_preserves_historical_stages() {
             .filter(|row| row.detector == "custom@1")
             .collect::<Vec<_>>(),
     );
-    let mut jobs = JobStore::open(&state_path).unwrap();
-    let job = jobs.enqueue("ingest:/historical/project").unwrap();
-    jobs.set_progress(job.id, "extract", 37.0).unwrap();
-    jobs.fail(job.id, "historical failure").unwrap();
+    let jobs = JobStore::open(&state_path).unwrap();
+    let conn = Connection::open(&state_path).unwrap();
+    conn.execute("INSERT INTO jobs(kind,status,stage,progress,error) VALUES ('ingest:/historical/project','failed','extract',37,'historical failure')", []).unwrap();
+    let job = jobs.get(conn.last_insert_rowid()).unwrap();
     let jobs_before = serialized(&jobs.list().unwrap());
     let computed = metrics::compute(
         &legacy_nodes,
@@ -1065,12 +1072,8 @@ fn managed_plugin_gate_retains_source_guards_through_verdict() {
             std::fs::remove_file(&corpus_path).unwrap();
             drop(guard);
         }
-        let job_id = {
-            let mut jobs = state.jobs.lock().unwrap();
-            let job = jobs.enqueue(&format!("plugin-gate:{PLUGIN}")).unwrap();
-            jobs.set_status(job.id, "running").unwrap();
-            job.id
-        };
+        let (job, execution) = start_job(&state, &format!("plugin-gate:{PLUGIN}")).unwrap();
+        let job_id = job.id;
         let other_registry =
             Mutex::new(SourceRegistry::open(app_data.join("state.db"), &app_data).unwrap());
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -1112,7 +1115,7 @@ fn managed_plugin_gate_retains_source_guards_through_verdict() {
                 .push((boundary.to_string(), blocked, ready));
         });
 
-        let report = plugin_gate_blocking(PLUGIN, job_id, app.handle()).unwrap();
+        let report = plugin_gate_blocking(PLUGIN, &execution, app.handle()).unwrap();
         app.unlisten(event_id);
         assert_eq!(report["passed"], json!(corpus_present));
         assert_eq!(

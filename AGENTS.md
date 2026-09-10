@@ -132,6 +132,15 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 npm --prefix ui run lint && npm --prefix ui run typecheck && npm --prefix ui run test && npm --prefix ui run build
 ```
 
+The complete CI suite also requires native job ownership tests on
+`windows-2022`: `cargo test --locked -p job-execution-tests --test ownership`.
+The harness imports the production job modules and their existing tests without
+building Tauri. Local workspace tests run the same harness on the local platform;
+only a successful exact-SHA Windows lane establishes its Windows runtime result.
+This focused gate does not establish full Windows application support or physical
+power-loss durability. It uses the existing governed CI lifecycle and manual
+purposes, alongside every gate above.
+
 To see the app itself: `npm run tauri dev` (root). This section is the single
 place that lists the gates; CI mirrors it exactly.
 

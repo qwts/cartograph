@@ -4,14 +4,26 @@
 //! links, and support the full lifecycle — cancel (cooperative), retry,
 //! and resume after an interrupted run. Long work stays non-blocking; the
 //! UI observes transitions via `job://changed` events emitted by the shell.
+//! SPEC-07 adds private attempt ownership; production workers require execution
+//! handles, while the old ID-only mutators remain test fixture helpers only.
 
-use rusqlite::{Connection, params};
+use crate::job_execution::ExecutionNamespace;
+use rusqlite::{Connection, TransactionBehavior, params};
+
+#[path = "jobs/execution.rs"]
+mod execution;
+pub(crate) use execution::{ClaimMode, ClaimPlan, ExecutionCheck, ExecutionUpdate};
+#[cfg(test)]
+#[path = "jobs/ownership_tests.rs"]
+mod ownership_tests;
 use serde::Serialize;
 use std::path::Path;
 
 /// A durable job row.
 #[derive(Debug, Clone, Serialize)]
 pub struct Job {
+    /// Whether this row participates in attempt ownership; not a liveness claim.
+    pub execution_tracking: ExecutionTracking,
     /// Row id.
     pub id: i64,
     /// Job kind, e.g. `ingest-source-v1:src_<id>`; historical path kinds remain readable.
@@ -30,6 +42,14 @@ pub struct Job {
     pub created_at: String,
     /// Last transition timestamp (UTC, ISO-8601).
     pub updated_at: String,
+}
+
+/// Private metadata presence, returned with the same snapshot as the job row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionTracking {
+    Recorded,
+    LegacyUnknown,
 }
 
 /// Durable paired-eval result on the state spine (SPEC-00 §8.3, §13).
@@ -60,12 +80,14 @@ pub struct EvalResult {
 /// Store for durable jobs, backed by the state-spine database.
 pub struct JobStore {
     conn: Connection,
+    namespace: ExecutionNamespace,
 }
 
 impl JobStore {
     /// Open (creating if absent) the state spine at `path`, in WAL mode.
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path.as_ref())?;
+        conn.busy_timeout(std::time::Duration::from_secs(1))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS jobs (
@@ -93,35 +115,30 @@ impl JobStore {
              ) STRICT;",
         )?;
         migrate_v1_jobs(&conn)?;
-        Ok(Self { conn })
+        let namespace = execution::initialize(&mut conn, path.as_ref())?;
+        Ok(Self { conn, namespace })
     }
 
-    /// Mark jobs left `running` by a previous process as `interrupted` —
-    /// the app died mid-run; they are resumable, never silently stuck.
-    /// Returns the ids that were recovered.
-    pub fn recover_interrupted(&mut self) -> rusqlite::Result<Vec<i64>> {
-        let ids: Vec<i64> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id FROM jobs WHERE status = 'running'")?;
-            stmt.query_map([], |r| r.get(0))?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        for id in &ids {
-            self.set_status(*id, "interrupted")?;
-        }
-        Ok(ids)
-    }
-
-    /// Enqueue a job of `kind`; returns the stored row.
+    /// Enqueue and record unclaimed ownership in one transaction. Earlier rows
+    /// without metadata remain legacy-unknown; opening the store never adopts them.
     pub fn enqueue(&mut self, kind: &str) -> rusqlite::Result<Job> {
-        self.conn
-            .execute("INSERT INTO jobs (kind) VALUES (?1)", params![kind])?;
-        let id = self.conn.last_insert_rowid();
-        self.get(id)
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        execution::validate(&tx, &self.namespace)?;
+        execution::one(tx.execute("INSERT INTO jobs (kind) VALUES (?1)", params![kind])?)?;
+        let id = tx.last_insert_rowid();
+        execution::one(tx.execute(
+            "INSERT INTO job_attempts (job_id, generation, owner) VALUES (?1, 0, NULL)",
+            [id],
+        )?)?;
+        let job = execution::read_job(&tx, id)?;
+        tx.commit()?;
+        Ok(job)
     }
 
     /// Transition a job to `status`.
+    #[cfg(test)]
     pub fn set_status(&mut self, id: i64, status: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE jobs SET status = ?2,
@@ -133,6 +150,7 @@ impl JobStore {
     }
 
     /// Record stage + percent for a running job.
+    #[cfg(test)]
     pub fn set_progress(&mut self, id: i64, stage: &str, progress: f64) -> rusqlite::Result<Job> {
         self.conn.execute(
             "UPDATE jobs SET stage = ?2, progress = ?3,
@@ -147,6 +165,7 @@ impl JobStore {
     /// job still `queued`/`running` transitions — a cancellation that lands
     /// mid-pipeline is never overwritten back to `done` (the returned row
     /// tells the caller which outcome won).
+    #[cfg(test)]
     pub fn finish(&mut self, id: i64, artifacts: &[String]) -> rusqlite::Result<Job> {
         let artifacts_json = serde_json::to_string(artifacts).expect("string vec serializes");
         self.conn.execute(
@@ -161,6 +180,7 @@ impl JobStore {
 
     /// Fail a job with its error detail preserved for display. Guarded like
     /// [`Self::finish`]: a concurrent cancel wins over a late failure.
+    #[cfg(test)]
     pub fn fail(&mut self, id: i64, error: &str) -> rusqlite::Result<Job> {
         self.conn.execute(
             "UPDATE jobs SET status = 'failed', error = ?2,
@@ -171,25 +191,29 @@ impl JobStore {
         self.get(id)
     }
 
-    /// Cancel a queued or running job. Running work observes this
-    /// cooperatively via [`Self::is_cancelled`] between stages.
+    /// Cancel atomically. A completed row wins over a later cancellation, and
+    /// cancellation never releases a live worker's execution guard.
     pub fn cancel(&mut self, id: i64) -> Result<Job, JobTransitionError> {
-        let job = self.get(id).map_err(JobTransitionError::Store)?;
-        match job.status.as_str() {
-            "queued" | "running" => {
-                self.set_status(id, "cancelled")
-                    .map_err(JobTransitionError::Store)?;
-                self.get(id).map_err(JobTransitionError::Store)
-            }
-            other => Err(JobTransitionError::InvalidFrom {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        execution::validate(&tx, &self.namespace)?;
+        let before = execution::read_job(&tx, id).map_err(execution::missing)?;
+        if !matches!(before.status.as_str(), "queued" | "running") {
+            return Err(JobTransitionError::InvalidFrom {
                 verb: "cancel",
-                status: other.to_string(),
-            }),
+                status: before.status,
+            });
         }
+        execution::one(tx.execute("UPDATE jobs SET status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?1 AND status IN ('queued', 'running')", [id])?)?;
+        let job = execution::read_job(&tx, id)?;
+        tx.commit()?;
+        Ok(job)
     }
 
     /// Re-queue a failed, cancelled, or interrupted job (clears progress and
     /// error). The caller re-dispatches execution for the job's kind.
+    #[cfg(test)]
     pub fn retry(&mut self, id: i64) -> Result<Job, JobTransitionError> {
         let job = self.get(id).map_err(JobTransitionError::Store)?;
         match job.status.as_str() {
@@ -214,6 +238,7 @@ impl JobStore {
 
     /// True when the job was cancelled — checked between pipeline stages so
     /// running work stops at the next safe boundary.
+    #[cfg(test)]
     pub fn is_cancelled(&self, id: i64) -> rusqlite::Result<bool> {
         match self.get(id) {
             Ok(job) => Ok(job.status == "cancelled"),
@@ -230,22 +255,29 @@ impl JobStore {
     /// spine. Queued, running, and interrupted (resumable) work is never
     /// discarded. Returns the number of rows removed.
     pub fn clear_finished(&mut self) -> rusqlite::Result<usize> {
-        self.conn.execute(
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        execution::validate(&tx, &self.namespace)?;
+        tx.execute("DELETE FROM job_attempts WHERE job_id IN (SELECT id FROM jobs WHERE status IN ('done', 'failed', 'cancelled'))", [])?;
+        let removed = tx.execute(
             "DELETE FROM jobs WHERE status IN ('done', 'failed', 'cancelled')",
             [],
-        )
+        )?;
+        tx.commit()?;
+        Ok(removed)
     }
 
-    /// All jobs, newest first.
+    /// All jobs, newest first, with tracking from the same read transaction.
     pub fn list(&self) -> rusqlite::Result<Vec<Job>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, kind, status, stage, progress, error, artifacts,
-                    created_at, updated_at
-             FROM jobs ORDER BY id DESC",
-        )?;
-        let jobs = stmt
-            .query_map([], job_row)?
-            .collect::<Result<Vec<_>, _>>()?;
+        let tx = self.conn.unchecked_transaction()?;
+        execution::validate(&tx, &self.namespace)?;
+        let jobs = {
+            let mut stmt = tx.prepare(&format!("{} ORDER BY j.id DESC", execution::JOB_SELECT))?;
+            stmt.query_map([], job_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        tx.commit()?;
         Ok(jobs)
     }
 
@@ -288,13 +320,11 @@ impl JobStore {
 
     /// One job by id.
     pub fn get(&self, id: i64) -> rusqlite::Result<Job> {
-        self.conn.query_row(
-            "SELECT id, kind, status, stage, progress, error, artifacts,
-                    created_at, updated_at
-             FROM jobs WHERE id = ?1",
-            params![id],
-            job_row,
-        )
+        let tx = self.conn.unchecked_transaction()?;
+        execution::validate(&tx, &self.namespace)?;
+        let job = execution::read_job(&tx, id)?;
+        tx.commit()?;
+        Ok(job)
     }
 
     fn get_eval(&self, id: i64) -> rusqlite::Result<EvalResult> {
@@ -314,6 +344,15 @@ impl JobStore {
 pub enum JobTransitionError {
     InvalidFrom { verb: &'static str, status: String },
     Store(rusqlite::Error),
+    Busy,
+    LockUnavailable,
+    ForeignStore,
+    LegacyUnknown,
+    Missing,
+    StaleAttempt,
+    Stopped,
+    InvalidMetadata,
+    GenerationOverflow,
 }
 
 impl std::fmt::Display for JobTransitionError {
@@ -323,11 +362,36 @@ impl std::fmt::Display for JobTransitionError {
                 write!(f, "cannot {verb} a job in status '{status}'")
             }
             Self::Store(error) => write!(f, "job store error: {error}"),
+            Self::Busy => {
+                f.write_str("The previous job execution is still active; retry after it exits.")
+            }
+            Self::LockUnavailable => f.write_str(
+                "Job execution locking is unavailable or invalid; ownership was not assumed.",
+            ),
+            Self::ForeignStore => f.write_str("Job execution belongs to a different state store."),
+            Self::LegacyUnknown => {
+                f.write_str("Historical job ownership is unknown; start a fresh operation.")
+            }
+            Self::Missing => f.write_str("Job execution was removed; work must stop."),
+            Self::StaleAttempt => f.write_str("Job execution is stale; work must stop."),
+            Self::Stopped => f.write_str("Job execution has been interrupted; work must stop."),
+            Self::InvalidMetadata => {
+                f.write_str("Job execution metadata is invalid; work must stop.")
+            }
+            Self::GenerationOverflow => {
+                f.write_str("Job execution generation is exhausted; start a fresh operation.")
+            }
         }
     }
 }
 
 impl std::error::Error for JobTransitionError {}
+
+impl From<rusqlite::Error> for JobTransitionError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Store(error)
+    }
+}
 
 /// Add the v2 columns to a v1 `jobs` table (fresh tables already have them).
 fn migrate_v1_jobs(conn: &Connection) -> rusqlite::Result<()> {
@@ -350,7 +414,12 @@ fn migrate_v1_jobs(conn: &Connection) -> rusqlite::Result<()> {
 
 fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
     let artifacts_json: Option<String> = row.get(6)?;
+    let execution_tracking = execution::row_attempt(row)?
+        .map_or(ExecutionTracking::LegacyUnknown, |_| {
+            ExecutionTracking::Recorded
+        });
     Ok(Job {
+        execution_tracking,
         id: row.get(0)?,
         kind: row.get(1)?,
         status: row.get(2)?,
@@ -482,24 +551,6 @@ mod tests {
         let job = store.fail(other, "late error").unwrap();
         assert_eq!(job.status, "cancelled");
         assert_eq!(job.error, None);
-    }
-
-    #[test]
-    fn interrupted_jobs_are_recovered_and_resumable() {
-        // A job left `running` by a dead process becomes `interrupted` on
-        // reopen — visible and retryable, never silently stuck.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.db");
-        let id = {
-            let mut store = JobStore::open(&path).unwrap();
-            let id = store.enqueue("ingest:/repo").unwrap().id;
-            store.set_status(id, "running").unwrap();
-            id
-        };
-        let mut store = JobStore::open(&path).unwrap();
-        assert_eq!(store.recover_interrupted().unwrap(), vec![id]);
-        assert_eq!(store.get(id).unwrap().status, "interrupted");
-        assert_eq!(store.retry(id).unwrap().status, "queued");
     }
 
     #[test]

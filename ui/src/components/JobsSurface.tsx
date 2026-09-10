@@ -1,27 +1,18 @@
 import { useState } from 'react';
 import type { Job } from '../store';
 import { stageLabel } from '../stageLabels';
+import { hasRecordedExecution, isRecoveryJob } from '../jobPresentation';
 
 export interface JobsSurfaceProps {
   jobs: Job[];
   /** Disabled when there is no live backend to clear against. */
   canClear: boolean;
+  actionError?: string | null;
   onClearFinished: () => void;
   onCancel: (id: number) => void;
   onRetry: (id: number) => void;
-  /** Jump to the live Recovering screen for a running/queued recovery job
-   *  (#209) — the id isn't threaded further since the Recover surface finds
-   *  its job by status, but it's passed through for future kind-specific use. */
+  /** Pin this recorded recovery job in the Recover surface. */
   onViewLive?: (id: number) => void;
-}
-
-/** Recovery-flow job kinds (`store.ts`'s `ingest()` dispatches one of these
- *  three backend commands) — only these have a Recover surface to jump back
- *  to; other job kinds (plugin gates, escalations) do not. */
-const RECOVERY_KIND_PREFIXES = ['ingest-source-v1:', 'ingest:', 'add-repo:', 'add-system:'];
-
-function isRecoveryJob(kind: string): boolean {
-  return RECOVERY_KIND_PREFIXES.some((prefix) => kind.startsWith(prefix));
 }
 
 /** Terminal statuses removed by Clear finished; resumable work never is. */
@@ -59,6 +50,7 @@ function actionFor(status: string): { label: string; kind: 'cancel' | 'retry' } 
 export function JobsSurface({
   jobs,
   canClear,
+  actionError = null,
   onClearFinished,
   onCancel,
   onRetry,
@@ -72,8 +64,8 @@ export function JobsSurface({
         <div>
           <h2>Jobs</h2>
           <p className="muted">
-            The job spine is durable — restart the app and this list survives; interrupted work
-            can be resumed when its source is registered.
+            Job records survive restart. Recorded execution tracking enables guarded controls;
+            a stored status alone does not prove a worker is live. Cancellation is cooperative.
           </p>
         </div>
         {!confirming ? (
@@ -112,42 +104,51 @@ export function JobsSurface({
           </div>
         )}
       </header>
+      {actionError && <p className="job-error" role="alert">{actionError}</p>}
       {jobs.length === 0 ? (
         <p className="muted">No jobs yet.</p>
       ) : (
         <ul className="jobs-rows">
           {jobs.map((job) => {
             const action = actionFor(job.status);
-            const legacyRetry = job.kind.startsWith('ingest:') && action?.kind === 'retry';
+            const unknown = !hasRecordedExecution(job);
+            const legacyRetry = (unknown || job.kind.startsWith('ingest:')) && action?.kind === 'retry';
             return (
               <li key={job.id} className={`job-row job-${job.status}`}>
                 <span
                   className={`material-symbols-outlined job-icon${
-                    job.status === 'running' ? ' spinning' : ''
+                    !unknown && job.status === 'running' ? ' spinning' : ''
                   }`}
                   aria-hidden="true"
                 >
-                  {STATUS_ICON[job.status] ?? 'help'}
+                  {unknown ? 'history' : STATUS_ICON[job.status] ?? 'help'}
                 </span>
                 <div className="job-main">
                   <div className="job-title">
                     <code>#{job.id}</code> {job.kind}
                     <span className={`job-status job-status-${job.status}`}>{job.status}</span>
-                    {job.stage && job.status === 'running' && (
+                    {!unknown && job.stage && job.status === 'running' && (
                       <span className="job-stage">{stageLabel(job.stage)}</span>
                     )}
                   </div>
-                  {job.status === 'running' && job.detail && (
+                  {!unknown && job.status === 'running' && job.detail && (
                     <p className="job-detail muted">
                       <code>{job.detail}</code>
                     </p>
                   )}
-                  {legacyRetry && (
+                  {unknown && <>
+                    <p className="muted">Execution ownership unknown — this is a legacy record, not proof of live work. Start a fresh operation from its source; same-ID Retry and Resume are unavailable.</p>
+                    {(job.stage || typeof job.progress === 'number') && <p className="muted">
+                      {job.stage && `Stored stage: ${stageLabel(job.stage)}. `}
+                      {typeof job.progress === 'number' && `Stored progress: ${Math.round(job.progress)}%.`}
+                    </p>}
+                  </>}
+                  {legacyRetry && !unknown && (
                     <p className="muted">
                       This historical job has no registered source. Run a new ingestion to retry.
                     </p>
                   )}
-                  {job.status === 'running' && typeof job.progress === 'number' && (
+                  {!unknown && job.status === 'running' && typeof job.progress === 'number' && (
                     <div
                       className="job-progress"
                       role="progressbar"
@@ -174,6 +175,7 @@ export function JobsSurface({
                   </p>
                 </div>
                 {onViewLive &&
+                  !unknown &&
                   (job.status === 'running' || job.status === 'queued') &&
                   isRecoveryJob(job.kind) && (
                     <button
@@ -189,7 +191,7 @@ export function JobsSurface({
                     type="button"
                     className="job-action"
                     disabled={legacyRetry}
-                    title={legacyRetry ? 'Run a new ingestion to register this source.' : undefined}
+                    title={legacyRetry ? 'Start a fresh operation from the source; this historical execution cannot be resumed.' : undefined}
                     onClick={() =>
                       action.kind === 'cancel' ? onCancel(job.id) : onRetry(job.id)
                     }

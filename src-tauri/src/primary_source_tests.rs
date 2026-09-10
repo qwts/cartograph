@@ -166,17 +166,13 @@ struct HistoricalStage {
 }
 
 fn reviewed_historical_stage(state: &AppState, app_data: &Path) -> HistoricalStage {
+    let conn = rusqlite::Connection::open(app_data.join("state.db")).unwrap();
+    conn.execute("INSERT INTO jobs(kind,status,error) VALUES ('ingest:/historical/project','failed','historical failure')", []).unwrap();
     let job = state
         .jobs
         .lock()
         .unwrap()
-        .enqueue("ingest:/historical/project")
-        .unwrap();
-    state
-        .jobs
-        .lock()
-        .unwrap()
-        .fail(job.id, "historical failure")
+        .get(conn.last_insert_rowid())
         .unwrap();
     let (task, proposal) = historical_proposal();
     let mut store = state.proposals.lock().unwrap();

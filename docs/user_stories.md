@@ -390,3 +390,20 @@
 - **Security:** Private local retention only; no target writes, implicit network, model disclosure, arbitrary-root reads or confidence upgrades. Deletion is exact-source and preview-bound.
 - **Performance:** SPEC-04 capture limits, bounded enumeration and receipts, selected-object span reads and try-only locks; participating TS cache bypass is explicit.
 - **Trace:** H3 prerequisite #395 · `adapters-lang-ts`, `source-capture`, `core-graph`, `app`, `ui` · — · T-0148..0155
+
+
+### US-0029 — Keep job ownership accurate across concurrent processes and retries
+- **Actor:** Engineer running recovery and agent investigations
+- **As a** engineer **I want** each live job attempt to keep exclusive execution ownership **so that** another startup or retry cannot steal it or accept stale worker updates.
+- **Priority:** Must · **Status:** In-Progress
+- **AC-0156** Given a new or legacy job store, when execution metadata initializes and rows are returned, then a private versioned namespace and recorded new-job attempts coexist with unchanged historical fields, while ownerless legacy rows remain explicitly unknown and require fresh operations rather than same-ID adoption or retry.
+- **AC-0157** Given participating job workers, when execution is claimed or cloned into blocking work, then a host-owned persistent try-only OS guard excludes another claim until the last worker holder exits, without a database mutex spanning lock acquisition or a substituted lock granting ownership; before SQL claim, its file and rooted directory entries are synced, Windows handles must report NTFS and permit real write-access directory flushes, and unsupported/query/sync failures release ownership with the job unchanged.
+- **AC-0158** Given an execution handle, when progress, checks, finish or fail occur, then the exact store/job/attempt/owner and allowed status fence every update; same-attempt cancellation remains unchanged and missing, interrupted or superseded ownership stops work distinctly.
+- **AC-0159** Given another startup or confirmed owner exit, when recovery runs, then busy live attempts remain untouched and only the exact observed still-running recorded candidates whose locks were acquired become interrupted, without overwriting concurrent terminal transitions or reporting unchanged rows.
+- **AC-0160** Given cancellation, cleanup or supported retry, when transitions race, then guarded transactions preserve the winning status, live cancelled workers exclude retry, source/kind admission precedes mutation and one retry atomically claims the next attempt without stale writes or an unowned queued interval.
+- **AC-0161** Given plugin, ingest, add and single/class escalation workers, when progress, publication, cancellation or async waiter loss occurs, then all production lifecycle writes use the retained execution, blocking closures preserve ownership, and completed proposals remain staged and reviewable after cancellation under AC-0128, including an already-started model result that completes after job cleanup; missing history still stops subsequent work and lifecycle writes.
+- **AC-0162** Given the Jobs surface, when legacy-unknown work or a busy/rejected retry is shown, then historical state is not presented as proven live or retryable, fresh recovery guidance is explicit and action failures remain visible without inventing a successful transition.
+- **AC-0163** Given history and independent source/evidence contracts, when ownership migration, retry, recovery or job cleanup runs, then existing job kinds/fields and staged proposal IDs/content/reviews remain intact, tracking grants no tier/source freshness upgrade and source guards retain their separate scope.
+- **Security:** Private host-generated ownership only; no caller tokens, force takeover, target writes, added egress or implicit model replay.
+- **Performance:** Short SQLite transitions, owned plans and try-only OS reservations; no mutex spans long work or blocking lock acquisition.
+- **Trace:** Durable runtime prerequisite #393 (SPEC-07) · `app`, `ui` · — · T-0156..0163

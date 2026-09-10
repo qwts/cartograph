@@ -192,6 +192,54 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # Native lock, SQLite, and process-exit coverage uses the actual host modules
+  # without building Tauri. This is an additional required complete-suite gate.
+  windows-job-ownership:
+    name: Windows job ownership
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact validation commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Read pinned Rust toolchain
+        id: toolchain
+        shell: pwsh
+        run: |
+          $configuration = Get-Content rust-toolchain.toml -Raw
+          $channel = [regex]::Match($configuration, '(?m)^channel\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
+          if (-not $channel.Success) { throw 'Expected a pinned Rust release in rust-toolchain.toml' }
+          "channel=$($channel.Groups[1].Value)" >> $env:GITHUB_OUTPUT
+
+      - name: Install pinned Rust toolchain
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@df404e2ce63fc1566eb2a60c92a8fabe009955b0
+        with:
+          task: Install pinned Windows Rust toolchain
+          executable: rustup.exe
+          arguments-json: '["toolchain","install","${{ steps.toolchain.outputs.channel }}","--profile","minimal","--component","rustfmt","--component","clippy"]'
+          timeout-seconds: '300'
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: windows-job-ownership
+
+      - name: Test production job ownership on Windows
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@df404e2ce63fc1566eb2a60c92a8fabe009955b0
+        with:
+          task: Test native Windows job ownership and process exit
+          executable: cargo.exe
+          arguments-json: '["test","--locked","-p","job-execution-tests","--test","ownership","--","--nocapture"]'
+          timeout-seconds: '600'
+
   # License compliance + supply-chain gate (#222). This remains a complete-
   # suite lane and retains its stable context.
   compliance:
@@ -359,7 +407,7 @@ jobs:
 
   complete:
     name: Complete suite
-    needs: [policy, merge-evidence, preflight-evidence, docs, rust, compliance, frontend, codeql, workflow-runtime]
+    needs: [policy, merge-evidence, preflight-evidence, docs, rust, windows-job-ownership, compliance, frontend, codeql, workflow-runtime]
     if: >-
       always() && needs.policy.result == 'success' &&
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
@@ -371,6 +419,7 @@ jobs:
         env:
           DOCS: ${{ needs.docs.result }}
           RUST: ${{ needs.rust.result }}
+          WINDOWS_JOB_OWNERSHIP: ${{ needs.windows-job-ownership.result }}
           COMPLIANCE: ${{ needs.compliance.result }}
           FRONTEND: ${{ needs.frontend.result }}
           CODEQL: ${{ needs.codeql.result }}
@@ -378,6 +427,7 @@ jobs:
         run: |
           test "$DOCS" = success
           test "$RUST" = success
+          test "$WINDOWS_JOB_OWNERSHIP" = success
           test "$COMPLIANCE" = success
           test "$FRONTEND" = success
           test "$CODEQL" = success
