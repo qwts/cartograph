@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within } from 'storybook/test';
 import { WorkspaceSurface } from './WorkspaceSurface';
-import type { FindingsSummary, SpecBundle, TierDistribution } from '../store';
+import type { FindingsSummary, SpecBundle, SystemRepo, TierDistribution } from '../store';
 
 /** The handoff's image-trail outcome (screenshot 01). */
 const FINDINGS: FindingsSummary = {
@@ -303,6 +303,79 @@ export const NoRecoveryYet: Story = {
 
     await userEvent.click(canvas.getByRole('button', { name: 'Connect a target' }));
     await expect(args.onReingest).toHaveBeenCalled();
+  },
+};
+
+export const RegisteredRepositoryDisplayNames: Story = {
+  // AC-0144: operational labels use exact repo membership, never the first
+  // registration. A host without a display label still shows the repository key.
+  args: {
+    summary: { ...meta.args.summary, repo: 'local/src_22222222222222222222222222222222' },
+    systemContents: [
+      { repo: 'local/src_11111111111111111111111111111111', display_name: 'Other project', commit: 'workdir' },
+      { repo: 'local/src_22222222222222222222222222222222', display_name: 'Billing service', commit: 'workdir' },
+      { repo: 'acme/infra', commit: 'a1b2c3d4e5f6' },
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('heading', { name: 'Billing service' })).toBeInTheDocument();
+    await expect(canvas.getByTestId('system-contents')).toHaveTextContent(
+      'Other project @ workdir · Billing service @ workdir · acme/infra @ a1b2c3d',
+    );
+    await expect(canvas.queryByText(/local\/src_/)).not.toBeInTheDocument();
+  },
+};
+
+const SAME_NAMED_SOURCES: SystemRepo[] = [
+  { repo: 'local/src_11111111111111111111111111111111', display_name: 'mirror', commit: 'workdir' },
+  { repo: 'local/src_22222222222222222222222222222222', display_name: ' mirror ', commit: 'workdir' },
+  { repo: 'acme/shop', display_name: 'shop', commit: 'a1b2c3d4e5f6' },
+  { repo: 'other/shop', display_name: 'shop', commit: 'b2c3d4e5f6a1' },
+  { repo: 'acme/billing', display_name: 'Billing service', commit: 'workdir' },
+  { repo: 'legacy/mirror', commit: 'workdir' },
+  { repo: 'legacy/blank', display_name: '  ', commit: 'workdir' },
+];
+
+export const SameNamedRepositoriesRemainDistinct: Story = {
+  // AC-0144: equal local basenames and GitHub repository names retain their
+  // human labels and exact keys. Unique names and missing labels stay concise.
+  args: {
+    summary: { ...meta.args.summary, repo: 'local/src_22222222222222222222222222222222' },
+    systemContents: SAME_NAMED_SOURCES,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('heading', {
+      name: 'mirror (local/src_22222222222222222222222222222222)',
+    })).toBeInTheDocument();
+    await expect(canvas.getByTestId('system-contents')).toHaveTextContent(
+      'System contents: mirror (local/src_11111111111111111111111111111111) @ workdir · '
+      + 'mirror (local/src_22222222222222222222222222222222) @ workdir · '
+      + 'shop (acme/shop) @ a1b2c3d · shop (other/shop) @ b2c3d4e · '
+      + 'Billing service @ workdir · legacy/mirror @ workdir · legacy/blank @ workdir',
+    );
+  },
+};
+
+export const ManifestLabelsUseExactRepositoryMembership: Story = {
+  // AC-0144: revision labels share the same disambiguation. A same-basename
+  // repository absent from current membership never borrows another's label.
+  args: {
+    summary: {
+      ...meta.args.summary,
+      repo: undefined,
+      commit_sha: undefined,
+      repos: ['acme/shop@a1b2c3d4e5f6', 'other/shop@b2c3d4e5f6a1', 'unknown/shop@workdir'],
+    },
+    systemContents: SAME_NAMED_SOURCES,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('heading', { name: '3 repos as one system' })).toBeInTheDocument();
+    await expect(canvas.getByText(
+      'shop (acme/shop)@a1b2c3d4e5f6 · shop (other/shop)@b2c3d4e5f6a1 · unknown/shop@workdir',
+    )).toBeInTheDocument();
   },
 };
 

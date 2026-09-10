@@ -8,6 +8,7 @@
 //! success — an auth failure leaves **no partial clone** (AC-0003) and
 //! maps to a typed error carrying remediation text.
 
+pub mod managed;
 pub mod manifest;
 pub mod preflight;
 pub mod toolchain;
@@ -31,6 +32,21 @@ pub enum IngestError {
     /// The URL is not a recognized GitHub (or file://) repo reference.
     #[error("unrecognized repo URL: {0}")]
     InvalidUrl(String),
+    /// A managed origin is unsupported, inconsistent or exceeds its bound.
+    #[error("invalid managed source origin")]
+    InvalidManagedOrigin,
+    /// Registry/source IDs or the host storage path are invalid.
+    #[error("invalid managed source identity or host storage path")]
+    InvalidManagedIdentity,
+    /// Another participating process currently holds an incompatible source guard.
+    #[error("managed source is busy")]
+    SourceBusy,
+    /// A private slot, lock or checkout does not have the expected ownership.
+    #[error("managed source ownership is invalid or unavailable")]
+    SourceOwnership,
+    /// Publication could not complete; preserved attempt data may require recovery.
+    #[error("managed source publication failed; source remains unavailable")]
+    SourcePublication,
     /// Any other git failure.
     #[error("git: {0}")]
     Git(#[from] git2::Error),
@@ -42,7 +58,7 @@ pub enum IngestError {
 /// A completed read-only clone.
 #[derive(Debug, Clone)]
 pub struct ClonedRepo {
-    /// Repo identity (`owner/name`, or `local/<name>` for file:// URLs).
+    /// Registered repo identity (`owner/name`, or `local/<source_id>`).
     pub repo: String,
     /// Resolved HEAD commit SHA (AC-0001: listed with commit SHA).
     pub commit_sha: String,
@@ -127,21 +143,17 @@ fn classify_git_error(url: &str, e: git2::Error) -> IngestError {
     }
 }
 
-/// Shallow-clone `url` under `dest_root`, returning the repo identity and
-/// HEAD SHA. The clone lands in a temp directory and moves into place only
-/// on success — failures leave no partial clone (AC-0003). Re-adding a
-/// repo replaces its previous clone (v1 is one-shot ingest per SPEC §10).
-pub fn clone_repo(
-    url: &str,
-    dest_root: &Path,
+/// Clone only into a caller-owned fresh attempt path. This primitive cannot
+/// replace an existing destination; managed publication owns that separate step.
+fn clone_into_new(
+    clone_url: &str,
+    destination: &Path,
     token: Option<&str>,
-) -> Result<ClonedRepo, IngestError> {
-    let (identity, clone_url) = parse_repo_url(url)?;
-    std::fs::create_dir_all(dest_root)?;
-    let final_dir = dest_root.join(identity.replace('/', "__"));
-    let tmp_dir = dest_root.join(format!(".tmp-{}", identity.replace('/', "__")));
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)?;
+) -> Result<String, IngestError> {
+    match std::fs::symlink_metadata(destination) {
+        Ok(_) => return Err(IngestError::SourceOwnership),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
 
     let mut callbacks = git2::RemoteCallbacks::new();
@@ -160,34 +172,20 @@ pub fn clone_repo(
 
     let result = git2::build::RepoBuilder::new()
         .fetch_options(fetch)
-        .clone(&clone_url, &tmp_dir);
+        .clone(clone_url, destination);
     let repo = match result {
         Ok(repo) => repo,
         Err(e) => {
-            // No partial clone: whatever git2 left behind goes away.
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err(classify_git_error(url, e));
+            return Err(classify_git_error(clone_url, e));
         }
     };
     let commit_sha = repo
         .head()
         .and_then(|h| h.peel_to_commit())
         .map(|c| c.id().to_string())
-        .map_err(|e| {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            classify_git_error(url, e)
-        })?;
+        .map_err(|e| classify_git_error(clone_url, e))?;
     drop(repo);
-
-    if final_dir.exists() {
-        std::fs::remove_dir_all(&final_dir)?;
-    }
-    std::fs::rename(&tmp_dir, &final_dir)?;
-    Ok(ClonedRepo {
-        repo: identity,
-        commit_sha,
-        path: final_dir,
-    })
+    Ok(commit_sha)
 }
 
 #[cfg(test)]

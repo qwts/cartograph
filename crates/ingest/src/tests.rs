@@ -46,13 +46,22 @@ fn clone_lists_repo_with_commit_sha() {
     let dir = tempfile::tempdir().unwrap();
     let url = bare_fixture(dir.path());
     let dest = dir.path().join("clones");
-
-    let cloned = clone_repo(&url, &dest, None).unwrap();
-    assert_eq!(cloned.repo, "local/fixture");
+    std::fs::create_dir(&dest).unwrap();
+    let dest = dunce::canonicalize(dest).unwrap();
+    let origin = managed::parse_managed_origin(&url).unwrap();
+    let checkout = managed::ManagedCheckout::new(
+        &dest,
+        "reg_11111111111111111111111111111111",
+        "src_22222222222222222222222222222222",
+    )
+    .unwrap();
+    let mut guard = checkout.try_write().unwrap();
+    let cloned = guard.clone_from(&origin, None).unwrap();
+    assert_eq!(cloned.repo, "local/src_22222222222222222222222222222222");
     assert_eq!(cloned.commit_sha.len(), 40, "full SHA");
     assert!(cloned.path.join("app.ts").exists());
     // Re-adding replaces, same identity/SHA (v1 one-shot ingest).
-    let again = clone_repo(&url, &dest, None).unwrap();
+    let again = guard.clone_from(&origin, None).unwrap();
     assert_eq!(again.commit_sha, cloned.commit_sha);
 }
 
@@ -61,14 +70,31 @@ fn clone_lists_repo_with_commit_sha() {
 fn failed_clone_leaves_nothing_behind() {
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("clones");
-    let url = format!("file://{}/does-not-exist.git", dir.path().display());
-
-    let err = clone_repo(&url, &dest, None).unwrap_err();
-    assert!(!matches!(err, IngestError::InvalidUrl(_)));
-    let leftovers: Vec<_> = std::fs::read_dir(&dest)
+    std::fs::create_dir(&dest).unwrap();
+    let dest = dunce::canonicalize(dest).unwrap();
+    let not_a_repo = dir.path().join("not-a-repository");
+    std::fs::create_dir(&not_a_repo).unwrap();
+    let url = url::Url::from_file_path(not_a_repo).unwrap();
+    let origin = managed::parse_managed_origin(url.as_str()).unwrap();
+    let checkout = managed::ManagedCheckout::new(
+        &dest,
+        "reg_11111111111111111111111111111111",
+        "src_22222222222222222222222222222222",
+    )
+    .unwrap();
+    let mut guard = checkout.try_write().unwrap();
+    let err = guard.clone_from(&origin, None).unwrap_err();
+    assert!(matches!(err, IngestError::Git(_)));
+    assert!(!checkout.root().exists());
+    let leftovers: Vec<_> = std::fs::read_dir(checkout.root().parent().unwrap())
         .map(|it| it.filter_map(|e| e.ok()).collect())
         .unwrap_or_default();
-    assert!(leftovers.is_empty(), "no partial clone: {leftovers:?}");
+    assert_eq!(
+        leftovers.len(),
+        1,
+        "only persistent owner metadata: {leftovers:?}"
+    );
+    assert_eq!(leftovers[0].file_name(), "owner.json");
 }
 
 // AC-0003: auth-shaped git errors map to a typed failure with

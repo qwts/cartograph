@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createRepositoryLabeler } from '../repositoryLabels';
 import type { GraphStats, SystemRepo } from '../store';
 
 export interface GraphStatsCardProps {
@@ -23,6 +24,7 @@ export function GraphStatsCard({
   onClear,
 }: GraphStatsCardProps) {
   const [confirming, setConfirming] = useState(false);
+  const repoLabel = createRepositoryLabeler(systemContents);
 
   return (
     <section className="card">
@@ -49,7 +51,7 @@ export function GraphStatsCard({
           <p>
             Remove every recovered fact
             {systemContents && systemContents.length > 0
-              ? ` for ${systemContents.map((entry) => entry.repo).join(', ')}`
+              ? ` for ${systemContents.map((entry) => repoLabel(entry.repo)).join(', ')}`
               : ' in this system'}
             ? Job history and settings are kept.
           </p>

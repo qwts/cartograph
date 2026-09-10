@@ -18,6 +18,8 @@ core-prov = { workspace = true }
 core-redact = { workspace = true }
 adapters-fw = { workspace = true }
 toml = "1.1"
+url = "2"
+dunce = "1"
 # libgit2 bindings; vendored so CI needs no system libgit2.
 git2 = { version = "0.21", default-features = false, features = ["https", "vendored-libgit2", "vendored-openssl"] }
 

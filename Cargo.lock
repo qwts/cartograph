@@ -70,11 +70,15 @@ name = "adapters-lang-ts"
 version = "0.11.0"
 dependencies = [
  "adapters-fw",
+ "cap-fs-ext",
+ "cap-std",
  "core-graph",
  "core-prov",
  "core-redact",
  "iac",
+ "serde",
  "serde_json",
+ "source-capture",
  "streaming-iterator",
  "tempfile",
  "thiserror 2.0.20",
@@ -192,6 +196,8 @@ dependencies = [
  "adapters-lang-ts",
  "adapters-plugin-host",
  "agents",
+ "cap-fs-ext",
+ "cap-std",
  "context-hub",
  "core-graph",
  "core-prov",
@@ -206,6 +212,7 @@ dependencies = [
  "semantic",
  "serde",
  "serde_json",
+ "source-capture",
  "spec",
  "tauri",
  "tauri-build",
@@ -2324,12 +2331,14 @@ dependencies = [
  "core-graph",
  "core-prov",
  "core-redact",
+ "dunce",
  "git2",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "toml 1.1.4+spec-1.1.0",
+ "url",
 ]
 
 [[package]]

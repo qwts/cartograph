@@ -59,3 +59,53 @@ export const Empty: Story = {
 export const ClearFailed: Story = {
   args: { stats: { nodes: 12, edges: 18 }, error: 'storage: database is locked' },
 };
+
+export const RegisteredRepositoryLabelsInConfirmation: Story = {
+  // AC-0144: destructive confirmation uses operational labels from SystemRepo.
+  args: {
+    stats: { nodes: 12, edges: 18 },
+    systemContents: [
+      { repo: 'local/src_11111111111111111111111111111111', display_name: 'Billing service', commit: 'workdir' },
+      { repo: 'acme/infra', commit: 'workdir' },
+    ],
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear system' }));
+    await expect(canvas.getByRole('alert')).toHaveTextContent(
+      'Remove every recovered fact for Billing service, acme/infra?',
+    );
+    await expect(canvas.getByRole('alert')).not.toHaveTextContent('local/src_');
+    await userEvent.click(canvas.getByRole('button', { name: 'Keep system' }));
+    await expect(args.onClear).not.toHaveBeenCalled();
+  },
+};
+
+export const SameNamedRepositoriesRemainDistinct: Story = {
+  // AC-0144: clear confirmation distinguishes every same-named local and
+  // GitHub source by its exact key without expanding unique human labels.
+  args: {
+    stats: { nodes: 12, edges: 18 },
+    systemContents: [
+      { repo: 'local/src_11111111111111111111111111111111', display_name: 'mirror', commit: 'workdir' },
+      { repo: 'local/src_22222222222222222222222222222222', display_name: ' mirror ', commit: 'workdir' },
+      { repo: 'acme/shop', display_name: 'shop', commit: 'a1b2c3d4e5f6' },
+      { repo: 'other/shop', display_name: 'shop', commit: 'b2c3d4e5f6a1' },
+      { repo: 'acme/billing', display_name: 'Billing service', commit: 'workdir' },
+      { repo: 'legacy/mirror', commit: 'workdir' },
+      { repo: 'legacy/blank', display_name: '  ', commit: 'workdir' },
+    ],
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear system' }));
+    await expect(canvas.getByRole('alert')).toHaveTextContent(
+      'Remove every recovered fact for mirror (local/src_11111111111111111111111111111111), '
+      + 'mirror (local/src_22222222222222222222222222222222), '
+      + 'shop (acme/shop), shop (other/shop), Billing service, legacy/mirror, legacy/blank? '
+      + 'Job history and settings are kept.',
+    );
+    await userEvent.click(canvas.getByRole('button', { name: 'Keep system' }));
+    await expect(args.onClear).not.toHaveBeenCalled();
+  },
+};

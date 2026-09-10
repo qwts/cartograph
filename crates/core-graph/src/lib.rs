@@ -7,8 +7,9 @@
 //! benchmark ever demands it.
 
 pub mod rules;
+pub mod source;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::cell::RefCell;
@@ -38,6 +39,20 @@ pub struct Edge {
     pub props: serde_json::Value,
 }
 
+/// A scoped set of graph changes published against an expected full snapshot.
+/// Deletions precede upserts, so an id can be removed and then recreated.
+#[derive(Debug, Clone, Default)]
+pub struct GraphPatch {
+    /// Nodes inserted or updated by stable id.
+    pub upsert_nodes: Vec<Node>,
+    /// Edges inserted or updated by `(src, dst, label)`.
+    pub upsert_edges: Vec<Edge>,
+    /// Nodes to remove together with all their incident edges.
+    pub delete_node_ids: Vec<String>,
+    /// Individual edge keys `(src, dst, label)` to remove.
+    pub delete_edges: Vec<(String, String, String)>,
+}
+
 /// Errors from graph-store operations.
 #[derive(Debug, thiserror::Error)]
 pub enum GraphError {
@@ -47,6 +62,9 @@ pub enum GraphError {
     /// Property (de)serialization failure.
     #[error("props: {0}")]
     Props(#[from] serde_json::Error),
+    /// Invalid or incompatible current-source association metadata.
+    #[error("source binding: {0}")]
+    SourceBinding(&'static str),
 }
 
 /// Storage abstraction for the unified graph (ADR-0008).
@@ -100,17 +118,20 @@ pub trait GraphStore {
 
 /// Version of the graph's fact schema — the node/edge *id scheme*, not the
 /// SQL shape. Bumped when ids change meaning (v2: repo-namespaced ids,
-/// US-0001 slice 2; v3: scope-qualified callable identities, AC-0120).
+/// US-0001 slice 2; v3: scope-qualified callable identities, AC-0120;
+/// v4: registered source namespaces and root-free Repo facts, AC-0144/0146).
 /// A mismatched db is cleared on open: the graph is a
 /// disposable ingest artifact (ADR-0008), and stale-scheme rows can never
 /// be upserted again — they would shadow every re-ingest as zombies (#50).
-pub const GRAPH_SCHEMA_VERSION: u32 = 3;
+pub const GRAPH_SCHEMA_VERSION: u32 = 4;
 
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
 pub struct SqliteGraphStore {
     conn: Connection,
     #[cfg(any(test, feature = "test-support"))]
     snapshot_after_nodes: RefCell<Option<SnapshotAfterNodesHook>>,
+    #[cfg(any(test, feature = "test-support"))]
+    source_binding_after_lookup: RefCell<Option<SnapshotAfterNodesHook>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -134,9 +155,55 @@ impl SqliteGraphStore {
         <Self as GraphStore>::read_snapshot(self)
     }
 
+    /// Atomically validate an ordered full [`Self::read_snapshot`] and apply a
+    /// scoped patch. An immediate transaction excludes competing writers before
+    /// validation and until commit. A stale snapshot returns `false` without
+    /// changes; any read, serialization or write failure rolls back the patch.
+    /// Facts absent from the patch remain intact, except edges incident to a
+    /// deleted node. This does not make earlier ingestion writes atomic.
+    pub fn apply_patch_if_snapshot_matches(
+        &mut self,
+        expected: &(Vec<Node>, Vec<Edge>),
+        patch: &GraphPatch,
+    ) -> Result<bool, GraphError> {
+        // Shared connection borrowing lets the ordinary private readers/writers
+        // run inside this transaction; nested transactions still fail at runtime.
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        if &self.read_snapshot_rows(None, None)? != expected {
+            return Ok(false);
+        }
+        self.apply_patch_rows(patch)?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Apply scoped changes inside the caller's transaction.
+    fn apply_patch_rows(&self, patch: &GraphPatch) -> Result<(), GraphError> {
+        for (src, dst, label) in &patch.delete_edges {
+            self.conn.execute(
+                "DELETE FROM edges WHERE src = ?1 AND dst = ?2 AND label = ?3",
+                params![src, dst, label],
+            )?;
+        }
+        for id in &patch.delete_node_ids {
+            self.conn
+                .execute("DELETE FROM edges WHERE src = ?1 OR dst = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
+        }
+        for node in &patch.upsert_nodes {
+            self.write_node(node)?;
+        }
+        for edge in &patch.upsert_edges {
+            self.write_edge(edge)?;
+        }
+        Ok(())
+    }
+
     /// Install a one-shot interleaving hook for regression tests. The ordinary
-    /// snapshot path consumes it after the node query, while its transaction is
-    /// still open, and propagates errors with normal transaction cleanup.
+    /// snapshot and conditional-patch paths consume it after the node query,
+    /// while their transaction is still open, and propagate errors with normal
+    /// transaction cleanup.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn set_snapshot_after_nodes_hook(
@@ -144,6 +211,25 @@ impl SqliteGraphStore {
         hook: impl FnOnce() -> Result<(), GraphError> + Send + 'static,
     ) {
         *self.snapshot_after_nodes.borrow_mut() = Some(Box::new(hook));
+    }
+
+    /// Read through the active transaction owned by the public operation.
+    fn read_snapshot_rows(
+        &self,
+        node_labels: Option<&[&str]>,
+        edge_labels: Option<&[&str]>,
+    ) -> Result<(Vec<Node>, Vec<Edge>), GraphError> {
+        let nodes = self.read_nodes(node_labels)?;
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            // Release the RefCell borrow before calling user-supplied test code.
+            let after_nodes = self.snapshot_after_nodes.borrow_mut().take();
+            if let Some(after_nodes) = after_nodes {
+                after_nodes()?;
+            }
+        }
+        let edges = self.read_edges(edge_labels)?;
+        Ok((nodes, edges))
     }
 
     fn read_nodes(&self, labels: Option<&[&str]>) -> Result<Vec<Node>, GraphError> {
@@ -202,6 +288,29 @@ impl SqliteGraphStore {
         Ok(edges)
     }
 
+    fn write_node(&self, node: &Node) -> Result<(), GraphError> {
+        self.conn.execute(
+            "INSERT INTO nodes (id, label, props) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET label = excluded.label, props = excluded.props",
+            params![node.id, node.label, serde_json::to_string(&node.props)?],
+        )?;
+        Ok(())
+    }
+
+    fn write_edge(&self, edge: &Edge) -> Result<(), GraphError> {
+        self.conn.execute(
+            "INSERT INTO edges (src, dst, label, props) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(src, dst, label) DO UPDATE SET props = excluded.props",
+            params![
+                edge.src,
+                edge.dst,
+                edge.label,
+                serde_json::to_string(&edge.props)?
+            ],
+        )?;
+        Ok(())
+    }
+
     fn init(conn: Connection) -> Result<Self, GraphError> {
         // WAL is a no-op for in-memory databases; harmless to set anyway.
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -222,6 +331,9 @@ impl SqliteGraphStore {
              CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
              CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);",
         )?;
+        // Private association metadata has its own schema version. Validate it
+        // before any legacy fact-schema rebuild can remove existing facts.
+        source::initialize(&conn)?;
         let version: u32 = conn.query_row("SELECT * FROM pragma_user_version", [], |r| r.get(0))?;
         if version != GRAPH_SCHEMA_VERSION {
             // Pre-versioned or older-scheme db: clear the facts, keep the
@@ -233,6 +345,8 @@ impl SqliteGraphStore {
             conn,
             #[cfg(any(test, feature = "test-support"))]
             snapshot_after_nodes: RefCell::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            source_binding_after_lookup: RefCell::new(None),
         })
     }
 }
@@ -249,26 +363,11 @@ fn label_selection(labels: Option<&[&str]>) -> String {
 
 impl GraphStore for SqliteGraphStore {
     fn put_node(&mut self, node: &Node) -> Result<(), GraphError> {
-        self.conn.execute(
-            "INSERT INTO nodes (id, label, props) VALUES (?1, ?2, ?3)
-             ON CONFLICT(id) DO UPDATE SET label = excluded.label, props = excluded.props",
-            params![node.id, node.label, serde_json::to_string(&node.props)?],
-        )?;
-        Ok(())
+        self.write_node(node)
     }
 
     fn put_edge(&mut self, edge: &Edge) -> Result<(), GraphError> {
-        self.conn.execute(
-            "INSERT INTO edges (src, dst, label, props) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(src, dst, label) DO UPDATE SET props = excluded.props",
-            params![
-                edge.src,
-                edge.dst,
-                edge.label,
-                serde_json::to_string(&edge.props)?
-            ],
-        )?;
-        Ok(())
+        self.write_edge(edge)
     }
 
     fn delete_edges_from_with_label(&mut self, src: &str, label: &str) -> Result<(), GraphError> {
@@ -368,18 +467,9 @@ impl GraphStore for SqliteGraphStore {
         // permits a read-only &self API and rejects nested transactions at
         // runtime. RAII rollback releases the snapshot on any failure.
         let transaction = self.conn.unchecked_transaction()?;
-        let nodes = self.read_nodes(node_labels)?;
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            // Release the RefCell borrow before calling user-supplied test code.
-            let after_nodes = self.snapshot_after_nodes.borrow_mut().take();
-            if let Some(after_nodes) = after_nodes {
-                after_nodes()?;
-            }
-        }
-        let edges = self.read_edges(edge_labels)?;
+        let snapshot = self.read_snapshot_rows(node_labels, edge_labels)?;
         transaction.commit()?;
-        Ok((nodes, edges))
+        Ok(snapshot)
     }
 
     fn reachable_from(&self, start: &str, label: Option<&str>) -> Result<Vec<String>, GraphError> {
@@ -427,6 +517,222 @@ impl GraphStore for SqliteGraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conditional_patch_updates_only_requested_facts_and_incident_edges() {
+        // AC-0142, AC-0147: ADR publication is a scoped patch; unrelated facts
+        // survive and every incoming/outgoing edge of a deleted node is removed.
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        for id in ["a", "b", "c", "d"] {
+            store.put_node(&node(id, "Symbol")).unwrap();
+        }
+        for (src, dst, label) in [
+            ("a", "b", "DECIDES"),
+            ("b", "c", "REFERENCES"),
+            ("a", "c", "DECIDES"),
+            ("c", "a", "REFERENCES"),
+            ("c", "d", "CALLS"),
+        ] {
+            store.put_edge(&edge(src, dst, label)).unwrap();
+        }
+        let expected = store.read_snapshot().unwrap();
+        let mut updated_node = node("a", "ADR");
+        updated_node.props = serde_json::json!({ "title": "Recovered decision" });
+        let mut updated_edge = edge("c", "d", "CALLS");
+        updated_edge.props = serde_json::json!({ "evidence": "retained" });
+        let patch = GraphPatch {
+            delete_edges: vec![("a".into(), "c".into(), "DECIDES".into())],
+            delete_node_ids: vec!["b".into()],
+            upsert_nodes: vec![updated_node.clone(), node("e", "Symbol")],
+            upsert_edges: vec![edge("a", "e", "DECIDES"), updated_edge.clone()],
+        };
+        assert!(
+            store
+                .apply_patch_if_snapshot_matches(&expected, &patch)
+                .unwrap()
+        );
+        assert!(store.conn.is_autocommit());
+        assert_eq!(
+            store.read_snapshot().unwrap(),
+            (
+                vec![
+                    updated_node,
+                    node("c", "Symbol"),
+                    node("d", "Symbol"),
+                    node("e", "Symbol")
+                ],
+                vec![
+                    edge("a", "e", "DECIDES"),
+                    edge("c", "a", "REFERENCES"),
+                    updated_edge
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn conditional_patch_rejects_stale_node_or_edge_snapshot_without_writes() {
+        // AC-0142, AC-0147: another connection can change only properties,
+        // without changing fact counts; neither a stale node nor edge is accepted.
+        for change_edge in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db");
+            let mut store = SqliteGraphStore::open(&path).unwrap();
+            store.put_node(&node("a", "Symbol")).unwrap();
+            store.put_node(&node("b", "Symbol")).unwrap();
+            store.put_edge(&edge("a", "b", "CALLS")).unwrap();
+            let expected = store.read_snapshot().unwrap();
+            let mut writer = SqliteGraphStore::open(&path).unwrap();
+            if change_edge {
+                let mut changed = edge("a", "b", "CALLS");
+                changed.props = serde_json::json!({ "revision": "new" });
+                writer.put_edge(&changed).unwrap();
+            } else {
+                let mut changed = node("a", "Symbol");
+                changed.props = serde_json::json!({ "revision": "new" });
+                writer.put_node(&changed).unwrap();
+            }
+            let current = writer.read_snapshot().unwrap();
+            let patch = GraphPatch {
+                delete_edges: vec![("a".into(), "b".into(), "CALLS".into())],
+                delete_node_ids: vec!["b".into()],
+                upsert_nodes: vec![node("adr", "ADR")],
+                // Validation must reject stale input before even this bad write.
+                upsert_edges: vec![edge("adr", "missing", "DECIDES")],
+            };
+            assert!(
+                !store
+                    .apply_patch_if_snapshot_matches(&expected, &patch)
+                    .unwrap()
+            );
+            assert!(store.conn.is_autocommit());
+            assert_eq!(store.read_snapshot().unwrap(), current);
+            writer.put_node(&node("later", "Symbol")).unwrap();
+        }
+    }
+
+    #[test]
+    fn conditional_patch_rolls_back_deletes_and_upserts_on_invalid_edge() {
+        // AC-0142, AC-0147: a late foreign-key failure rolls back explicit and
+        // incident-edge deletions, node deletion, updates and earlier inserts.
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        for id in ["a", "b", "c"] {
+            store.put_node(&node(id, "Symbol")).unwrap();
+        }
+        for (src, dst) in [("a", "b"), ("b", "c"), ("c", "a")] {
+            store.put_edge(&edge(src, dst, "CALLS")).unwrap();
+        }
+        let expected = store.read_snapshot().unwrap();
+        let patch = GraphPatch {
+            delete_edges: vec![("c".into(), "a".into(), "CALLS".into())],
+            delete_node_ids: vec!["b".into()],
+            upsert_nodes: vec![node("a", "ADR"), node("new", "Symbol")],
+            upsert_edges: vec![edge("a", "new", "DECIDES"), edge("a", "missing", "DECIDES")],
+        };
+        let error = store
+            .apply_patch_if_snapshot_matches(&expected, &patch)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GraphError::Storage(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation
+        ));
+        assert!(store.conn.is_autocommit());
+        assert_eq!(store.read_snapshot().unwrap(), expected);
+        assert!(
+            store
+                .apply_patch_if_snapshot_matches(&expected, &GraphPatch::default())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn conditional_patch_invalid_properties_release_immediate_transaction() {
+        // AC-0142, AC-0147: malformed persisted node/edge JSON fails closed and
+        // releases the writer reservation so another connection can repair it.
+        for table in ["nodes", "edges"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db");
+            let mut store = SqliteGraphStore::open(&path).unwrap();
+            store.put_node(&node("a", "Symbol")).unwrap();
+            store.put_edge(&edge("a", "a", "CALLS")).unwrap();
+            let expected = store.read_snapshot().unwrap();
+            let writer = SqliteGraphStore::open(&path).unwrap();
+            writer.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+            writer
+                .conn
+                .execute(&format!("UPDATE {table} SET props = 'invalid'"), [])
+                .unwrap();
+            let patch = GraphPatch {
+                upsert_nodes: vec![node("adr", "ADR")],
+                ..GraphPatch::default()
+            };
+            assert!(matches!(
+                store.apply_patch_if_snapshot_matches(&expected, &patch),
+                Err(GraphError::Props(_))
+            ));
+            assert!(store.conn.is_autocommit());
+            writer
+                .conn
+                .execute(&format!("UPDATE {table} SET props = '{{}}'"), [])
+                .unwrap();
+            assert_eq!(writer.read_snapshot().unwrap(), expected);
+            assert!(
+                store
+                    .apply_patch_if_snapshot_matches(&expected, &patch)
+                    .unwrap()
+            );
+            assert!(writer.get_node("adr").unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn conditional_patch_excludes_competing_writer_until_commit() {
+        // AC-0142, AC-0147: attempt a second-connection write synchronously after
+        // the node read. It must fail busy before validation/publication finishes;
+        // no timer, process mutex or optimistic gap between check and write helps.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let mut store = SqliteGraphStore::open(&path).unwrap();
+        store.put_node(&node("a", "Symbol")).unwrap();
+        store.put_edge(&edge("a", "a", "CALLS")).unwrap();
+        let expected = store.read_snapshot().unwrap();
+        let before = expected.clone();
+        let mut writer = SqliteGraphStore::open(&path).unwrap();
+        writer.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        store.set_snapshot_after_nodes_hook(move || {
+            // WAL readers continue to observe the committed graph.
+            assert_eq!(writer.read_snapshot()?, before);
+            let error = writer.put_node(&node("competitor", "Symbol")).unwrap_err();
+            assert!(matches!(
+                error,
+                GraphError::Storage(rusqlite::Error::SqliteFailure(error, _))
+                    if error.code == rusqlite::ErrorCode::DatabaseBusy
+            ));
+            sender.send(writer).unwrap();
+            Ok(())
+        });
+        let patch = GraphPatch {
+            upsert_nodes: vec![node("adr", "ADR")],
+            upsert_edges: vec![edge("adr", "a", "DECIDES")],
+            ..GraphPatch::default()
+        };
+        assert!(
+            store
+                .apply_patch_if_snapshot_matches(&expected, &patch)
+                .unwrap()
+        );
+        assert!(store.conn.is_autocommit());
+        let mut writer = receiver.try_recv().unwrap();
+        assert_eq!(
+            writer.read_snapshot().unwrap(),
+            store.read_snapshot().unwrap()
+        );
+        writer.put_node(&node("competitor", "Symbol")).unwrap();
+        assert!(store.get_node("competitor").unwrap().is_some());
+        assert!(store.get_node("adr").unwrap().is_some());
+    }
 
     #[test]
     fn read_snapshot_keeps_one_sqlite_revision_across_another_connection_commit() {

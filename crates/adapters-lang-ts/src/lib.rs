@@ -1089,6 +1089,15 @@ pub fn extract_source(
     path: &str,
     id: &SourceId,
 ) -> Result<Extraction, ExtractError> {
+    extract_source_recording(source, path, id, None)
+}
+
+fn extract_source_recording(
+    source: &[u8],
+    path: &str,
+    id: &SourceId,
+    mut direct: Option<&mut captured::DirectFacts>,
+) -> Result<Extraction, ExtractError> {
     // Only bare `.ts` keeps the non-JSX grammar — it's the sole extension
     // that can carry the old-style `<Type>expr` cast syntax the two
     // grammars exist to disambiguate, and TypeScript itself refuses JSX
@@ -1173,11 +1182,15 @@ pub fn extract_source(
         {
             props["computed_name"] = serde_json::json!(true);
         }
-        out.nodes.push(Node {
+        let owner = Node {
             id: sid.clone(),
             label: if is_component { "Component" } else { "Symbol" }.into(),
             props,
-        });
+        };
+        if let Some(direct) = direct.as_deref_mut() {
+            direct.owners.insert(sid.clone(), owner.clone());
+        }
+        out.nodes.push(owner);
         out.edges.push(Edge {
             src: sid.clone(),
             dst: file_id(id.repo, path),
@@ -2666,7 +2679,7 @@ pub fn extract_source(
         }
     }
 
-    rule_evidence::extract(&cx, &syntax_nodes, &bindings, &mut out);
+    rule_evidence::extract(&cx, &syntax_nodes, &bindings, &mut out, direct);
     Ok(out)
 }
 
@@ -2735,16 +2748,31 @@ pub fn extract_dir_incremental_with_progress(
                 extraction: ex.clone(),
             },
         );
-        out.nodes.extend(ex.nodes);
-        out.edges.extend(ex.edges);
-        out.event_sites.extend(ex.event_sites);
-        out.fetch_sites.extend(ex.fetch_sites);
-        out.default_exports.extend(ex.default_exports);
-        out.pending_calls.extend(ex.pending_calls);
-        out.pulumi_bindings.extend(ex.pulumi_bindings);
-        out.pending_pulumi_edges.extend(ex.pending_pulumi_edges);
-        out.eval_sites.extend(ex.eval_sites);
+        append_extraction(&mut out, ex);
     }
+    complete_directory(&mut out, root, id)?;
+    Ok((out, stats))
+}
+
+fn append_extraction(out: &mut Extraction, ex: Extraction) {
+    out.nodes.extend(ex.nodes);
+    out.edges.extend(ex.edges);
+    out.event_sites.extend(ex.event_sites);
+    out.fetch_sites.extend(ex.fetch_sites);
+    out.default_exports.extend(ex.default_exports);
+    out.pending_calls.extend(ex.pending_calls);
+    out.pulumi_bindings.extend(ex.pulumi_bindings);
+    out.pending_pulumi_edges.extend(ex.pending_pulumi_edges);
+    out.eval_sites.extend(ex.eval_sites);
+}
+
+/// Shared directory completion. Its live configuration inputs are deliberately
+/// outside the captured direct lexical receipt contract.
+fn complete_directory(
+    out: &mut Extraction,
+    root: &Path,
+    id: &SourceId,
+) -> Result<(), ExtractError> {
     let known_symbols: std::collections::HashSet<String> =
         out.nodes.iter().map(|node| node.id.clone()).collect();
     let known_files: std::collections::HashSet<String> = out
@@ -2759,7 +2787,7 @@ pub fn extract_dir_incremental_with_progress(
     // files, citing the deciding config. Reads configs fresh on every walk —
     // a tsconfig edit must take effect even when every source parse is
     // cache-reused.
-    resolution::resolve_bare_imports(&mut out, root, id, &known_files)?;
+    resolution::resolve_bare_imports(out, root, id, &known_files)?;
     let instance_methods: BTreeSet<_> = out
         .nodes
         .iter()
@@ -2808,9 +2836,9 @@ pub fn extract_dir_incremental_with_progress(
         });
     }
     out.pulumi_bindings.clear();
-    next_pages_screens(&mut out, id);
+    next_pages_screens(out, id);
     out.close_over_endpoints();
-    Ok((out, stats))
+    Ok(())
 }
 
 /// Next.js pages-router convention (SPEC-00 §3.5): a `.tsx` file under a
@@ -2959,6 +2987,7 @@ fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::
 }
 
 mod callable;
+pub mod captured;
 pub mod chrome_messaging;
 pub(crate) mod const_resolution;
 pub mod indexeddb;

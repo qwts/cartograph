@@ -1,4 +1,5 @@
 import { HelpTip } from './HelpTip';
+import { createRepositoryLabeler } from '../repositoryLabels';
 import type {
   FindingsSummary,
   IngestSummary,
@@ -12,8 +13,7 @@ export interface WorkspaceSurfaceProps {
   findings: FindingsSummary | null;
   distribution: TierDistribution;
   bundle: SpecBundle | null;
-  /** Repos whose facts are in the current graph (#162) — from graph facts,
-   * so it reflects stacking across ingests, not just the last job. */
+  /** Repos currently in the graph, with operational labels from the host. */
   systemContents?: SystemRepo[];
   onReingest: () => void;
   onTriageGaps: () => void;
@@ -64,15 +64,21 @@ export function WorkspaceSurface({
   onOpenArtifact,
 }: WorkspaceSurfaceProps) {
   const recovered = findings !== null && findings.graph_facts > 0;
+  const repoLabel = createRepositoryLabeler(systemContents);
 
   const systemName =
-    summary?.repo ??
+    (summary?.repo ? repoLabel(summary.repo) : null) ??
     (summary?.repos?.length ? `${summary.repos.length} repos as one system` : null) ??
     (recovered ? 'Ingested system' : 'No system yet');
   // Manifest recoveries carry per-repo identities (`identity@sha12`) instead
   // of one top-level SHA — show those, never a false mutable-workdir label.
   const commit = summary?.repos?.length
-    ? summary.repos.join(' · ')
+    ? summary.repos.map((revision) => {
+        const separator = revision.lastIndexOf('@');
+        return separator < 0
+          ? repoLabel(revision)
+          : `${repoLabel(revision.slice(0, separator))}${revision.slice(separator)}`;
+      }).join(' · ')
     : summary?.commit_sha
       ? `@ ${summary.commit_sha.slice(0, 7)}`
       : recovered && summary
@@ -115,13 +121,12 @@ export function WorkspaceSurface({
       </header>
 
       {systemContents && systemContents.length > 0 && (
-        // #162: stacking is stated, never silent — the graph's own facts
-        // name every repo currently merged into this system.
+        // #162: host labels identify every repo contributing facts to the system.
         <p className="system-contents" data-testid="system-contents">
           <span>
             System contents:{' '}
             {systemContents
-              .map((entry) => `${entry.repo} @ ${entry.commit.slice(0, 7)}`)
+              .map((entry) => `${repoLabel(entry.repo)} @ ${entry.commit.slice(0, 7)}`)
               .join(' · ')}
           </span>
           <span className="muted">

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { FactKey } from './primarySourceStore';
 import { invokeOr } from './tauri';
 import type { SurfaceView } from './views';
 import type { EgressPreview } from './components/EgressConsentDialog';
@@ -169,11 +170,11 @@ export interface AnchorProbe {
   found: number;
 }
 
-/** One repo currently contributing facts to the unified graph (#162),
- * derived from graph facts — never from history logs. */
+/** Graph membership with operational labels supplied by the host registry. */
 export interface SystemRepo {
   repo: string;
   commit: string;
+  display_name?: string | null;
 }
 
 /** One installed deterministic adapter, from the registry Preflight uses
@@ -598,7 +599,7 @@ export interface AppStore {
   disclosures: Partial<Record<string, CloudDisclosure>>;
   settingsError: string | null;
   /** Node selected for evidence view, with its source window state. */
-  selected: { node: GraphNode; source: SourceState; evidenceIndex: number } | null;
+  selected: { node: GraphNode; source: SourceState; evidenceIndex: number; fact?: FactKey; requestVersion: number } | null;
   refresh: () => Promise<void>;
   /** Remove terminal (done/failed/cancelled) jobs from the durable spine;
    *  queued, running, and interrupted (resumable) work is kept (AC-0076). */
@@ -616,7 +617,7 @@ export interface AppStore {
   ) => Promise<void>;
   /** Open the evidence drawer for a fact; `evidenceIndex` picks among its
    *  supporting evidence spans (default first). */
-  select: (node: GraphNode, evidenceIndex?: number) => Promise<void>;
+  select: (node: GraphNode, evidenceIndex?: number, fact?: FactKey) => Promise<void>;
   clearSelection: () => void;
   /** Navigate the shell; clears the evidence selection (handoff §Interactions). */
   setView: (view: SurfaceView) => void;
@@ -681,14 +682,7 @@ async function loadEndpoints(): Promise<GraphNode[]> {
   return invokeOr<GraphNode[]>('list_nodes', [], { label: 'Endpoint' });
 }
 
-/** The ingest root for an evidence ref's repo — each Repo node carries its
- *  own tree root, so multi-repo graphs resolve evidence per repo. */
-async function repoRoot(repo: string): Promise<string | null> {
-  const repos = await invokeOr<GraphNode[]>('list_nodes', [], { label: 'Repo' });
-  const match = repos.find((r) => r.id === `repo:${repo}`) ?? repos[0];
-  const root = match?.props?.root;
-  return typeof root === 'string' ? root : null;
-}
+let evidenceRequestVersion = 0;
 
 export const useAppStore = create<AppStore>((set, get) => ({
   view: 'workspace',
@@ -933,29 +927,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  select: async (node: GraphNode, evidenceIndex = 0) => {
-    set({ selected: { node, source: 'loading', evidenceIndex } });
+  select: async (node: GraphNode, evidenceIndex = 0, fact?: FactKey) => {
+    const requestVersion = ++evidenceRequestVersion;
+    set({ selected: { node, source: 'loading', evidenceIndex, fact, requestVersion } });
     const done = (source: SourceState) => {
       // Ignore if the user selected something else meanwhile.
       const current = get().selected;
-      if (current?.node.id === node.id && current.evidenceIndex === evidenceIndex) {
-        set({ selected: { node, source, evidenceIndex } });
+      if (requestVersion === evidenceRequestVersion && current?.node === node && current.evidenceIndex === evidenceIndex) {
+        set({ selected: { node, source, evidenceIndex, fact, requestVersion } });
       }
     };
     const ev = node.props.prov?.evidence[evidenceIndex] ?? node.props.prov?.evidence[0];
     if (!ev) return done('unavailable');
-    const root = await repoRoot(ev.repo);
-    if (root === null) return done('unavailable');
     try {
       const source = await invokeOr<EvidenceSource | null>('read_evidence', null, {
-        root,
+        repo: ev.repo,
         path: ev.path,
         byteStart: ev.byte_start,
         byteEnd: ev.byte_end,
       });
       done(source ?? 'unavailable');
     } catch {
-      // Source unavailable (file moved since ingest): panel shows metadata only.
+      // Unknown, missing or unavailable registration: keep the citation metadata.
       done('unavailable');
     }
   },

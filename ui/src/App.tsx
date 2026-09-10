@@ -23,6 +23,9 @@ import { ProvenanceSurface } from './components/ProvenanceSurface';
 import { ResolutionStrategyModal } from './components/ResolutionStrategyModal';
 import { EndpointsCard } from './components/EndpointsCard';
 import { EvidencePanel } from './components/EvidencePanel';
+import { CapturedSource } from './components/CapturedSource';
+import { SourceRetention } from './components/SourceRetention';
+import { sameFactKey, usePrimarySourceStore } from './primarySourceStore';
 import { TopologyCard } from './components/TopologyCard';
 import type { Job, SpecArtifact, SpecBundle } from './store';
 
@@ -62,6 +65,7 @@ function copySpecArtifact(artifact: SpecArtifact) {
 }
 
 export default function App() {
+  const primarySource = usePrimarySourceStore();
   const {
     view,
     recoverJobId,
@@ -198,6 +202,20 @@ export default function App() {
     };
   }, [applyJobDetail]);
 
+  const selectedNode = selected?.node;
+  const selectedFact = selected?.fact;
+  const selectedRequest = selected?.requestVersion;
+  const capturedSelectionMatches = selectedNode !== undefined && primarySource.subject === selectedNode &&
+    sameFactKey(primarySource.subjectFact, selectedFact ?? { kind: 'node', id: selectedNode.id });
+  useEffect(() => {
+    if (selectedNode) void usePrimarySourceStore.getState().inspect(selectedNode, selectedFact);
+    else usePrimarySourceStore.getState().clear();
+  }, [selectedNode, selectedFact, selectedRequest]);
+
+  useEffect(() => {
+    if (view === 'settings') void usePrimarySourceStore.getState().loadSources();
+  }, [view]);
+
   const navigate = useCallback(
     (next: SurfaceView) => {
       setView(next);
@@ -320,7 +338,7 @@ export default function App() {
                   id: `${edge.src} ${edge.label} ${edge.dst}`,
                   label: edge.label,
                   props: edge.props,
-                })
+                }, 0, { kind: 'edge', source: edge.src, label: edge.label, destination: edge.dst })
               }
               onLayerChange={setAtlasLayer}
             />
@@ -482,6 +500,7 @@ export default function App() {
         return <HelpSurface topic={helpTopic} onTopicChange={setHelpTopic} />;
       case 'settings':
         return (
+          <>
           <SettingsSurface
             tiers={tierSettings}
             egressLabel={egressLine}
@@ -497,6 +516,12 @@ export default function App() {
             onGrantConsent={(tier) => void grantCloudConsent(tier)}
             onRevokeConsent={(tier) => void revokeCloudConsent(tier)}
           />
+          <SourceRetention sources={primarySource.sources} preview={primarySource.preview}
+            busy={primarySource.retentionBusy} error={primarySource.retentionError}
+            message={primarySource.retentionMessage}
+            onPreview={(id) => void primarySource.previewSource(id)}
+            onDismiss={primarySource.dismissPreview} onForget={() => void primarySource.forget()} />
+          </>
         );
     }
   })();
@@ -544,8 +569,12 @@ export default function App() {
             node={selected.node}
             source={selected.source}
             evidenceIndex={selected.evidenceIndex}
+            captured={<CapturedSource description={capturedSelectionMatches ? primarySource.description : null}
+              text={capturedSelectionMatches ? primarySource.text : null}
+              loading={!capturedSelectionMatches || primarySource.loading} error={capturedSelectionMatches ? primarySource.error : null}
+              onRead={(index) => void primarySource.readRange(index)} />}
             onClose={clearSelection}
-            onShowEvidence={(index) => void select(selected.node, index)}
+            onShowEvidence={(index) => void select(selected.node, index, selected.fact)}
             onOpenResolution={
               // Only a real Gap node has strategies to derive; a synthetic
               // edge/flow subject would ask the backend for a node it does

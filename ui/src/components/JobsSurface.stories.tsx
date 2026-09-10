@@ -21,8 +21,8 @@ const ALL_STATES: Job[] = [
     progress: 100,
     artifacts: ['graph:local/repo@workdir'],
   }),
-  job({ id: 2, kind: 'ingest:/gone', status: 'failed', error: 'io: no such directory' }),
-  job({ id: 1, kind: 'ingest:/big', status: 'interrupted' }),
+  job({ id: 2, kind: 'ingest-source-v1:src_22222222222222222222222222222222', status: 'failed', error: 'io: no such directory' }),
+  job({ id: 1, kind: 'ingest-source-v1:src_33333333333333333333333333333333', status: 'interrupted' }),
 ];
 
 const meta = {
@@ -111,7 +111,7 @@ export const NothingToClear: Story = {
   args: {
     jobs: [
       job({ id: 2, kind: 'ingest:/repo', status: 'running', stage: 'extract', progress: 10 }),
-      job({ id: 1, kind: 'ingest:/big', status: 'interrupted' }),
+      job({ id: 1, kind: 'ingest-source-v1:src_33333333333333333333333333333333', status: 'interrupted' }),
     ],
   },
   play: async ({ canvasElement }) => {
@@ -171,5 +171,36 @@ export const PreV2CoreDegradesGracefully: Story = {
     await expect(canvas.getByText('noop')).toBeInTheDocument();
     await expect(canvas.getByText('done')).toBeInTheDocument();
     await expect(canvas.queryByRole('progressbar')).not.toBeInTheDocument();
+  },
+};
+
+export const RegisteredAndHistoricalRecoveryJobs: Story = {
+  // AC-0145: registered-source jobs retain recovery actions; historical path
+  // kinds remain visible and require a fresh ingestion before retry.
+  args: {
+    jobs: [
+      job({ id: 8, kind: 'ingest-source-v1:src_88888888888888888888888888888888', status: 'running' }),
+      job({ id: 7, kind: 'ingest-source-v1:src_77777777777777777777777777777777', status: 'interrupted' }),
+      job({ id: 6, kind: 'ingest:/historical', status: 'interrupted' }),
+      job({ id: 5, kind: 'ingest:/live-history', status: 'queued' }),
+    ],
+    onViewLive: fn(),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const live = canvas.getAllByRole('button', { name: 'View live' });
+    await expect(live).toHaveLength(2);
+    await userEvent.click(live[0]);
+    await expect(args.onViewLive).toHaveBeenCalledWith(8);
+    await userEvent.click(live[1]);
+    await expect(args.onViewLive).toHaveBeenCalledWith(5);
+    const resume = canvas.getAllByRole('button', { name: 'Resume' });
+    await expect(resume[0]).toBeEnabled();
+    await userEvent.click(resume[0]);
+    await expect(args.onRetry).toHaveBeenCalledWith(7);
+    await expect(resume[1]).toBeDisabled();
+    await expect(canvas.getByText(/ingest:\/historical/)).toBeInTheDocument();
+    await expect(canvas.getByText(/This historical job has no registered source/)).toBeInTheDocument();
+    await expect(args.onRetry).not.toHaveBeenCalledWith(6);
   },
 };
