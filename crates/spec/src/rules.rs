@@ -258,7 +258,7 @@ pub(crate) fn inventory(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAs
                 output,
                 "| {} | {} | {:?} | {:?} |",
                 edge.label,
-                text(&edge.dst),
+                reference(&edge.dst, &visible),
                 producing.tier,
                 producing.confidence_tier
             )

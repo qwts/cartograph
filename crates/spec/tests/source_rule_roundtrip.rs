@@ -140,6 +140,20 @@ fn source_rules_survive_storage_context_and_exports_without_secret_disclosure() 
                 .count(),
             6
         );
+        // Every visible GOVERNS target must carry the same source-name
+        // disclosure as its owner, including computed and quoted keys.
+        for owner in inventory
+            .content
+            .lines()
+            .filter_map(|line| line.strip_prefix("Owner: "))
+        {
+            assert!(
+                inventory.content.contains(&format!(
+                    "| GOVERNS | {owner} | Deterministic | Confirmed |"
+                )),
+                "relationship target lost the owner's source-name disclosure"
+            );
+        }
         assert!(inventory.content.contains("\\[REDACTED\\]"));
         let all = serde_json::to_string(&(&nodes, &edges, &page, &symbols, &bundle)).unwrap();
         for secret in [
