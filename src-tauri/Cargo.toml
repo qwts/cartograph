@@ -37,5 +37,6 @@ semantic = { workspace = true }
 agents = { workspace = true }
 
 [dev-dependencies]
+core-graph = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 tauri = { version = "2", features = ["test"] }
