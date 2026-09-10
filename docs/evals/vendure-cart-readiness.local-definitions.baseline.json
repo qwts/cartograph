@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "vendure-cart-readiness",
+  "stage": "cited_local_initializers_source_only",
+  "cartograph_commit": "3b146ce0425648b447c477e3a4e8f67bc6673d8a",
+  "target_commit": "2cc309deb5394af176314552ac7320a7b26a0104",
+  "oracle_sha256": "dcd9833e8f9be2269a6711f8bd04119c83931f6de45e04d17d1b99da9d51295d",
+  "input_proof": {
+    "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+    "exact_membership": true,
+    "files_sha256": {
+      "packages/core/src/api/resolvers/shop/shop-order.resolver.ts": "1fbcee5fda93e57498ae65d5b9987821e92ccebb89a921cdf64d4dd2134bca0d",
+      "packages/core/src/common/finite-state-machine/finite-state-machine.ts": "eb275983f0d4d35a5aa71720ff9789789cb58269512a364b95c4a1d5d3c8725f",
+      "packages/core/src/common/finite-state-machine/merge-transition-definitions.ts": "528601807a75a032184b7cc124092277a04ab9f7e9c0f5e46e8c015146cebe97",
+      "packages/core/src/common/finite-state-machine/types.ts": "b22cb7276ff11aa7a06e71a056224054c9e1dca9cd6d63db1d4347996cc653d4",
+      "packages/core/src/common/finite-state-machine/validate-transition-definition.ts": "76033e1e98e003c1c51eb9dff04f3c37bc9d724275054f3453f91911c893c05a",
+      "packages/core/src/config/catalog/multi-channel-stock-location-strategy.ts": "82fcda7a83265be981cd44849050539c433cdcd6e7a69d4c570b8c00f90675f4",
+      "packages/core/src/config/default-config.ts": "a126d8a594d6a44c4f04ab31de020965940ea624daaa29f62ece9e5eb57b77be",
+      "packages/core/src/config/order/default-order-placed-strategy.ts": "c4377652a48d55c69cbe99edb788e1130c74b9fcee30b91e9f13716071be77ad",
+      "packages/core/src/config/order/default-order-process.ts": "2de47767c358523a6620f9cfaea96c3e2f946a04dad62e8d92ea9862fd50d41f",
+      "packages/core/src/config/order/default-stock-allocation-strategy.ts": "f905be97d657c93d57905d6245657465aba6615ea868ac4b0a0dc16d01f97493",
+      "packages/core/src/service/helpers/order-state-machine/order-state-machine.ts": "444b6793f629798e1e8353072f2bb786ec67149c5266473ced5ca049fe4ce90d",
+      "packages/core/src/service/helpers/order-state-machine/order-state.ts": "99edc14942897af3ff089569e3dc4abd43f8126171e739b2a47f0b307dd295e4",
+      "packages/core/src/service/services/global-settings.service.ts": "77eb8331a07e4d00108e1fcf2af0fbc050cab96b30f1a15b7f2c838c8bb6cde8",
+      "packages/core/src/service/services/order.service.ts": "c0343924f6454cc4ac565a9adda04eb7a8ca0bd10c155c2172a27b58ab036db3",
+      "packages/core/src/service/services/product-variant.service.ts": "69dba7be26a6e5e66dee009667156edf1b67c420e1604fc4c29d2e379392b864",
+      "packages/core/src/service/services/stock-level.service.ts": "ae299bd90820dedb2deef8de5b4072d3c8a337ca8dfba93d7dee24e5070032f0",
+      "packages/core/src/service/services/stock-location.service.ts": "eedf4e4aeec0c1cd0da72fe775e3b724f224ec1186e206bdb413a85c65b06e67"
+    },
+    "manifest_sha256": "96d2595907c4b1ea05991c7f0f2460df2f7b75267c486d5ee3e96c3d6ae49b83",
+    "oracle_sha256": "dcd9833e8f9be2269a6711f8bd04119c83931f6de45e04d17d1b99da9d51295d",
+    "repo": "vendurehq/vendure",
+    "symlinks": false
+  },
+  "observation_run": {
+    "edges": 2228,
+    "gap_reasons": {
+      "consumer_semantics_unknown": 139,
+      "definition_binding_unsupported": 69,
+      "definition_scope_unsupported": 61,
+      "exception_control": 9,
+      "execution_predicate_unknown": 139,
+      "local_definition_unsupported": 96,
+      "loop_dependency": 49,
+      "mutation": 55,
+      "preceding_exit": 59,
+      "redacted_expression": 39,
+      "runtime_value_unknown": 13,
+      "unresolved_binding": 7,
+      "unresolved_call": 98
+    },
+    "guarded_exit_observations": 139,
+    "input_files": {
+      "packages/core/src/api/resolvers/shop/shop-order.resolver.ts": "ab9967f8f8570853240dc3a4812dee1aef2180678dea297792006c008c59e4ce",
+      "packages/core/src/common/finite-state-machine/finite-state-machine.ts": "30c878e95c41a4e36233280105639f044b87323a87fff0798a3ba5a5a5e553a6",
+      "packages/core/src/common/finite-state-machine/merge-transition-definitions.ts": "e09a5ea18afcd4b7ceaa0ce177dbab6751e1185f63668795ef24507ef430c329",
+      "packages/core/src/common/finite-state-machine/types.ts": "a0a72cefb6e590fd07a7b723995e4677dd3bf10727ff7713c0c2b043a9b990ac",
+      "packages/core/src/common/finite-state-machine/validate-transition-definition.ts": "049ae1e4f257734d26c82517a57886a2a4e288c8c450a011c10407039f4faeee",
+      "packages/core/src/config/catalog/multi-channel-stock-location-strategy.ts": "0c6fe82d68c82e44f98be9bcec586453488467068835f3198447def851d30d3f",
+      "packages/core/src/config/default-config.ts": "14be5d959237ac24269e78f8dced69a6cb1f9f077e65854339bbf3e58c829999",
+      "packages/core/src/config/order/default-order-placed-strategy.ts": "ce3bb28a74653a3b79ee2c1f404ecd3e5586db28bbf16c9ad91a107ddb1b9f4b",
+      "packages/core/src/config/order/default-order-process.ts": "b796521f240bf1213887fe8c79c9d52166f576ae461fddb90b9256347c5b581c",
+      "packages/core/src/config/order/default-stock-allocation-strategy.ts": "5987a7216c792a74eb9a1a5c9d61ecd25ba7de1d74b1b042580d0dd35fcf2276",
+      "packages/core/src/service/helpers/order-state-machine/order-state-machine.ts": "715ea9e66937e7f7ccce1b7da30c715266371f031228fec2dfe7b09757d6be44",
+      "packages/core/src/service/helpers/order-state-machine/order-state.ts": "3828c11c521485572ecacc0f273064608fd5d0b5d6ede8248dc5cedefca29b71",
+      "packages/core/src/service/services/global-settings.service.ts": "78b7435416a0611583d677a50538afd1c098888672432d25401a4b7a1c88ae87",
+      "packages/core/src/service/services/order.service.ts": "4f626e95adbb35fc024ea3f3571738249b487d445accc6b859a802cb9a3a32fb",
+      "packages/core/src/service/services/product-variant.service.ts": "71feb995f13ac074754364e7fe72353f03bed3357ccd56109b69cf9e04c6dadd",
+      "packages/core/src/service/services/stock-level.service.ts": "13e16797768e28afb1024dfccb9af11580ffd48a186e34dbe6aa6b5b0f356e35",
+      "packages/core/src/service/services/stock-location.service.ts": "1e84a6700b1c541ca896606d49dfe61603b9e37562babb1929afd0e86460d9b1"
+    },
+    "nodes": 1920,
+    "repo": "vendurehq/vendure",
+    "schema_version": 1,
+    "scope": "source-only TypeScript adapter and stored-fact spec projection; no full ingest, flow inference, target execution or acceptance scoring",
+    "snapshot_id": "context-v1:5aff6823e95070e9ce6fd13019d0afe617c96efa4d48c3aa591f5bd1d5493c1b",
+    "source_commit_supplied_by_caller": "2cc309deb5394af176314552ac7320a7b26a0104"
+  },
+  "artifacts": {
+    "bundle.json": {
+      "bytes": 6481417,
+      "sha256": "5300d6e9ae5fd1d5dad77f410adfd60f2d0b554ec3bdab8a203882a95b6f2384"
+    },
+    "graph.json": {
+      "bytes": 3927045,
+      "sha256": "76b1fa5731bb70b03fb67613a00a5760f68206dec225964c99830c7c79405e56"
+    },
+    "metadata.json": {
+      "bytes": 3285,
+      "sha256": "aa0886cb0c4ee3578163b732ce9c758d2bdcf64c53890155a8a5b055de9f9a78"
+    },
+    "rule-evidence.md": {
+      "bytes": 1544228,
+      "sha256": "3713ce4a993e2ac2dcf164783be39e8bf23c2271f6beed12f67c8c802e9baac9"
+    }
+  },
+  "determinism": {
+    "runs": 2,
+    "run_ids": [
+      "vendure-local-definitions-final-1",
+      "vendure-local-definitions-final-2"
+    ],
+    "byte_identical": true,
+    "byte_identical_to_independently_audited_preliminary_output": true,
+    "working_tree_clean_at_run": true
+  },
+  "timing": {
+    "build_profile": "debug",
+    "performance_gate": false,
+    "run_wall_seconds": [
+      23.91,
+      24.21
+    ],
+    "run_1_includes_build": true
+  },
+  "original_guarded_exit_fields_unchanged": [
+    "conditions",
+    "effect",
+    "exit_source",
+    "owner_id",
+    "source_order"
+  ],
+  "original_guarded_exit_ids_unchanged": true,
+  "citation_audit": {
+    "script": "scripts/audit-local-definitions.cjs",
+    "script_sha256": "2a1d56b8b8b1944033715d5982464455a1a6f0f628c43688157a404e7d6f6822",
+    "result": "docs/evals/vendure-cart-readiness.local-definitions.audit.json",
+    "result_sha256": "6ef5c1997c9f229f3170cb1e70828f73956305b9d9e58476220e0a71ebc05df2",
+    "both_final_audits_byte_identical": true
+  },
+  "target_code_executed": false,
+  "decision_cases": {
+    "status": "not_executed",
+    "executed": 0,
+    "total": 41,
+    "passed": null,
+    "failed": null
+  },
+  "full_rule_matches": {
+    "core_entry_guards": {
+      "matched": 0,
+      "expected": 5
+    },
+    "supporting_stock_rules": {
+      "matched": 0,
+      "expected": 3
+    },
+    "total": {
+      "matched": 0,
+      "expected": 8
+    }
+  },
+  "complete_rule_acceptance": "not_passed",
+  "bounded_procedure": {
+    "id": "MT-H2-03",
+    "result": "passed",
+    "complete_H2_gate": "not_passed"
+  },
+  "score_file": "vendure-cart-readiness.local-definitions.score.json",
+  "source_capture_scope": "Ordinary extraction benchmark. Actual captured-producer receipts are tested separately; no complete input-closure or source-attestation claim."
+}
