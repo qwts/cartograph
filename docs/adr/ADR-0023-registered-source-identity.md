@@ -31,8 +31,12 @@ and shared guards across managed-source reads. Acquire planned source IDs in ord
 reuse existing guards and fail busy without waiting cycles. Never unlink live lock
 files, silently fall back unlocked or overwrite an arbitrary existing directory.
 
-Persist unavailable state around replacement and leave interrupted attempts
-unavailable until an explicit successful recovery. OS handle closure releases the
+Reserve the complete sorted OS lock set before initializing or validating managed
+checkouts. A failed lock acquisition leaves readiness unchanged. Under those same
+handles, atomically persist all planned writes unavailable before promoting the
+reservations into validated guards; any later slot or checkout validation failure
+leaves those writes unavailable, including for previously ready sources.
+Leave interrupted attempts unavailable until an explicit successful recovery. OS handle closure releases the
 lock after a crash; a stored marker is neither a lease nor proof of readiness.
 The lock coordinates Cartograph operations and does not freeze external writers.
 Keep all ownership markers outside checkout/source content.

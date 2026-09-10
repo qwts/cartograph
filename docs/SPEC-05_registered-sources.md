@@ -91,11 +91,19 @@ If the required root set changes, fail/replan before dependent reads/publication
 This prevents lock cycles between two repository operations without claiming the
 whole multi-repository recovery is an atomic transaction.
 
+Separate lock reservation from checkout validation. First acquire every planned
+OS handle without initializing slots or validating checkouts. A busy/failed lock
+attempt leaves readiness unchanged. With the complete reservation set held,
+atomically mark all planned managed writes unavailable, then initialize/validate
+each slot and checkout using those same handles. Any subsequent validation failure,
+including a previously ready corrupt checkout or a later read member, leaves all
+planned writes unavailable. Read-only members do not mutate their readiness flags.
+
 Slot initialization stages and syncs complete ownership metadata in an owned sibling
 before publishing the reserved final directory; failure leaves no half-owned final
 slot. An attempt owns a unique temporary path within its registered slot and cleans up
-only that path. Mark the managed source unavailable durably before replacement
-work; publish ready availability only after successful destination validation and
+only that path. Mark the managed source unavailable durably before slot/checkout
+validation and replacement work; publish ready availability only after successful destination validation and
 the guarded root-use operation. Readiness for all managed members is published in one registry transaction after
 the job completion transition settles cancellation. If that final registry commit
 fails, a job may already record completed recovery while every managed member

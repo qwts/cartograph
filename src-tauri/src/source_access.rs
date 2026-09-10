@@ -3,7 +3,9 @@
 //! reads remain current working-tree reads, not captured producer evidence.
 
 use crate::sources::{RegisteredSource, SourceRegistry};
-use ingest::managed::{ManagedReadGuard, ManagedWriteGuard};
+use ingest::managed::{
+    ManagedReadGuard, ManagedReadReservation, ManagedWriteGuard, ManagedWriteReservation,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -55,6 +57,11 @@ enum Guard {
     Write(ManagedWriteGuard),
 }
 
+enum Reservation {
+    Read(ManagedReadReservation),
+    Write(ManagedWriteReservation),
+}
+
 /// A sorted, try-only lock plan shared by intake, enrichment and ADR relinking.
 /// All guards outlive the entire operation; nested readers reuse this plan.
 pub(crate) struct SourceOperation {
@@ -76,16 +83,43 @@ impl SourceOperation {
                 .and_modify(|(_, existing_write)| *existing_write |= write)
                 .or_insert((source, write));
         }
+        let mut reservations = BTreeMap::new();
+        let mut write_ids = Vec::new();
+        for (id, (source, write)) in &plan {
+            if let Some(managed) = source.managed()? {
+                let reservation = if *write {
+                    write_ids.push(id.clone());
+                    Reservation::Write(managed.try_reserve_write().map_err(|e| e.to_string())?)
+                } else {
+                    Reservation::Read(managed.try_reserve_read().map_err(|e| e.to_string())?)
+                };
+                reservations.insert(id.clone(), reservation);
+            }
+        }
+        // No DB mutex spans an OS lock attempt. A failure acquiring any planned
+        // handle releases the reservations without invalidating ready sources.
+        // Once every handle is held, persist all write sources unavailable BEFORE
+        // any slot initialization or checkout validation can fail. Reservations
+        // promote with the same handles, so there is no unlocked transition.
+        if !write_ids.is_empty() {
+            registry
+                .lock()
+                .map_err(|e| e.to_string())?
+                .set_ready_batch(&write_ids, false)?;
+        }
         let mut operation = Self {
             sources: BTreeMap::new(),
             guards: BTreeMap::new(),
         };
         for (id, (source, write)) in plan {
-            if let Some(managed) = source.managed()? {
-                let guard = if write {
-                    Guard::Write(managed.try_write().map_err(|e| e.to_string())?)
-                } else {
-                    Guard::Read(managed.try_read().map_err(|e| e.to_string())?)
+            if let Some(reservation) = reservations.remove(&id) {
+                let guard = match reservation {
+                    Reservation::Read(reservation) => {
+                        Guard::Read(reservation.validate().map_err(|e| e.to_string())?)
+                    }
+                    Reservation::Write(reservation) => {
+                        Guard::Write(reservation.initialize().map_err(|e| e.to_string())?)
+                    }
                 };
                 operation.guards.insert(id, guard);
             }
@@ -94,9 +128,6 @@ impl SourceOperation {
             }
             operation.sources.insert(source.repo_key.clone(), source);
         }
-        // No DB mutex spans an OS lock attempt. Failure above releases every
-        // acquired handle without invalidating unrelated ready sources.
-        operation.set_writes_ready(registry, false)?;
         Ok(operation)
     }
 
