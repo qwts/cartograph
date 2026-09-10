@@ -32,6 +32,8 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 
 | US-0026 | AC-0132..0136 | source-capture (durable read policy), spec | H3 | — | ADR-0022 | T-0132..0136 |
 
+| US-0027 | AC-0140..0147 | app, ingest, core-graph, ui | H3 | — | ADR-0019, ADR-0023 | T-0140..0147 |
+
 ## Coverage assertions
 - Every Must-priority US is anchored to an original milestone, post-M10 work, or a SPEC-01 delivery gate; a milestone label alone does not establish completion.
 - Every AC has at least one test ID reserved (T-XXXX), to be authored alongside the AC (test-trace mapping standard).
@@ -62,3 +64,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0020 | Source rule evidence and deterministic redaction |
 | ADR-0021 | Durable host-owned proposal staging before curated projection |
 | ADR-0022 | Immutable source captures before producer verification |
+| ADR-0023 | Durable source registration before production capture receipts |

@@ -64,7 +64,8 @@ const FAKE_ENDPOINT = {
 };
 
 const FAKE_REPO = {
-  id: 'repo:local',
+  // A tempting historical root from a different repo must never resolve evidence.
+  id: 'repo:unrelated',
   label: 'Repo',
   props: { root: '/fake/repo' },
 };
@@ -170,6 +171,8 @@ function stagedFixture(proposalId = 'proposal:host-result', decision: 'accepted'
 
 let reviewRequests: Record<string, unknown>[] = [];
 let historyRequests: { limit: number; cursor: string | null }[] = [];
+let evidenceRequests: Record<string, unknown>[] = [];
+let repoRootLookups = 0;
 
 function installFakeCore(options: {
   staged?: StagedProposal[];
@@ -179,16 +182,19 @@ function installFakeCore(options: {
   unstagedResult?: boolean;
   historyGate?: Promise<void>;
   runGate?: Promise<void>;
+  unavailableEvidence?: boolean;
 } = {}) {
   let staged = [...(options.staged ?? [])];
   reviewRequests = [];
   historyRequests = [];
+  evidenceRequests = [];
+  repoRootLookups = 0;
   // The fake core boots with one queued job: the production surface offers
   // no job-creation control (AC-0077), so lifecycle stories act on it.
   let jobs: MockJob[] = [
     {
       id: 1,
-      kind: 'ingest:/seed',
+      kind: 'ingest-source-v1:src_11111111111111111111111111111111',
       status: 'queued',
       created_at: '2026-07-05T19:00:00Z',
       updated_at: '2026-07-05T19:00:00Z',
@@ -229,7 +235,10 @@ function installFakeCore(options: {
       case 'list_nodes': {
         const label = (args as { label: string }).label;
         if (label === 'Endpoint') return [FAKE_ENDPOINT];
-        if (label === 'Repo') return [FAKE_REPO];
+        if (label === 'Repo') {
+          repoRootLookups += 1;
+          return [FAKE_REPO];
+        }
         return [];
       }
       case 'atlas_snapshot':
@@ -252,6 +261,8 @@ function installFakeCore(options: {
           ],
         };
       case 'read_evidence':
+        evidenceRequests.push(args as Record<string, unknown>);
+        if (options.unavailableEvidence) throw new Error('registered source unavailable');
         return { text: FAKE_SOURCE, window_start: 0, truncated: false };
       case 'export_flows':
         return '# Flow dossier\n\n## GET /users — Verified (score 1.00)\n';
@@ -643,6 +654,7 @@ const meta = {
       jobs: [],
       endpoints: [],
       atlas: { nodes: [], edges: [] },
+      systemContents: [],
       topology: null,
       flows: null,
       flowList: [],
@@ -707,7 +719,7 @@ export const ConnectedToCore: Story = {
     // Lifecycle round-trip (#117/#111) on the seeded queued job: cancel,
     // then retry. No creation control ships on the surface (AC-0077).
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
-    await waitFor(() => expect(canvas.getByText('ingest:/seed')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('ingest-source-v1:src_11111111111111111111111111111111')).toBeInTheDocument());
     await expect(canvas.getByText('queued')).toBeInTheDocument();
     await expect(canvas.queryByRole('button', { name: /enqueue/i })).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
@@ -972,12 +984,43 @@ export const EvidenceJumpToSource: Story = {
     });
     const evidence = within(canvasElement.querySelector('.evidence-panel') as HTMLElement);
     await expect(evidence.getByText(/t0\.adapter-ts/)).toBeInTheDocument();
+    // AC-0143: the host receives the exact citation identity, never a UI root.
+    await expect(evidenceRequests).toEqual([{
+      repo: 'local', path: 'src/app.ts', byteStart: SPAN_START, byteEnd: SPAN_END,
+    }]);
+    await expect(repoRootLookups).toBe(0);
+    await expect(evidence.getByTestId('source-revision-status')).toHaveTextContent(
+      'Current working-tree source — cited revision unverified.',
+    );
 
     // Close returns to the dashboard.
     await userEvent.click(canvas.getByRole('button', { name: /close/i }));
     await waitFor(() =>
       expect(canvasElement.querySelector('.evidence-panel')).not.toBeInTheDocument(),
     );
+  },
+};
+
+export const UnavailableEvidenceNeverFallsBackToAnotherRepository: Story = {
+  // AC-0143: an unrelated Repo root must never substitute for unavailable or
+  // historical evidence. Keep provenance visible after the host rejects a read.
+  beforeEach: () => installFakeCore({ unavailableEvidence: true }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText('/users')).toBeInTheDocument());
+    await userEvent.click(canvas.getByText('/users'));
+    const drawer = within(canvas.getByTestId('evidence-drawer'));
+    await waitFor(() => expect(drawer.getByText(/Source unavailable for this repository/)).toBeInTheDocument());
+    await expect(evidenceRequests).toEqual([{
+      repo: 'local', path: 'src/app.ts', byteStart: SPAN_START, byteEnd: SPAN_END,
+    }]);
+    await expect(repoRootLookups).toBe(0);
+    await expect(drawer.queryByTestId('evidence-code')).not.toBeInTheDocument();
+    await expect(drawer.queryByTestId('source-revision-status')).not.toBeInTheDocument();
+    await expect(drawer.getByText('local:src/app.ts')).toBeInTheDocument();
+    await expect(drawer.getByText(`bytes ${SPAN_START}–${SPAN_END}`)).toBeInTheDocument();
+    await expect(drawer.getByText('workdir')).toBeInTheDocument();
+    await expect(drawer.getByTestId('content-hash')).toHaveTextContent(FAKE_PROVENANCE.content_hash);
   },
 };
 
@@ -1038,7 +1081,7 @@ export const ClearGraphPreservesJobs: Story = {
     // The seeded job exists, then clear the graph from Workspace: the
     // durable job spine must survive a graph clear.
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
-    await waitFor(() => expect(canvas.getByText('ingest:/seed')).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('ingest-source-v1:src_11111111111111111111111111111111')).toBeInTheDocument());
 
     await userEvent.click(canvas.getByRole('button', { name: 'Workspace' }));
     await userEvent.click(canvas.getByRole('button', { name: 'Clear system' }));
@@ -1047,7 +1090,7 @@ export const ClearGraphPreservesJobs: Story = {
     await expect(canvas.getByTestId('graph-edge-count')).toHaveTextContent('0');
 
     await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
-    await expect(canvas.getByText('ingest:/seed')).toBeInTheDocument();
+    await expect(canvas.getByText('ingest-source-v1:src_11111111111111111111111111111111')).toBeInTheDocument();
   },
 };
 

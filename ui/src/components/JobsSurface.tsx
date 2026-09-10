@@ -18,7 +18,7 @@ export interface JobsSurfaceProps {
 /** Recovery-flow job kinds (`store.ts`'s `ingest()` dispatches one of these
  *  three backend commands) — only these have a Recover surface to jump back
  *  to; other job kinds (plugin gates, escalations) do not. */
-const RECOVERY_KIND_PREFIXES = ['ingest:', 'add-repo:', 'add-system:'];
+const RECOVERY_KIND_PREFIXES = ['ingest-source-v1:', 'ingest:', 'add-repo:', 'add-system:'];
 
 function isRecoveryJob(kind: string): boolean {
   return RECOVERY_KIND_PREFIXES.some((prefix) => kind.startsWith(prefix));
@@ -73,7 +73,7 @@ export function JobsSurface({
           <h2>Jobs</h2>
           <p className="muted">
             The job spine is durable — restart the app and this list survives; interrupted work
-            resumes.
+            can be resumed when its source is registered.
           </p>
         </div>
         {!confirming ? (
@@ -118,6 +118,7 @@ export function JobsSurface({
         <ul className="jobs-rows">
           {jobs.map((job) => {
             const action = actionFor(job.status);
+            const legacyRetry = job.kind.startsWith('ingest:') && action?.kind === 'retry';
             return (
               <li key={job.id} className={`job-row job-${job.status}`}>
                 <span
@@ -139,6 +140,11 @@ export function JobsSurface({
                   {job.status === 'running' && job.detail && (
                     <p className="job-detail muted">
                       <code>{job.detail}</code>
+                    </p>
+                  )}
+                  {legacyRetry && (
+                    <p className="muted">
+                      This historical job has no registered source. Run a new ingestion to retry.
                     </p>
                   )}
                   {job.status === 'running' && typeof job.progress === 'number' && (
@@ -182,6 +188,8 @@ export function JobsSurface({
                   <button
                     type="button"
                     className="job-action"
+                    disabled={legacyRetry}
+                    title={legacyRetry ? 'Run a new ingestion to register this source.' : undefined}
                     onClick={() =>
                       action.kind === 'cancel' ? onCancel(job.id) : onRetry(job.id)
                     }

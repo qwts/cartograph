@@ -148,7 +148,7 @@ export function EvidencePanel({
           {source === 'loading' ? (
             <p className="muted">Loading source…</p>
           ) : source === 'unavailable' ? (
-            <p className="muted">Source unavailable (moved since ingest?) — span metadata below.</p>
+            <p className="muted">Source unavailable for this repository — citation metadata is preserved below.</p>
           ) : (
             (() => {
               const { before, span, after } = splitAtSpan(
@@ -163,6 +163,9 @@ export function EvidencePanel({
               const totalLines = source.text.split('\n').length;
               return (
                 <>
+                  <p className="muted" data-testid="source-revision-status">
+                    Current working-tree source — cited revision unverified.
+                  </p>
                   <p className="evidence-span-range">
                     <code data-testid="span-range">
                       bytes {ev.byte_start}–{ev.byte_end} · L{from.line}:{from.col} – L{to.line}:
@@ -218,7 +221,7 @@ export function EvidencePanel({
               </dd>
             </div>
             <div>
-              <dt>Commit</dt>
+              <dt>Cited revision</dt>
               <dd>
                 <code>{ev.commit_sha}</code>
               </dd>
@@ -247,7 +250,7 @@ export function EvidencePanel({
               <h3 className="settings-section-title">Supporting evidence</h3>
               <ul className="supporting-evidence">
                 {prov.evidence.map((reference, index) => (
-                  <li key={`${reference.path}:${reference.byte_start}`}>
+                  <li key={`${reference.repo}:${reference.path}:${reference.byte_start}:${reference.byte_end}:${index}`}>
                     <button
                       type="button"
                       className={`evidence-ref${index === evidenceIndex ? ' active' : ''}`}

@@ -306,6 +306,27 @@ export const NoRecoveryYet: Story = {
   },
 };
 
+export const RegisteredRepositoryDisplayNames: Story = {
+  // AC-0144: operational labels use exact repo membership, never the first
+  // registration. A host without a display label still shows the repository key.
+  args: {
+    summary: { ...meta.args.summary, repo: 'local/src_22222222222222222222222222222222' },
+    systemContents: [
+      { repo: 'local/src_11111111111111111111111111111111', display_name: 'Other project', commit: 'workdir' },
+      { repo: 'local/src_22222222222222222222222222222222', display_name: 'Billing service', commit: 'workdir' },
+      { repo: 'acme/infra', commit: 'a1b2c3d4e5f6' },
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('heading', { name: 'Billing service' })).toBeInTheDocument();
+    await expect(canvas.getByTestId('system-contents')).toHaveTextContent(
+      'Other project @ workdir · Billing service @ workdir · acme/infra @ a1b2c3d',
+    );
+    await expect(canvas.queryByText(/local\/src_/)).not.toBeInTheDocument();
+  },
+};
+
 export const MissingArtifactIsVisible: Story = {
   args: {
     bundle: {

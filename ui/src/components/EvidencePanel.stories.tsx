@@ -37,6 +37,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const WithSource: Story = {
+  // AC-0143: the source window remains explicitly unverified against its citation.
   args: {
     node: nodeWithSpan(),
     source: { text: SOURCE, window_start: 0, truncated: false },
@@ -48,6 +49,9 @@ export const WithSource: Story = {
     await expect(mark?.textContent).toBe(SPAN_TEXT);
     await expect(canvas.getAllByText('Confirmed').length).toBeGreaterThan(0);
     await expect(canvas.getByText(/t0\.adapter-ts/)).toBeInTheDocument();
+    await expect(canvas.getByTestId('source-revision-status')).toHaveTextContent(
+      'Current working-tree source — cited revision unverified.',
+    );
 
     // The full span range includes the end line:col — the span sits on
     // line 4 of the fixture (multibyte-safe columns).
@@ -175,10 +179,16 @@ export const Loading: Story = {
 };
 
 export const SourceUnavailable: Story = {
+  // AC-0143: source lookup failure does not erase the original citation.
   args: { node: nodeWithSpan(), source: 'unavailable' },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(/source unavailable/i)).toBeInTheDocument();
+    await expect(canvas.getByText(`bytes ${SPAN_START}–${SPAN_END}`)).toBeInTheDocument();
+    await expect(canvas.getByText(/t0\.adapter-ts/)).toBeInTheDocument();
+    await expect(canvas.getByText('Cited revision')).toBeInTheDocument();
+    await expect(canvas.getByTestId('content-hash')).toBeInTheDocument();
+    await expect(canvas.queryByTestId('evidence-code')).not.toBeInTheDocument();
   },
 };
 

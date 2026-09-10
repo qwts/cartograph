@@ -169,11 +169,11 @@ export interface AnchorProbe {
   found: number;
 }
 
-/** One repo currently contributing facts to the unified graph (#162),
- * derived from graph facts — never from history logs. */
+/** Graph membership with operational labels supplied by the host registry. */
 export interface SystemRepo {
   repo: string;
   commit: string;
+  display_name?: string | null;
 }
 
 /** One installed deterministic adapter, from the registry Preflight uses
@@ -681,15 +681,6 @@ async function loadEndpoints(): Promise<GraphNode[]> {
   return invokeOr<GraphNode[]>('list_nodes', [], { label: 'Endpoint' });
 }
 
-/** The ingest root for an evidence ref's repo — each Repo node carries its
- *  own tree root, so multi-repo graphs resolve evidence per repo. */
-async function repoRoot(repo: string): Promise<string | null> {
-  const repos = await invokeOr<GraphNode[]>('list_nodes', [], { label: 'Repo' });
-  const match = repos.find((r) => r.id === `repo:${repo}`) ?? repos[0];
-  const root = match?.props?.root;
-  return typeof root === 'string' ? root : null;
-}
-
 export const useAppStore = create<AppStore>((set, get) => ({
   view: 'workspace',
   recoverJobId: null,
@@ -944,18 +935,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     };
     const ev = node.props.prov?.evidence[evidenceIndex] ?? node.props.prov?.evidence[0];
     if (!ev) return done('unavailable');
-    const root = await repoRoot(ev.repo);
-    if (root === null) return done('unavailable');
     try {
       const source = await invokeOr<EvidenceSource | null>('read_evidence', null, {
-        root,
+        repo: ev.repo,
         path: ev.path,
         byteStart: ev.byte_start,
         byteEnd: ev.byte_end,
       });
       done(source ?? 'unavailable');
     } catch {
-      // Source unavailable (file moved since ingest): panel shows metadata only.
+      // Unknown, missing or unavailable registration: keep the citation metadata.
       done('unavailable');
     }
   },

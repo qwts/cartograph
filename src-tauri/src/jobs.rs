@@ -14,7 +14,7 @@ use std::path::Path;
 pub struct Job {
     /// Row id.
     pub id: i64,
-    /// Job kind, e.g. `ingest:/path`.
+    /// Job kind, e.g. `ingest-source-v1:src_<id>`; historical path kinds remain readable.
     pub kind: String,
     /// `queued` | `running` | `done` | `failed` | `cancelled` | `interrupted`.
     pub status: String,

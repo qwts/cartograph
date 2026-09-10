@@ -49,7 +49,7 @@ export function GraphStatsCard({
           <p>
             Remove every recovered fact
             {systemContents && systemContents.length > 0
-              ? ` for ${systemContents.map((entry) => entry.repo).join(', ')}`
+              ? ` for ${systemContents.map((entry) => entry.display_name?.trim() || entry.repo).join(', ')}`
               : ' in this system'}
             ? Job history and settings are kept.
           </p>

@@ -14,14 +14,20 @@ mod jobs;
 mod metrics;
 mod paths;
 mod proposals;
+#[cfg(test)]
+mod registered_source_tests;
 mod settings;
+mod source_access;
+mod sources;
 
 use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
 use findings::{Finding, FindingStore, NewFinding};
 use jobs::{EvalResult, Job, JobStore};
 use llm::LlmProvider;
 use serde::Serialize;
-use std::sync::Mutex;
+use source_access::SourceOperation;
+use sources::{RegisteredSource, SourceRegistry};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
 /// Stores managed by the Tauri runtime. Graph and state spine are separate
@@ -35,9 +41,8 @@ struct AppState {
     decisions: Mutex<agents::DecisionLog>,
     proposals: Mutex<agents::ProposalStore>,
     extraction_caches: Mutex<ExtractionCaches>,
-    /// Resolved filesystem roots of every ingested target this session —
-    /// plugin discovery scans these, never the raw Connect input (#203).
-    project_roots: Mutex<std::collections::BTreeSet<String>>,
+    /// Durable, host-owned authority for operational source locations.
+    sources: Arc<Mutex<SourceRegistry>>,
     metrics: Mutex<metrics::MetricsStore>,
 }
 
@@ -172,13 +177,23 @@ fn discover_session_plugins<R: tauri::Runtime>(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("adapters");
-    let roots: Vec<std::path::PathBuf> = state
-        .project_roots
-        .lock()
-        .map_err(|e| e.to_string())?
+    let registered = state.sources.lock().map_err(|e| e.to_string())?.list()?;
+    let available = registered
+        .into_iter()
+        .filter(RegisteredSource::is_ready)
+        .collect::<Vec<_>>();
+    let operation = SourceOperation::acquire(
+        &state.sources,
+        available.iter().cloned().map(|source| (source, false)),
+    )?;
+    let roots = available
         .iter()
-        .map(std::path::PathBuf::from)
-        .collect();
+        .map(|source| {
+            operation
+                .root(&source.repo_key)
+                .map(std::path::Path::to_path_buf)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(adapters_plugin_host::discovery::discover(&roots, &user_dir))
 }
 
@@ -489,6 +504,7 @@ fn adapter_inventory() -> AdapterInventory {
 struct SystemRepo {
     repo: String,
     commit: String,
+    display_name: Option<String>,
 }
 
 /// What the current system contains, derived from the graph's own facts
@@ -499,9 +515,20 @@ struct SystemRepo {
 /// Deterministic: sorted by repo.
 #[tauri::command]
 fn system_contents(state: State<'_, AppState>) -> Result<Vec<SystemRepo>, String> {
-    let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    let nodes = graph.all_nodes().map_err(|e| e.to_string())?;
-    Ok(system_contents_of(&nodes))
+    let nodes = state
+        .graph
+        .lock()
+        .map_err(|e| e.to_string())?
+        .all_nodes()
+        .map_err(|e| e.to_string())?;
+    let mut contents = system_contents_of(&nodes);
+    let registry = state.sources.lock().map_err(|e| e.to_string())?;
+    for entry in &mut contents {
+        entry.display_name = registry
+            .get_by_repo(&entry.repo)?
+            .map(|source| source.display_name);
+    }
+    Ok(contents)
 }
 
 fn system_contents_of(nodes: &[Node]) -> Vec<SystemRepo> {
@@ -516,7 +543,11 @@ fn system_contents_of(nodes: &[Node]) -> Vec<SystemRepo> {
     }
     repos
         .into_iter()
-        .map(|(repo, commit)| SystemRepo { repo, commit })
+        .map(|(repo, commit)| SystemRepo {
+            repo,
+            commit,
+            display_name: None,
+        })
         .collect()
 }
 
@@ -1084,7 +1115,7 @@ fn load_into_graph(
     graph: &mut SqliteGraphStore,
     extraction: &adapters_lang_ts::Extraction,
     repo: &str,
-    root: &std::path::Path,
+    _root: &std::path::Path,
     commit: &str,
 ) -> Result<ReconcileStats, String> {
     let repo_prov = core_prov::Provenance::new(
@@ -1092,14 +1123,13 @@ fn load_into_graph(
         core_prov::ConfidenceTier::Confirmed,
         vec![],
         "app.ingest",
-        root.to_string_lossy().as_bytes(),
+        &serde_json::to_vec(&("registered-repo-v1", repo, commit)).expect("serializes"),
     )
     .expect("within ceiling");
     let repo_node = Node {
         id: format!("repo:{repo}"),
         label: "Repo".into(),
         props: serde_json::json!({
-            "root": root.to_string_lossy(),
             "commit": commit,
             "prov": serde_json::to_value(repo_prov).expect("serializes"),
         }),
@@ -1245,63 +1275,104 @@ fn stitch_backings(graph: &mut SqliteGraphStore) -> Result<u64, String> {
 /// A rescan first drops links previously owned by that repo's found ADRs and
 /// removes ADR nodes whose source file disappeared, so re-ingest cannot retain
 /// declarations that are no longer present.
-fn relink_found_adrs(graph: &mut SqliteGraphStore) -> Result<u64, String> {
-    let repos = graph
-        .nodes_with_label("Repo")
-        .map_err(|error| error.to_string())?;
-    let candidates = graph
-        .all_nodes()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|node| node.label != "ADR")
-        .collect::<Vec<_>>();
-    let mut linked = 0;
-    for repo_node in repos {
-        let Some(repo) = repo_node.id.strip_prefix("repo:") else {
-            continue;
-        };
-        let Some(root) = repo_node.props["root"].as_str().map(std::path::Path::new) else {
-            continue;
-        };
-        if !root.is_dir() {
-            continue;
-        }
-        let commit = repo_node.props["commit"].as_str().unwrap_or("workdir");
-        let facts = spec::extract_found_adrs(root, repo, commit, &candidates)
-            .map_err(|error| error.to_string())?;
+fn relink_found_adrs(state: &AppState, operation: &SourceOperation) -> Result<u64, String> {
+    let snapshot = state
+        .graph
+        .lock()
+        .map_err(|e| e.to_string())?
+        .read_snapshot()
+        .map_err(|e| e.to_string())?;
+    // Source guards were acquired before recovery. Root-dependent reads run
+    // without a graph mutex and cannot recursively lock an exclusive owner.
+    let updates = collect_found_adrs(&snapshot.0, |repo| operation.root(repo))?;
+    let (patch, linked) = found_adr_patch(&snapshot.0, &snapshot.1, updates);
+    let mut graph = state.graph.lock().map_err(|e| e.to_string())?;
+    if !graph
+        .apply_patch_if_snapshot_matches(&snapshot, &patch)
+        .map_err(|e| e.to_string())?
+    {
+        return Err("graph context changed during ADR recovery; retry recovery".into());
+    }
+    Ok(linked)
+}
 
+fn collect_found_adrs<'a>(
+    nodes: &[Node],
+    root_for: impl Fn(&str) -> Result<&'a std::path::Path, String>,
+) -> Result<Vec<(String, spec::AdrFacts)>, String> {
+    let candidates = nodes
+        .iter()
+        .filter(|node| node.label != "ADR")
+        .cloned()
+        .collect::<Vec<_>>();
+    nodes
+        .iter()
+        .filter(|node| node.label == "Repo")
+        .map(|node| {
+            let repo = node
+                .id
+                .strip_prefix("repo:")
+                .ok_or("invalid repository fact identity")?;
+            let root = root_for(repo)?;
+            let commit = node.props["commit"].as_str().unwrap_or("workdir");
+            let facts = spec::extract_found_adrs(root, repo, commit, &candidates)
+                .map_err(|e| e.to_string())?;
+            Ok((repo.to_owned(), facts))
+        })
+        .collect()
+}
+
+fn found_adr_patch(
+    nodes: &[Node],
+    edges: &[Edge],
+    updates: Vec<(String, spec::AdrFacts)>,
+) -> (core_graph::GraphPatch, u64) {
+    let mut patch = core_graph::GraphPatch::default();
+    let mut linked = 0;
+    for (repo, facts) in updates {
         let adr_prefix = format!("adr:{repo}@");
-        let existing_ids = graph
-            .nodes_with_label("ADR")
-            .map_err(|error| error.to_string())?
-            .into_iter()
+        let existing_ids = nodes
+            .iter()
             .filter(|node| {
-                node.id.starts_with(&adr_prefix) && node.props["origin"].as_str() == Some("found")
+                node.label == "ADR"
+                    && node.id.starts_with(&adr_prefix)
+                    && node.props["origin"].as_str() == Some("found")
             })
-            .map(|node| node.id)
+            .map(|node| node.id.clone())
             .collect::<std::collections::BTreeSet<_>>();
         let current_ids = facts
             .nodes
             .iter()
             .map(|node| node.id.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        for adr_id in existing_ids.union(&current_ids) {
-            graph
-                .delete_edges_from_with_label(adr_id, "DECIDES")
-                .map_err(|error| error.to_string())?;
+        for edge in edges.iter().filter(|edge| {
+            edge.label == "DECIDES"
+                && (existing_ids.contains(&edge.src) || current_ids.contains(&edge.src))
+        }) {
+            patch.delete_edges.push(edge_key(edge));
         }
-        for stale_id in existing_ids.difference(&current_ids) {
-            graph
-                .delete_node(stale_id)
-                .map_err(|error| error.to_string())?;
-        }
-        for node in facts.nodes {
-            graph.put_node(&node).map_err(|error| error.to_string())?;
-        }
-        for edge in facts.edges {
-            graph.put_edge(&edge).map_err(|error| error.to_string())?;
-            linked += 1;
-        }
+        patch
+            .delete_node_ids
+            .extend(existing_ids.difference(&current_ids).cloned());
+        linked += facts.edges.len() as u64;
+        patch.upsert_nodes.extend(facts.nodes);
+        patch.upsert_edges.extend(facts.edges);
+    }
+    (patch, linked)
+}
+
+#[cfg(test)]
+fn apply_found_adrs(
+    graph: &mut SqliteGraphStore,
+    updates: Vec<(String, spec::AdrFacts)>,
+) -> Result<u64, String> {
+    let snapshot = graph.read_snapshot().map_err(|e| e.to_string())?;
+    let (patch, linked) = found_adr_patch(&snapshot.0, &snapshot.1, updates);
+    if !graph
+        .apply_patch_if_snapshot_matches(&snapshot, &patch)
+        .map_err(|e| e.to_string())?
+    {
+        return Err("graph context changed during ADR recovery; retry recovery".into());
     }
     Ok(linked)
 }
@@ -1400,24 +1471,17 @@ fn preflight_blocking<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<ingest::preflight::PreflightReport, String> {
-    let root = paths::canonicalize(path).map_err(|e| e.to_string())?;
-    if let Ok(mut roots) = state.project_roots.lock() {
-        roots.insert(root.display().to_string());
-    }
-    let repo = format!(
-        "local/{}",
-        root.file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default()
-    );
-    let claims: Vec<ingest::preflight::PluginCoverage> =
-        active_plugins_for_root(app, state, &root)?
-            .into_iter()
-            .map(|plugin| ingest::preflight::PluginCoverage {
-                plugin_id: plugin.plugin_id,
-                extensions: plugin.extensions,
-            })
-            .collect();
+    let source = register_local_source(state, std::path::Path::new(path))?;
+    let operation = SourceOperation::acquire(&state.sources, [(source.clone(), false)])?;
+    let root = operation.root(&source.repo_key)?;
+    let repo = source.repo_key.clone();
+    let claims: Vec<ingest::preflight::PluginCoverage> = active_plugins_for_root(app, state, root)?
+        .into_iter()
+        .map(|plugin| ingest::preflight::PluginCoverage {
+            plugin_id: plugin.plugin_id,
+            extensions: plugin.extensions,
+        })
+        .collect();
     // Eval-site claims come from the TS adapter's own AST proof (#214): the
     // same extractor that emits facts from literal eval()/new Function()
     // strings classifies each site, so preflight's textual `inline-eval`
@@ -1425,7 +1489,7 @@ fn preflight_blocking<R: tauri::Runtime>(
     // potential Gaps, and keep dynamic ones — without ever disagreeing
     // with what extraction will actually recover.
     let eval_sites: Vec<ingest::preflight::EvalSiteCoverage> = adapters_lang_ts::eval_coverage(
-        &root,
+        root,
         &adapters_lang_ts::SourceId {
             repo: &repo,
             commit: "workdir",
@@ -1445,7 +1509,7 @@ fn preflight_blocking<R: tauri::Runtime>(
         },
     })
     .collect();
-    let report = ingest::preflight::preflight_with_coverage(&root, &claims, &eval_sites)
+    let report = ingest::preflight::preflight_with_coverage(root, &claims, &eval_sites)
         .map_err(|e| e.to_string())?;
     let batch: Vec<NewFinding<'_>> = report
         .unsupported
@@ -1626,24 +1690,16 @@ fn graph_and_reader(state: &AppState) -> Result<(Vec<Node>, Vec<Edge>, SpanReade
         let graph = state.graph.lock().map_err(|e| e.to_string())?;
         graph.read_snapshot().map_err(|e| e.to_string())?
     };
-    let roots: std::collections::BTreeMap<String, String> = nodes
-        .iter()
-        .filter(|node| node.label == "Repo")
-        .filter_map(|node| {
-            let repo = node.id.strip_prefix("repo:")?.to_string();
-            let root = node.props["root"].as_str()?.to_string();
-            Some((repo, root))
-        })
-        .collect();
+    let registry = Arc::clone(&state.sources);
     let reader: SpanReader = Box::new(move |reference: &core_prov::EvidenceRef| {
-        let root = roots.get(&reference.repo)?;
-        // Exactly the cited bytes, sliced before any lossy conversion —
-        // an escalation payload never carries more than its citations.
-        evidence::read_span_exact(
-            std::path::Path::new(root),
-            &reference.path,
-            &(reference.byte_start..reference.byte_end),
-        )
+        source_access::with_registered_read(&registry, &reference.repo, |root| {
+            evidence::read_span_exact(
+                root,
+                &reference.path,
+                &(reference.byte_start..reference.byte_end),
+            )
+            .map_err(|e| e.to_string())
+        })
         .ok()
     });
     Ok((nodes, edges, reader))
@@ -2100,6 +2156,22 @@ fn finish_or_cancelled(
     Ok(())
 }
 
+fn finish_source_operation(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    job_id: i64,
+    operation: &SourceOperation,
+) -> Result<(), String> {
+    if job_cancelled(state, job_id) {
+        return Err("cancelled".into());
+    }
+    // Settle the cancellation race before publishing readiness. A failed final
+    // availability transaction leaves all managed sources unavailable, even if
+    // the historical job has already recorded its completed recovery work.
+    finish_or_cancelled(state, app, job_id)?;
+    operation.set_writes_ready(&state.sources, true)
+}
+
 fn job_cancelled(state: &AppState, job_id: i64) -> bool {
     state
         .jobs
@@ -2112,10 +2184,50 @@ fn job_cancelled(state: &AppState, job_id: i64) -> bool {
         .unwrap_or(true)
 }
 
+fn register_local_source(
+    state: &AppState,
+    path: &std::path::Path,
+) -> Result<RegisteredSource, String> {
+    let root = paths::canonicalize(path).map_err(|e| e.to_string())?;
+    let mut registry = state.sources.lock().map_err(|e| e.to_string())?;
+    if let Some(source) = registry.get_by_root(&root)? {
+        return Ok(source);
+    }
+    registry.register_local(&root)
+}
+
+fn source_operation(
+    state: &AppState,
+    mut requested: Vec<(RegisteredSource, bool)>,
+) -> Result<SourceOperation, String> {
+    let nodes = state
+        .graph
+        .lock()
+        .map_err(|e| e.to_string())?
+        .read_snapshot()
+        .map_err(|e| e.to_string())?
+        .0;
+    {
+        let registry = state.sources.lock().map_err(|e| e.to_string())?;
+        for node in nodes.iter().filter(|node| node.label == "Repo") {
+            let repo = node
+                .id
+                .strip_prefix("repo:")
+                .ok_or("invalid repository fact identity")?;
+            let source = registry
+                .get_by_repo(repo)?
+                .ok_or("registered ADR source unavailable; reconnect source")?;
+            requested.push((source, false));
+        }
+    }
+    SourceOperation::acquire(&state.sources, requested)
+}
+
 /// The staged ingest pipeline behind `ingest_path` and `retry_job`: extract →
 /// load → stitch, with progress events and cooperative cancellation.
 fn run_ingest(
-    path: &str,
+    source: &RegisteredSource,
+    operation: &SourceOperation,
     job_id: i64,
     app: &tauri::AppHandle,
     state: &AppState,
@@ -2133,23 +2245,13 @@ fn run_ingest(
         Ok(())
     };
 
-    // Local unversioned tree: identified by directory basename (two dirs
-    // with the same basename still collide — real identity is `add_repo`).
     report_progress(app, state, job_id, "scan", 5.0)?;
-    let root = paths::canonicalize(path).map_err(|e| fail(e.to_string()))?;
-    if let Ok(mut roots) = state.project_roots.lock() {
-        roots.insert(root.display().to_string());
-    }
-    let repo = format!(
-        "local/{}",
-        root.file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default()
-    );
+    let root = operation.root(&source.repo_key).map_err(&fail)?;
+    let repo = source.repo_key.clone();
 
     cancelled()?;
     report_progress(app, state, job_id, "extract", 15.0)?;
-    let active_plugins = active_plugins_for_root(app, state, &root).map_err(&fail)?;
+    let active_plugins = active_plugins_for_root(app, state, root).map_err(&fail)?;
     let mut on_file = detail_throttle(app, job_id);
     let (extraction, layers, delta) = {
         let mut caches = state
@@ -2158,7 +2260,7 @@ fn run_ingest(
             .map_err(|e| fail(e.to_string()))?;
         let cache = caches.repos.entry(repo.clone()).or_default();
         extract_tree_incremental(
-            &root,
+            root,
             &repo,
             "workdir",
             &[],
@@ -2177,11 +2279,13 @@ fn run_ingest(
     report_progress(app, state, job_id, "load", 70.0)?;
     {
         let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
-        load_into_graph(&mut graph, &extraction, &repo, &root, "workdir").map_err(&fail)?;
+        load_into_graph(&mut graph, &extraction, &repo, root, "workdir").map_err(&fail)?;
         report_progress(app, state, job_id, "stitch", 90.0)?;
-        relink_found_adrs(&mut graph).map_err(&fail)?;
+
         stitch_backings(&mut graph).map_err(&fail)?;
     }
+
+    relink_found_adrs(state, operation).map_err(&fail)?;
 
     record_ingest_metrics(
         state,
@@ -2235,10 +2339,12 @@ async fn ingest_path(path: String, app: tauri::AppHandle) -> Result<IngestSummar
 
 fn ingest_path_blocking(path: String, app: tauri::AppHandle) -> Result<IngestSummary, String> {
     let state = app.state::<AppState>();
+    let source = register_local_source(&state, std::path::Path::new(&path))?;
+    let operation = source_operation(&state, vec![(source.clone(), false)])?;
     let job_id = {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         let job = jobs
-            .enqueue(&format!("ingest:{path}"))
+            .enqueue(&source.ingest_job_kind())
             .map_err(|e| e.to_string())?;
         jobs.set_status(job.id, "running")
             .map_err(|e| e.to_string())?;
@@ -2246,7 +2352,7 @@ fn ingest_path_blocking(path: String, app: tauri::AppHandle) -> Result<IngestSum
         emit_job(&app, &running);
         job.id
     };
-    run_ingest(&path, job_id, &app, &state)
+    run_ingest(&source, &operation, job_id, &app, &state)
 }
 
 /// Cancel a queued or running job; running work stops at its next stage
@@ -2261,33 +2367,78 @@ fn cancel_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
 /// Retry a failed or cancelled job, or resume an interrupted one: re-queues
 /// the same row, then re-dispatches execution for kinds the shell can re-run
-/// (`ingest:*` reuses the content-addressed cache, so a resume recomputes
+/// (`ingest-source-v1:*` reuses the content-addressed cache, so a resume recomputes
 /// only what the interrupted run didn't finish — ADR-0014).
 #[tauri::command]
 async fn retry_job(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
     off_ui_thread(move || retry_job_blocking(id, app)).await
 }
 
+fn retry_source(state: &AppState, kind: &str) -> Result<Option<RegisteredSource>, String> {
+    if kind.starts_with("ingest:") || kind.starts_with("ingest-source-v1:") {
+        let id = sources::source_id_from_ingest_job_kind(kind)?;
+        let source = state
+            .sources
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get_by_id(id)?
+            .ok_or("registered source unavailable; re-run ingestion")?;
+        if !source.is_ready() {
+            return Err("registered source unavailable; reconnect source".into());
+        }
+        return Ok(Some(source));
+    }
+    if kind == "noop" || kind.starts_with("plugin-gate:") {
+        return Ok(None);
+    }
+    Err("retry is not supported for this job; re-run the add".into())
+}
+
+fn prepare_job_retry(
+    state: &AppState,
+    id: i64,
+) -> Result<(Job, Option<RegisteredSource>, Option<SourceOperation>), String> {
+    let kind = state
+        .jobs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(id)
+        .map_err(|e| e.to_string())?
+        .kind;
+    // Validate the supported binding and complete source guard plan before the
+    // retry transition. Historical/unavailable jobs remain byte-for-byte intact.
+    let source = retry_source(state, &kind)?;
+    let operation = source
+        .as_ref()
+        .map(|source| source_operation(state, vec![(source.clone(), false)]))
+        .transpose()?;
+    let job = state
+        .jobs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .retry(id)
+        .map_err(|e| e.to_string())?;
+    Ok((job, source, operation))
+}
+
 fn retry_job_blocking(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
     let state = app.state::<AppState>();
-    let kind = {
-        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        let job = jobs.retry(id).map_err(|e| e.to_string())?;
-        emit_job(&app, &job);
-        job.kind
-    };
-
-    if let Some(path) = kind.strip_prefix("ingest:") {
+    let (job, source, operation) = prepare_job_retry(&state, id)?;
+    emit_job(&app, &job);
+    let kind = job.kind;
+    if let (Some(source), Some(operation)) = (source, operation) {
         {
             let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
             jobs.set_status(id, "running").map_err(|e| e.to_string())?;
-            let running = jobs.get(id).map_err(|e| e.to_string())?;
-            emit_job(&app, &running);
+            emit_job(&app, &jobs.get(id).map_err(|e| e.to_string())?);
         }
-        let path = path.to_string();
-        run_ingest(&path, id, &app, &state)?;
-        let jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        return jobs.get(id).map_err(|e| e.to_string());
+        run_ingest(&source, &operation, id, &app, &state)?;
+        return state
+            .jobs
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(id)
+            .map_err(|e| e.to_string());
     }
     // A conformance gate re-runs whole (#206 review): the verdict re-binds
     // to whatever bytes are on disk now, which is exactly what a retry
@@ -2340,6 +2491,12 @@ async fn add_repo(url: String, app: tauri::AppHandle) -> Result<AddRepoSummary, 
 
 fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummary, String> {
     let state = app.state::<AppState>();
+    let source = state
+        .sources
+        .lock()
+        .map_err(|e| e.to_string())?
+        .reserve_managed(&url)?;
+    let mut operation = source_operation(&state, vec![(source.clone(), true)])?;
     let job_id = {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         let job = jobs
@@ -2356,32 +2513,28 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         e
     };
 
-    let repos_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| fail(e.to_string(), &state, job_id))?
-        .join("repos");
     let token = ingest::discover_token();
-    let cloned = ingest::clone_repo(&url, &repos_dir, token.as_deref())
-        .map_err(|e| fail(e.to_string(), &state, job_id))?;
+    let cloned = operation
+        .clone_source(&source, token.as_deref())
+        .map_err(|e| fail(e, &state, job_id))?;
     if job_cancelled(&state, job_id) {
-        return Err("cancelled".to_string());
+        return Err("cancelled".into());
     }
-    if let Ok(mut roots) = state.project_roots.lock() {
-        roots.insert(cloned.path.display().to_string());
-    }
+    let root = operation
+        .root(&source.repo_key)
+        .map_err(|e| fail(e, &state, job_id))?;
     let active_plugins =
-        active_plugins_for_root(&app, &state, &cloned.path).map_err(|e| fail(e, &state, job_id))?;
+        active_plugins_for_root(&app, &state, root).map_err(|e| fail(e, &state, job_id))?;
     let mut on_file = detail_throttle(&app, job_id);
     let (extraction, layers, delta) = {
         let mut caches = state
             .extraction_caches
             .lock()
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        let cache = caches.repos.entry(cloned.repo.clone()).or_default();
+        let cache = caches.repos.entry(source.repo_key.clone()).or_default();
         extract_tree_incremental(
-            &cloned.path,
-            &cloned.repo,
+            root,
+            &source.repo_key,
             &cloned.commit_sha,
             &[],
             &std::collections::BTreeMap::new(),
@@ -2405,27 +2558,28 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         load_into_graph(
             &mut graph,
             &extraction,
-            &cloned.repo,
-            &cloned.path,
+            &source.repo_key,
+            root,
             &cloned.commit_sha,
         )
         .map_err(|e| fail(e, &state, job_id))?;
-        relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
+
         stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
+    relink_found_adrs(&state, &operation).map_err(|e| fail(e, &state, job_id))?;
     record_ingest_metrics(
         &state,
         job_id,
-        &cloned.repo,
+        &source.repo_key,
         &cloned.commit_sha,
         &layers,
-        &std::collections::BTreeSet::from([cloned.repo.clone()]),
+        &std::collections::BTreeSet::from([source.repo_key.clone()]),
     )
     .map_err(|e| fail(e, &state, job_id))?;
-    finish_or_cancelled(&state, &app, job_id)?;
+    finish_source_operation(&state, &app, job_id, &operation)?;
     Ok(AddRepoSummary {
         job_id,
-        repo: cloned.repo,
+        repo: source.repo_key,
         commit_sha: cloned.commit_sha,
         files: layers.files(),
         nodes: extraction.nodes.len() as u64,
@@ -2477,6 +2631,27 @@ async fn add_system(path: String, app: tauri::AppHandle) -> Result<AddSystemSumm
 
 fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemSummary, String> {
     let state = app.state::<AppState>();
+    let manifest_path = paths::canonicalize(&path).map_err(|e| e.to_string())?;
+    let manifest =
+        ingest::manifest::SystemManifest::load(&manifest_path).map_err(|e| e.to_string())?;
+    let base = manifest_dir(&manifest_path);
+    let admitted = {
+        let mut registry = state.sources.lock().map_err(|e| e.to_string())?;
+        manifest
+            .repos
+            .iter()
+            .map(|entry| {
+                let remote = manifest_entry_is_remote(&entry.url, base);
+                let source = if remote {
+                    registry.reserve_managed(&entry.url)?
+                } else {
+                    registry.register_local(&base.join(&entry.url))?
+                };
+                Ok((source, remote))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    };
+    let mut operation = source_operation(&state, admitted.clone())?;
     let job_id = {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         let job = jobs
@@ -2493,17 +2668,22 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
         e
     };
 
-    let manifest_path =
-        paths::canonicalize(&path).map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let manifest = ingest::manifest::SystemManifest::load(&manifest_path)
-        .map_err(|e| fail(e.to_string(), &state, job_id))?;
-    let base = manifest_dir(&manifest_path);
-    let repos_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| fail(e.to_string(), &state, job_id))?
-        .join("repos");
     let token = ingest::discover_token();
+    let mut cloned_commits = std::collections::BTreeMap::new();
+    for (source, remote) in &admitted {
+        if *remote
+            && let std::collections::btree_map::Entry::Vacant(entry) =
+                cloned_commits.entry(source.source_id.clone())
+        {
+            if job_cancelled(&state, job_id) {
+                return Err("cancelled".into());
+            }
+            let cloned = operation
+                .clone_source(source, token.as_deref())
+                .map_err(|e| fail(e, &state, job_id))?;
+            entry.insert(cloned.commit_sha);
+        }
+    }
 
     let mut repos = Vec::new();
     let mut repo_identities = std::collections::BTreeSet::new();
@@ -2511,29 +2691,22 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
     let mut layers = LayerBreakdown::default();
     let mut delta = DeltaSummary::default();
     let mut on_file = detail_throttle(&app, job_id);
-    for entry in &manifest.repos {
+    for (entry, (source, remote)) in manifest.repos.iter().zip(&admitted) {
         if job_cancelled(&state, job_id) {
             return Err("cancelled".to_string());
         }
-        let is_remote = manifest_entry_is_remote(&entry.url, base);
-        let (root, repo, commit) = if is_remote {
-            let cloned = ingest::clone_repo(&entry.url, &repos_dir, token.as_deref())
-                .map_err(|e| fail(e.to_string(), &state, job_id))?;
-            (cloned.path, cloned.repo, cloned.commit_sha)
+        let root = operation
+            .root(&source.repo_key)
+            .map_err(|e| fail(e, &state, job_id))?;
+        let repo = source.repo_key.clone();
+        let commit = if *remote {
+            cloned_commits
+                .get(&source.source_id)
+                .ok_or("missing managed clone result")?
+                .clone()
         } else {
-            let root = paths::canonicalize(base.join(&entry.url))
-                .map_err(|e| fail(e.to_string(), &state, job_id))?;
-            let name = root
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (root, format!("local/{name}"), "workdir".to_string())
+            "workdir".to_string()
         };
-        // Every manifest repo is a resolved ingest root: plugin discovery
-        // scans them like any directly-ingested tree (#198).
-        if let Ok(mut roots) = state.project_roots.lock() {
-            roots.insert(root.display().to_string());
-        }
         // state_json travels with the manifest, so it resolves against the
         // manifest dir — same rule as local repo paths.
         let state_path = entry.state_json.as_ref().map(|p| base.join(p));
@@ -2541,7 +2714,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
         let trace_paths: Vec<std::path::PathBuf> =
             entry.otel_jsonl.iter().map(|p| base.join(p)).collect();
         let active_plugins =
-            active_plugins_for_root(&app, &state, &root).map_err(|e| fail(e, &state, job_id))?;
+            active_plugins_for_root(&app, &state, root).map_err(|e| fail(e, &state, job_id))?;
         let (extraction, repo_layers, repo_delta) = {
             let mut caches = state
                 .extraction_caches
@@ -2549,7 +2722,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
                 .map_err(|e| fail(e.to_string(), &state, job_id))?;
             let cache = caches.repos.entry(repo.clone()).or_default();
             extract_tree_incremental(
-                &root,
+                root,
                 &repo,
                 &commit,
                 &entry.layers,
@@ -2577,7 +2750,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
                 .graph
                 .lock()
                 .map_err(|e| fail(e.to_string(), &state, job_id))?;
-            load_into_graph(&mut graph, &extraction, &repo, &root, &commit)
+            load_into_graph(&mut graph, &extraction, &repo, root, &commit)
                 .map_err(|e| fail(e, &state, job_id))?;
         }
         let sha12: String = commit.chars().take(12).collect();
@@ -2591,9 +2764,10 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
             .graph
             .lock()
             .map_err(|e| fail(e.to_string(), &state, job_id))?;
-        relink_found_adrs(&mut graph).map_err(|e| fail(e, &state, job_id))?;
+
         stitch_backings(&mut graph).map_err(|e| fail(e, &state, job_id))?;
     }
+    relink_found_adrs(&state, &operation).map_err(|e| fail(e, &state, job_id))?;
     // One history record for the whole system; the per-repo identities are
     // the record's identity (a system has no single commit).
     record_ingest_metrics(
@@ -2605,7 +2779,7 @@ fn add_system_blocking(path: String, app: tauri::AppHandle) -> Result<AddSystemS
         &repo_identities,
     )
     .map_err(|e| fail(e, &state, job_id))?;
-    finish_or_cancelled(&state, &app, job_id)?;
+    finish_source_operation(&state, &app, job_id, &operation)?;
     Ok(AddSystemSummary {
         job_id,
         repos,
@@ -2835,16 +3009,18 @@ struct EvidenceSource {
 }
 
 /// Read-only source window containing an evidence span, confined to the
-/// ingest root recorded on the `Repo` node (NG1: navigation, never edit).
+/// exact registered repository root (NG1: navigation, never edit).
 #[tauri::command]
 fn read_evidence(
-    root: String,
+    repo: String,
     path: String,
     byte_start: u64,
     byte_end: u64,
+    state: State<'_, AppState>,
 ) -> Result<EvidenceSource, String> {
-    let window = evidence::read_source(std::path::Path::new(&root), &path, &(byte_start..byte_end))
-        .map_err(|e| e.to_string())?;
+    let window = source_access::with_registered_read(&state.sources, &repo, |root| {
+        evidence::read_source(root, &path, &(byte_start..byte_end)).map_err(|e| e.to_string())
+    })?;
     Ok(EvidenceSource {
         text: window.text,
         window_start: window.window_start,
@@ -2933,6 +3109,8 @@ fn main() {
             // `interrupted` rows — resumable, never silently stuck (#117).
             jobs.recover_interrupted()?;
             let findings = FindingStore::open(&state_path)?;
+            let sources =
+                SourceRegistry::open(&state_path, &data_dir).map_err(std::io::Error::other)?;
             let tier_settings = settings::SettingsStore::open(&state_path)?;
             let decisions = agents::DecisionLog::open(&state_path)?;
             let staged_proposals = agents::ProposalStore::open(data_dir.join("proposals.sqlite"))?;
@@ -2945,7 +3123,7 @@ fn main() {
                 decisions: Mutex::new(decisions),
                 proposals: Mutex::new(staged_proposals),
                 extraction_caches: Mutex::new(ExtractionCaches::default()),
-                project_roots: Mutex::new(std::collections::BTreeSet::new()),
+                sources: Arc::new(Mutex::new(sources)),
                 metrics: Mutex::new(recovery_metrics),
             });
             Ok(())
@@ -3005,7 +3183,20 @@ fn main() {
 }
 
 #[cfg(test)]
+fn test_source_registry(
+    state_path: &std::path::Path,
+    roots: &std::collections::BTreeSet<String>,
+) -> Arc<Mutex<SourceRegistry>> {
+    let mut registry = SourceRegistry::open(state_path, state_path.parent().unwrap()).unwrap();
+    for root in roots {
+        registry.register_local(std::path::Path::new(root)).unwrap();
+    }
+    Arc::new(Mutex::new(registry))
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test_source_registry;
     use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
     use llm::{Embedding, Locality, ProviderCaps, ProviderError};
 
@@ -3517,7 +3708,13 @@ resource "aws_sqs_queue" "orders" {
             "workdir",
         )
         .unwrap();
-        crate::relink_found_adrs(&mut store).unwrap();
+        let updates = crate::collect_found_adrs(&store.all_nodes().unwrap(), |repo| match repo {
+            "local/docs-repo" => Ok(docs.as_path()),
+            "local/service" => Ok(service.as_path()),
+            _ => Err("unexpected fixture source".into()),
+        })
+        .unwrap();
+        crate::apply_found_adrs(&mut store, updates).unwrap();
 
         let decides = store.edges_with_labels(&["DECIDES"]).unwrap();
         assert_eq!(decides.len(), 1);
@@ -3535,12 +3732,24 @@ resource "aws_sqs_queue" "orders" {
             "# Service ownership\n\n- **Status:** Accepted\n",
         )
         .unwrap();
-        crate::relink_found_adrs(&mut store).unwrap();
+        let updates = crate::collect_found_adrs(&store.all_nodes().unwrap(), |repo| match repo {
+            "local/docs-repo" => Ok(docs.as_path()),
+            "local/service" => Ok(service.as_path()),
+            _ => Err("unexpected fixture source".into()),
+        })
+        .unwrap();
+        crate::apply_found_adrs(&mut store, updates).unwrap();
         assert!(store.edges_with_labels(&["DECIDES"]).unwrap().is_empty());
 
         // Removing the source file reconciles the found ADR node as well.
         std::fs::remove_file(docs.join("docs/adr/ADR-0001-service.md")).unwrap();
-        crate::relink_found_adrs(&mut store).unwrap();
+        let updates = crate::collect_found_adrs(&store.all_nodes().unwrap(), |repo| match repo {
+            "local/docs-repo" => Ok(docs.as_path()),
+            "local/service" => Ok(service.as_path()),
+            _ => Err("unexpected fixture source".into()),
+        })
+        .unwrap();
+        crate::apply_found_adrs(&mut store, updates).unwrap();
         assert!(
             store
                 .nodes_with_label("ADR")
@@ -4327,10 +4536,12 @@ resource "aws_sqs_queue" "orders" {
             [
                 crate::SystemRepo {
                     repo: "acme/shop".into(),
+                    display_name: None,
                     commit: "a1b2c3d".into(),
                 },
                 crate::SystemRepo {
                     repo: "local/infra".into(),
+                    display_name: None,
                     commit: "workdir".into(),
                 },
             ]
@@ -4635,13 +4846,18 @@ export const orders = new aws.sqs.Queue('orders', {});
             dir.path(),
         );
 
-        let cloned = ingest::clone_repo(
-            &format!("file://{}", bare.display()),
-            &dir.path().join("clones"),
-            None,
+        let mut registry =
+            super::SourceRegistry::open(dir.path().join("state.db"), dir.path()).unwrap();
+        let source = registry
+            .reserve_managed(&format!("file://{}", bare.display()))
+            .unwrap();
+        let mut operation = super::SourceOperation::acquire(
+            &std::sync::Mutex::new(registry),
+            [(source.clone(), true)],
         )
         .unwrap();
-        assert_eq!(cloned.repo, "local/shop");
+        let cloned = operation.clone_source(&source, None).unwrap();
+        assert_eq!(cloned.repo, source.repo_key);
         assert_eq!(cloned.commit_sha.len(), 40);
 
         let extraction = crate::extract_tree(
@@ -4661,10 +4877,10 @@ export const orders = new aws.sqs.Queue('orders', {});
             .find(|n| n.label == "Endpoint")
             .expect("endpoint recovered from the clone");
         let ev = &ep.props["prov"]["evidence"][0];
-        assert_eq!(ev["repo"], "local/shop");
+        assert_eq!(ev["repo"], source.repo_key);
         assert_eq!(ev["commit_sha"].as_str().unwrap(), cloned.commit_sha);
 
-        // Repo node carries root + commit for per-repo evidence resolution.
+        // Repo facts retain commit, while operational roots stay in the registry.
         let mut store = SqliteGraphStore::open_in_memory().unwrap();
         crate::load_into_graph(
             &mut store,
@@ -4676,7 +4892,8 @@ export const orders = new aws.sqs.Queue('orders', {});
         .unwrap();
         let repos = store.nodes_with_label("Repo").unwrap();
         assert_eq!(repos.len(), 1);
-        assert_eq!(repos[0].id, "repo:local/shop");
+        assert_eq!(repos[0].id, format!("repo:{}", source.repo_key));
+        assert!(repos[0].props.get("root").is_none());
         assert_eq!(
             repos[0].props["commit"].as_str().unwrap(),
             cloned.commit_sha
@@ -5542,7 +5759,7 @@ export function App() {
                 agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
             ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
-            project_roots: std::sync::Mutex::new(roots),
+            sources: test_source_registry(&state_path, &roots),
             metrics: std::sync::Mutex::new(
                 super::metrics::MetricsStore::open(&state_path).unwrap(),
             ),
@@ -5645,7 +5862,7 @@ export function App() {
                 agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
             ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
-            project_roots: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            sources: test_source_registry(&state_path, &std::collections::BTreeSet::new()),
             metrics: std::sync::Mutex::new(
                 super::metrics::MetricsStore::open(&state_path).unwrap(),
             ),
@@ -5734,7 +5951,7 @@ export function App() {
                 agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
             ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
-            project_roots: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            sources: test_source_registry(&state_path, &std::collections::BTreeSet::new()),
             metrics: std::sync::Mutex::new(
                 super::metrics::MetricsStore::open(&state_path).unwrap(),
             ),
@@ -5754,10 +5971,14 @@ export function App() {
             .find(|f| f.kind == "uncovered-language" && f.message.contains("Ruby"))
             .expect("Ruby surfaces as uncovered");
         assert_eq!(finding.request_adapter.as_deref(), Some("Ruby"));
-        let repo = format!(
-            "local/{}",
-            root.file_name().map(|n| n.to_string_lossy()).unwrap()
-        );
+        let repo = state
+            .sources
+            .lock()
+            .unwrap()
+            .get_by_root(&root)
+            .unwrap()
+            .unwrap()
+            .repo_key;
         assert!(
             state
                 .findings
@@ -5911,10 +6132,13 @@ export function App() {
                 agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
             ),
             extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
-            project_roots: std::sync::Mutex::new(std::collections::BTreeSet::from([
-                root_a.display().to_string(),
-                root_b.display().to_string(),
-            ])),
+            sources: test_source_registry(
+                &state_path,
+                &std::collections::BTreeSet::from([
+                    root_a.display().to_string(),
+                    root_b.display().to_string(),
+                ]),
+            ),
             metrics: std::sync::Mutex::new(
                 super::metrics::MetricsStore::open(&state_path).unwrap(),
             ),

@@ -59,3 +59,24 @@ export const Empty: Story = {
 export const ClearFailed: Story = {
   args: { stats: { nodes: 12, edges: 18 }, error: 'storage: database is locked' },
 };
+
+export const RegisteredRepositoryLabelsInConfirmation: Story = {
+  // AC-0144: destructive confirmation uses operational labels from SystemRepo.
+  args: {
+    stats: { nodes: 12, edges: 18 },
+    systemContents: [
+      { repo: 'local/src_11111111111111111111111111111111', display_name: 'Billing service', commit: 'workdir' },
+      { repo: 'acme/infra', commit: 'workdir' },
+    ],
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear system' }));
+    await expect(canvas.getByRole('alert')).toHaveTextContent(
+      'Remove every recovered fact for Billing service, acme/infra?',
+    );
+    await expect(canvas.getByRole('alert')).not.toHaveTextContent('local/src_');
+    await userEvent.click(canvas.getByRole('button', { name: 'Keep system' }));
+    await expect(args.onClear).not.toHaveBeenCalled();
+  },
+};
