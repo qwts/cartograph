@@ -93,6 +93,28 @@ Use an actual recovered node identity for the anchor. Continue with the returned
 are consistency tokens, not authorization credentials. No MCP endpoint is implied
 by the existence of this Tauri command.
 
+## Coherent legacy graph projections (#388)
+
+The same database-revision guarantee extends to the existing Atlas, specification,
+flow/topology, findings, metrics and semantic-preview graph reads. `GraphStore`
+requires coherent full and label-filtered snapshots; no backend may implement the
+contract as unrelated autocommit reads. Filtering occurs within the read
+transaction, preserving existing selections, stable ordering and the treatment of
+malformed properties outside the selected labels. `None` selects every label and
+an explicitly empty label set selects no facts. Flow tracing, spec compilation,
+metrics and other computation operate on owned results after the transaction ends.
+
+Paired graph counts use one coherent count operation without materializing JSON
+facts. The source/edge selections and returned count meaning remain unchanged.
+Deterministic regression fixtures commit a replacement graph through a second
+connection between collection reads and exercise the actual spec/Atlas adapters;
+errors must release the transaction so later corrected reads can advance. A narrowly
+feature-gated one-shot hook supports test interleaving without runtime app exposure.
+
+This read contract does not make multi-step ingest/reconciliation publication
+atomic, prevent competing write plans, or create a transaction across graph,
+review, findings and jobs databases. Source-byte verification remains #385.
+
 ## MCP ingress, ACP execution
 
 External agents use Cartograph's MCP server to read context and request work.
