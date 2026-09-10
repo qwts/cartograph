@@ -1005,7 +1005,7 @@ fn ready_managed_source(state: &AppState, name: &str) -> RegisteredSource {
 }
 
 fn ready_after_reopen(app_data: &Path, source: &RegisteredSource) -> bool {
-    SourceRegistry::open(&app_data.join("state.db"), app_data)
+    SourceRegistry::open(app_data.join("state.db"), app_data)
         .unwrap()
         .get_by_id(&source.source_id)
         .unwrap()
