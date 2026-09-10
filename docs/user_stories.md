@@ -331,7 +331,7 @@
 - **Actor:** Human developer
 - **As a** developer **I want** agent results staged durably and reviewed by identity **so that** I can resume after restart and know the exact evidence and interpretation I accepted.
 - **Priority:** Must · **Status:** In-Progress
-- **AC-0126** Given a bounded host task and broker result, when staged, then complete proposal content, provenance, task/run identity, graph snapshot and a versioned basis manifest determine an immutable identity; validation rejects unsupported candidate/citation changes, repeated identical staging is idempotent, and raw task source is not persisted.
+- **AC-0126** Given a bounded host task and broker result, when staged, then complete proposal content, provenance, task/run identity, a graph snapshot read coherently under AC-0105 and a versioned basis manifest determine an immutable identity; validation rejects unsupported candidate/citation changes, repeated identical staging is idempotent, and raw task source is not persisted.
 - **AC-0127** Given a staged proposal, when reviewed by ID and expected review revision, then the host atomically records the decision without changing proposal content; unknown IDs and stale revisions fail, and both pending and reviewed records survive restart.
 - **AC-0128** Given single or class escalation, when a result completes, then it is durably staged before reported success; failed persistence is a failed result and cancellation preserves already completed staged instances.
 - **AC-0129** Given staged history after restart, when the review surface opens, then pending and reviewed results can be retrieved with bounded explicit pagination and reviewed by ID; accepted status states that shared-context reconciliation is pending.

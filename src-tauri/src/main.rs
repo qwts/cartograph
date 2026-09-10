@@ -1635,9 +1635,10 @@ type SpanReader = Box<dyn Fn(&core_prov::EvidenceRef) -> Option<String> + Send>;
 /// Whole-graph projection plus an evidence reader bound to the ingested
 /// repo roots — the escalation assembly needs both.
 fn graph_and_reader(state: &AppState) -> Result<(Vec<Node>, Vec<Edge>, SpanReader), String> {
-    let graph = state.graph.lock().map_err(|e| e.to_string())?;
-    let nodes = graph.all_nodes().map_err(|e| e.to_string())?;
-    let edges = graph.all_edges().map_err(|e| e.to_string())?;
+    let (nodes, edges) = {
+        let graph = state.graph.lock().map_err(|e| e.to_string())?;
+        graph.read_snapshot().map_err(|e| e.to_string())?
+    };
     let roots: std::collections::BTreeMap<String, String> = nodes
         .iter()
         .filter(|node| node.label == "Repo")

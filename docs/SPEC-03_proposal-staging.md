@@ -8,8 +8,10 @@ Status: implementation in progress, #384. H3 prerequisite under SPEC-01 and
 The host persists each validated broker result before reporting success. A staged
 record binds the complete proposal (including annotation, citations and original
 Agentic/InferredWeak provenance), the producing job, the recovered graph snapshot,
-and a versioned task-basis manifest to an immutable content identity. Retrying an
-identical stage operation is idempotent. Different reviewed content has a different
+and a versioned task-basis manifest to an immutable content identity. The graph
+copy reads nodes and edges in one SQLite snapshot even when another app process
+writes concurrently. This does not attest the separately read source bytes.
+Retrying an identical stage operation is idempotent. Different reviewed content has a different
 identity, even when its proposed edge tuple is unchanged.
 
 The basis manifest retains the unresolved task fields, bounded candidate identities
