@@ -311,3 +311,18 @@
 - **Security:** No target-code writes from analysis; implementation authorization is separate and scoped.
 - **Performance:** Evaluation is feature/domain scoped with explicit runtime and token budgets.
 - **Trace:** H6–H7 (SPEC-01) · `context-hub`, `agents`, `app`, `ui` · — · T-0115..0118
+
+### US-0024 — Recover source-backed rule evidence with real lexical owners
+- **Actor:** Developer investigating business behavior
+- **As a** developer **I want** cited callable owners and guarded-exit evidence **so that** business rules can be recovered without guessed dispatch or stronger predicates than the code establishes.
+- **Priority:** Must · **Status:** In-Progress
+- **AC-0119** Given TypeScript object methods and property-bound callbacks, when extracted, then each has exact T0 provenance, a real scope-qualified symbol and DEFINED_IN edge; same-named members of different objects and objects nested inside classes remain distinct.
+- **AC-0120** Given nested or shadowed callable declarations, when their calls are extracted, then the nearest actual callable owns the calls and direct-call targets require lexical binding proof; unrelated file-wide name matches and unknown member dispatch do not become confirmed links.
+- **AC-0121** Given unchanged source and existing unambiguous top-level/class callables, when re-extracted, then identities and content hashes are deterministic and existing identities remain stable; anonymous route symbol and endpoint ownership continue to agree.
+- **AC-0122** Given supported guarded returns/throws, when recovered, then source conditions, branch polarity, owner, local effect and exact evidence are retained without treating return strings as rejection or an ancestor-condition list as a complete execution predicate.
+- **AC-0123** Given unresolved calls, mutation, loops or exception control flow, when rule evidence is recovered, then unsupported behavioral interpretation and dependencies remain explicit gaps rather than omitted prerequisites or invented semantics.
+- **AC-0124** Given rule evidence with secret-shaped source literals, when stored or exported, then a shared deterministic redaction boundary prevents their disclosure while preserving source references and an explicit redaction indication.
+- **AC-0125** Given recovered rule evidence, when the inventory, shared context and exports are inspected, then owner, conditions, local effect, dependencies, confidence and incomplete interpretation are consistent; the pinned benchmark records only fully supported matches.
+- **Security:** No model or source execution; no new raw predicate/return text stored before the redaction contract is implemented.
+- **Performance:** Ownership and rule passes share the parsed tree; unsupported complexity remains bounded and explicit.
+- **Trace:** H2 (SPEC-01/SPEC-02) · `adapters-lang-ts`, `core-graph`, `core-prov`, `core-redact`, `spec`, `context-hub`, `app` · — · T-0119..0125

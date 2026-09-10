@@ -6,6 +6,8 @@
 //! embedded-graph-engine adapter implements the same trait if the OQ-3
 //! benchmark ever demands it.
 
+pub mod rules;
+
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -81,10 +83,11 @@ pub trait GraphStore {
 
 /// Version of the graph's fact schema — the node/edge *id scheme*, not the
 /// SQL shape. Bumped when ids change meaning (v2: repo-namespaced ids,
-/// US-0001 slice 2). A mismatched db is cleared on open: the graph is a
+/// US-0001 slice 2; v3: scope-qualified callable identities, AC-0120).
+/// A mismatched db is cleared on open: the graph is a
 /// disposable ingest artifact (ADR-0008), and stale-scheme rows can never
 /// be upserted again — they would shadow every re-ingest as zombies (#50).
-pub const GRAPH_SCHEMA_VERSION: u32 = 2;
+pub const GRAPH_SCHEMA_VERSION: u32 = 3;
 
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
 pub struct SqliteGraphStore {
@@ -358,6 +361,8 @@ mod tests {
     // a current-version db keeps its facts.
     #[test]
     fn version_mismatch_clears_the_graph_current_version_persists() {
+        // AC-0120: old file-wide ownership links must disappear on upgrade,
+        // before users have individually re-ingested their repositories.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         {
@@ -369,11 +374,22 @@ mod tests {
                     props: serde_json::json!({}),
                 })
                 .unwrap();
+            store
+                .put_node(&node("sym:acme/shop@a.ts#g", "Symbol"))
+                .unwrap();
+            store
+                .put_edge(&edge(
+                    "sym:acme/shop@a.ts#f",
+                    "sym:acme/shop@a.ts#g",
+                    "CALLS",
+                ))
+                .unwrap();
         }
         // Same version: facts survive reopen.
         {
             let store = SqliteGraphStore::open(&path).unwrap();
-            assert_eq!(store.node_count().unwrap(), 1);
+            assert_eq!(store.node_count().unwrap(), 2);
+            assert_eq!(store.edge_count().unwrap(), 1);
         }
         // Simulate a db written by an older scheme.
         {

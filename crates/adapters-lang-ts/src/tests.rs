@@ -1024,9 +1024,352 @@ export function Checkout() {
 "#,
     );
     assert_eq!(out.fetch_sites.len(), 1);
+    let nested = out
+        .nodes
+        .iter()
+        .find(|node| {
+            node.label == "Component"
+                && node.props["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("Checkout/CouponLookup@"))
+        })
+        .expect("nested component retains its actual lexical owner");
     assert_eq!(
         out.fetch_sites[0].symbol.as_deref(),
-        Some("sym:qwtm/example@checkout.tsx#CouponLookup")
+        Some(nested.id.as_str())
+    );
+}
+
+#[test]
+fn object_methods_and_property_callbacks_have_cited_distinct_owners() {
+    // AC-0119: every source callable is real, cited and distinct across objects.
+    let source = r#"
+function helper() {}
+const first = { check() { helper(); }, arrow: () => helper(), fn: function named() { helper(); } };
+const second = { check() { helper(); }, [key]() { helper(); } };
+class Box {
+  check() { helper(); }
+  create() { return { check() { helper(); }, callback: () => helper() }; }
+}
+
+"#;
+    let out = extract_source(source.as_bytes(), "owners.ts", &id()).unwrap();
+    let symbols: Vec<_> = out
+        .nodes
+        .iter()
+        .filter(|node| node.label == "Symbol")
+        .collect();
+    let ids: BTreeSet<_> = symbols.iter().map(|node| node.id.as_str()).collect();
+    assert_eq!(ids.len(), symbols.len(), "no callable identities merge");
+    let helper = "sym:qwtm/example@owners.ts#helper";
+    let calls: Vec<_> = out
+        .edges
+        .iter()
+        .filter(|edge| edge.label == "CALLS" && edge.dst == helper)
+        .collect();
+    assert_eq!(calls.len(), 8);
+    assert_eq!(
+        calls
+            .iter()
+            .map(|edge| &edge.src)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        8
+    );
+    for edge in calls {
+        let owner = symbols
+            .iter()
+            .find(|node| node.id == edge.src)
+            .expect("a call owner must be emitted");
+        assert!(out.edges.iter().any(|edge| edge.label == "DEFINED_IN"
+            && edge.src == owner.id
+            && edge.dst == "file:qwtm/example@owners.ts"));
+        let prov: Provenance = serde_json::from_value(owner.props["prov"].clone()).unwrap();
+        assert_eq!(prov.tier, Tier::Deterministic);
+        assert_eq!(prov.confidence_tier, ConfidenceTier::Confirmed);
+        assert_eq!(prov.evidence.len(), 1);
+        let span = &prov.evidence[0];
+        assert_eq!(span.path, "owners.ts");
+        assert_eq!(span.commit_sha, "abc123");
+        let text = &source[span.byte_start as usize..span.byte_end as usize];
+        assert!(
+            text.contains("helper()"),
+            "the evidence is the owner, not another object: {text}"
+        );
+        if owner.id.contains("first@")
+            || owner.id.contains("second@")
+            || owner.id.contains("Box.create/")
+        {
+            assert!(
+                owner.props.get("class").is_none(),
+                "object method is not a class member"
+            );
+        }
+    }
+    assert!(
+        symbols
+            .iter()
+            .any(|node| node.id.contains("first@") && node.id.contains(".check@"))
+    );
+    assert!(
+        symbols
+            .iter()
+            .any(|node| node.id.contains("second@") && node.id.contains(".check@"))
+    );
+    assert!(
+        symbols
+            .iter()
+            .any(|node| node.id.contains("Box.create/") && node.id.contains(".check@"))
+    );
+    let computed = symbols
+        .iter()
+        .find(|node| node.props["computed_name"] == true)
+        .unwrap();
+    assert!(computed.id.contains(".computed@"));
+    assert!(
+        !computed.id.contains("[key]"),
+        "computed syntax does not prove a runtime key"
+    );
+}
+
+#[test]
+fn class_expression_owners_never_merge_by_anonymous_or_private_name() {
+    // AC-0119 / AC-0120 / AC-0121: expression-local class names need identity.
+    let source = r#"
+function first() {}
+function second() {}
+const A = class { check() { first(); } };
+const B = class { check() { second(); } };
+const C = class Private { check() { first(); } };
+const D = class Private { check() { second(); } };
+class Existing { check() { first(); } }
+"#;
+    let out = extract_source(source.as_bytes(), "class-expressions.ts", &id()).unwrap();
+    let methods: Vec<_> = out
+        .nodes
+        .iter()
+        .filter(|node| node.props["kind"] == "Method")
+        .collect();
+    assert_eq!(methods.len(), 5);
+    assert_eq!(
+        methods
+            .iter()
+            .map(|node| &node.id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        5
+    );
+    assert!(
+        methods
+            .iter()
+            .any(|node| node.id == "sym:qwtm/example@class-expressions.ts#Existing.check")
+    );
+    let calls = edge_pairs(&out, "CALLS");
+    assert_eq!(calls.len(), 5);
+    for method in methods {
+        let prov: Provenance = serde_json::from_value(method.props["prov"].clone()).unwrap();
+        let evidence = &prov.evidence[0];
+        let text = &source[evidence.byte_start as usize..evidence.byte_end as usize];
+        let target = if text.contains("first()") {
+            "first"
+        } else {
+            "second"
+        };
+        assert!(calls.contains(&(
+            method.id.as_str(),
+            sym_id(id().repo, "class-expressions.ts", target).as_str()
+        )));
+        assert_eq!(calls.iter().filter(|(src, _)| *src == method.id).count(), 1);
+    }
+}
+
+#[test]
+fn nested_calls_resolve_only_lexical_callable_bindings() {
+    // AC-0120: nearest owners, lexical shadowing, and no unrelated name matches.
+    let source = r#"
+function shared() {}
+function reassigned() {}
+function wrapper(shared: () => void) {
+  shared();
+  function local() {}
+  local();
+  { const local = () => {}; local(); }
+  local();
+  [1].map(() => { local(); });
+}
+function other() { function local() {} local(); }
+function unrelated() { local(); shared(); }
+function destructured({ shared }: { shared: () => void }) { shared(); }
+function looped() { for (const shared of callbacks) { shared(); } }
+function caught() { try {} catch (shared) { shared(); } }
+function changed() { reassigned = () => {}; reassigned(); }
+const named = function privateName() { shared(); privateName(); };
+function outside() { privateName(); }
+"#;
+    let out = extract_source(source.as_bytes(), "scope.ts", &id()).unwrap();
+    let symbol = |prefix: &str| {
+        out.nodes
+            .iter()
+            .find(|node| {
+                node.label == "Symbol"
+                    && node.props["name"]
+                        .as_str()
+                        .is_some_and(|name| name.starts_with(prefix))
+            })
+            .unwrap()
+    };
+    let outer_local = symbol("wrapper/local@");
+    let other_local = symbol("other/local@");
+    assert_ne!(outer_local.id, other_local.id);
+    let calls = edge_pairs(&out, "CALLS");
+    assert!(calls.contains(&("sym:qwtm/example@scope.ts#wrapper", outer_local.id.as_str())));
+    assert!(calls.contains(&("sym:qwtm/example@scope.ts#other", other_local.id.as_str())));
+    let anonymous = calls
+        .iter()
+        .find(|(src, dst)| *dst == outer_local.id && *src != "sym:qwtm/example@scope.ts#wrapper")
+        .expect("map callback owns its call")
+        .0;
+    assert!(
+        out.nodes
+            .iter()
+            .any(|node| node.id == anonymous && node.label == "Symbol")
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(src, dst)| *src == "sym:qwtm/example@scope.ts#wrapper"
+                && dst.ends_with("#shared"))
+    );
+    assert!(!calls.iter().any(|(src, _)| src.ends_with("#destructured")
+        || src.ends_with("#changed")
+        || src.ends_with("#looped")
+        || src.ends_with("#caught")
+        || src.ends_with("#outside")));
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(src, _)| src.ends_with("#unrelated"))
+            .count(),
+        1
+    );
+    assert!(calls.contains(&(
+        "sym:qwtm/example@scope.ts#unrelated",
+        "sym:qwtm/example@scope.ts#shared"
+    )));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@scope.ts#named",
+        "sym:qwtm/example@scope.ts#shared"
+    )));
+    for (source, target) in calls {
+        assert!(out.nodes.iter().any(|node| node.id == source));
+        assert!(out.nodes.iter().any(|node| node.id == target));
+    }
+}
+
+#[test]
+fn shadowed_imports_and_receivers_do_not_borrow_file_wide_proof() {
+    // AC-0120: imported bindings and typed receivers obey the call's own scope.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("helper.ts"),
+        "export function imported() {} export class Remote { check() {} }",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("scope.ts"),
+        r#"
+import { imported, Remote } from './helper';
+class Local { check() {} }
+function proven(receiver: Remote) { imported(); receiver.check(); }
+function shadowed(imported: () => void, receiver: unknown) { imported(); receiver.check(); }
+function local() { const receiver = new Local(); receiver.check(); }
+function unknown() { receiver.check(); }
+class Container {
+  check() {}
+  build() {
+    const object = { check() { this.check(); } };
+    const callback = function () { this.check(); };
+    const arrow = () => this.check();
+    return object;
+  }
+}
+"#,
+    )
+    .unwrap();
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let calls = edge_pairs(&out, "CALLS");
+    assert!(calls.contains(&(
+        "sym:qwtm/example@scope.ts#proven",
+        "sym:qwtm/example@helper.ts#imported"
+    )));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@scope.ts#proven",
+        "sym:qwtm/example@helper.ts#Remote.check"
+    )));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@scope.ts#local",
+        "sym:qwtm/example@scope.ts#Local.check"
+    )));
+    assert!(!calls.iter().any(|(src, _)| src.ends_with("#shadowed")
+        || src.ends_with("#unknown")
+        || src.contains("/callback@")));
+    let class_calls: Vec<_> = calls
+        .iter()
+        .filter(|(_, dst)| dst.ends_with("#Container.check"))
+        .collect();
+    assert_eq!(class_calls.len(), 1);
+    assert!(class_calls[0].0.contains("Container.build/arrow@"));
+}
+
+#[test]
+fn callable_ownership_preserves_existing_ids_and_determinism() {
+    // AC-0121: existing top-level/class/route identities agree with call owners.
+    let source = r#"
+import express from 'express';
+const router = express();
+function helper() {}
+const arrow = () => helper();
+class Service { run() { helper(); } }
+router.get('/check', () => { helper(); });
+function register() { router.post('/check', function () { helper(); }); }
+const config = { test() { helper(); }, before: () => helper() };
+"#;
+    let first = extract_source(source.as_bytes(), "stable.ts", &id()).unwrap();
+    let second = extract_source(source.as_bytes(), "stable.ts", &id()).unwrap();
+    assert_eq!(first.nodes, second.nodes);
+    assert_eq!(first.edges, second.edges);
+    for name in ["helper", "arrow", "Service.run", "register"] {
+        let expected = sym_id(id().repo, "stable.ts", name);
+        assert_eq!(
+            first
+                .nodes
+                .iter()
+                .filter(|node| node.id == expected)
+                .count(),
+            1
+        );
+    }
+    for handles in first.edges.iter().filter(|edge| edge.label == "HANDLES") {
+        assert!(handles.dst.starts_with("sym:qwtm/example@stable.ts#anon@"));
+        assert_eq!(
+            first
+                .nodes
+                .iter()
+                .filter(|node| node.id == handles.dst)
+                .count(),
+            1
+        );
+        assert!(first.edges.iter().any(|edge| edge.label == "CALLS"
+            && edge.src == handles.dst
+            && edge.dst.ends_with("#helper")));
+    }
+    assert_eq!(
+        first
+            .edges
+            .iter()
+            .filter(|edge| edge.label == "HANDLES")
+            .count(),
+        2
     );
 }
 
@@ -1249,6 +1592,47 @@ export function boot() {
         "sym:qwtm/example@src/app.ts#setup"
     )));
     assert!(calls.contains(&(entry, inner_id.as_str())));
+}
+
+#[test]
+fn eval_wrapper_projection_preserves_nested_lexical_owners() {
+    // AC-0099 / AC-0120 / AC-0121: remove only the synthetic wrapper scope.
+    let source = r#"
+function boot() {
+  eval("function shared() {} function first() { function shared() {} shared(); } function second() { shared(); } first(); second();");
+}
+"#;
+    let out = extract_source(source.as_bytes(), "eval-scopes.ts", &id()).unwrap();
+    let calls = edge_pairs(&out, "CALLS");
+    let entry = calls
+        .iter()
+        .find(|(src, dst)| src.ends_with("#boot") && dst.contains("#eval@"))
+        .unwrap()
+        .1;
+    let root_shared = format!("{entry}.shared");
+    let first = format!("{entry}.first");
+    let second = format!("{entry}.second");
+    let nested = out
+        .nodes
+        .iter()
+        .find(|node| node.id.starts_with(&format!("{first}/shared@")))
+        .expect("nested declaration retains its lexical owner");
+    assert!(calls.contains(&(first.as_str(), nested.id.as_str())));
+    assert!(calls.contains(&(second.as_str(), root_shared.as_str())));
+    assert!(!calls.contains(&(first.as_str(), root_shared.as_str())));
+    for (src, dst) in calls {
+        assert!(out.nodes.iter().any(|node| node.id == src));
+        assert!(out.nodes.iter().any(|node| node.id == dst));
+        assert!(!src.contains("__cgeval") && !dst.contains("__cgeval"));
+    }
+    assert_eq!(
+        out.nodes
+            .iter()
+            .map(|node| &node.id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        out.nodes.len()
+    );
 }
 
 // A same-file `const CODE = '…'` and a const-object member proven through
@@ -1753,4 +2137,317 @@ fn most_specific_paths_pattern_wins() {
         "file:qwtm/example@app.ts",
         "file:qwtm/example@src/foo/bar.ts"
     )));
+}
+
+#[test]
+fn computed_keys_and_decorators_use_the_creation_scope() {
+    // AC-0120: a computed key cannot see the method's parameters or own calls.
+    let source = r#"
+function key() { return 'run'; }
+function decorate() { return () => {}; }
+function build() { return { [key()](key: () => void) { key(); } }; }
+function buildClass() { class Example { @decorate() run() {} } return Example; }
+"#;
+    let out = extract_source(source.as_bytes(), "creation.ts", &id()).unwrap();
+    let calls = edge_pairs(&out, "CALLS");
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(_, dst)| dst.ends_with("#key"))
+            .count(),
+        1
+    );
+    assert!(calls.contains(&(
+        "sym:qwtm/example@creation.ts#build",
+        "sym:qwtm/example@creation.ts#key"
+    )));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@creation.ts#buildClass",
+        "sym:qwtm/example@creation.ts#decorate"
+    )));
+    assert!(
+        !calls
+            .iter()
+            .any(|(src, _)| src.contains(".computed@") || src.contains("Example"))
+    );
+}
+
+#[test]
+fn nested_class_initializers_never_borrow_outer_this() {
+    // AC-0120: nested class fields/static blocks have their own runtime this.
+    let source = r#"
+class Outer {
+  run() {}
+  make() {
+    const valid = () => this.run();
+    return class Inner {
+      run() {}
+      callback = () => this.run();
+      value = this.run();
+      static { this.run(); }
+    };
+  }
+}
+"#;
+    let out = extract_source(source.as_bytes(), "class-this.ts", &id()).unwrap();
+    let calls = edge_pairs(&out, "CALLS");
+    let outer_calls: Vec<_> = calls
+        .iter()
+        .filter(|(_, dst)| dst.ends_with("#Outer.run"))
+        .collect();
+    assert_eq!(outer_calls.len(), 1);
+    assert!(outer_calls[0].0.contains("Outer.make/valid@"));
+    assert!(!calls.iter().any(|(src, _)| src.ends_with("#Outer.make")));
+}
+
+#[test]
+fn receiver_identity_is_bound_at_its_declaration_and_invalidated_by_assignment() {
+    // AC-0120: declaration-site type proof cannot migrate to a shadowing class.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("remote.ts"),
+        "export class Remote { run() {} }",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("receiver.ts"), r#"
+import { Remote } from './remote';
+class Service { run() {} }
+class Replacement { run() {} }
+function typed(receiver: Service) { class Service { run() {} } receiver.run(); }
+function imported(receiver: Remote) { class Remote { run() {} } receiver.run(); }
+function constructed() { const receiver = new Service(); { class Service { run() {} } receiver.run(); } }
+function reassigned() { let receiver = new Service(); receiver = new Replacement(); receiver.run(); }
+function changedLater() { const receiver = new Service(); function change() { receiver = new Replacement(); } receiver.run(); }
+function qualified(receiver: Namespace.Service) { receiver.run(); }
+function array(receiver: Service[]) { receiver.run(); }
+"#).unwrap();
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let calls = edge_pairs(&out, "CALLS");
+    let local = "sym:qwtm/example@receiver.ts#Service.run";
+    assert!(calls.contains(&("sym:qwtm/example@receiver.ts#typed", local)));
+    assert!(calls.contains(&("sym:qwtm/example@receiver.ts#constructed", local)));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@receiver.ts#imported",
+        "sym:qwtm/example@remote.ts#Remote.run"
+    )));
+    for name in ["reassigned", "changedLater", "qualified", "array"] {
+        assert!(
+            !calls
+                .iter()
+                .any(|(src, _)| src.ends_with(&format!("#{name}"))),
+            "{name} must not reuse invalid receiver proof"
+        );
+    }
+}
+
+#[test]
+fn ambiguous_static_and_accessor_members_have_distinct_owners_without_guessed_dispatch() {
+    // AC-0119 / AC-0120 / AC-0121: own every method, but prove its dispatch kind.
+    let source = r#"
+function first() {}
+function second() {}
+class Mixed {
+  static run() { first(); }
+  run() { second(); }
+  get value() { first(); return 1; }
+  set value(input: number) { second(); }
+  static staticOnly() { first(); }
+  plain() { second(); }
+}
+function use(receiver: Mixed) { receiver.run(); receiver.value(); receiver.staticOnly(); receiver.plain(); }
+"#;
+    let out = extract_source(source.as_bytes(), "members.ts", &id()).unwrap();
+    let methods: Vec<_> = out
+        .nodes
+        .iter()
+        .filter(|node| node.props["kind"] == "Method")
+        .collect();
+    assert_eq!(methods.len(), 6);
+    assert_eq!(
+        methods
+            .iter()
+            .map(|node| &node.id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        6
+    );
+    let calls = edge_pairs(&out, "CALLS");
+    for method in methods {
+        let prov: Provenance = serde_json::from_value(method.props["prov"].clone()).unwrap();
+        let evidence = &prov.evidence[0];
+        let text = &source[evidence.byte_start as usize..evidence.byte_end as usize];
+        let expected = if text.contains("first()") {
+            "first"
+        } else {
+            "second"
+        };
+        assert!(calls.contains(&(
+            method.id.as_str(),
+            sym_id(id().repo, "members.ts", expected).as_str()
+        )));
+    }
+    let use_calls: Vec<_> = calls
+        .iter()
+        .filter(|(src, _)| src.ends_with("#use"))
+        .collect();
+    assert_eq!(
+        use_calls,
+        vec![&(
+            "sym:qwtm/example@members.ts#use",
+            "sym:qwtm/example@members.ts#Mixed.plain"
+        )]
+    );
+    assert!(
+        out.nodes
+            .iter()
+            .any(|node| node.id.ends_with("#Mixed.staticOnly")),
+        "unique old member identity stays stable"
+    );
+}
+
+#[test]
+fn imported_static_and_accessor_methods_cannot_satisfy_instance_calls() {
+    // AC-0120: directory target existence alone does not prove instance dispatch.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("remote.ts"),
+        "export class Remote { static run() {} get task() { return () => {}; } }",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("caller.ts"), "import { Remote } from './remote'; function use(receiver: Remote) { receiver.run(); receiver.task(); }").unwrap();
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let calls: Vec<_> = out
+        .edges
+        .iter()
+        .filter(|edge| edge.label == "CALLS" && edge.src.ends_with("#use"))
+        .collect();
+    assert_eq!(calls.len(), 2);
+    for call in calls {
+        assert!(
+            out.nodes
+                .iter()
+                .any(|node| node.id == call.dst && node.label == "Gap")
+        );
+        assert_eq!(call.props["prov"]["confidence_tier"], "Gap");
+    }
+}
+
+#[test]
+fn with_environment_cannot_prove_global_fetch() {
+    // AC-0120: an unresolvable dynamic scope is not proof of an unshadowed global.
+    let out = client_extract(
+        "dynamic-scope.tsx",
+        r#"
+function Dynamic() { with (unknownObject) { fetch('/unproven'); } }
+function Genuine() { fetch('/known'); }
+"#,
+    );
+    assert_eq!(out.fetch_sites.len(), 1);
+    assert_eq!(
+        out.fetch_sites[0].symbol.as_deref(),
+        Some("sym:qwtm/example@dynamic-scope.tsx#Genuine")
+    );
+}
+
+#[test]
+fn named_class_expression_self_name_shadows_outer_callable_only_inside_class() {
+    // AC-0120: the private class-expression name is not the outer function.
+    let source = r#"
+function C() {}
+const Inner = class C { run() { C(); } };
+function outside() { C(); }
+"#;
+    let out = extract_source(source.as_bytes(), "class-self.ts", &id()).unwrap();
+    assert_eq!(
+        edge_pairs(&out, "CALLS"),
+        vec![(
+            "sym:qwtm/example@class-self.ts#outside",
+            "sym:qwtm/example@class-self.ts#C"
+        )]
+    );
+}
+
+#[test]
+fn named_class_expression_type_does_not_borrow_outer_class_proof() {
+    // AC-0120: same-spelled types inside a named class expression cannot resolve
+    // to the outer class. Existing this dispatch and outside type proof survive.
+    let source = r#"
+class C { run() {} }
+const Inner = class C {
+  run() {}
+  use(receiver: C) { receiver.run(); this.run(); }
+};
+function outside(receiver: C) { receiver.run(); }
+"#;
+    let out = extract_source(source.as_bytes(), "class-self-type.ts", &id()).unwrap();
+    let inner_method = |suffix: &str| {
+        out.nodes
+            .iter()
+            .find(|node| {
+                node.props["class"]
+                    .as_str()
+                    .is_some_and(|class| class.starts_with("C@"))
+                    && node.id.ends_with(suffix)
+            })
+            .unwrap()
+    };
+    let inner_use = inner_method(".use");
+    let inner_run = inner_method(".run");
+    let calls = edge_pairs(&out, "CALLS");
+    assert!(calls.contains(&(inner_use.id.as_str(), inner_run.id.as_str())));
+    assert!(!calls.contains(&(
+        inner_use.id.as_str(),
+        "sym:qwtm/example@class-self-type.ts#C.run"
+    )));
+    assert!(calls.contains(&(
+        "sym:qwtm/example@class-self-type.ts#outside",
+        "sym:qwtm/example@class-self-type.ts#C.run"
+    )));
+}
+
+#[test]
+fn parameter_decorator_this_does_not_borrow_decorated_instance() {
+    // AC-0120: parameter decorators execute at creation, while the method body
+    // still has its own instance receiver. Unsupported ambient this stays open.
+    let source = r#"
+function deco(value: any) { return () => {}; }
+class Outer {
+  run() {}
+  build() {
+    class Inner {
+      run() {}
+      method(@deco(this.run()) value: any) { this.run(); }
+    }
+    return Inner;
+  }
+}
+"#;
+    let out = extract_source(source.as_bytes(), "decorator-this.ts", &id()).unwrap();
+    let calls = edge_pairs(&out, "CALLS");
+    let creation_calls: Vec<_> = calls
+        .iter()
+        .filter(|(src, _)| src.ends_with("#Outer.build"))
+        .collect();
+    assert_eq!(
+        creation_calls,
+        vec![&(
+            "sym:qwtm/example@decorator-this.ts#Outer.build",
+            "sym:qwtm/example@decorator-this.ts#deco"
+        )]
+    );
+    let inner_method = out
+        .nodes
+        .iter()
+        .find(|node| {
+            node.props["class"]
+                .as_str()
+                .is_some_and(|class| class.starts_with("Outer.build/Inner@"))
+                && node.id.ends_with(".method")
+        })
+        .unwrap();
+    let inner_run = format!(
+        "sym:qwtm/example@decorator-this.ts#{}.run",
+        inner_method.props["class"].as_str().unwrap()
+    );
+    assert!(calls.contains(&(inner_method.id.as_str(), inner_run.as_str())));
 }

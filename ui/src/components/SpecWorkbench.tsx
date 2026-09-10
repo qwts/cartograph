@@ -58,6 +58,9 @@ export function docChip(artifact: SpecArtifact): { text: string; tone: 'default'
       return { text: `${count} hops`, tone: 'default' };
     case 'adrs.md':
       return { text: `${count} ADR`, tone: 'default' };
+    case 'rule-evidence.md':
+      // Includes observations and their GOVERNS/DEPENDS_ON relationships.
+      return { text: `${count} assertions`, tone: 'default' };
     case 'gap_register.md':
     case 'drift_register.md':
     case 'security.md':
@@ -200,6 +203,13 @@ export function SpecWorkbench({
                     Copy artifact
                   </button>
                 </header>
+
+                {selected.file_name === 'rule-evidence.md' && (
+                  <p className="muted">
+                    Source observations only. Complete execution predicates and consumer
+                    effects are not established.
+                  </p>
+                )}
 
                 <p className="spec-lock-banner" role="note">
                   Confirmed (T0/T1) assertions are read-only; only proposed T2/T3 assertions can

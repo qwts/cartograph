@@ -42,6 +42,7 @@ npm run tauri dev   # first run compiles the Rust workspace — takes a few minu
 |---|---|
 | [docs/SPEC-00_master.md](docs/SPEC-00_master.md) | Master specification — single source of truth |
 | [docs/SPEC-01_context-hub.md](docs/SPEC-01_context-hub.md) | Domain context, MCP/ACP architecture, and delivery gates |
+| [docs/SPEC-02_rule-evidence.md](docs/SPEC-02_rule-evidence.md) | Scoped rule evidence, redaction, and interpretation boundaries |
 | [docs/cartograph_project_brief.md](docs/cartograph_project_brief.md) | Short project brief |
 | [docs/user_stories.md](docs/user_stories.md) | User stories + acceptance criteria (US/AC schema) |
 | [docs/US-TM.md](docs/US-TM.md) | Traceability matrix: US ↔ AC ↔ crate ↔ milestone ↔ ADR ↔ test |

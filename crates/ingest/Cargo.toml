@@ -15,6 +15,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 core-graph = { workspace = true }
 core-prov = { workspace = true }
+core-redact = { workspace = true }
 adapters-fw = { workspace = true }
 toml = "1.1"
 # libgit2 bindings; vendored so CI needs no system libgit2.
