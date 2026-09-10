@@ -257,7 +257,7 @@ fn require_one(affected: usize) -> Result<(), String> {
 }
 
 fn receipt_schema(conn: &Connection) -> Result<(), String> {
-    let objects: u64 = conn
+    let objects: i64 = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'",
             [],
@@ -290,10 +290,10 @@ fn receipt_schema(conn: &Connection) -> Result<(), String> {
 // fields are not trusted just because a SQL predicate selected their row.
 fn receipt_storage(conn: &Connection) -> Result<(u64, u64), String> {
     receipt_schema(conn)?;
-    let count: u64 = conn
+    let count: i64 = conn
         .query_row("SELECT count(*) FROM receipts", [], |row| row.get(0))
         .map_err(storage_error)?;
-    if count > MAX_RECEIPTS {
+    if count < 0 || count > MAX_RECEIPTS as i64 {
         return Err(storage_error("receipt inventory count"));
     }
     let invalid: bool = conn
@@ -303,24 +303,25 @@ fn receipt_storage(conn: &Connection) -> Result<(u64, u64), String> {
          OR typeof(source_id) != 'text' OR length(CAST(source_id AS BLOB)) != 36
          OR typeof(repo_key) != 'text' OR length(CAST(repo_key AS BLOB)) NOT BETWEEN 1 AND 256
          OR typeof(payload) != 'text' OR length(CAST(payload AS BLOB)) NOT BETWEEN 1 AND ?1)",
-            [MAX_RECEIPT_BYTES],
+            [MAX_RECEIPT_BYTES as i64],
             |row| row.get(0),
         )
         .map_err(storage_error)?;
     if invalid {
         return Err(storage_error("receipt metadata bounds"));
     }
-    let bytes: u64 = conn
+    let bytes: i64 = conn
         .query_row(
             "SELECT coalesce(sum(length(CAST(payload AS BLOB))),0) FROM receipts",
             [],
             |row| row.get(0),
         )
         .map_err(storage_error)?;
-    if bytes > MAX_RECEIPT_STORE_BYTES {
+    if bytes < 0 || bytes > MAX_RECEIPT_STORE_BYTES as i64 {
         return Err(storage_error("receipt inventory bytes"));
     }
-    Ok((count, bytes))
+    // SQLite integers are signed; convert only after the nonnegative bounds.
+    Ok((count as u64, bytes as u64))
 }
 
 // The caller retains a transaction after receipt_storage validated all lengths.
@@ -369,7 +370,7 @@ impl ReceiptStore {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let count: u64 = tx
+        let count: i64 = tx
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'",
                 [],
@@ -1022,7 +1023,7 @@ mod tests {
         (directory, source, capture, extraction, receipts)
     }
 
-    fn receipt_count(store: &ReceiptStore) -> u64 {
+    fn receipt_count(store: &ReceiptStore) -> i64 {
         store
             .conn
             .query_row("SELECT count(*) FROM receipts", [], |row| row.get(0))
@@ -1110,7 +1111,7 @@ mod tests {
             .unwrap();
         assert!(store.ids(&source.source_id).is_err());
         assert!(store.ids(&wrong_source).is_err());
-        assert_eq!(receipt_count(&store), expected.len() as u64);
+        assert_eq!(receipt_count(&store), expected.len() as i64);
     }
 
     // AC-0150: a later enrichment sharing an identity wins graph publication;

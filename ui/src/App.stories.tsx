@@ -270,6 +270,8 @@ function installFakeCore(options: {
         if (options.unavailableEvidence) throw new Error('registered source unavailable');
         if (options.evidenceGate) return options.evidenceGate.then(() => ({ text: FAKE_SOURCE, window_start: 0, truncated: false }));
         return { text: FAKE_SOURCE, window_start: 0, truncated: false };
+      case 'list_retained_sources':
+        return [];
       case 'describe_captured_source': {
         if (!options.capturedDescriptions) return null;
         const request = args as Record<string, unknown>;
@@ -1047,17 +1049,18 @@ export const SameFactReselectionRefreshesCapturedSource: Story = {
   // new receipt, while settling its live-source request must not restart it.
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText('/users')).toBeInTheDocument());
+    const endpoints = canvas.getByRole('heading', { name: 'Endpoints' }).closest('section') as HTMLElement;
+    const endpoint = await within(endpoints).findByRole('button', { name: /GET \/users/ });
     let releaseEvidence = () => {};
     const evidenceGate = new Promise<void>((resolve) => { releaseEvidence = resolve; });
     installFakeCore({ capturedDescriptions: true, evidenceGate });
     usePrimarySourceStore.getState().clear();
     try {
-      await userEvent.click(canvas.getByText('/users'));
+      await userEvent.click(endpoint);
       await waitFor(() => expect(capturedDescriptionRequests).toHaveLength(1));
       const subject = useAppStore.getState().selected?.node;
       const firstToken = useAppStore.getState().selected?.requestVersion;
-      await userEvent.click(canvas.getByText('/users'));
+      await userEvent.click(endpoint);
       await waitFor(() => expect(capturedDescriptionRequests).toHaveLength(2));
       await expect(useAppStore.getState().selected?.node).toBe(subject);
       await expect(useAppStore.getState().selected?.requestVersion).not.toBe(firstToken);
