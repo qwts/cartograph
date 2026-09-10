@@ -636,10 +636,14 @@ fn decorator_call<'tree>(
     }
 }
 
-/// tree-sitter-typescript represents decorators as named siblings immediately
-/// preceding the class or method they decorate (including through `export`).
+/// The grammar places decorators on a plain class directly, but before a
+/// method or an exported class as named siblings within its parent.
 fn leading_decorators(mut node: TsNode) -> Vec<TsNode> {
-    let mut decorators = Vec::new();
+    let mut cursor = node.walk();
+    let mut decorators: Vec<_> = node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "decorator")
+        .collect();
     while let Some(previous) = node.prev_named_sibling() {
         if previous.kind() != "decorator" {
             break;
@@ -647,7 +651,7 @@ fn leading_decorators(mut node: TsNode) -> Vec<TsNode> {
         decorators.push(previous);
         node = previous;
     }
-    decorators.reverse();
+    decorators.sort_by_key(|decorator| decorator.start_byte());
     decorators
 }
 
@@ -1612,30 +1616,29 @@ pub fn extract_source(
     // --- NestJS endpoints: @Controller prefix + import-proven method decorator
     let q_classes = Query::new(
         &language,
-        r#"(class_declaration name: (_) @name body: (class_body) @body) @class"#,
+        r#"(class_declaration body: (class_body) @body) @class"#,
     )
     .expect("static query");
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&q_classes, root, source);
     while let Some(m) = matches.next() {
-        let (mut class_node, mut class_name, mut body) = (None, None, None);
+        let (mut class_node, mut body) = (None, None);
         for capture in m.captures {
             match q_classes.capture_names()[capture.index as usize] {
                 "class" => class_node = Some(capture.node),
-                "name" => class_name = Some(cx.text(&capture.node).to_string()),
                 "body" => body = Some(capture.node),
                 _ => {}
             }
         }
-        let (Some(class_node), Some(class_name), Some(body)) = (class_node, class_name, body)
-        else {
+        let (Some(class_node), Some(body)) = (class_node, body) else {
             continue;
         };
         let controller = leading_decorators(class_node)
             .into_iter()
             .filter_map(|decorator| decorator_call(&cx, decorator))
-            .find(|(local, _, _)| {
-                import_modules.get(local).map(String::as_str) == Some(NEST.module_name)
+            .find(|(local, _, evidence)| {
+                bindings.imported(*evidence, local)
+                    && import_modules.get(local).map(String::as_str) == Some(NEST.module_name)
                     && imported_names.get(local).map(String::as_str) == Some(NEST.controller)
             });
         let Some((_, prefix, _)) = controller else {
@@ -1648,15 +1651,13 @@ pub fn extract_source(
             .children(&mut body_cursor)
             .filter(|child| child.kind() == "method_definition")
         {
-            let Some(method_name_node) = method_node.child_by_field_name("name") else {
-                continue;
-            };
-            let method_name = cx.text(&method_name_node).to_string();
             for (local, suffix, evidence) in leading_decorators(method_node)
                 .into_iter()
                 .filter_map(|decorator| decorator_call(&cx, decorator))
             {
-                if import_modules.get(&local).map(String::as_str) != Some(NEST.module_name) {
+                if !bindings.imported(evidence, &local)
+                    || import_modules.get(&local).map(String::as_str) != Some(NEST.module_name)
+                {
                     continue;
                 }
                 let exported = imported_names
@@ -1678,12 +1679,10 @@ pub fn extract_source(
                         "prov": cx.prov(&evidence, &format!("Endpoint {verb} {route}")),
                     }),
                 });
-                let handler = methods
-                    .get(&(class_name.clone(), method_name.clone()))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        sym_id(id.repo, path, &format!("{class_name}.{method_name}"))
-                    });
+                // The decorator names this exact method, so reuse its emitted
+                // lexical identity instead of performing member dispatch or
+                // fabricating a target from the unqualified class name.
+                let handler = callable::id(&cx, method_node);
                 out.edges.push(Edge {
                     src: ep_id,
                     dst: handler,

@@ -65,7 +65,7 @@ fn reason_description(reason: &str) -> &'static str {
             "A source-rule capture limit was reached; additional analysis remains incomplete."
         }
         "unsupported_rule_syntax" => {
-            "Incomplete source syntax prevented a valid rule observation; this rule and remaining file analysis were omitted."
+            "Incomplete source syntax prevented supported rule analysis; remaining file analysis was omitted."
         }
         _ => "Source-rule interpretation remains incomplete.",
     }
@@ -244,10 +244,11 @@ fn is_value_identifier(node: TsNode<'_>) -> bool {
     })
 }
 
-fn branches(mut exit: TsNode<'_>) -> (Vec<(TsNode<'_>, TsNode<'_>, BranchPolarity)>, bool) {
+fn branches(mut exit: TsNode<'_>) -> (Vec<(TsNode<'_>, TsNode<'_>, BranchPolarity)>, bool, bool) {
     let mut conditions = Vec::new();
     let mut steps = 0;
     let mut limited = false;
+    let mut recovered = exit.has_error() || exit.is_missing() || exit.is_error();
     while let Some(parent) = exit.parent() {
         if callable::is_callable(parent) {
             break;
@@ -257,6 +258,12 @@ fn branches(mut exit: TsNode<'_>) -> (Vec<(TsNode<'_>, TsNode<'_>, BranchPolarit
             limited = true;
             break;
         }
+        // A valid-looking child cannot establish an exit through a recovered
+        // wrapper or controlling branch. Unsupported sanitized expressions
+        // remain useful only when the parser established the original syntax.
+        recovered |= parent.is_error()
+            || parent.is_missing()
+            || (parent.kind() == "if_statement" && parent.has_error());
         if parent.kind() == "if_statement"
             && let Some(condition) = parent.child_by_field_name("condition")
         {
@@ -274,7 +281,28 @@ fn branches(mut exit: TsNode<'_>) -> (Vec<(TsNode<'_>, TsNode<'_>, BranchPolarit
         exit = parent;
     }
     conditions.reverse();
-    (conditions, limited)
+    (conditions, limited, recovered)
+}
+
+fn exit_value(exit: TsNode<'_>) -> Option<TsNode<'_>> {
+    let mut cursor = exit.walk();
+    exit.named_children(&mut cursor)
+        .find(|node| node.kind() != "comment")
+}
+
+fn omission_source(mut node: TsNode<'_>) -> TsNode<'_> {
+    // Missing parser nodes can be zero-width. Cite the enclosing source that
+    // failed to parse instead of manufacturing an expression or empty span.
+    for _ in 0..MAX_ANCESTOR_STEPS {
+        if !node.byte_range().is_empty() {
+            break;
+        }
+        let Some(parent) = node.parent() else {
+            break;
+        };
+        node = parent;
+    }
+    node
 }
 
 fn omission_gap(
@@ -357,11 +385,22 @@ pub(super) fn extract<'tree>(
 ) {
     let targets: BTreeSet<_> = out.nodes.iter().map(|node| node.id.clone()).collect();
     // Collect once by callable, rather than repeatedly scanning the whole file.
+    // Recovery may erase an entire exit or callable. Keep that incomplete
+    // syntax as an omission candidate, anchored to the existing File when no
+    // real callable can be established; do not infer an exit from raw text.
     let mut exits: BTreeMap<String, Vec<TsNode<'tree>>> = BTreeMap::new();
     let mut controls: BTreeMap<String, BTreeMap<String, (RuleGapReason, TsNode<'tree>)>> =
         BTreeMap::new();
     for node in nodes.iter().copied() {
-        if matches!(node.kind(), "return_statement" | "throw_statement") {
+        if node.is_error()
+            || node.is_missing()
+            || (node.kind() == "if_statement" && node.has_error())
+        {
+            let owner = callable::enclosing(cx, node)
+                .filter(|owner| targets.contains(owner))
+                .unwrap_or_else(|| super::file_id(cx.id.repo, cx.path));
+            exits.entry(owner).or_default().push(node);
+        } else if matches!(node.kind(), "return_statement" | "throw_statement") {
             if let Some(owner) = callable::enclosing(cx, node) {
                 exits.entry(owner).or_default().push(node);
             }
@@ -382,7 +421,17 @@ pub(super) fn extract<'tree>(
             continue;
         }
         for (order, exit) in owner_exits.iter().copied().enumerate() {
-            let (ancestors, limited) = branches(exit);
+            let (ancestors, limited, recovered) = branches(exit);
+            if recovered || (exit.kind() == "throw_statement" && exit_value(exit).is_none()) {
+                omission_gap(
+                    cx,
+                    omission_source(exit),
+                    &owner_id,
+                    RuleGapReason::UnsupportedRuleSyntax,
+                    out,
+                );
+                return;
+            }
             if ancestors.is_empty() && !limited {
                 continue;
             }
@@ -430,11 +479,7 @@ pub(super) fn extract<'tree>(
                     polarity,
                 });
             }
-            let mut cursor = exit.walk();
-            let value = exit
-                .named_children(&mut cursor)
-                .find(|node| node.kind() != "comment");
-            let value = value.map(|node| {
+            let value = exit_value(exit).map(|node| {
                 let (expression, mut withheld) = capture(cx, node);
                 if expression.capture != ExpressionCapture::CompleteSyntax {
                     builder.control_gap(RuleGapReason::RedactedExpression, node);
@@ -448,7 +493,16 @@ pub(super) fn extract<'tree>(
                 expression
             });
             let effect = if exit.kind() == "throw_statement" {
-                let Some(value) = value else { continue };
+                let Some(value) = value else {
+                    omission_gap(
+                        cx,
+                        exit,
+                        &owner_id,
+                        RuleGapReason::UnsupportedRuleSyntax,
+                        out,
+                    );
+                    return;
+                };
                 LocalExit::Throw { value }
             } else {
                 LocalExit::Return { value }
