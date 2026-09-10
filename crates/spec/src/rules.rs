@@ -78,7 +78,12 @@ fn expression(output: &mut String, value: &SourceExpression) {
 
 fn reference(id: &str, visible: &BTreeMap<&str, &Node>) -> String {
     if let Some(node) = visible.get(id) {
-        if node.props["name_capture"] == "nonidentifier_key_omitted" {
+        if node.props["computed_name"] == true {
+            format!(
+                "{} (computed source name omitted; runtime key unresolved)",
+                text(id)
+            )
+        } else if node.props["name_capture"] == "nonidentifier_key_omitted" {
             format!("{} (source name omitted)", text(id))
         } else {
             text(id)

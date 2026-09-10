@@ -20,9 +20,12 @@ count as five recovered Vendure entry constraints.
   decoded secrets must not enter names, owner IDs or relationship IDs through
   the ownership pass. Neither raw withheld values nor secret-only hashes may
   participate in those identities.
-  The symbol records `name_capture: nonidentifier_key_omitted`; inventories
-  explicitly label the omitted source name instead of presenting the placeholder
-  as an original source name.
+  Quoted/noncomputed keys record `name_capture: nonidentifier_key_omitted`;
+  inventories explicitly label the omitted source name instead of presenting
+  the placeholder as an original source name. Computed keys record
+  `computed_name: true`; inventories label their references as "computed source
+  name omitted; runtime key unresolved", including class/object methods and
+  property-bound callbacks. Shared context retains that computed-name metadata.
 - Existing unambiguous top-level function/class-method identities remain stable.
   New object/nested callable identities include their lexical scope and a stable
   source-position discriminator where necessary. Same-named methods in separate
