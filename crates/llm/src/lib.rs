@@ -9,13 +9,11 @@
 pub mod anthropic;
 pub mod catalog;
 
-use regex::Regex;
 use reqwest::Url;
 use reqwest::blocking::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Dense embedding vector returned by a provider.
@@ -623,38 +621,7 @@ fn redact_payload(payload: &CompletionPayload) -> (CompletionPayload, usize) {
 }
 
 fn redact_text(input: &str) -> (String, usize) {
-    static PATTERNS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
-    let patterns = PATTERNS.get_or_init(|| {
-        vec![
-            (
-                Regex::new(r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----").unwrap(),
-                "[REDACTED PRIVATE KEY]",
-            ),
-            (
-                Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}").unwrap(),
-                "Bearer [REDACTED]",
-            ),
-            (
-                Regex::new(r"\b(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]{8,}").unwrap(),
-                "[REDACTED TOKEN]",
-            ),
-            (
-                Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap(),
-                "[REDACTED AWS ACCESS KEY]",
-            ),
-            (
-                Regex::new(r#"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\b(\s*[:=]\s*[\"']?)([^\s\"',;}\]\[]{4,})"#).unwrap(),
-                "$1$2[REDACTED]",
-            ),
-        ]
-    });
-    let mut output = input.to_string();
-    let mut count = 0;
-    for (pattern, replacement) in patterns {
-        count += pattern.find_iter(&output).count();
-        output = pattern.replace_all(&output, *replacement).into_owned();
-    }
-    (output, count)
+    core_redact::redact_text(input)
 }
 
 #[cfg(test)]

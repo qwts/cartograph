@@ -18,4 +18,6 @@ serde_json = { workspace = true }
 blake3 = { workspace = true }
 
 [dev-dependencies]
+adapters-lang-ts = { workspace = true }
+context-hub = { workspace = true }
 tempfile = "3"

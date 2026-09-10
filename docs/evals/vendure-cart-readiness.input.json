@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "repo": "vendurehq/vendure",
+  "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+  "scope": "Selected production-source evidence closure for the initial cart-readiness observation baseline. Imports outside this list remain unresolved. Upstream tests and expected labels are excluded.",
+  "source_files": [
+    "packages/core/src/api/resolvers/shop/shop-order.resolver.ts",
+    "packages/core/src/common/finite-state-machine/finite-state-machine.ts",
+    "packages/core/src/common/finite-state-machine/merge-transition-definitions.ts",
+    "packages/core/src/common/finite-state-machine/types.ts",
+    "packages/core/src/common/finite-state-machine/validate-transition-definition.ts",
+    "packages/core/src/config/catalog/multi-channel-stock-location-strategy.ts",
+    "packages/core/src/config/default-config.ts",
+    "packages/core/src/config/order/default-order-placed-strategy.ts",
+    "packages/core/src/config/order/default-order-process.ts",
+    "packages/core/src/config/order/default-stock-allocation-strategy.ts",
+    "packages/core/src/service/helpers/order-state-machine/order-state-machine.ts",
+    "packages/core/src/service/helpers/order-state-machine/order-state.ts",
+    "packages/core/src/service/services/global-settings.service.ts",
+    "packages/core/src/service/services/order.service.ts",
+    "packages/core/src/service/services/product-variant.service.ts",
+    "packages/core/src/service/services/stock-level.service.ts",
+    "packages/core/src/service/services/stock-location.service.ts"
+  ]
+}

@@ -26,6 +26,7 @@ export interface WorkspaceSurfaceProps {
  *  bundle by file name so a missing artifact is visibly not generated. */
 const ARTIFACT_CARDS: { file: string; title: string; icon: string }[] = [
   { file: 'user_stories.md', title: 'user_stories.md', icon: 'description' },
+  { file: 'rule-evidence.md', title: 'Source rule evidence', icon: 'rule' },
   { file: 'flow_dossiers.md', title: 'Flow dossiers', icon: 'account_tree' },
   { file: 'US-TM.md', title: 'US-TM.md', icon: 'table_chart' },
   { file: 'topology.md', title: 'Topology / resource map', icon: 'map' },
@@ -221,6 +222,7 @@ export function WorkspaceSurface({
                 (artifact) => artifact.file_name === card.file,
               );
               const isRegister = card.file === 'gap_register.md';
+              const isRuleEvidence = card.file === 'rule-evidence.md';
               return (
                 <li key={card.file}>
                   <button type="button" className="artifact-card" onClick={onOpenArtifact}>
@@ -239,7 +241,9 @@ export function WorkspaceSurface({
                         <>
                           <span className="artifact-badge generated">Artifact generated</span>
                           <span className="artifact-badge authority">
-                            {recoveryAuthority(findings, distribution)}
+                            {isRuleEvidence
+                              ? 'Interpretation: incomplete'
+                              : recoveryAuthority(findings, distribution)}
                           </span>
                         </>
                       ) : (

@@ -912,8 +912,23 @@ pub fn compile_spec(
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
+    // A filtered rule must not survive through a separately confirmed
+    // relationship. Keep every artifact on the same rule projection.
+    let all_rule_ids: BTreeSet<_> = nodes
+        .iter()
+        .filter(|node| node.label == "BusinessRule")
+        .map(|node| node.id.as_str())
+        .collect();
+    let visible_node_ids: BTreeSet<_> = base_nodes.iter().map(|node| node.id.as_str()).collect();
     let base_edges = filter_edges(edges, mode, rejected_hashes)
         .into_iter()
+        .filter(|edge| {
+            let touches_rule = all_rule_ids.contains(edge.src.as_str())
+                || all_rule_ids.contains(edge.dst.as_str());
+            !touches_rule
+                || (visible_node_ids.contains(edge.src.as_str())
+                    && visible_node_ids.contains(edge.dst.as_str()))
+        })
         .cloned()
         .collect::<Vec<_>>();
     let projected_flows = project_flows(flows, mode, rejected_hashes);
@@ -936,6 +951,7 @@ pub fn compile_spec(
     let (drifts, drift_assertions, drift_count) = drift_register(&nodes, &edges);
     let (security, security_assertions, security_count) = security_view(&nodes);
     let (toolchain, toolchain_assertions) = toolchain_view(&nodes, &edges);
+    let (rules, rule_assertions) = crate::rules::inventory(&nodes, &edges);
 
     // The register still lists supporting edge and flow-hop assertions as
     // rows, but the count the Workbench displays uses the shared finding
@@ -1021,6 +1037,14 @@ pub fn compile_spec(
             "markdown",
             toolchain,
             toolchain_assertions,
+        ),
+        artifact(
+            "rule-evidence",
+            "rule-evidence.md",
+            "Source rule evidence",
+            "markdown",
+            rules,
+            rule_assertions,
         ),
     ];
     let assertion_count = artifacts
@@ -1230,6 +1254,7 @@ mod tests {
                 "drift_register.md",
                 "security.md",
                 "toolchain.md",
+                "rule-evidence.md",
             ]
         );
         for artifact in &bundle.artifacts {

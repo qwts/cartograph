@@ -1,10 +1,25 @@
 # Vendure benchmark — cart readiness to ArrangingPayment
 
-**Status: Draft expected set — independent second review still required.**
+**Status: Independently source-reviewed baseline oracle frozen before extraction.**
 Scope: the H2 domain-truth gate in [SPEC-01](../SPEC-01_context-hub.md), traced to
 [AC-0106](../user_stories.md#us-0021--inspect-and-curate-a-persistent-business-domain-context).
-This benchmark has not been executed. Source inspection establishes the draft
-expectations below; it does not establish Cartograph recovery coverage or a pass.
+The frozen [expected manifest and decision-case matrix](vendure-cart-readiness.expected.json)
+contains five core entry guards, three supporting stock rules, 41 decision cases,
+and ten negative claims. Its SHA-256 is
+`dcd9833e8f9be2269a6711f8bd04119c83931f6de45e04d17d1b99da9d51295d`.
+Benchmark acceptance cases have not been executed. Source review establishes
+expectations; it does not establish Cartograph recovery coverage or a pass.
+
+The [first measured source-observation baseline](vendure-cart-readiness.baseline.md)
+records 0/8 complete matches, six relevant local exit anchors and deterministic
+outputs. Decision cases remain unexecuted; H2 remains incomplete.
+
+Codex context_tests performed the second source review on 2026-09-10 against the
+clean pinned checkout, before accessing or generating any recovered benchmark
+output. This is **agent review, not human approval**. The reviewer contributed
+generic Cartograph implementation work; the independence claim concerns source
+review before benchmark output, not blindness to the implementation. The manifest
+records that limitation, resolved refinements, and no unresolved disagreements.
 
 ## Target and configuration
 
@@ -28,7 +43,7 @@ The enforcing path is [ShopOrderResolver.transitionOrderToState][resolver] →
 → configured transition guards → delegated stock services where needed →
 transition or rejection. Preserve unsupported dependency hops as explicit gaps.
 
-## Draft expected rules
+## Frozen expected rules
 
 Each row is one rule. A matching function name or call edge alone does not recover
 the rule: the predicate, scope, configuration condition, and consequence must agree.
@@ -45,7 +60,7 @@ the rule: the predicate, scope, configuration condition, and consequence must ag
 | VEN-READY-08 | With the default multi-channel stock strategy, available on-hand and allocated stock are summed only from locations applicable to the active channel. | [multi-channel-stock-location-strategy.ts L82–100][channel-stock] |
 
 Report the first five entry guards separately from the three supporting stock
-rules. All eight have deterministic source evidence; this draft does not imply
+rules. All eight have deterministic source evidence; this oracle does not imply
 the current adapters can recover them.
 
 ## Configuration and negative claims
@@ -59,6 +74,13 @@ do not generalize this expected set to an unknown deployment. [Construction][def
 Vendure v3.7.3 uses `MultiChannelStockLocationStrategy` by default, rather than the
 older `DefaultStockLocationStrategy`. An overridden strategy changes the stock
 interpretation and requires a separately reviewed expected set. [Configuration][catalog-config].
+
+The reviewed dependency closure includes the finite-state machine's consumption
+of string rejections before state assignment, the service's typed transition
+error, variant-specific stock loading, and cached active-channel membership.
+The manifest records exact UTF-8 byte ranges, file and span hashes, and source
+dependencies; line numbers are navigation aids. Locale catalogs and translated
+message text are not semantic matching criteria.
 
 - Guards return the first rejection in source order: unavailable variants, empty
   order, missing customer, missing shipping, then insufficient stock. A domain
@@ -74,8 +96,23 @@ interpretation and requires a separately reviewed expected set. [Configuration][
 - Source can confirm implemented predicates, not a running cart's customer,
   deletion state, stock values, or configuration. Unobserved values remain unknown.
 - This slice does not prove complete checkout recovery or arbitrary-repository support.
+- Inventory bypass returns the finite `Number.MAX_SAFE_INTEGER`; tracked saleable
+  stock is not clamped to zero. Schema defaults do not prove persisted values.
+- The variant-existence rule is the specific distinct-ID query/count predicate.
+  Its `LEFT JOIN` and deletion-null check are not a separate assertion that a
+  parent row exists or that a variant is enabled or published.
+- A guard permit does not guarantee transaction success: dependency reads,
+  persistence, event publishing, and finalization can still fail.
 
 ## Independent expected-set procedure
+
+Steps 1–3 are complete for this baseline. All cases remain `not_executed`; later
+scoring must record results separately. The reviewed upstream tests corroborate
+behavior but use test configuration: notably, the stock suite selects a custom
+`TestOrderPlacedStrategy`. They are neither default-configuration execution
+evidence nor extraction input. Cases with synthetic local-guard inputs, such as
+repeated same-variant lines or numeric limits, explicitly avoid claiming Shop API
+reachability.
 
 1. Before seeing Cartograph output, a reviewer inspects the pinned enforcement
    code and dependency closure. Freeze a manifest containing the eight IDs,

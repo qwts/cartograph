@@ -72,6 +72,7 @@ dependencies = [
  "adapters-fw",
  "core-graph",
  "core-prov",
+ "core-redact",
  "iac",
  "serde_json",
  "streaming-iterator",
@@ -683,6 +684,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "core-graph"
 version = "0.10.3"
 dependencies = [
+ "core-prov",
  "rusqlite",
  "serde",
  "serde_json",
@@ -722,6 +724,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "core-redact"
+version = "0.10.3"
+dependencies = [
+ "regex",
 ]
 
 [[package]]
@@ -2314,6 +2323,7 @@ dependencies = [
  "adapters-fw",
  "core-graph",
  "core-prov",
+ "core-redact",
  "git2",
  "serde",
  "serde_json",
@@ -2644,7 +2654,7 @@ name = "llm"
 version = "0.10.3"
 dependencies = [
  "blake3",
- "regex",
+ "core-redact",
  "reqwest",
  "serde",
  "serde_json",
@@ -4030,7 +4040,9 @@ dependencies = [
 name = "spec"
 version = "0.10.3"
 dependencies = [
+ "adapters-lang-ts",
  "blake3",
+ "context-hub",
  "core-graph",
  "core-prov",
  "flowtracer",

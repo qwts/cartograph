@@ -189,6 +189,11 @@ Export honors **R-INT-5**: `verified-only` vs `best-effort`.
 ### 5.4 BusinessRule extraction
 T0: guard conditions, validation schemas (zod/pydantic/JSON-Schema), authorization checks, computed values in handlers → `BusinessRule{predicate, location}` linked via `GOVERNS`. T2/T3 only *name/cluster* rules; they never invent predicates.
 
+The staged implementation contract is [SPEC-02](SPEC-02_rule-evidence.md).
+It starts with real lexical owners, then sanitized guarded-exit observations and
+explicit interpretation/dependency gaps. A conditional return alone does not
+establish a business validation or a complete execution predicate.
+
 ---
 
 ## 6. ADR Recovery

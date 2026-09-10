@@ -30,6 +30,7 @@ const BUNDLE = {
   security_count: 0,
   artifacts: [
     'user_stories.md',
+    'rule-evidence.md',
     'flow_dossiers.md',
     'US-TM.md',
     'topology.md',
@@ -124,8 +125,16 @@ export const ArtifactBadgeSemantics: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     // Two independent axes on generated artifacts: generation + authority.
-    await expect(canvas.getAllByText('Artifact generated')).toHaveLength(5);
+    await expect(canvas.getAllByText('Artifact generated')).toHaveLength(6);
     await expect(canvas.getAllByText('Recovery: partial')).toHaveLength(5);
+
+    // AC-0125: generation of source observations does not establish behavior.
+    const rules = canvas.getByRole('button', { name: /Source rule evidence/ });
+    await expect(within(rules).getByText('Artifact generated')).toBeInTheDocument();
+    await expect(within(rules).getByText('Interpretation: incomplete')).toBeInTheDocument();
+    await expect(within(rules).queryByText(/Recovery:/)).not.toBeInTheDocument();
+    await userEvent.click(rules);
+    await expect(args.onOpenArtifact).toHaveBeenCalled();
 
     // The gap register shows exactly ONE completion-style badge, never two.
     const register = canvas
@@ -157,6 +166,11 @@ export const FullyConfirmedRecovery: Story = {
     await expect(canvas.getByText('Full recovery')).toBeInTheDocument();
     await expect(canvas.getByText('Confirmed overall')).toBeInTheDocument();
     await expect(canvas.getAllByText('Recovery: authoritative')).toHaveLength(5);
+    // AC-0125: even a confirmed graph cannot upgrade local source observations
+    // to a complete behavioral interpretation.
+    const rules = within(canvas.getByRole('button', { name: /Source rule evidence/ }));
+    await expect(rules.getByText('Interpretation: incomplete')).toBeInTheDocument();
+    await expect(rules.queryByText('Recovery: authoritative')).not.toBeInTheDocument();
     await expect(canvas.getByRole('button', { name: 'Triage 0 gaps' })).toBeInTheDocument();
   },
 };
@@ -296,15 +310,24 @@ export const MissingArtifactIsVisible: Story = {
   args: {
     bundle: {
       ...BUNDLE,
-      artifacts: BUNDLE.artifacts.filter((artifact) => artifact.file_name !== 'topology.md'),
+      artifacts: BUNDLE.artifacts.filter(
+        (artifact) => !['topology.md', 'rule-evidence.md'].includes(artifact.file_name),
+      ),
     },
   },
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     // A missing artifact is stated, not implied by absence.
     const topology = canvas
       .getByText('Topology / resource map')
       .closest('.artifact-card') as HTMLElement;
     await expect(within(topology).getByText('Not generated')).toBeInTheDocument();
+    // AC-0125: older/missing bundles retain an explicit missing card and the
+    // established navigation into the Spec Workbench.
+    const rules = canvas.getByRole('button', { name: /Source rule evidence/ });
+    await expect(within(rules).getByText('Not generated')).toBeInTheDocument();
+    await expect(within(rules).queryByText('Artifact generated')).not.toBeInTheDocument();
+    await userEvent.click(rules);
+    await expect(args.onOpenArtifact).toHaveBeenCalled();
   },
 };

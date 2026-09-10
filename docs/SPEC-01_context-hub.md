@@ -137,7 +137,7 @@ generation in the initial implementation.
 | Gate | Observable result | Current state |
 |---|---|---|
 | H1 Shared reads | App/core contract passes revision, budget, provenance and paging tests | Implementing in #380 |
-| H2 Domain truth | Pinned Vendure feature yields cited rules, feature membership and honest coverage against independent expected cases | Planned; guarded-exit evidence starts in #381; [benchmark](evals/vendure-cart-readiness.md) awaits execution |
+| H2 Domain truth | Pinned Vendure feature yields cited rules, feature membership and honest coverage against independent expected cases | [Rule-evidence substrate](SPEC-02_rule-evidence.md) in progress in #381; [benchmark](evals/vendure-cart-readiness.md) awaits execution |
 | H3 Curated context | Accepted proposals appear consistently in UI, exports and agent context; stale evidence reconciles | Planned; existing decision log alone is insufficient |
 | H4 Agent investigation | Durable specialist task reads context and returns cited, reviewable findings in app | Planned; #256 |
 | H5 MCP + ACP | A real external MCP caller starts an ACP investigation, observes progress, cancels/reconnects, and retrieves its result | Planned; protocol adapters not shipped by H1 |
