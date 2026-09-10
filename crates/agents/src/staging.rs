@@ -12,7 +12,7 @@ use crate::{
 use core_prov::{ConfidenceTier, EvidenceRef, content_hash};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 /// Current immutable envelope and task-manifest version.
@@ -139,6 +139,13 @@ pub enum StagingError {
     /// The original bounded task or result failed the broker contract.
     #[error(transparent)]
     InvalidTask(#[from] AgentError),
+    /// A provider annotation repeats supplied task material under SPEC-03's
+    /// bounded replay policy. Never carry the detected source in this error.
+    #[error("proposal annotation replays supplied task text")]
+    AnnotationReplaysTaskText,
+    /// Candidate summaries must be bounded before task hashing or replay checks.
+    #[error("staging task summaries exceed the byte bound")]
+    TaskSummariesTooLarge,
     /// Missing or invalid host metadata.
     #[error("invalid staging metadata: {0}")]
     InvalidMetadata(&'static str),
@@ -196,8 +203,16 @@ impl StageContent {
         graph_snapshot_id: &str,
     ) -> Result<Self, StagingError> {
         validate_metadata(job_id, graph_snapshot_id)?;
+        check_size(proposal.annotation.len())?;
+        let summary_bytes = task.candidates.iter().try_fold(0usize, |total, candidate| {
+            total.checked_add(candidate.summary.len())
+        });
+        if summary_bytes.is_none_or(|bytes| bytes > MAX_STAGED_RECORD_BYTES) {
+            return Err(StagingError::TaskSummariesTooLarge);
+        }
         let broker = AgentBroker::bounded_default();
         broker.validate_task(task)?;
+        reject_annotation_replay(task, &proposal.annotation)?;
         let citations = match_citations(task, proposal).ok_or_else(|| {
             AgentError::Integrity("proposal citations do not match the host task".into())
         })?;
@@ -343,6 +358,43 @@ impl StageContent {
             content_hash(&serde_json::to_vec(self)?)
         ))
     }
+}
+
+/// Compare transient normalized characters without retaining source or changing
+/// the accepted proposal. Short complete items deliberately fail closed too.
+/// This is an exact replay bound, not semantic/encoded-text declassification.
+fn reject_annotation_replay(task: &AgentTask, annotation: &str) -> Result<(), StagingError> {
+    const EXCERPT_SCALARS: usize = 48;
+    fn normalized(text: &str) -> Vec<char> {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    }
+    let annotation = normalized(annotation);
+    let excerpts: HashSet<&[char]> = annotation.windows(EXCERPT_SCALARS).collect();
+    for supplied in task
+        .evidence
+        .iter()
+        .map(|item| item.text.as_str())
+        .chain(task.candidates.iter().map(|item| item.summary.as_str()))
+    {
+        let supplied = normalized(supplied);
+        let repeats = if supplied.is_empty() {
+            false
+        } else if supplied.len() < EXCERPT_SCALARS {
+            annotation
+                .windows(supplied.len())
+                .any(|part| part == supplied)
+        } else {
+            supplied
+                .windows(EXCERPT_SCALARS)
+                .any(|part| excerpts.contains(part))
+        };
+        if repeats {
+            return Err(StagingError::AnnotationReplaysTaskText);
+        }
+    }
+    Ok(())
 }
 
 fn is_hash(value: &str) -> bool {

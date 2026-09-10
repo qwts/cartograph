@@ -16,7 +16,11 @@ by the human, nor restore pending work after restart.
 
 Persist immutable broker results with complete-content identities, producing job
 and snapshot, and bounded versioned task-basis manifests before reporting success.
-Store source fingerprints rather than raw task evidence. Review resolves a staged
+Store source fingerprints rather than raw task evidence. Before persistence,
+reject annotation replay under the bounded normalized-text policy in SPEC-03;
+retain accepted annotations unchanged. This admission check cannot establish
+arbitrary generated-text confidentiality or retrospectively certify prototype
+records from hashes alone. Review resolves a staged
 ID on the host and atomically checks the expected review revision. Retain legacy
 rows as historical records. Mark current source capture as working-tree evidence
 whose binding to cited revisions is unverified.
