@@ -64,6 +64,26 @@ Any unsupported or failed sync rejects the reservation, releases its lock and
 leaves the job unclaimed; there is no unsynced fallback. The pre-existing app-data
 trust root's entry in its external parent is outside this creation boundary.
 
+Windows remains a supported target. For this execution protocol, private job
+storage must report NTFS through `GetVolumeInformationByHandleW` on the actual
+retained file and reopened directory handles. Unknown filesystems, non-NTFS
+filesystems and failed queries reject the reservation before SQL ownership;
+an apparent successful flush alone does not certify their directory durability.
+Reopen each rooted directory with read and write access plus backup semantics,
+without following symlinks or allowing replacement of the retained directory.
+Validate its identity, then perform the real `FlushFileBuffers` through
+`sync_all`; do not substitute a no-op, privileged volume flush or ambient-path
+reopen. Use stable handle-derived cap metadata for link counts and identity.
+This is a private-storage capability boundary, not a limit on the filesystem of
+repositories being analyzed. It requires no administrator privileges beyond
+ordinary access to the app's own storage.
+
+Microsoft requires [write access for FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers).
+Its [flush contract](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/0de7dc40-9627-437e-a4df-c4696cdc3d02)
+includes directory persistence, with [product behavior note 80](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/4e3695bd-7574-4f24-a223-b4679c065b63)
+limiting that guarantee to NTFS. Handle-based [volume information](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew)
+is checked without selecting a second ambient path.
+
 Separate reservation from mutation: copy the required claim/recovery plan under
 the jobs mutex, release it, acquire the OS reservation, then enter a short SQLite
 IMMEDIATE transaction. No database, graph, cache or settings mutex spans an OS
@@ -159,6 +179,12 @@ A handshake-controlled subprocess proves live ownership excludes recovery and
 confirmed exit permits it. Test cancelled workers that still hold ownership,
 competing claims, stale-attempt writes, removal while active, dropped async waiters
 with live blocking workers, and exact retained proposal history.
+Windows tests exercise actual NTFS handles and flushes, rejected filesystem
+queries/classification before claim, and unchanged jobs after failure. A retained
+Windows directory handle may prevent substitution outright; assert that refusal
+and the unchanged rooted identity rather than requiring a successful rename.
+These tests establish API behavior and synchronization order, not a simulation of
+physical power loss or a guarantee about hardware that ignores flush requests.
 
 This slice establishes same-job ownership and accurate lifecycle transitions.
 It does not establish exactly-once external model execution, rollback of published

@@ -217,6 +217,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2469,6 +2470,20 @@ checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
 dependencies = [
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "job-execution-tests"
+version = "0.11.0"
+dependencies = [
+ "cap-fs-ext",
+ "cap-std",
+ "dunce",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

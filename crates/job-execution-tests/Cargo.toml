@@ -1,0 +1,26 @@
+[package]
+name = "job-execution-tests"
+description = "Native ownership tests against the production job modules without the Tauri shell"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "ownership"
+path = "tests/ownership.rs"
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
+dunce = "1"
+tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

@@ -21,6 +21,15 @@ execution guard through every worker and blocking closure. Fence worker transiti
 by the exact attempt; guard user cancellation and retry atomically. Recovery may
 interrupt only an unchanged recorded running candidate whose OS lock it acquired.
 
+Sync the held lock file and rooted namespace, execution-root and app-data
+directories before committing SQL ownership, including when entries already
+exist. Windows directory handles request write access as required by
+`FlushFileBuffers`; their handle-reported filesystem must be NTFS, whose documented
+flush contract persists directory structure (SPEC-07 cites the platform sources).
+Any capability query or flush failure releases the reservation without claiming
+the job. Retain rooted identity checks and use stable handle-derived metadata;
+there is no unsynced fallback or administrator-only volume flush.
+
 Keep ownerless legacy rows unchanged and explicitly unknown. Do not reuse their
 job IDs; require fresh operations instead of inferring death or offering forced
 takeover. Preserve stable job IDs for tracked retries and all proposal/review
@@ -36,6 +45,11 @@ update a newer one. Cancellation remains cooperative and busy workers exclude
 retry until they exit. No database lock spans an OS lock attempt or long work.
 Persistent lock files and private metadata add storage; earlier job rows require
 fresh recovery. Historical columns and staged proposal bytes remain intact.
+Windows remains supported with NTFS private job storage; other private-storage
+filesystems require a separately established durability contract. This does not
+restrict ingested repository filesystems. Real Windows tests cover successful
+flushes, fail-closed capability checks and OS-enforced directory retention, but
+do not certify physical power-loss behavior.
 
 No exactly-once external execution, rollback of completed side effects or global
 transaction is implied. Older binaries do not participate in this ownership

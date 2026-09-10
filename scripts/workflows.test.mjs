@@ -121,6 +121,85 @@ test('complete suite retains every existing Cartograph gate', () => {
   }
 });
 
+test('Windows ownership tests are required by the same exact-SHA complete-suite policy', () => {
+  // AC-0157 / AC-0159: native lock and process-exit coverage must not become
+  // optional, silently skipped, or detached from the governed validation SHA.
+  const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+  const job = (name) => {
+    const contents = workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [a-z][a-z-]*:\n/u)[0];
+    assert.ok(contents, `missing ${name} job`);
+    return contents;
+  };
+  const windows = job('windows-job-ownership');
+  const rust = job('rust');
+  const complete = job('complete');
+  const condition = (contents) => contents.match(/    if: >-\n([\s\S]*?)    runs-on:/u)?.[1].trim();
+  assert.ok(condition(rust));
+  assert.equal(condition(windows), condition(rust));
+  assert.equal(condition(complete), condition(rust));
+  assert.match(windows, /needs: \[policy, merge-evidence, preflight-evidence\]/u);
+  assert.match(windows, /runs-on: windows-2022/u);
+  assert.match(windows, /timeout-minutes: 20/u);
+  assert.match(windows, /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/u);
+  assert.match(
+    windows,
+    /ref: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/u,
+  );
+  assert.match(windows, /persist-credentials: false/u);
+  assert.match(windows, /Get-Content rust-toolchain\.toml -Raw/u);
+  assert.match(windows, /executable: rustup\.exe/u);
+  assert.match(windows, /"\$\{\{ steps\.toolchain\.outputs\.channel \}\}"/u);
+  assert.match(windows, /timeout-seconds: '300'/u);
+  assert.match(windows, /executable: cargo\.exe/u);
+  assert.match(
+    windows,
+    /arguments-json: '\["test","--locked","-p","job-execution-tests","--test","ownership","--","--nocapture"\]'/u,
+  );
+  assert.match(windows, /timeout-seconds: '600'/u);
+  assert.equal(
+    windows.match(new RegExp(`bounded-command@${PLAYBOOK_RUNTIME_PIN}`, 'gu'))?.length,
+    2,
+  );
+  assert.doesNotMatch(windows, /continue-on-error|--skip|--ignored|attempts:|windows-latest/u);
+  assert.match(complete, /needs: \[[^\]\n]*windows-job-ownership[^\]\n]*\]/u);
+  assert.match(complete, /WINDOWS_JOB_OWNERSHIP: \$\{\{ needs\.windows-job-ownership\.result \}\}/u);
+  assert.match(complete, /test "\$WINDOWS_JOB_OWNERSHIP" = success/u);
+});
+
+test('the native ownership harness includes production modules without a Tauri dependency', () => {
+  // AC-0157: exercise the same source and child-process test entrypoint on each
+  // platform; a separate implementation would not establish host behavior.
+  const manifest = readFileSync(path.join(root, 'crates/job-execution-tests/Cargo.toml'), 'utf8');
+  const harness = readFileSync(path.join(root, 'crates/job-execution-tests/tests/ownership.rs'), 'utf8');
+  assert.match(manifest, /version\.workspace = true/u);
+  assert.match(manifest, /\[\[test\]\]\nname = "ownership"\npath = "tests\/ownership\.rs"/u);
+  assert.doesNotMatch(manifest, /^\s*(?:app|semantic|tauri(?:-build)?|wasmtime|usearch)\s*=|\[build-dependencies\]/imu);
+  for (const name of ['jobs', 'job_execution']) {
+    assert.match(
+      harness,
+      new RegExp(`#\\[path = "\\.\\./\\.\\./\\.\\./src-tauri/src/${name}\\.rs"\\]\\nmod ${name};`, 'u'),
+    );
+  }
+  assert.match(harness, /extern crate self as semantic;/u);
+  assert.match(harness, /#\[path = "\.\.\/\.\.\/\.\.\/crates\/semantic\/src\/eval_report\.rs"\]\nmod eval_report;/u);
+  assert.match(harness, /pub use eval_report::EvalReport;/u);
+  const semantic = readFileSync(path.join(root, 'crates/semantic/src/lib.rs'), 'utf8');
+  assert.match(semantic, /mod eval_report;\npub use eval_report::EvalReport;/u);
+  assert.doesNotMatch(semantic, /struct EvalReport/u);
+  for (const [file, directory, modules] of [
+    ['jobs.rs', 'jobs', ['execution', 'ownership_tests']],
+    ['job_execution.rs', 'job_execution', ['tests', 'windows']],
+  ]) {
+    const source = readFileSync(path.join(root, 'src-tauri/src', file), 'utf8');
+    for (const name of modules) {
+      assert.match(source, new RegExp(`#\\[path = "${directory}/${name}\\.rs"\\]\\nmod ${name};`, 'u'));
+    }
+  }
+  assert.doesNotMatch(harness, /\b(?:fn|struct|enum|impl)\s|include_str!|include_bytes!|allow\(warnings\)/u);
+  const guidance = readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
+  assert.match(guidance, /`windows-2022`: `cargo test --locked -p job-execution-tests --test ownership`/u);
+});
+
 test('workflow runtime policy is pinned and installer processes are centrally bounded', () => {
   const workflowNames = [
     'ci.yml',
