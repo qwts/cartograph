@@ -20,4 +20,5 @@ blake3 = { workspace = true }
 [dev-dependencies]
 adapters-lang-ts = { workspace = true }
 context-hub = { workspace = true }
+source-capture = { workspace = true }
 tempfile = "3"

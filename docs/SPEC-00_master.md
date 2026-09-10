@@ -234,6 +234,7 @@ MVC mapping: **Rust core = Model + Controller**, **web UI = View**. Plugin-based
 | `core-graph` | SQLite/WAL schema and graph store API | — |
 | `core-prov` | Provenance + confidence model, content-addressing | — |
 | `context-hub` | Bounded, revision-bound context reads shared across transports (SPEC-01) | — |
+| `source-capture` | Bounded immutable local source acquisition/storage (SPEC-04); production producer integration remains #385 | — |
 | `ingest` | GitHub App auth (`octocrab`), clone (`git2`), repo discovery, **topology manifest** | T0 |
 | `adapters-lang-*` | Language adapters wrapping **tree-sitter** grammars (one crate per family) | T0 |
 | `adapters-fw` | Framework registries (HTTP/event SDK signatures) | T0 |

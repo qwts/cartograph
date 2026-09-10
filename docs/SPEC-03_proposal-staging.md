@@ -58,6 +58,11 @@ added to the durable store. Verified source capture for both local and Git input
 with per-file parse fingerprints and fail-closed reconciliation, is tracked in
 #385 and is required before these records can enter curated context.
 
+The first source-capture slice is #387 ([SPEC-04](SPEC-04_source-capture.md)):
+bounded acquisition and local immutable byte storage, separate from the existing
+`EvidenceRef` and staging wire format. It does not change these records or certify
+their original task basis; actual producer/capture reconciliation remains #385.
+
 ## Delivery boundary
 
 This slice makes review durable and binds it to the material actually produced.

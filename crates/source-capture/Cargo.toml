@@ -1,0 +1,23 @@
+[package]
+name = "source-capture"
+description = "Bounded immutable local source captures and atomic byte retention"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+rusqlite = { workspace = true }
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
+git2 = { version = "0.21", default-features = false, features = ["https", "vendored-libgit2", "vendored-openssl"] }
+
+[dev-dependencies]
+tempfile = "3"
