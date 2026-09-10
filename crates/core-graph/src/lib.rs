@@ -10,6 +10,8 @@ pub mod rules;
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "test-support"))]
+use std::cell::RefCell;
 use std::path::Path;
 
 /// A node in the unified graph (code or domain layer, SPEC-00 §4.1–4.2).
@@ -65,6 +67,21 @@ pub trait GraphStore {
     fn node_count(&self) -> Result<u64, GraphError>;
     /// Number of edges.
     fn edge_count(&self) -> Result<u64, GraphError>;
+    /// Node and edge counts from one database revision, without loading facts.
+    fn fact_counts(&self) -> Result<(u64, u64), GraphError>;
+    /// Owned nodes and edges from one database revision, ordered by node id
+    /// and edge (src, dst, label). The read transaction ends before return.
+    /// Implementations must not compose unrelated autocommit reads.
+    fn read_snapshot(&self) -> Result<(Vec<Node>, Vec<Edge>), GraphError>;
+    /// One coherent snapshot with independent exact-label selections. `None`
+    /// selects all labels; `Some(&[])` selects no facts of that kind. Filtering
+    /// precedes property decoding, so unselected malformed JSON is ignored.
+    /// Results retain the same ordering and transaction lifetime as a full read.
+    fn read_snapshot_filtered(
+        &self,
+        node_labels: Option<&[&str]>,
+        edge_labels: Option<&[&str]>,
+    ) -> Result<(Vec<Node>, Vec<Edge>), GraphError>;
     /// All node ids reachable from `start` following outgoing edges,
     /// optionally restricted to one edge label. Excludes `start` itself
     /// unless it lies on a cycle.
@@ -92,7 +109,12 @@ pub const GRAPH_SCHEMA_VERSION: u32 = 3;
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
 pub struct SqliteGraphStore {
     conn: Connection,
+    #[cfg(any(test, feature = "test-support"))]
+    snapshot_after_nodes: RefCell<Option<SnapshotAfterNodesHook>>,
 }
+
+#[cfg(any(test, feature = "test-support"))]
+type SnapshotAfterNodesHook = Box<dyn FnOnce() -> Result<(), GraphError> + Send>;
 
 impl SqliteGraphStore {
     /// Open (creating if absent) a graph database at `path`, in WAL mode.
@@ -109,22 +131,75 @@ impl SqliteGraphStore {
     /// another connection or process commits during the copy. The transaction
     /// ends before the owned facts return for expensive downstream analysis.
     pub fn read_snapshot(&self) -> Result<(Vec<Node>, Vec<Edge>), GraphError> {
-        self.read_snapshot_after_nodes(|| {})
+        <Self as GraphStore>::read_snapshot(self)
     }
 
-    fn read_snapshot_after_nodes(
+    /// Install a one-shot interleaving hook for regression tests. The ordinary
+    /// snapshot path consumes it after the node query, while its transaction is
+    /// still open, and propagates errors with normal transaction cleanup.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn set_snapshot_after_nodes_hook(
         &self,
-        after_nodes: impl FnOnce(),
-    ) -> Result<(Vec<Node>, Vec<Edge>), GraphError> {
-        // The connection is not shared across threads; `unchecked_transaction`
-        // permits a read-only &self API and rejects nested transactions at
-        // runtime. RAII rollback releases the snapshot on either read failure.
-        let transaction = self.conn.unchecked_transaction()?;
-        let nodes = self.all_nodes()?;
-        after_nodes();
-        let edges = self.all_edges()?;
-        transaction.commit()?;
-        Ok((nodes, edges))
+        hook: impl FnOnce() -> Result<(), GraphError> + Send + 'static,
+    ) {
+        *self.snapshot_after_nodes.borrow_mut() = Some(Box::new(hook));
+    }
+
+    fn read_nodes(&self, labels: Option<&[&str]>) -> Result<Vec<Node>, GraphError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT id, label, props FROM nodes {} ORDER BY id",
+            label_selection(labels),
+        ))?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(labels.unwrap_or_default()),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        let mut nodes = Vec::new();
+        for row in rows {
+            let (id, label, props) = row?;
+            nodes.push(Node {
+                id,
+                label,
+                props: serde_json::from_str(&props)?,
+            });
+        }
+        Ok(nodes)
+    }
+
+    fn read_edges(&self, labels: Option<&[&str]>) -> Result<Vec<Edge>, GraphError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT src, dst, label, props FROM edges {} ORDER BY src, dst, label",
+            label_selection(labels),
+        ))?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(labels.unwrap_or_default()),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )?;
+        let mut edges = Vec::new();
+        for row in rows {
+            let (src, dst, label, props) = row?;
+            edges.push(Edge {
+                src,
+                dst,
+                label,
+                props: serde_json::from_str(&props)?,
+            });
+        }
+        Ok(edges)
     }
 
     fn init(conn: Connection) -> Result<Self, GraphError> {
@@ -154,7 +229,21 @@ impl SqliteGraphStore {
             conn.execute_batch("DELETE FROM edges; DELETE FROM nodes;")?;
             conn.pragma_update(None, "user_version", GRAPH_SCHEMA_VERSION)?;
         }
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            #[cfg(any(test, feature = "test-support"))]
+            snapshot_after_nodes: RefCell::new(None),
+        })
+    }
+}
+
+fn label_selection(labels: Option<&[&str]>) -> String {
+    match labels {
+        None => String::new(),
+        // Execute the node query even for no selected labels: its read
+        // transaction must be established before the edge query and test hook.
+        Some([]) => "WHERE 0".into(),
+        Some(labels) => format!("WHERE label IN ({})", vec!["?"; labels.len()].join(",")),
     }
 }
 
@@ -247,6 +336,52 @@ impl GraphStore for SqliteGraphStore {
         Ok(n as u64)
     }
 
+    fn fact_counts(&self) -> Result<(u64, u64), GraphError> {
+        // Scalar subqueries in one statement share a SQLite read revision.
+        // Do not decode or materialize JSON merely to count retained rows.
+        Ok(self.conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM nodes), (SELECT COUNT(*) FROM edges)",
+            [],
+            |row| {
+                let nodes: i64 = row.get(0)?;
+                let edges: i64 = row.get(1)?;
+                Ok((
+                    u64::try_from(nodes)
+                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, nodes))?,
+                    u64::try_from(edges)
+                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, edges))?,
+                ))
+            },
+        )?)
+    }
+
+    fn read_snapshot(&self) -> Result<(Vec<Node>, Vec<Edge>), GraphError> {
+        self.read_snapshot_filtered(None, None)
+    }
+
+    fn read_snapshot_filtered(
+        &self,
+        node_labels: Option<&[&str]>,
+        edge_labels: Option<&[&str]>,
+    ) -> Result<(Vec<Node>, Vec<Edge>), GraphError> {
+        // The connection is not shared across threads; `unchecked_transaction`
+        // permits a read-only &self API and rejects nested transactions at
+        // runtime. RAII rollback releases the snapshot on any failure.
+        let transaction = self.conn.unchecked_transaction()?;
+        let nodes = self.read_nodes(node_labels)?;
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            // Release the RefCell borrow before calling user-supplied test code.
+            let after_nodes = self.snapshot_after_nodes.borrow_mut().take();
+            if let Some(after_nodes) = after_nodes {
+                after_nodes()?;
+            }
+        }
+        let edges = self.read_edges(edge_labels)?;
+        transaction.commit()?;
+        Ok((nodes, edges))
+    }
+
     fn reachable_from(&self, start: &str, label: Option<&str>) -> Result<Vec<String>, GraphError> {
         // UNION (not UNION ALL) deduplicates and therefore terminates on cycles.
         let mut stmt = self.conn.prepare(
@@ -265,104 +400,19 @@ impl GraphStore for SqliteGraphStore {
     }
 
     fn all_nodes(&self) -> Result<Vec<Node>, GraphError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, label, props FROM nodes ORDER BY id")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        let mut nodes = Vec::new();
-        for row in rows {
-            let (id, label, props) = row?;
-            nodes.push(Node {
-                id,
-                label,
-                props: serde_json::from_str(&props)?,
-            });
-        }
-        Ok(nodes)
+        self.read_nodes(None)
     }
 
     fn all_edges(&self) -> Result<Vec<Edge>, GraphError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT src, dst, label, props FROM edges ORDER BY src, dst, label")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        let mut edges = Vec::new();
-        for row in rows {
-            let (src, dst, label, props) = row?;
-            edges.push(Edge {
-                src,
-                dst,
-                label,
-                props: serde_json::from_str(&props)?,
-            });
-        }
-        Ok(edges)
+        self.read_edges(None)
     }
 
     fn nodes_with_label(&self, label: &str) -> Result<Vec<Node>, GraphError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, label, props FROM nodes WHERE label = ?1 ORDER BY id")?;
-        let rows = stmt.query_map(params![label], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        let mut nodes = Vec::new();
-        for row in rows {
-            let (id, label, props) = row?;
-            nodes.push(Node {
-                id,
-                label,
-                props: serde_json::from_str(&props)?,
-            });
-        }
-        Ok(nodes)
+        self.read_nodes(Some(&[label]))
     }
 
     fn edges_with_labels(&self, labels: &[&str]) -> Result<Vec<Edge>, GraphError> {
-        if labels.is_empty() {
-            return Ok(Vec::new());
-        }
-        let placeholders = vec!["?"; labels.len()].join(",");
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT src, dst, label, props FROM edges
-             WHERE label IN ({placeholders}) ORDER BY src, dst, label"
-        ))?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(labels), |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?;
-        let mut edges = Vec::new();
-        for row in rows {
-            let (src, dst, label, props) = row?;
-            edges.push(Edge {
-                src,
-                dst,
-                label,
-                props: serde_json::from_str(&props)?,
-            });
-        }
-        Ok(edges)
+        self.read_edges(Some(labels))
     }
 
     fn clear(&mut self) -> Result<(), GraphError> {
@@ -380,7 +430,7 @@ mod tests {
 
     #[test]
     fn read_snapshot_keeps_one_sqlite_revision_across_another_connection_commit() {
-        // AC-0105: a process-local mutex cannot exclude another app process.
+        // AC-0105, AC-0137: a process-local mutex cannot exclude another process.
         // Commit through a second connection exactly between the two reads.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
@@ -389,21 +439,9 @@ mod tests {
         reader.put_edge(&edge("a", "a", "CALLS")).unwrap();
         let mut writer = SqliteGraphStore::open(&path).unwrap();
         let before = reader.read_snapshot().unwrap();
-        let during = reader
-            .read_snapshot_after_nodes(|| {
-                let tx = writer.conn.transaction().unwrap();
-                tx.execute("DELETE FROM edges", []).unwrap();
-                tx.execute("DELETE FROM nodes", []).unwrap();
-                tx.execute("INSERT INTO nodes (id, label) VALUES ('b', 'Symbol')", [])
-                    .unwrap();
-                tx.execute(
-                    "INSERT INTO edges (src, dst, label) VALUES ('b', 'b', 'CALLS')",
-                    [],
-                )
-                .unwrap();
-                tx.commit().unwrap();
-            })
-            .unwrap();
+        reader.set_snapshot_after_nodes_hook(move || replace_graph(&mut writer, "b"));
+        // Exercise the required trait API rather than a test-only read helper.
+        let during = GraphStore::read_snapshot(&reader).unwrap();
         assert_eq!(during, before);
         let after = reader.read_snapshot().unwrap();
         assert_eq!(after.0, vec![node("b", "Symbol")]);
@@ -411,9 +449,171 @@ mod tests {
         assert_ne!(after, before);
     }
 
+    fn replace_graph(store: &mut SqliteGraphStore, id: &str) -> Result<(), GraphError> {
+        let tx = store.conn.transaction()?;
+        tx.execute("DELETE FROM edges", [])?;
+        tx.execute("DELETE FROM nodes", [])?;
+        tx.execute("INSERT INTO nodes (id, label) VALUES (?1, 'Symbol')", [id])?;
+        tx.execute(
+            "INSERT INTO edges (src, dst, label) VALUES (?1, ?1, 'CALLS')",
+            [id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[test]
+    fn filtered_snapshot_keeps_one_revision_even_with_no_selected_nodes() {
+        // AC-0137: filtered and explicitly empty node queries must pin the
+        // revision before another connection replaces the selected edge set.
+        for labels in [&["Symbol"][..], &[][..], &["Absent"][..]] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db");
+            let mut reader = SqliteGraphStore::open(&path).unwrap();
+            replace_graph(&mut reader, "a").unwrap();
+            let mut writer = SqliteGraphStore::open(&path).unwrap();
+            let before = reader
+                .read_snapshot_filtered(Some(labels), Some(&["CALLS"]))
+                .unwrap();
+            reader.set_snapshot_after_nodes_hook(move || replace_graph(&mut writer, "b"));
+            let during = reader
+                .read_snapshot_filtered(Some(labels), Some(&["CALLS"]))
+                .unwrap();
+            assert_eq!(during, before);
+            assert!(reader.conn.is_autocommit());
+            let after = reader
+                .read_snapshot_filtered(Some(labels), Some(&["CALLS"]))
+                .unwrap();
+            assert_eq!(after.1, vec![edge("b", "b", "CALLS")]);
+            assert_ne!(after, before);
+        }
+    }
+
+    #[test]
+    fn filtered_snapshot_preserves_selection_order_and_unselected_malformed_props() {
+        // AC-0137: exact independent label selection happens in SQL before
+        // JSON decoding; duplicates/input order do not duplicate or reorder facts.
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        for (id, label) in [
+            ("z", "File"),
+            ("b", "Symbol"),
+            ("a", "File"),
+            ("bad", "Other"),
+        ] {
+            store.put_node(&node(id, label)).unwrap();
+        }
+        for (src, dst, label) in [
+            ("b", "z", "CALLS"),
+            ("a", "z", "IMPORTS"),
+            ("a", "b", "IMPORTS"),
+            ("a", "b", "CALLS"),
+            ("bad", "a", "OTHER"),
+        ] {
+            store.put_edge(&edge(src, dst, label)).unwrap();
+        }
+        store
+            .conn
+            .execute("UPDATE nodes SET props='invalid' WHERE label='Other'", [])
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE edges SET props='invalid' WHERE label='OTHER'", [])
+            .unwrap();
+        let selected = store
+            .read_snapshot_filtered(
+                Some(&["Symbol", "File", "File"]),
+                Some(&["IMPORTS", "CALLS", "IMPORTS"]),
+            )
+            .unwrap();
+        assert_eq!(
+            selected.0,
+            vec![node("a", "File"), node("b", "Symbol"), node("z", "File")]
+        );
+        assert_eq!(
+            selected.1,
+            vec![
+                edge("a", "b", "CALLS"),
+                edge("a", "b", "IMPORTS"),
+                edge("a", "z", "IMPORTS"),
+                edge("b", "z", "CALLS"),
+            ]
+        );
+        assert_eq!(
+            store.read_snapshot_filtered(Some(&[]), Some(&[])).unwrap(),
+            (vec![], vec![])
+        );
+        assert_eq!(
+            store
+                .read_snapshot_filtered(Some(&["File"]), Some(&[]))
+                .unwrap()
+                .0,
+            vec![node("a", "File"), node("z", "File")]
+        );
+        assert_eq!(
+            store
+                .read_snapshot_filtered(Some(&[]), Some(&["CALLS"]))
+                .unwrap()
+                .1,
+            vec![edge("a", "b", "CALLS"), edge("b", "z", "CALLS")]
+        );
+        assert_eq!(
+            store
+                .read_snapshot_filtered(Some(&["File' OR 1=1 --"]), Some(&["calls"]))
+                .unwrap(),
+            (vec![], vec![])
+        );
+        assert!(store.read_snapshot_filtered(None, Some(&[])).is_err());
+        assert!(store.read_snapshot_filtered(Some(&[]), None).is_err());
+        assert!(store.read_snapshot().is_err());
+        assert!(store.conn.is_autocommit());
+    }
+
+    #[test]
+    fn snapshot_hook_is_one_shot_and_failure_releases_transaction() {
+        // AC-0139: test interleaving uses the production path, propagates errors
+        // and releases both the transaction and the one-shot callback on failure.
+        fn assert_send<T: Send>() {}
+        assert_send::<SqliteGraphStore>();
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        store.put_node(&node("a", "Symbol")).unwrap();
+        store.set_snapshot_after_nodes_hook(|| {
+            Err(GraphError::Storage(rusqlite::Error::InvalidQuery))
+        });
+        assert!(GraphStore::read_snapshot(&store).is_err());
+        assert!(store.conn.is_autocommit());
+        store.put_node(&node("b", "Symbol")).unwrap();
+        let after = store.read_snapshot().unwrap();
+        assert_eq!(after.0, vec![node("a", "Symbol"), node("b", "Symbol")]);
+        assert!(store.conn.is_autocommit());
+    }
+
+    #[test]
+    fn fact_counts_ignore_malformed_properties_and_match_retained_rows() {
+        // AC-0137: the paired count is a single SQL statement with no JSON
+        // materialization; invalid node/edge props still count as retained facts.
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        assert_eq!(store.fact_counts().unwrap(), (0, 0));
+        store.put_node(&node("a", "Symbol")).unwrap();
+        store.put_node(&node("b", "Symbol")).unwrap();
+        store.put_edge(&edge("a", "b", "CALLS")).unwrap();
+        store
+            .conn
+            .execute("UPDATE nodes SET props='invalid'", [])
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE edges SET props='invalid'", [])
+            .unwrap();
+        assert_eq!(store.fact_counts().unwrap(), (2, 1));
+        assert!(store.read_snapshot().is_err());
+        assert!(store.conn.is_autocommit());
+        store.clear().unwrap();
+        assert_eq!(store.fact_counts().unwrap(), (0, 0));
+    }
+
     #[test]
     fn failed_read_snapshot_releases_the_transaction() {
-        // AC-0105: malformed stored properties must release the read snapshot
+        // AC-0105, AC-0139: malformed properties must release the read snapshot
         // on failure so a later corrected read can observe current data.
         let mut store = SqliteGraphStore::open_in_memory().unwrap();
         store.put_node(&node("a", "Symbol")).unwrap();
@@ -434,6 +634,17 @@ mod tests {
             .execute("UPDATE nodes SET props = 'invalid'", [])
             .unwrap();
         assert!(store.read_snapshot().is_err());
+        assert!(store.conn.is_autocommit());
+        store
+            .conn
+            .execute("UPDATE nodes SET props = '{}'", [])
+            .unwrap();
+        store.put_node(&node("b", "Symbol")).unwrap();
+        let repaired = store
+            .read_snapshot_filtered(Some(&["Symbol"]), Some(&["CALLS"]))
+            .unwrap();
+        assert_eq!(repaired.0, vec![node("a", "Symbol"), node("b", "Symbol")]);
+        assert_eq!(repaired.1, vec![edge("a", "a", "CALLS")]);
         assert!(store.conn.is_autocommit());
     }
 

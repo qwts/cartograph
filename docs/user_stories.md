@@ -271,9 +271,12 @@
 - **AC-0103** Given valid, absent, malformed, or ceiling-violating provenance, when a fact is returned, then only validated provenance is authoritative, invalid provenance is explicitly Gap, raw provenance is removed from properties, and inferred facts retain their confidence ceiling.
 - **AC-0104** Given a label or neighborhood selection, when queried, then exact labels and the bounded undirected neighborhood select deterministically; absent domain facts return no invented concepts and unknown anchors fail explicitly.
 - **AC-0105** Given the app context-query command, when invoked, then graph copying and query work run off the calling thread, read nodes and edges in one database snapshot even across multiple app processes, return the recovered-graph view, and preserve graph contents without model or network calls.
+- **AC-0137** Given multiple database connections, when full or label-filtered graph snapshots are read through GraphStore, then nodes and edges belong to one SQLite revision; selections/order and malformed-unselected-property behavior are preserved, and paired counts are coherent without materializing facts.
+- **AC-0138** Given legacy Atlas, spec, flow/topology, findings, metrics or semantic-preview graph reads, when another process commits between collection reads, then the application uses the shared coherent contract and performs downstream computations after the read transaction ends, preserving existing output/filter policy.
+- **AC-0139** Given a node or edge property read failure, when a graph projection fails and its source is repaired, then the same reader can observe a later valid revision; tests exercise real spec/Atlas adapters without timing races, and no claim is made of atomic ingest or cross-store publication.
 - **Security:** Read-only core API; no SQL, arbitrary filesystem paths, model execution, or transport-specific privilege in requests.
 - **Performance:** At most 500 facts, 1 MiB serialized response and three hops; large-graph snapshot caching/latency is a later measured gate, not guaranteed by output bounds.
-- **Trace:** H1 (SPEC-01) · `context-hub`, `core-graph`, `app` · — · T-0101..0105
+- **Trace:** H1 (SPEC-01) · `context-hub`, `core-graph`, `app` · — · T-0101..0105,T-0137..0139
 
 ### US-0021 — Inspect and curate a persistent business-domain context
 - **Actor:** Human developer
