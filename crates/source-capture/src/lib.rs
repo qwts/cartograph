@@ -12,7 +12,7 @@ mod acquisition;
 mod store;
 
 pub use acquisition::{capture_git, capture_working_tree};
-pub use store::{CaptureStore, MAX_STORE_BYTES, MAX_STORED_CAPTURES, StoreLimits};
+pub use store::{CaptureInfo, CaptureStore, MAX_STORE_BYTES, MAX_STORED_CAPTURES, StoreLimits};
 
 /// Canonical manifest interpretation version.
 pub const CAPTURE_SCHEMA_VERSION: u32 = 1;

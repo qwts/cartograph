@@ -7,6 +7,7 @@
 //! benchmark ever demands it.
 
 pub mod rules;
+pub mod source;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,9 @@ pub enum GraphError {
     /// Property (de)serialization failure.
     #[error("props: {0}")]
     Props(#[from] serde_json::Error),
+    /// Invalid or incompatible current-source association metadata.
+    #[error("source binding: {0}")]
+    SourceBinding(&'static str),
 }
 
 /// Storage abstraction for the unified graph (ADR-0008).
@@ -126,6 +130,8 @@ pub struct SqliteGraphStore {
     conn: Connection,
     #[cfg(any(test, feature = "test-support"))]
     snapshot_after_nodes: RefCell<Option<SnapshotAfterNodesHook>>,
+    #[cfg(any(test, feature = "test-support"))]
+    source_binding_after_lookup: RefCell<Option<SnapshotAfterNodesHook>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -166,15 +172,24 @@ impl SqliteGraphStore {
         if &self.read_snapshot_rows(None, None)? != expected {
             return Ok(false);
         }
+        self.apply_patch_rows(patch)?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Apply scoped changes inside the caller's transaction.
+    fn apply_patch_rows(&self, patch: &GraphPatch) -> Result<(), GraphError> {
         for (src, dst, label) in &patch.delete_edges {
-            transaction.execute(
+            self.conn.execute(
                 "DELETE FROM edges WHERE src = ?1 AND dst = ?2 AND label = ?3",
                 params![src, dst, label],
             )?;
         }
         for id in &patch.delete_node_ids {
-            transaction.execute("DELETE FROM edges WHERE src = ?1 OR dst = ?1", params![id])?;
-            transaction.execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM edges WHERE src = ?1 OR dst = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
         }
         for node in &patch.upsert_nodes {
             self.write_node(node)?;
@@ -182,8 +197,7 @@ impl SqliteGraphStore {
         for edge in &patch.upsert_edges {
             self.write_edge(edge)?;
         }
-        transaction.commit()?;
-        Ok(true)
+        Ok(())
     }
 
     /// Install a one-shot interleaving hook for regression tests. The ordinary
@@ -317,6 +331,9 @@ impl SqliteGraphStore {
              CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
              CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);",
         )?;
+        // Private association metadata has its own schema version. Validate it
+        // before any legacy fact-schema rebuild can remove existing facts.
+        source::initialize(&conn)?;
         let version: u32 = conn.query_row("SELECT * FROM pragma_user_version", [], |r| r.get(0))?;
         if version != GRAPH_SCHEMA_VERSION {
             // Pre-versioned or older-scheme db: clear the facts, keep the
@@ -328,6 +345,8 @@ impl SqliteGraphStore {
             conn,
             #[cfg(any(test, feature = "test-support"))]
             snapshot_after_nodes: RefCell::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            source_binding_after_lookup: RefCell::new(None),
         })
     }
 }

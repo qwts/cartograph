@@ -13,7 +13,7 @@ fn directory(parent: &Path, name: &str) -> PathBuf {
     crate::paths::canonicalize(path).unwrap()
 }
 
-fn app_state(app_data: &Path) -> AppState {
+pub(crate) fn app_state(app_data: &Path) -> AppState {
     let state_path = app_data.join("state.db");
     // Match startup ordering: the registry migration sees the actual findings
     // table, and completes before any new intake can publish registered rows.
@@ -30,6 +30,7 @@ fn app_state(app_data: &Path) -> AppState {
         ),
         extraction_caches: Mutex::new(ExtractionCaches::default()),
         sources: Arc::new(Mutex::new(sources)),
+        primary_sources: primary_source::PrimarySourceStore::open(app_data).unwrap(),
         metrics: Mutex::new(metrics::MetricsStore::open(&state_path).unwrap()),
     }
 }
@@ -521,7 +522,7 @@ impl llm::LlmProvider for ProposalFixtureProvider {
     }
 }
 
-fn historical_proposal() -> (agents::AgentTask, agents::AgentProposal) {
+pub(crate) fn historical_proposal() -> (agents::AgentTask, agents::AgentProposal) {
     let evidence = [
         ("source", "export function source() { target(); }"),
         ("target", "export function target() {}"),
@@ -559,7 +560,7 @@ fn historical_proposal() -> (agents::AgentTask, agents::AgentProposal) {
     (task, proposal)
 }
 
-fn staged_bytes(path: &Path, id: &str) -> String {
+pub(crate) fn staged_bytes(path: &Path, id: &str) -> String {
     Connection::open(path)
         .unwrap()
         .query_row(

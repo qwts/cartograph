@@ -382,6 +382,7 @@ pub(super) fn extract<'tree>(
     nodes: &[TsNode<'tree>],
     bindings: &callable::Bindings<'tree>,
     out: &mut Extraction,
+    mut direct: Option<&mut super::captured::DirectFacts>,
 ) {
     let targets: BTreeSet<_> = out.nodes.iter().map(|node| node.id.clone()).collect();
     // Collect once by callable, rather than repeatedly scanning the whole file.
@@ -543,7 +544,7 @@ pub(super) fn extract<'tree>(
             }
             file_bytes += canonical.len();
             rule_count += 1;
-            out.nodes.push(Node {
+            let rule_node = Node {
                 id: rule_id.clone(),
                 label: "BusinessRule".into(),
                 props: serde_json::json!({
@@ -552,13 +553,20 @@ pub(super) fn extract<'tree>(
                     "rule": payload,
                     "prov": cx.prov(&exit, &canonical),
                 }),
-            });
-            out.edges.push(Edge {
+            };
+            let governs = Edge {
                 src: rule_id.clone(),
                 dst: owner_id.clone(),
                 label: "GOVERNS".into(),
                 props: serde_json::json!({"observation": "lexical_owner", "prov": cx.prov(&exit, &format!("GOVERNS {rule_id} -> {owner_id}"))}),
-            });
+            };
+            // Only this actual lexical producer marks participating outputs.
+            // Synthetic eval parses invoke the public parser without this sink.
+            if let Some(direct) = direct.as_deref_mut() {
+                direct.rules.push((rule_node.clone(), governs.clone()));
+            }
+            out.nodes.push(rule_node);
+            out.edges.push(governs);
             for (reason, (gap_id, at)) in builder.gaps {
                 let props = serde_json::json!({
                     "rule_evidence_gap": true,

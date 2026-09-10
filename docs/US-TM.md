@@ -34,6 +34,8 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 
 | US-0027 | AC-0140..0147 | app, ingest, core-graph, ui | H3 | — | ADR-0019, ADR-0023 | T-0140..0147 |
 
+| US-0028 | AC-0148..0155 | adapters-lang-ts, source-capture, core-graph, app, ui | H3 | — | ADR-0024 | T-0148..0155 |
+
 ## Coverage assertions
 - Every Must-priority US is anchored to an original milestone, post-M10 work, or a SPEC-01 delivery gate; a milestone label alone does not establish completion.
 - Every AC has at least one test ID reserved (T-XXXX), to be authored alongside the AC (test-trace mapping standard).
@@ -65,3 +67,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0021 | Durable host-owned proposal staging before curated projection |
 | ADR-0022 | Immutable source captures before producer verification |
 | ADR-0023 | Durable source registration before production capture receipts |
+| ADR-0024 | Producer receipts and explicit current source associations |

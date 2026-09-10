@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GraphNode, SourceState, Tier } from '../store';
+import type { ReactNode } from 'react';
 import { TierBadge } from './TierBadge';
 
 export interface EvidencePanelProps {
   node: GraphNode;
   source: SourceState;
+  captured?: ReactNode;
   onClose: () => void;
   /** Load a different supporting evidence span for the same fact. */
   onShowEvidence?: (index: number) => void;
@@ -64,6 +66,7 @@ const WHY_TIER: Record<Tier, string> = {
 export function EvidencePanel({
   node,
   source,
+  captured,
   onClose,
   onShowEvidence,
   onOpenResolution,
@@ -126,6 +129,8 @@ export function EvidencePanel({
         </button>
       </div>
 
+      {captured}
+      <h3>Current working-tree source</h3>
       {!prov || !ev ? (
         <p className="muted">This fact carries no evidence span.</p>
       ) : (

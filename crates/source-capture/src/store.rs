@@ -1,10 +1,11 @@
 use crate::{
-    Capture, CaptureError, CaptureLimits, CaptureManifest, CaptureSpanRef, MAX_FILE_BYTES,
-    MAX_MANIFEST_BYTES, MAX_SPAN_BYTES, Result, assemble_capture, canonical_manifest, manifest_id,
-    validate_capture_id, validate_manifest,
+    Capture, CaptureError, CaptureFileRef, CaptureLimits, CaptureManifest, CaptureSpanRef,
+    MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_SPAN_BYTES, Result, SourceId, assemble_capture,
+    canonical_manifest, manifest_id, validate_capture_id, validate_manifest, validate_range,
 };
-use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
-use std::collections::BTreeMap;
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior, params};
+use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
@@ -44,10 +45,22 @@ impl StoreLimits {
     }
 }
 
+/// Metadata for one canonical capture, without paths, raw bytes or read policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CaptureInfo {
+    /// Immutable content identity, including the registered source identity.
+    pub capture_id: String,
+    /// Number of selected file entries, including files that share an object.
+    pub file_count: u64,
+    /// Sum of selected file lengths; shared objects can be counted repeatedly.
+    pub byte_len: u64,
+}
+
 /// Atomic local raw-source retention, separate from graphs and proposal stores.
 ///
 /// The trusted host supplies a private application location and permissions.
-/// There is no eviction, source fallback, source export, or deletion API.
+/// There is no automatic eviction, source fallback or source export. Explicit
+/// source deletion requires a matching inventory inside the write transaction.
 pub struct CaptureStore {
     connection: Connection,
     limits: StoreLimits,
@@ -64,9 +77,25 @@ impl fmt::Debug for CaptureStore {
 impl CaptureStore {
     /// Open a host-owned SQLite/WAL path, creating a fresh version-two schema.
     /// Prototype version-one stores lack retained read policy and are rejected.
+    /// The trusted parent is canonicalized (including platform temp aliases);
+    /// SQLite itself refuses a symlink at the final database filename.
     pub fn open(path: &Path, limits: StoreLimits) -> Result<Self> {
         limits.validate()?;
-        Self::initialize(Connection::open(path)?, limits)
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let name = path
+            .file_name()
+            .ok_or(CaptureError::Invalid("database filename required"))?;
+        let path = std::fs::canonicalize(parent)?.join(name);
+        Self::initialize(
+            Connection::open_with_flags(
+                &path,
+                OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            )?,
+            limits,
+        )
     }
 
     /// Create an ephemeral store with the same validation and transaction rules.
@@ -220,10 +249,48 @@ impl CaptureStore {
         Ok(capture)
     }
 
-    /// Validate the full file/range reference and copy the verified span bytes.
+    /// Validate the canonical manifest, retained policy and complete selected
+    /// file/range binding, then copy the verified span bytes. Only the requested
+    /// raw object is loaded and hashed; corruption in another object's bytes
+    /// does not block this read. `load` still validates every captured object.
     pub fn read_span(&self, reference: &CaptureSpanRef) -> Result<Vec<u8>> {
-        let capture = self.load(&reference.file.capture_id)?;
-        Ok(capture.read_span(reference)?.to_vec())
+        let transaction = self.connection.unchecked_transaction()?;
+        check_version(&transaction)?;
+        let (manifest, max_span_bytes) = load_manifest(&transaction, &reference.file.capture_id)?;
+        let entry = manifest
+            .files
+            .iter()
+            .find(|entry| entry.path == reference.file.path)
+            .ok_or(CaptureError::Missing("path outside capture"))?;
+        let expected = CaptureFileRef {
+            source_id: manifest.source_id.clone(),
+            capture_id: reference.file.capture_id.clone(),
+            path: entry.path.clone(),
+            digest: entry.digest.clone(),
+            byte_len: entry.byte_len,
+        };
+        if reference.file != expected {
+            return Err(CaptureError::Corrupt("file reference mismatch"));
+        }
+        validate_range(
+            reference.byte_start,
+            reference.byte_end,
+            entry.byte_len,
+            max_span_bytes,
+        )?;
+        let bytes = read_object(&transaction, &entry.digest)?
+            .ok_or(CaptureError::Missing("captured object"))?;
+        if bytes.len() as u64 != entry.byte_len {
+            return Err(CaptureError::Corrupt("manifest and object length disagree"));
+        }
+        if let Some(git) = &entry.git
+            && git2::Oid::hash_object(git2::ObjectType::Blob, &bytes)?.to_string() != git.oid
+        {
+            return Err(CaptureError::Corrupt("Git blob identity mismatch"));
+        }
+        let span = bytes[reference.byte_start as usize..reference.byte_end as usize].to_vec();
+        transaction.commit()?;
+        Ok(span)
     }
 
     /// Strict UTF-8 span read; no normalization or lossy decoding is performed.
@@ -231,6 +298,146 @@ impl CaptureStore {
         let bytes = self.read_span(reference)?;
         String::from_utf8(bytes).map_err(|_| CaptureError::Encoding)
     }
+
+    /// Return this source's capture metadata sorted by capture identity. Every
+    /// bounded manifest is decoded and validated before trusting ownership;
+    /// this is not a raw-object integrity audit and loads no source bytes.
+    pub fn source_inventory(&self, source: &SourceId) -> Result<Vec<CaptureInfo>> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut inventory = Vec::new();
+        visit_manifests(&transaction, |id, manifest| {
+            if &manifest.source_id == source {
+                inventory.push(capture_info(id, manifest));
+            }
+            Ok(())
+        })?;
+        transaction.commit()?;
+        Ok(inventory)
+    }
+
+    /// Atomically forget exactly this source's current capture set. The caller
+    /// supplies the sorted, unique IDs from its preview; a changed inventory
+    /// rejects the whole operation. Only objects referenced by deleted captures
+    /// and by no remaining capture are removed. Missing/corrupt raw objects do
+    /// not establish ownership and are not read; corrupt manifests fail closed.
+    /// The host separately guards receipt publication and retains its metadata.
+    /// Deletion ends the retained span policy's lifetime; explicit identical
+    /// recapture uses its newly supplied cap, without changing historical refs.
+    pub fn forget_source(
+        &mut self,
+        source: &SourceId,
+        expected_capture_ids: &[String],
+    ) -> Result<u64> {
+        if expected_capture_ids.len() as u64 > MAX_STORED_CAPTURES {
+            return Err(CaptureError::Limit("capture inventory count"));
+        }
+        for id in expected_capture_ids {
+            validate_capture_id(id)?;
+        }
+        if expected_capture_ids
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(CaptureError::Invalid(
+                "sorted unique capture inventory required",
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut actual = Vec::new();
+        let mut removable = BTreeSet::new();
+        visit_manifests(&transaction, |id, manifest| {
+            if &manifest.source_id == source {
+                actual.push(id.to_owned());
+                removable.extend(manifest.files.iter().map(|entry| entry.digest.clone()));
+            }
+            Ok(())
+        })?;
+        if actual.as_slice() != expected_capture_ids {
+            return Err(CaptureError::Invalid(
+                "source inventory changed; refresh required",
+            ));
+        }
+        // Stream a second metadata pass instead of retaining all manifests or
+        // all other sources' object references in memory. Nothing is deleted
+        // until every manifest has passed validation in this write snapshot.
+        visit_manifests(&transaction, |_, manifest| {
+            if &manifest.source_id != source {
+                for entry in &manifest.files {
+                    removable.remove(&entry.digest);
+                }
+            }
+            Ok(())
+        })?;
+        for id in &actual {
+            let affected = transaction.execute("DELETE FROM captures WHERE id=?1", [id])?;
+            if affected != 1 {
+                return Err(CaptureError::Corrupt(
+                    "capture deletion did not remove one row",
+                ));
+            }
+        }
+        for digest in removable {
+            // An already missing object needs no deletion. The unique digest
+            // key and exact schema prevent deleting a different object here.
+            transaction.execute("DELETE FROM objects WHERE digest=?1", [digest])?;
+        }
+        transaction.commit()?;
+        Ok(actual.len() as u64)
+    }
+}
+
+fn capture_info(id: &str, manifest: &CaptureManifest) -> CaptureInfo {
+    CaptureInfo {
+        capture_id: id.to_owned(),
+        file_count: manifest.files.len() as u64,
+        // validate_manifest has already checked this sum against its hard cap.
+        byte_len: manifest.files.iter().map(|entry| entry.byte_len).sum(),
+    }
+}
+
+/// Check inventory bounds using metadata before fetching any manifest or key,
+/// then decode one bounded manifest at a time in the caller's transaction.
+fn visit_manifests(
+    connection: &Connection,
+    mut visit: impl FnMut(&str, &CaptureManifest) -> Result<()>,
+) -> Result<()> {
+    check_version(connection)?;
+    let count: u64 = connection.query_row("SELECT count(*) FROM captures", [], |row| {
+        nonnegative(row, 0)
+    })?;
+    if count > MAX_STORED_CAPTURES {
+        return Err(CaptureError::Limit("capture inventory count"));
+    }
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM captures WHERE typeof(id) != 'text'
+         OR length(CAST(id AS BLOB)) != 75 OR typeof(manifest) != 'blob'
+         OR length(manifest) > ?1
+         OR NOT (CASE WHEN typeof(max_span_bytes) = 'integer'
+                 THEN max_span_bytes BETWEEN 0 AND ?2 ELSE 0 END))",
+        params![MAX_MANIFEST_BYTES as i64, MAX_SPAN_BYTES as i64],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(CaptureError::Corrupt("invalid capture inventory metadata"));
+    }
+    let manifest_bytes: u64 = connection.query_row(
+        "SELECT coalesce(sum(length(manifest)),0) FROM captures",
+        [],
+        |row| nonnegative(row, 0),
+    )?;
+    if manifest_bytes > MAX_STORE_BYTES {
+        return Err(CaptureError::Limit("capture inventory bytes"));
+    }
+    let mut statement = connection.prepare("SELECT id FROM captures ORDER BY id")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let (manifest, _) = load_manifest(connection, &id)?;
+        visit(&id, &manifest)?;
+    }
+    Ok(())
 }
 
 fn nonnegative(row: &Row<'_>, index: usize) -> rusqlite::Result<u64> {
@@ -351,8 +558,9 @@ fn read_object(connection: &Connection, digest: &str) -> Result<Option<Vec<u8>>>
     Ok(Some(bytes))
 }
 
-fn load_capture(connection: &Connection, id: &str) -> Result<Capture> {
-    check_version(connection)?;
+// Callers validate the store schema/version and keep one transaction alive
+// across metadata checks, manifest decoding and any selected object reads.
+fn load_manifest(connection: &Connection, id: &str) -> Result<(CaptureManifest, u64)> {
     validate_capture_id(id)?;
     let metadata: Option<(String, u64, Option<i64>)> = connection
         .query_row(
@@ -382,11 +590,18 @@ fn load_capture(connection: &Connection, id: &str) -> Result<Capture> {
     if raw.len() as u64 != len || manifest_id(&raw) != id {
         return Err(CaptureError::Corrupt("stored manifest identity mismatch"));
     }
-    let manifest: CaptureManifest = serde_json::from_slice(&raw)?;
+    let manifest: CaptureManifest = serde_json::from_slice(&raw)
+        .map_err(|_| CaptureError::Corrupt("invalid stored manifest encoding"))?;
     validate_manifest(&manifest, CaptureLimits::default())?;
     if canonical_manifest(&manifest, MAX_MANIFEST_BYTES)? != raw {
         return Err(CaptureError::Corrupt("noncanonical stored manifest"));
     }
+    Ok((manifest, max_span_bytes))
+}
+
+fn load_capture(connection: &Connection, id: &str) -> Result<Capture> {
+    check_version(connection)?;
+    let (manifest, max_span_bytes) = load_manifest(connection, id)?;
     let mut buffers = BTreeMap::new();
     for entry in &manifest.files {
         let bytes = read_object(connection, &entry.digest)?
@@ -434,6 +649,32 @@ mod tests {
         .unwrap()
     }
 
+    fn captured_files(source: &str, files: &[(&str, &[u8])]) -> Capture {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, bytes) in files {
+            std::fs::write(dir.path().join(path), bytes).unwrap();
+        }
+        capture_working_tree(
+            dir.path(),
+            &SourceId::new(source).unwrap(),
+            &files
+                .iter()
+                .map(|(path, _)| (*path).into())
+                .collect::<Vec<_>>(),
+            CaptureLimits::default(),
+        )
+        .unwrap()
+    }
+
+    fn inventory_ids(store: &CaptureStore, source: &SourceId) -> Vec<String> {
+        store
+            .source_inventory(source)
+            .unwrap()
+            .into_iter()
+            .map(|info| info.capture_id)
+            .collect()
+    }
+
     fn counts(store: &CaptureStore) -> (u64, u64) {
         store
             .connection
@@ -472,6 +713,389 @@ mod tests {
         let mut wrong = span.clone();
         wrong.file.source_id = SourceId::new("other").unwrap();
         assert!(store.read_span(&wrong).is_err());
+    }
+
+    // AC-0153: the SQLite connection itself refuses a symlink database path;
+    // checking an earlier filesystem handle cannot authorize a later target.
+    #[cfg(unix)]
+    #[test]
+    fn capture_store_open_refuses_symlink_database_paths() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("captures.sqlite");
+        let alias = directory.path().join("alias.sqlite");
+        let capture = captured("source", b"untouched");
+        let mut store = CaptureStore::open(&database, StoreLimits::default()).unwrap();
+        store.persist(&capture).unwrap();
+        drop(store);
+        symlink(&database, &alias).unwrap();
+        assert!(CaptureStore::open(&alias, StoreLimits::default()).is_err());
+        let store = CaptureStore::open(&database, StoreLimits::default()).unwrap();
+        assert_eq!(
+            store.load(capture.id()).unwrap().manifest(),
+            capture.manifest()
+        );
+    }
+
+    // AC-0153: a source preview contains only sorted metadata; explicit forgetting
+    // removes its own manifests and unshared objects, preserving other sources.
+    #[test]
+    fn source_inventory_and_forgetting_preserve_shared_objects() {
+        let first = captured_files(
+            "first-source",
+            &[("shared.ts", b"shared"), ("private.ts", b"first-only")],
+        );
+        let historical = captured_files("first-source", &[("previous.ts", b"previous")]);
+        let second = captured_files(
+            "second-source",
+            &[("shared.ts", b"shared"), ("private.ts", b"second-only")],
+        );
+        let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+        for capture in [&second, &historical, &first] {
+            store.persist(capture).unwrap();
+        }
+        // A pre-existing orphan is not attributed to the source being forgotten.
+        let orphan_digest = blake3::hash(b"orphan").to_hex().to_string();
+        store
+            .connection
+            .execute(
+                "INSERT INTO objects(digest,bytes) VALUES (?1,?2)",
+                params![orphan_digest, b"orphan".as_slice()],
+            )
+            .unwrap();
+        assert_eq!(counts(&store), (3, 5));
+        let source = &first.manifest().source_id;
+        let inventory = store.source_inventory(source).unwrap();
+        let mut expected = vec![
+            CaptureInfo {
+                capture_id: first.id().into(),
+                file_count: 2,
+                byte_len: 16,
+            },
+            CaptureInfo {
+                capture_id: historical.id().into(),
+                file_count: 1,
+                byte_len: 8,
+            },
+        ];
+        expected.sort_by(|a, b| a.capture_id.cmp(&b.capture_id));
+        assert_eq!(inventory, expected);
+        let wire = serde_json::to_string(&inventory).unwrap();
+        for omitted in ["first-only", "shared.ts", "first-source", "max_span_bytes"] {
+            assert!(!wire.contains(omitted));
+        }
+        let ids = inventory_ids(&store, source);
+        assert_eq!(store.forget_source(source, &ids).unwrap(), 2);
+        assert_eq!(counts(&store), (1, 3));
+        assert!(store.source_inventory(source).unwrap().is_empty());
+        assert!(store.load(first.id()).is_err());
+        assert!(store.load(historical.id()).is_err());
+        let shared_span = second.file("shared.ts").unwrap().span(0, 6).unwrap();
+        assert_eq!(store.read_span(&shared_span).unwrap(), b"shared");
+        assert_eq!(
+            store.load(second.id()).unwrap().manifest(),
+            second.manifest()
+        );
+        assert_eq!(
+            read_object(&store.connection, &orphan_digest)
+                .unwrap()
+                .unwrap(),
+            b"orphan"
+        );
+        assert_eq!(store.forget_source(source, &[]).unwrap(), 0);
+        let second_source = &second.manifest().source_id;
+        let second_ids = inventory_ids(&store, second_source);
+        assert_eq!(store.forget_source(second_source, &second_ids).unwrap(), 1);
+        assert_eq!(counts(&store), (0, 1));
+    }
+
+    // AC-0153: stale previews, invalid ordering and corrupt unrelated ownership
+    // all fail before publication, leaving every manifest and object in place.
+    #[test]
+    fn source_forgetting_rejects_stale_or_corrupt_inventory_atomically() {
+        let first = captured("one", b"one");
+        let later = captured("two", b"two");
+        let source = &first.manifest().source_id;
+        let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+        store.persist(&first).unwrap();
+        let stale = inventory_ids(&store, source);
+        store.persist(&later).unwrap();
+        assert!(store.forget_source(source, &stale).is_err());
+        let current = inventory_ids(&store, source);
+        let mut reversed = current.clone();
+        reversed.reverse();
+        for wrong in [vec![], reversed, vec![current[0].clone(); 2]] {
+            assert!(store.forget_source(source, &wrong).is_err());
+            assert_eq!(inventory_ids(&store, source), current);
+            assert_eq!(counts(&store), (2, 2));
+        }
+
+        let other = captured_files("other-source", &[("other", b"other")]);
+        for corruption in [
+            "UPDATE captures SET manifest=X'7B7D' WHERE id=?1",
+            "UPDATE captures SET manifest='éé' WHERE id=?1",
+            "UPDATE captures SET manifest=zeroblob(8388609) WHERE id=?1",
+            "UPDATE captures SET id=zeroblob(1000) WHERE id=?1",
+            "UPDATE captures SET max_span_bytes=-1 WHERE id=?1",
+        ] {
+            let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+            store.persist(&first).unwrap();
+            store.persist(&other).unwrap();
+            let expected = inventory_ids(&store, source);
+            store
+                .connection
+                .pragma_update(None, "ignore_check_constraints", true)
+                .unwrap();
+            store.connection.execute(corruption, [other.id()]).unwrap();
+            assert!(store.source_inventory(source).is_err());
+            assert!(store.forget_source(source, &expected).is_err());
+            assert_eq!(counts(&store), (2, 2));
+            assert_eq!(store.load(first.id()).unwrap().manifest(), first.manifest());
+            assert_eq!(
+                read_object(&store.connection, &other.manifest().files[0].digest)
+                    .unwrap()
+                    .unwrap(),
+                b"other"
+            );
+        }
+
+        // Hash-consistent payloads still need schema, source and canonical-order
+        // validation. Decoder errors must not echo an untrusted enum value.
+        let mut wrong_version = other.manifest().clone();
+        wrong_version.schema_version += 1;
+        let mut duplicate_path = other.manifest().clone();
+        duplicate_path.files.push(duplicate_path.files[0].clone());
+        let mut noncanonical = canonical_manifest(other.manifest(), MAX_MANIFEST_BYTES).unwrap();
+        noncanonical.push(b' ');
+        for raw in [
+            serde_json::to_vec(&wrong_version).unwrap(),
+            serde_json::to_vec(&duplicate_path).unwrap(),
+            noncanonical,
+            br#"{"schema_version":1,"source_id":"","kind":{"kind":"working_tree"},"files":[]}"#.to_vec(),
+            br#"{"schema_version":1,"source_id":"other-source","kind":{"kind":"do-not-echo-private-input"},"files":[]}"#.to_vec(),
+        ] {
+            let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+            store.persist(&first).unwrap();
+            store.persist(&other).unwrap();
+            let expected = inventory_ids(&store, source);
+            store.connection.execute(
+                "UPDATE captures SET id=?1,manifest=?2 WHERE id=?3",
+                params![manifest_id(&raw), raw, other.id()],
+            ).unwrap();
+            let error = store.source_inventory(source).unwrap_err();
+            assert!(!error.to_string().contains("do-not-echo-private-input"));
+            assert!(store.forget_source(source, &expected).is_err());
+            assert_eq!(counts(&store), (2, 2));
+            assert!(store.load(first.id()).is_ok());
+        }
+    }
+
+    // AC-0153: metadata bounds and the private schema are checked before any
+    // manifest body is trusted, including corruption introduced after open.
+    #[test]
+    fn source_inventory_rejects_schema_and_preallocation_bounds() {
+        let capture = captured("source", b"abcd");
+        let source = &capture.manifest().source_id;
+        let ids = vec![capture.id().to_string()];
+        for corruption in [
+            "PRAGMA user_version=1",
+            "CREATE TRIGGER sqliteXdrop BEFORE DELETE ON captures BEGIN SELECT RAISE(IGNORE); END",
+        ] {
+            let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+            store.persist(&capture).unwrap();
+            store.connection.execute_batch(corruption).unwrap();
+            assert!(store.source_inventory(source).is_err());
+            assert!(store.forget_source(source, &ids).is_err());
+            assert!(
+                store
+                    .read_span(&capture.file("source").unwrap().span(0, 1).unwrap())
+                    .is_err()
+            );
+            assert_eq!(counts(&store), (1, 1));
+        }
+
+        let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+        store.persist(&capture).unwrap();
+        store
+            .connection
+            .execute(
+                "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x < ?1)
+             INSERT INTO captures(id,manifest,max_span_bytes)
+             SELECT printf('capture-v1:%064x',x), X'7B7D', 0 FROM n",
+                [MAX_STORED_CAPTURES as i64],
+            )
+            .unwrap();
+        // Count rejection precedes even the deliberately bad manifest bodies.
+        assert!(matches!(
+            store.source_inventory(source),
+            Err(CaptureError::Limit("capture inventory count"))
+        ));
+        assert!(matches!(
+            store.forget_source(source, &ids),
+            Err(CaptureError::Limit("capture inventory count"))
+        ));
+        assert_eq!(counts(&store), (MAX_STORED_CAPTURES + 1, 1));
+    }
+
+    // AC-0152, AC-0153: restart and changed working bytes cannot satisfy a
+    // forgotten reference; explicit identical recapture can restore its ID.
+    #[test]
+    fn forgotten_captures_stay_unavailable_until_explicit_identical_recapture() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("captures.sqlite");
+        let original = captured_with_cap("source", b"abcd", 2);
+        let changed = captured_with_cap("source", b"wxyz", 2);
+        assert_ne!(original.id(), changed.id());
+        let reference = original.file("source").unwrap().span(0, 2).unwrap();
+        let source = &original.manifest().source_id;
+        {
+            let mut store = CaptureStore::open(&database, StoreLimits::default()).unwrap();
+            store.persist(&original).unwrap();
+            let ids = inventory_ids(&store, source);
+            assert_eq!(store.forget_source(source, &ids).unwrap(), 1);
+            assert_eq!(counts(&store), (0, 0));
+        }
+        {
+            let mut store = CaptureStore::open(&database, StoreLimits::default()).unwrap();
+            assert!(store.read_span(&reference).is_err());
+            store.persist(&changed).unwrap();
+            assert!(store.read_span(&reference).is_err());
+            let ids = inventory_ids(&store, source);
+            store.forget_source(source, &ids).unwrap();
+            // Acquisition is explicit; no path or working-tree read occurs in
+            // the store. This independent capture supplies identical bytes.
+            let recaptured = captured_with_cap("source", b"abcd", 2);
+            assert_eq!(recaptured.id(), original.id());
+            store.persist(&recaptured).unwrap();
+        }
+        let store = CaptureStore::open(&database, StoreLimits::default()).unwrap();
+        assert_eq!(store.read_text_span(&reference).unwrap(), "ab");
+        let mut over_cap = reference.clone();
+        over_cap.byte_end = 3;
+        assert!(store.read_span(&over_cap).is_err());
+        assert_eq!(counts(&store), (1, 1));
+    }
+
+    // AC-0152: inspection hashes the selected complete object, but never loads
+    // unrelated objects from its manifest. Full-capture load stays stricter.
+    #[test]
+    fn selected_span_reads_validate_only_the_requested_object() {
+        let capture = captured_files(
+            "selected-source",
+            &[("good.ts", "aéz".as_bytes()), ("other.ts", b"other")],
+        );
+        let reference = capture.file("good.ts").unwrap().span(0, 3).unwrap();
+        let other_digest = &capture.file("other.ts").unwrap().reference().digest;
+        for corruption in [
+            "UPDATE objects SET bytes=X'00' WHERE digest=?1",
+            "UPDATE objects SET bytes=zeroblob(16777217) WHERE digest=?1",
+            "UPDATE objects SET bytes='éé' WHERE digest=?1",
+            "DELETE FROM objects WHERE digest=?1",
+        ] {
+            let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+            store.persist(&capture).unwrap();
+            store
+                .connection
+                .execute(corruption, [other_digest])
+                .unwrap();
+            assert!(store.load(capture.id()).is_err());
+            assert_eq!(store.read_text_span(&reference).unwrap(), "aé");
+            let mut split_utf8 = reference.clone();
+            split_utf8.byte_end = 2;
+            assert_eq!(store.read_span(&split_utf8).unwrap(), &[b'a', 0xc3]);
+            assert!(matches!(
+                store.read_text_span(&split_utf8),
+                Err(CaptureError::Encoding)
+            ));
+            // Metadata inventory is not an attestation that all objects exist.
+            let source = &capture.manifest().source_id;
+            let ids = inventory_ids(&store, source);
+            assert_eq!(ids, vec![capture.id().to_string()]);
+            assert_eq!(store.forget_source(source, &ids).unwrap(), 1);
+            assert_eq!(counts(&store), (0, 0));
+        }
+        let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+        store.persist(&capture).unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE objects SET bytes=?1 WHERE digest=?2",
+                params!["aéx".as_bytes(), reference.file.digest],
+            )
+            .unwrap();
+        // Even a corruption outside the requested three bytes invalidates the
+        // selected object's digest; slicing before verification is forbidden.
+        assert!(store.read_span(&reference).is_err());
+    }
+
+    // AC-0152: selected reads retain complete membership, range, policy, manifest
+    // and Git-object validation; optimizing reads never weakens those bindings.
+    #[test]
+    fn selected_span_reads_reject_manifest_and_reference_corruption() {
+        let capture = captured_with_cap("source", b"abcd", 2);
+        let reference = capture.file("source").unwrap().span(0, 2).unwrap();
+        let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+        store.persist(&capture).unwrap();
+        for mutation in 0..8 {
+            let mut wrong = reference.clone();
+            match mutation {
+                0 => wrong.file.source_id = SourceId::new("another-source").unwrap(),
+                1 => wrong.file.capture_id = format!("capture-v1:{}", "0".repeat(64)),
+                2 => wrong.file.path = "unselected".into(),
+                3 => wrong.file.digest = "0".repeat(64),
+                4 => wrong.file.byte_len += 1,
+                5 => wrong.byte_end = wrong.byte_start,
+                6 => wrong.byte_end = 3,
+                7 => wrong.byte_start = u64::MAX,
+                _ => unreachable!(),
+            }
+            assert!(store.read_span(&wrong).is_err());
+        }
+        let mut version = capture.manifest().clone();
+        version.schema_version += 1;
+        let mut duplicate = capture.manifest().clone();
+        duplicate.files.push(duplicate.files[0].clone());
+        let mut wrong_length = capture.manifest().clone();
+        wrong_length.files[0].byte_len += 1;
+        let mut wrong_git = capture.manifest().clone();
+        wrong_git.kind = crate::CaptureKind::Git {
+            commit: "1".repeat(40),
+            tree: "2".repeat(40),
+        };
+        wrong_git.files[0].git = Some(crate::GitFile {
+            oid: "3".repeat(40),
+            mode: 0o100644,
+        });
+        for manifest in [version, duplicate, wrong_length, wrong_git] {
+            let raw = canonical_manifest(&manifest, MAX_MANIFEST_BYTES).unwrap();
+            let id = manifest_id(&raw);
+            store
+                .connection
+                .execute(
+                    "INSERT INTO captures(id,manifest,max_span_bytes) VALUES (?1,?2,2)",
+                    params![id, raw],
+                )
+                .unwrap();
+            let mut wrong = reference.clone();
+            wrong.file.capture_id = id;
+            wrong.file.byte_len = manifest.files[0].byte_len;
+            assert!(store.read_span(&wrong).is_err());
+            assert_eq!(store.read_text_span(&reference).unwrap(), "ab");
+        }
+        for corrupt in [
+            "UPDATE captures SET manifest=X'7B7D' WHERE id=?1",
+            "UPDATE captures SET manifest=zeroblob(8388609) WHERE id=?1",
+            "UPDATE captures SET max_span_bytes=-1 WHERE id=?1",
+        ] {
+            let mut store = CaptureStore::in_memory(StoreLimits::default()).unwrap();
+            store.persist(&capture).unwrap();
+            store
+                .connection
+                .pragma_update(None, "ignore_check_constraints", true)
+                .unwrap();
+            store.connection.execute(corrupt, [capture.id()]).unwrap();
+            assert!(store.read_span(&reference).is_err());
+        }
     }
 
     // AC-0135: read policy survives a real restart independently of canonical

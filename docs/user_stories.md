@@ -373,3 +373,20 @@
 - **Security:** Host lookup never accepts webview overwrite roots; source locks and registry identities grant no egress, target-code edits, source-verification flags or tier upgrades. Existing path/artifact consent stays root-specific.
 - **Performance:** Bounded identities/origins and short SQLite registration transactions; try-only source locking never holds a database transaction across clone or extraction. Whole-graph/ADR snapshot costs remain explicit.
 - **Trace:** H3 prerequisite #392 · `app`, `ingest`, `core-graph`, `ui` · — · T-0140..0147
+
+
+### US-0028 — Inspect the retained primary source that produced a rule
+- **Actor:** Engineer
+- **As a** engineer **I want** source observations bound to the bytes their parser consumed **so that** later edits cannot silently change the evidence I inspect.
+- **Priority:** Must · **Status:** In-Progress
+- **AC-0148** Given registered TS/JS sources, when the participating production lane runs, then bounded exact no-symlink enumeration and captured buffers feed the real parser without participating cache reuse or live-read fallback, preserving explicit incomplete input coverage.
+- **AC-0149** Given direct lexical rules, their owners and GOVERNS edges, when parsed from a CapturedFile, then versioned immutable metadata-only receipts bind the complete emitted fact, producer/grammar, source/capture and all original ranges; eval, placeholders and enrichment cannot acquire this binding by matching spans.
+- **AC-0150** Given current facts and proposed receipts, when repository reconciliation publishes, then facts and exact current receipt associations commit atomically, mismatched final facts lose participation, ordinary mutations invalidate associations, and identical facts from different captures retain distinct receipt identities.
+- **AC-0151** Given direct, retry, clone or manifest recovery, when participating facts are published, then captures and receipts are already retained under the exact registered source, same-named roots stay isolated and a persistence/capacity failure publishes no participating binding.
+- **AC-0152** Given a typed fact, expected receipt and stored range index, when captured inspection runs after source edits/restart, then coherent host checks return the original strict UTF-8 bytes or explicit stale/unavailable status without arbitrary offsets, caller roots or working-tree fallback.
+- **AC-0153** Given retained source, when capacity or forgetting is handled, then private bounded stores and source guards preserve immutable receipts/reviews, a refreshed inventory preview authorizes deletion of only that source's unshared bytes, and graph/job cleanup never deletes retained historical source.
+- **AC-0154** Given the evidence and retention UI, when the user changes selection, inspects captured/current source or confirms forgetting, then the UI preserves exact fact/receipt/source identity, labels captured primary source with incomplete input coverage, rejects stale async results and previews affected references before deletion.
+- **AC-0155** Given legacy graph/proposals and unrelated producers, when primary-source recovery and inspection run, then legacy EvidenceRef/staging bytes, producing tier/confidence and review state remain unchanged, raw source stays absent from graph/context/export/proposal payloads and H2/H3 verification is not inferred.
+- **Security:** Private local retention only; no target writes, implicit network, model disclosure, arbitrary-root reads or confidence upgrades. Deletion is exact-source and preview-bound.
+- **Performance:** SPEC-04 capture limits, bounded enumeration and receipts, selected-object span reads and try-only locks; participating TS cache bypass is explicit.
+- **Trace:** H3 prerequisite #395 · `adapters-lang-ts`, `source-capture`, `core-graph`, `app`, `ui` · — · T-0148..0155

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { FactKey } from './primarySourceStore';
 import { invokeOr } from './tauri';
 import type { SurfaceView } from './views';
 import type { EgressPreview } from './components/EgressConsentDialog';
@@ -598,7 +599,7 @@ export interface AppStore {
   disclosures: Partial<Record<string, CloudDisclosure>>;
   settingsError: string | null;
   /** Node selected for evidence view, with its source window state. */
-  selected: { node: GraphNode; source: SourceState; evidenceIndex: number } | null;
+  selected: { node: GraphNode; source: SourceState; evidenceIndex: number; fact?: FactKey; requestVersion: number } | null;
   refresh: () => Promise<void>;
   /** Remove terminal (done/failed/cancelled) jobs from the durable spine;
    *  queued, running, and interrupted (resumable) work is kept (AC-0076). */
@@ -616,7 +617,7 @@ export interface AppStore {
   ) => Promise<void>;
   /** Open the evidence drawer for a fact; `evidenceIndex` picks among its
    *  supporting evidence spans (default first). */
-  select: (node: GraphNode, evidenceIndex?: number) => Promise<void>;
+  select: (node: GraphNode, evidenceIndex?: number, fact?: FactKey) => Promise<void>;
   clearSelection: () => void;
   /** Navigate the shell; clears the evidence selection (handoff §Interactions). */
   setView: (view: SurfaceView) => void;
@@ -680,6 +681,8 @@ export interface AppStore {
 async function loadEndpoints(): Promise<GraphNode[]> {
   return invokeOr<GraphNode[]>('list_nodes', [], { label: 'Endpoint' });
 }
+
+let evidenceRequestVersion = 0;
 
 export const useAppStore = create<AppStore>((set, get) => ({
   view: 'workspace',
@@ -924,13 +927,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  select: async (node: GraphNode, evidenceIndex = 0) => {
-    set({ selected: { node, source: 'loading', evidenceIndex } });
+  select: async (node: GraphNode, evidenceIndex = 0, fact?: FactKey) => {
+    const requestVersion = ++evidenceRequestVersion;
+    set({ selected: { node, source: 'loading', evidenceIndex, fact, requestVersion } });
     const done = (source: SourceState) => {
       // Ignore if the user selected something else meanwhile.
       const current = get().selected;
-      if (current?.node.id === node.id && current.evidenceIndex === evidenceIndex) {
-        set({ selected: { node, source, evidenceIndex } });
+      if (requestVersion === evidenceRequestVersion && current?.node === node && current.evidenceIndex === evidenceIndex) {
+        set({ selected: { node, source, evidenceIndex, fact, requestVersion } });
       }
     };
     const ev = node.props.prov?.evidence[evidenceIndex] ?? node.props.prov?.evidence[0];
