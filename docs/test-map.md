@@ -12,6 +12,10 @@ realization. `kind` is one of:
 automated reference names a test that does not exist. New ACs land with their
 rows in the same PR (see AGENTS.md).
 
+The H2–H7 manual references below define future acceptance procedures. Those
+capabilities remain **PLANNED** and the procedures **UNEXECUTED**; a reference
+proves that a procedure exists, not that its AC or delivery gate has passed.
+
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
 | T-0119 | AC-0119 | rust | adapters-lang-ts::object_methods_and_property_callbacks_have_cited_distinct_owners, adapters-lang-ts::class_expression_owners_never_merge_by_anonymous_or_private_name, adapters-lang-ts::ambiguous_static_and_accessor_members_have_distinct_owners_without_guessed_dispatch | H2: scope-qualified callable owners and distinct class/member identities |
@@ -26,19 +30,19 @@ rows in the same PR (see AGENTS.md).
 | T-0103 | AC-0103 | rust | context-hub::invalid_provenance_is_gap_and_never_leaks_raw_metadata, context-hub::inferred_provenance_remains_inferred | H1: provenance ceilings and fail-closed metadata |
 | T-0104 | AC-0104 | rust | context-hub::neighborhood_is_bounded_undirected_and_induced, context-hub::unsupported_domain_labels_return_no_fabricated_facts, context-hub::invalid_limits_and_missing_anchors_fail_explicitly | H1: deterministic bounded selection, explicit missing anchors and unsupported domain coverage |
 | T-0105 | AC-0105 | rust | app::context_query_reads_on_worker_without_mutating_graph, app::context_query_propagates_errors_without_mutating_graph, app::context_query_rejects_invalid_request_before_graph_access | H1: desktop storage adapter uses worker boundary, recovered view, read-only paging, and validation before storage access |
-| T-0106 | AC-0106 | reserved | — | H2: pinned Vendure recovery and independently reviewed expected set |
-| T-0107 | AC-0107 | reserved | — | H2: implemented behavior, documented intent, inference and future design views |
-| T-0108 | AC-0108 | reserved | — | H3: accepted-proposal projection and stale-evidence reconciliation |
-| T-0109 | AC-0109 | reserved | — | H3: persistent named project/domain isolation |
-| T-0110 | AC-0110 | reserved | — | H4: shared durable specialist coordinator |
-| T-0111 | AC-0111 | reserved | — | H4–H5: ACP capability, environment and egress enforcement |
-| T-0112 | AC-0112 | reserved | — | H4–H5: cancellation, reconnect, restart and uncertain-outcome reconciliation |
-| T-0113 | AC-0113 | reserved | — | H5: bounded nested delegation and loop prevention |
-| T-0114 | AC-0114 | reserved | — | H5: real MCP caller and ACP runtime interoperability |
-| T-0115 | AC-0115 | reserved | — | H6: cited structural measurements and coverage accounting |
-| T-0116 | AC-0116 | reserved | — | H6: contextual god-file evaluation with justified-large-file counterexamples |
-| T-0117 | AC-0117 | reserved | — | H6–H7: authorized external implementation and re-ingested acceptance evidence |
-| T-0118 | AC-0118 | reserved | — | H7: independently completed market pilot with measured outcomes |
+| T-0106 | AC-0106 | manual | MT-H2-01 | PLANNED H2; UNEXECUTED: pinned Vendure recovery and independently reviewed expected set |
+| T-0107 | AC-0107 | manual | MT-H2-02 | PLANNED H2; UNEXECUTED: implemented behavior, documented intent, inference and future design views |
+| T-0108 | AC-0108 | manual | MT-H3-01 | PLANNED H3; UNEXECUTED: accepted-proposal projection and stale-evidence reconciliation |
+| T-0109 | AC-0109 | manual | MT-H3-02 | PLANNED H3; UNEXECUTED: persistent named project/domain isolation |
+| T-0110 | AC-0110 | manual | MT-H4-01 | PLANNED H4; UNEXECUTED: shared durable specialist coordinator |
+| T-0111 | AC-0111 | manual | MT-H5-01 | PLANNED H4–H5; UNEXECUTED: ACP capability, environment and egress enforcement |
+| T-0112 | AC-0112 | manual | MT-H5-02 | PLANNED H4–H5; UNEXECUTED: cancellation, reconnect, restart and uncertain-outcome reconciliation |
+| T-0113 | AC-0113 | manual | MT-H5-03 | PLANNED H5; UNEXECUTED: bounded nested delegation and loop prevention |
+| T-0114 | AC-0114 | manual | MT-H5-04 | PLANNED H5; UNEXECUTED: real MCP caller and ACP runtime interoperability |
+| T-0115 | AC-0115 | manual | MT-H6-01 | PLANNED H6; UNEXECUTED: cited structural measurements and coverage accounting |
+| T-0116 | AC-0116 | manual | MT-H6-02 | PLANNED H6; UNEXECUTED: contextual god-file evaluation with justified-large-file counterexamples |
+| T-0117 | AC-0117 | manual | MT-H6-03 | PLANNED H6–H7; UNEXECUTED: authorized external implementation and re-ingested acceptance evidence |
+| T-0118 | AC-0118 | manual | MT-H7-01 | PLANNED H7; UNEXECUTED: independently completed market pilot with measured outcomes |
 | T-0001 | AC-0001 | rust | ingest::clone_lists_repo_with_commit_sha, ingest::repo_urls_parse_to_identities, app::identical_repos_do_not_collide_in_one_graph | offline file:// fixtures; SHA listed in UI, plus story:Shell/IngestCard/WithClonedRepo, live clone manual at the milestone boundary |
 | T-0002 | AC-0002 | rust | ingest::manifest_parses_repos_layers_and_env, ingest::manifest_rejects_unknown_layers, app::manifest_local_paths_beat_owner_name_shorthand, events::manifest_identities_override_env_files, app::system_manifest_applies_hints_and_identities_at_ingest | layer hints + identities applied at ingest; UI listing, plus story:Shell/IngestCard/WithSystemManifest |
 | T-0003 | AC-0003 | rust | ingest::failed_clone_leaves_nothing_behind, ingest::auth_errors_carry_remediation | typed remediation; live 401 path manual at the milestone boundary |
