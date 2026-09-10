@@ -37,7 +37,12 @@ count as five recovered Vendure entry constraints.
   names remain source observations; they do not establish a runtime property key.
 - Every emitted call-owner identity must refer to a real emitted symbol rather
   than a synthetic uncited placeholder. Existing anonymous route identities must
-  remain consistent between symbol extraction and endpoint handling.
+  remain consistent between symbol extraction and endpoint handling. Nest handler
+  relationships bind directly to the decorated method's same lexical identity,
+  including controllers nested in functions, blocks or namespaces. Both directly
+  attached class decorators and exported-class decorator siblings are recognized;
+  Controller and HTTP-method decorators require unshadowed import proof at their
+  creation sites.
 - Direct calls resolve only to a scope-proven callable binding. A file-wide name
   match must not resolve a call to a shadowed or unrelated nested declaration.
   Unknown member dispatch is not made confirmed just because an object has a
@@ -63,7 +68,11 @@ An ancestor-condition list is not a complete execution predicate: previous exits
 mutation, loops, switch statements and try/finally can change behavior. Explicit
 completeness and dependency gaps must accompany unsupported interpretation.
 Rule facts must not silently incorporate outer-function conditions into a nested
-callback's execution predicate.
+callback's execution predicate. Parser-recovered exits or controlling branches
+with missing/error syntax cannot establish a Confirmed rule observation. Omit
+them with an explicit `unsupported_rule_syntax` Gap under the existing bounded
+remaining-file policy; a missing throw value cannot be silently skipped. A valid
+bare return remains a supported local return without a value.
 
 Before storing source expressions, use a shared deterministic redaction boundary
 for secret-shaped literals, retaining exact source references and marking any

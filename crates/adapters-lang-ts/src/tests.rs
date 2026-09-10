@@ -2451,3 +2451,98 @@ class Outer {
     );
     assert!(calls.contains(&(inner_method.id.as_str(), inner_run.as_str())));
 }
+
+#[test]
+fn nested_nest_controllers_bind_their_actual_qualified_handlers() {
+    // AC-0121: decorators bind the same actual method as symbol extraction,
+    // including distinct same-spelled controllers in non-module scopes.
+    let source = br#"
+import { Controller, Get } from '@nestjs/common';
+@Controller('top')
+class SharedController { @Get() list() {} }
+function create() {
+  @Controller('function')
+  class SharedController { @Get() list() {} }
+  return SharedController;
+}
+{
+  @Controller('block')
+  class SharedController { @Get() list() {} }
+}
+namespace Nested {
+  @Controller('namespace')
+  export class SharedController { @Get() list() {} }
+}
+"#;
+    let out = extract_source(source, "src/controllers.ts", &id()).unwrap();
+    let handlers: Vec<_> = out
+        .edges
+        .iter()
+        .filter(|edge| edge.label == "HANDLES")
+        .collect();
+    assert_eq!(handlers.len(), 4);
+    let mut targets = std::collections::BTreeSet::new();
+    for scope in ["top", "function", "block", "namespace"] {
+        let endpoint = format!("ep:qwtm/example@GET:/{scope}");
+        let handler = handlers.iter().find(|edge| edge.src == endpoint).unwrap();
+        let symbol = out
+            .nodes
+            .iter()
+            .find(|node| node.id == handler.dst)
+            .expect("HANDLES target must be a real emitted symbol");
+        assert_eq!(symbol.label, "Symbol");
+        assert_eq!(symbol.props["kind"], "Method");
+        let prov: Provenance = serde_json::from_value(symbol.props["prov"].clone()).unwrap();
+        assert_eq!(prov.confidence_tier, ConfidenceTier::Confirmed);
+        let evidence = &prov.evidence[0];
+        let method = &source[evidence.byte_start as usize..evidence.byte_end as usize];
+        assert!(std::str::from_utf8(method).unwrap().contains("list() {}"));
+        assert!(
+            out.edges
+                .iter()
+                .any(|edge| edge.src == symbol.id && edge.label == "DEFINED_IN")
+        );
+        assert!(targets.insert(symbol.id.clone()));
+        if scope == "top" {
+            assert_eq!(
+                symbol.id,
+                "sym:qwtm/example@src/controllers.ts#SharedController.list"
+            );
+        } else {
+            assert_ne!(
+                symbol.id,
+                "sym:qwtm/example@src/controllers.ts#SharedController.list"
+            );
+        }
+    }
+    let repeated = extract_source(source, "src/controllers.ts", &id()).unwrap();
+    assert_eq!(out.nodes, repeated.nodes);
+    assert_eq!(out.edges, repeated.edges);
+}
+
+#[test]
+fn shadowed_nest_decorators_never_borrow_file_import_proof() {
+    // AC-0120: class/method decorators execute at their creation site and
+    // cannot borrow file-wide import proof through unrelated local bindings.
+    for parameters in ["Controller: any", "Get: any", "Controller: any, Get: any"] {
+        let source = format!(
+            r#"
+import {{ Controller, Get }} from '@nestjs/common';
+function make({parameters}) {{
+  @Controller('fake')
+  class NestedController {{ @Get() run() {{}} }}
+}}
+"#
+        );
+        let out = extract_source(source.as_bytes(), "src/shadowed.ts", &id()).unwrap();
+        assert!(out.nodes.iter().any(|node| node.props["kind"] == "Method"));
+        assert!(
+            !out.nodes.iter().any(|node| node.label == "Endpoint"),
+            "{parameters}"
+        );
+        assert!(
+            !out.edges.iter().any(|edge| edge.label == "HANDLES"),
+            "{parameters}"
+        );
+    }
+}
