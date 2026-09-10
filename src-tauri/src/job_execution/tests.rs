@@ -16,6 +16,113 @@ fn start(store: &mut JobStore, locks: &JobExecutionLocks) -> JobExecution {
     store.claim_execution(&plan, reservation).unwrap().1
 }
 
+fn assert_unclaimed(connection: &rusqlite::Connection, id: i64) {
+    let state: (String, i64, Option<String>) = connection
+        .query_row(
+            "SELECT j.status, a.generation, a.owner FROM jobs j JOIN job_attempts a ON a.job_id = j.id WHERE j.id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(state, ("queued".into(), 0, None));
+}
+
+#[test]
+fn execution_reservations_sync_storage_before_claim() {
+    // AC-0157: lock inode and all new ancestor entries are synced before SQL
+    // ownership; a previously-created unclaimed file takes the same durable path.
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("state.db");
+    let mut store = JobStore::open(&database).unwrap();
+    assert!(!dir.path().join("job-executions").exists());
+    let locks = JobExecutionLocks::open(dir.path(), store.execution_namespace()).unwrap();
+    let id = store.enqueue("noop").unwrap().id;
+    let plan = store.claim_plan(id, ClaimMode::StartQueued).unwrap();
+    let observer = rusqlite::Connection::open(&database).unwrap();
+    let steps = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = steps.clone();
+    *locks.storage.before_sync.lock().unwrap() = Some(Box::new(move |step| {
+        assert_unclaimed(&observer, id);
+        observed.lock().unwrap().push(step);
+        Ok(())
+    }));
+    let expected = [
+        SyncStep::File,
+        SyncStep::Namespace,
+        SyncStep::Root,
+        SyncStep::AppData,
+    ];
+    let reservation = locks.try_reserve(plan.lock_target()).unwrap();
+    assert_eq!(*steps.lock().unwrap(), expected);
+    drop(reservation);
+    steps.lock().unwrap().clear();
+    let reservation = locks.try_reserve(plan.lock_target()).unwrap();
+    assert_eq!(*steps.lock().unwrap(), expected);
+    let (_, execution) = store.claim_execution(&plan, reservation).unwrap();
+    assert_eq!(execution.inner.generation, 1);
+    let reopened = JobStore::open(&database).unwrap();
+    assert_eq!(reopened.get(id).unwrap().status, "running");
+}
+
+#[test]
+fn execution_sync_failures_leave_jobs_unclaimed_and_release_reservations() {
+    // AC-0157: each failing sync boundary fails closed, preserves exact job
+    // history/attempt metadata and releases the same inode for a durable retry.
+    let expected = [
+        SyncStep::File,
+        SyncStep::Namespace,
+        SyncStep::Root,
+        SyncStep::AppData,
+    ];
+    for (failure_index, failure) in expected.into_iter().enumerate() {
+        let (dir, mut store, locks) = fixture();
+        let id = store.enqueue("noop").unwrap().id;
+        let before = serde_json::to_value(store.get(id).unwrap()).unwrap();
+        let plan = store.claim_plan(id, ClaimMode::StartQueued).unwrap();
+        let observer = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+        let steps = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = steps.clone();
+        *locks.storage.before_sync.lock().unwrap() = Some(Box::new(move |step| {
+            assert_unclaimed(&observer, id);
+            observed.lock().unwrap().push(step);
+            if step == failure {
+                Err(std::io::Error::other("injected storage sync failure"))
+            } else {
+                Ok(())
+            }
+        }));
+        assert!(matches!(
+            locks.try_reserve(plan.lock_target()),
+            Err(JobTransitionError::LockUnavailable)
+        ));
+        assert_eq!(*steps.lock().unwrap(), expected[..=failure_index]);
+        assert_eq!(
+            serde_json::to_value(store.get(id).unwrap()).unwrap(),
+            before
+        );
+        let observer = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+        assert_unclaimed(&observer, id);
+        let entry = locks
+            .storage
+            .locks
+            .symlink_metadata(id.to_string())
+            .unwrap();
+        *locks.storage.before_sync.lock().unwrap() = None;
+        let reservation = locks.try_reserve(plan.lock_target()).unwrap();
+        assert!(same_entry(
+            &entry,
+            &locks
+                .storage
+                .locks
+                .symlink_metadata(id.to_string())
+                .unwrap()
+        ));
+        let (_, execution) = store.claim_execution(&plan, reservation).unwrap();
+        assert_eq!(execution.inner.generation, 1);
+        assert_eq!(store.get(id).unwrap().status, "running");
+    }
+}
+
 #[test]
 fn execution_clones_hold_ownership_until_last_worker_exits() {
     // AC-0157: a detached blocking worker retains the original ownership guard.

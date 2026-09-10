@@ -1,7 +1,10 @@
 //! Private, persistent execution locks. A reservation never outlives its last
 //! execution holder, and terminal database state does not release a live worker.
 
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsSyncExt};
+use cap_fs_ext::{
+    DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsMaybeDirExt,
+    OpenOptionsSyncExt,
+};
 use cap_std::fs::{Dir, DirBuilder, OpenOptions};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -122,6 +125,8 @@ impl JobExecutionLocks {
             root,
             locks,
             name: namespace.value.clone(),
+            #[cfg(test)]
+            before_sync: std::sync::Mutex::new(None),
         });
         storage.verify()?;
         Ok(Self { namespace, storage })
@@ -155,6 +160,8 @@ impl JobExecutionLocks {
             storage: self.storage.clone(),
         };
         reservation.verify()?;
+        reservation.storage.sync_reservation(&reservation.file)?;
+        reservation.verify()?;
         Ok(reservation)
     }
 }
@@ -167,9 +174,51 @@ struct LockStorage {
     root: Dir,
     locks: Dir,
     name: String,
+    #[cfg(test)]
+    before_sync: std::sync::Mutex<Option<SyncHook>>,
+}
+
+#[cfg(test)]
+type SyncHook = Box<dyn FnMut(SyncStep) -> std::io::Result<()> + Send>;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncStep {
+    File,
+    Namespace,
+    Root,
+    AppData,
 }
 
 impl LockStorage {
+    fn sync_reservation(&self, file: &File) -> Result<(), JobTransitionError> {
+        // A later SQLite claim may survive power loss. Persist the same locked
+        // inode and every newly-created directory entry before allowing it.
+        // Repeat the whole chain even for an existing file: another process or
+        // a failed earlier reservation may have created it without finishing sync.
+        #[cfg(test)]
+        self.before_sync(SyncStep::File)?;
+        file.sync_all().map_err(lock_error)?;
+        #[cfg(test)]
+        self.before_sync(SyncStep::Namespace)?;
+        sync_directory(&self.locks)?;
+        #[cfg(test)]
+        self.before_sync(SyncStep::Root)?;
+        sync_directory(&self.root)?;
+        #[cfg(test)]
+        self.before_sync(SyncStep::AppData)?;
+        sync_directory(&self.app)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn before_sync(&self, step: SyncStep) -> Result<(), JobTransitionError> {
+        if let Some(hook) = self.before_sync.lock().map_err(lock_error)?.as_mut() {
+            hook(step).map_err(lock_error)?;
+        }
+        Ok(())
+    }
+
     fn verify(&self) -> Result<(), JobTransitionError> {
         if dunce::canonicalize(&self.app_path).map_err(lock_error)? != self.app_path {
             return Err(JobTransitionError::LockUnavailable);
@@ -215,6 +264,23 @@ impl LockStorage {
         }
         Ok(())
     }
+}
+
+fn sync_directory(directory: &Dir) -> Result<(), JobTransitionError> {
+    // Rooted Dir handles may use O_PATH on Linux, which cannot be synced.
+    // Reopen the retained directory itself for reading, never its ambient path.
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .maybe_dir(true)
+        .follow(FollowSymlinks::No)
+        .nonblock(true);
+    let file = directory.open_with(".", &options).map_err(lock_error)?;
+    let opened = file.metadata().map_err(lock_error)?;
+    if !opened.is_dir() || !same_entry(&opened, &directory.dir_metadata().map_err(lock_error)?) {
+        return Err(JobTransitionError::LockUnavailable);
+    }
+    file.sync_all().map_err(lock_error)
 }
 
 fn lock_error(_: impl std::fmt::Display) -> JobTransitionError {

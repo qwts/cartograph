@@ -54,6 +54,16 @@ unavailable/invalid locking; both fail without unlocked fallback. Private namesp
 checks do not promise isolation against arbitrary concurrent mutation by a
 process with the same user's filesystem authority.
 
+Before returning a claimable reservation, hold the acquired lock while syncing
+its file, namespace directory, job-executions directory and existing app-data
+directory, in that order, then revalidate their identities. This persists every
+entry created by the lock manager before SQLite can commit ownership. Repeat
+the chain for existing entries because an earlier preparation may have stopped
+before syncing them. Rooted readable directory handles avoid O_PATH-only handles.
+Any unsupported or failed sync rejects the reservation, releases its lock and
+leaves the job unclaimed; there is no unsynced fallback. The pre-existing app-data
+trust root's entry in its external parent is outside this creation boundary.
+
 Separate reservation from mutation: copy the required claim/recovery plan under
 the jobs mutex, release it, acquire the OS reservation, then enter a short SQLite
 IMMEDIATE transaction. No database, graph, cache or settings mutex spans an OS
