@@ -903,6 +903,242 @@ fn managed_readiness_batch_rolls_back_on_late_invalid_member() {
     }
 }
 
+fn isolated_managed_operation_case(name: &str) -> bool {
+    use std::io::Read;
+    use std::process::{Child, Command, Stdio};
+    const MARKER: &str = "CARTOGRAPH_REGISTERED_OPERATION_CASE";
+    let exact = format!("registered_source_tests::{name}");
+    if std::env::var(MARKER).is_ok_and(|value| value == exact) {
+        return false;
+    }
+    // Parallel fixtures spawn Git processes. CLOEXEC closes inherited lock
+    // handles only at exec, so open this fixture's locks after its own exec.
+    struct Cleanup(Child);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Cleanup(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &exact, "--nocapture", "--test-threads=1"])
+            .env(MARKER, &exact)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdout = child.0.stdout.take().unwrap();
+    let mut stderr = child.0.stderr.take().unwrap();
+    let stdout = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let stderr = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let status = child.0.wait().unwrap();
+    let stdout = stdout.join().unwrap();
+    let stderr = stderr.join().unwrap();
+    assert!(
+        status.success(),
+        "isolated {exact} failed:\n{}\n{}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    true
+}
+
+fn ready_managed_source(state: &AppState, name: &str) -> RegisteredSource {
+    let source = state
+        .sources
+        .lock()
+        .unwrap()
+        .reserve_managed(&format!("https://github.com/fixture/{name}"))
+        .unwrap();
+    let managed = source.managed().unwrap().unwrap();
+    let guard = managed.try_write().unwrap();
+    // The real slot initializer owns this destination; an empty Git checkout
+    // suffices to exercise the actual host acquisition/validation boundary.
+    std::fs::create_dir(guard.root()).unwrap();
+    let output = std::process::Command::new("git")
+        .args(["-c", "init.templateDir=", "init", "--quiet"])
+        .arg(guard.root())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git fixture init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::write(guard.root().join("keep.ts"), "retained checkout canary").unwrap();
+    drop(guard);
+    state
+        .sources
+        .lock()
+        .unwrap()
+        .set_ready(&source.source_id, true)
+        .unwrap();
+    let source = state
+        .sources
+        .lock()
+        .unwrap()
+        .get_by_id(&source.source_id)
+        .unwrap()
+        .unwrap();
+    assert!(source.is_ready());
+    source
+}
+
+fn ready_after_reopen(app_data: &Path, source: &RegisteredSource) -> bool {
+    SourceRegistry::open(&app_data.join("state.db"), app_data)
+        .unwrap()
+        .get_by_id(&source.source_id)
+        .unwrap()
+        .unwrap()
+        .is_ready()
+}
+
+#[test]
+fn managed_operation_invalidates_ready_source_before_checkout_validation() {
+    if isolated_managed_operation_case(
+        "managed_operation_invalidates_ready_source_before_checkout_validation",
+    ) {
+        return;
+    }
+    // AC-0147: re-add of a previously ready but corrupt checkout fails only
+    // after durable unavailability; an existing directory cannot revive it.
+    let directory_root = tempfile::tempdir().unwrap();
+    let app_data = directory(directory_root.path(), "private");
+    let state = app_state(&app_data);
+    let source = ready_managed_source(&state, "corrupt");
+    std::fs::remove_dir_all(source.root().join(".git")).unwrap();
+    assert!(
+        ready_after_reopen(&app_data, &source),
+        "the old ready flag is observable before re-add"
+    );
+    assert!(SourceOperation::acquire(&state.sources, [(source.clone(), true)]).is_err());
+    assert!(!ready_after_reopen(&app_data, &source));
+    assert_eq!(
+        std::fs::read_to_string(source.root().join("keep.ts")).unwrap(),
+        "retained checkout canary"
+    );
+    assert!(
+        source_access::with_registered_read(&state.sources, &source.repo_key, |_| Ok(())).is_err()
+    );
+}
+
+#[test]
+fn managed_operation_busy_lock_preserves_all_ready_flags() {
+    if isolated_managed_operation_case("managed_operation_busy_lock_preserves_all_ready_flags") {
+        return;
+    }
+    // AC-0147: a later busy lock means no full reservation was obtained. The
+    // earlier reserved source remains ready, and its temporary handle releases.
+    let directory_root = tempfile::tempdir().unwrap();
+    let app_data = directory(directory_root.path(), "private");
+    let state = app_state(&app_data);
+    let mut sources = [
+        ready_managed_source(&state, "first"),
+        ready_managed_source(&state, "second"),
+    ];
+    sources.sort_by(|a, b| a.source_id.cmp(&b.source_id));
+    let busy = sources[1]
+        .managed()
+        .unwrap()
+        .unwrap()
+        .try_reserve_write()
+        .unwrap();
+    let result = SourceOperation::acquire(
+        &state.sources,
+        sources.iter().cloned().map(|source| (source, true)),
+    );
+    assert!(matches!(result, Err(error) if error.contains("busy")));
+    for source in &sources {
+        assert!(ready_after_reopen(&app_data, source));
+    }
+    let released = sources[0]
+        .managed()
+        .unwrap()
+        .unwrap()
+        .try_reserve_write()
+        .unwrap();
+    drop(released);
+    drop(busy);
+}
+
+#[test]
+fn managed_operation_late_validation_failure_keeps_all_writes_unavailable() {
+    if isolated_managed_operation_case(
+        "managed_operation_late_validation_failure_keeps_all_writes_unavailable",
+    ) {
+        return;
+    }
+    // AC-0147: once every lock is reserved, all planned writes become unavailable
+    // atomically before either write initialization or read validation can fail.
+    let directory_root = tempfile::tempdir().unwrap();
+    let app_data = directory(directory_root.path(), "private");
+    let state = app_state(&app_data);
+    let mut sources = [
+        ready_managed_source(&state, "first"),
+        ready_managed_source(&state, "second"),
+    ];
+    sources.sort_by(|a, b| a.source_id.cmp(&b.source_id));
+    std::fs::remove_dir_all(sources[1].root().join(".git")).unwrap();
+    assert!(
+        SourceOperation::acquire(
+            &state.sources,
+            sources.iter().cloned().map(|source| (source, true))
+        )
+        .is_err()
+    );
+    for source in &sources {
+        assert!(!ready_after_reopen(&app_data, source));
+        assert_eq!(
+            std::fs::read_to_string(source.root().join("keep.ts")).unwrap(),
+            "retained checkout canary"
+        );
+    }
+    let ids: Vec<_> = sources
+        .iter()
+        .map(|source| source.source_id.clone())
+        .collect();
+    state
+        .sources
+        .lock()
+        .unwrap()
+        .set_ready_batch(&ids, true)
+        .unwrap();
+    // The corrupt later source may also be an ADR read member. Its failed read
+    // validation must not leave the already-reserved write source marked ready.
+    assert!(
+        SourceOperation::acquire(
+            &state.sources,
+            [(sources[0].clone(), true), (sources[1].clone(), false)]
+        )
+        .is_err()
+    );
+    assert!(!ready_after_reopen(&app_data, &sources[0]));
+    assert!(
+        ready_after_reopen(&app_data, &sources[1]),
+        "read-only members do not mutate readiness"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn managed_origin_rebinding_is_rejected_before_clone() {

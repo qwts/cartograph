@@ -223,27 +223,33 @@ impl ManagedCheckout {
 
     /// Acquire a nonblocking shared guard over an existing owned checkout.
     pub fn try_read(&self) -> Result<ManagedReadGuard, IngestError> {
-        let lock = self.acquire_lock(false)?;
-        self.validate_slot()?;
-        validate_checkout(&self.root)?;
-        Ok(ManagedReadGuard {
+        self.try_reserve_read()?.validate()
+    }
+
+    /// Acquire only a shared OS lock, without inspecting the managed slot or
+    /// checkout. The host can reserve its complete lock plan before changing
+    /// availability or validating any root. No root-use guard is returned yet.
+    pub fn try_reserve_read(&self) -> Result<ManagedReadReservation, IngestError> {
+        Ok(ManagedReadReservation {
             checkout: self.clone(),
-            _lock: lock,
+            lock: self.acquire_lock(false)?,
         })
     }
 
-    /// Acquire exclusive use, initializing only an absent owned slot. The host
-    /// separately marks availability false/true around its complete operation.
+    /// Acquire exclusive use, initializing only an absent owned slot. Registry
+    /// hosts use [`Self::try_reserve_write`] instead, persisting unavailability
+    /// before initialization/validation through the reservation can fail.
     pub fn try_write(&self) -> Result<ManagedWriteGuard, IngestError> {
-        let lock = self.acquire_lock(true)?;
-        self.initialize_slot()?;
-        self.validate_slot()?;
-        if entry_exists(&self.root)? {
-            validate_checkout(&self.root)?;
-        }
-        Ok(ManagedWriteGuard {
+        self.try_reserve_write()?.initialize()
+    }
+
+    /// Acquire only an exclusive OS lock, without initializing or validating
+    /// the managed slot/checkout. Retain all reservations across the host's
+    /// atomic unavailable-state transition, then initialize with the same handle.
+    pub fn try_reserve_write(&self) -> Result<ManagedWriteReservation, IngestError> {
+        Ok(ManagedWriteReservation {
             checkout: self.clone(),
-            _lock: lock,
+            lock: self.acquire_lock(true)?,
         })
     }
 
@@ -350,6 +356,50 @@ impl ManagedCheckout {
             return Err(IngestError::SourceOwnership);
         }
         Ok(())
+    }
+}
+
+/// Shared lock reservation with no validated checkout access. Dropping it
+/// releases its owned handle; promotion transfers that same handle unchanged.
+#[derive(Debug)]
+pub struct ManagedReadReservation {
+    checkout: ManagedCheckout,
+    lock: File,
+}
+
+impl ManagedReadReservation {
+    /// Validate the owned slot and existing checkout while retaining the lock.
+    pub fn validate(self) -> Result<ManagedReadGuard, IngestError> {
+        self.checkout.validate_slot()?;
+        validate_checkout(&self.checkout.root)?;
+        Ok(ManagedReadGuard {
+            checkout: self.checkout,
+            _lock: self.lock,
+        })
+    }
+}
+
+/// Exclusive lock reservation with no checkout initialization or root access.
+/// Registry hosts persist unavailability before promoting this reservation.
+#[derive(Debug)]
+pub struct ManagedWriteReservation {
+    checkout: ManagedCheckout,
+    lock: File,
+}
+
+impl ManagedWriteReservation {
+    /// Initialize an absent owned slot and validate any existing checkout,
+    /// transferring the already-held OS lock to the complete operation guard.
+    pub fn initialize(self) -> Result<ManagedWriteGuard, IngestError> {
+        self.checkout.initialize_slot()?;
+        self.checkout.validate_slot()?;
+        if entry_exists(&self.checkout.root)? {
+            validate_checkout(&self.checkout.root)?;
+        }
+        Ok(ManagedWriteGuard {
+            checkout: self.checkout,
+            _lock: self.lock,
+        })
     }
 }
 
