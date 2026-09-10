@@ -14,7 +14,7 @@ const MAX_RULE_BYTES: usize = 64 * 1024;
 const MAX_FILE_RULE_BYTES: usize = 1024 * 1024;
 const MAX_RULES_PER_FILE: usize = 256;
 
-fn source(cx: &FileCx<'_>, node: TsNode<'_>) -> EvidenceRef {
+pub(super) fn source(cx: &FileCx<'_>, node: TsNode<'_>) -> EvidenceRef {
     EvidenceRef {
         repo: cx.id.repo.into(),
         path: cx.path.into(),
@@ -67,6 +67,24 @@ fn reason_description(reason: &str) -> &'static str {
         "unsupported_rule_syntax" => {
             "Incomplete source syntax prevented supported rule analysis; remaining file analysis was omitted."
         }
+        "local_definition_unsupported" => {
+            "The initializer contains source forms outside supported structural capture."
+        }
+        "definition_limit" => {
+            "A local-definition capture limit was reached; initializer evidence remains incomplete."
+        }
+        "definition_order_unproven" => {
+            "Declaration initialization before this original read was not established."
+        }
+        "definition_scope_unsupported" => {
+            "Initializer recovery crosses an unsupported callable or control-flow boundary."
+        }
+        "definition_binding_unsupported" => {
+            "This binding is not a stable, directly initialized simple local const."
+        }
+        "runtime_value_unknown" => {
+            "The value of this runtime input or member read has not been established."
+        }
         _ => "Source-rule interpretation remains incomplete.",
     }
 }
@@ -76,6 +94,7 @@ struct RuleBuilder<'cx, 'tree> {
     rule_id: String,
     gaps: BTreeMap<String, (String, TsNode<'tree>)>,
     dependencies: Vec<RuleDependency>,
+    definition_seeds: Vec<TsNode<'tree>>,
 }
 
 impl<'cx, 'tree> RuleBuilder<'cx, 'tree> {
@@ -90,6 +109,12 @@ impl<'cx, 'tree> RuleBuilder<'cx, 'tree> {
 
     fn control_gap(&mut self, reason: RuleGapReason, at: TsNode<'tree>) {
         let gap_id = self.gap(reason, at);
+        // The Gap retains its own original provenance and is always emitted
+        // with a DEPENDS_ON edge plus interpretation reference. Do not exceed
+        // the v2 prerequisite cap merely to duplicate that source in this list.
+        if self.dependencies.len() >= MAX_DEPENDENCIES {
+            return;
+        }
         if !self.dependencies.iter().any(|dependency| {
             dependency.resolution
                 == DependencyResolution::Unresolved {
@@ -196,6 +221,9 @@ impl<'cx, 'tree> RuleBuilder<'cx, 'tree> {
                         })
                     })
             } else if is_value_identifier(node) {
+                if role == DependencyRole::Condition {
+                    self.definition_seeds.push(node);
+                }
                 Some(
                     bindings
                         .stable_declaration(node, self.cx.text(&node))
@@ -339,7 +367,10 @@ fn omission_gap(
     });
 }
 
-fn capture(cx: &FileCx<'_>, node: TsNode<'_>) -> (SourceExpression, Vec<SourceRedaction>) {
+pub(super) fn capture(
+    cx: &FileCx<'_>,
+    node: TsNode<'_>,
+) -> (SourceExpression, Vec<SourceRedaction>) {
     if node.byte_range().len() <= MAX_EXPRESSION_BYTES {
         return sanitize_expression(cx, node);
     }
@@ -450,6 +481,7 @@ pub(super) fn extract<'tree>(
                 rule_id: rule_id.clone(),
                 gaps: BTreeMap::new(),
                 dependencies: Vec::new(),
+                definition_seeds: Vec::new(),
             };
             builder.control_gap(RuleGapReason::ExecutionPredicateUnknown, exit);
             builder.control_gap(RuleGapReason::ConsumerSemanticsUnknown, exit);
@@ -508,6 +540,18 @@ pub(super) fn extract<'tree>(
             } else {
                 LocalExit::Return { value }
             };
+            let seeds = std::mem::take(&mut builder.definition_seeds);
+            let (local_definitions, mut definition_redactions) = super::local_definitions::recover(
+                cx,
+                bindings,
+                &owner_id,
+                &seeds,
+                &mut |reason, at| {
+                    builder.control_gap(reason, at);
+                    builder.gap(reason, at)
+                },
+            );
+            redactions.append(&mut definition_redactions);
             let evidence = GuardedExitEvidence {
                 schema_version: RULE_EVIDENCE_SCHEMA_VERSION,
                 kind: RuleKind::GuardedExit,
@@ -517,6 +561,7 @@ pub(super) fn extract<'tree>(
                 conditions,
                 effect,
                 dependencies: builder.dependencies,
+                local_definitions: Some(local_definitions),
                 interpretation: Interpretation {
                     execution_predicate: InterpretationStatus::NotEstablished,
                     consumer_effect: InterpretationStatus::NotEstablished,
@@ -524,12 +569,16 @@ pub(super) fn extract<'tree>(
                 },
                 redactions,
             };
-            if evidence.validate().is_err() {
+            if let Err(error) = evidence.validate() {
                 omission_gap(
                     cx,
                     exit,
                     &owner_id,
-                    RuleGapReason::UnsupportedRuleSyntax,
+                    if matches!(error, RuleValidationError::Limit(_)) {
+                        RuleGapReason::AnalysisLimit
+                    } else {
+                        RuleGapReason::UnsupportedRuleSyntax
+                    },
                     out,
                 );
                 return;

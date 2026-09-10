@@ -14,8 +14,36 @@ pub const MAX_RECEIPT_BYTES: usize = 128 * 1024;
 pub const MAX_RECEIPT_RANGES: usize = 1024;
 const MAX_ID_BYTES: usize = 4096;
 const MAX_REPO_BYTES: usize = 256;
-const RECEIPT_PREFIX: &str = "ts-primary-v1:";
-const PRODUCER_CONTRACT: &str = "t0.adapter-ts/direct-lexical-v1";
+const RECEIPT_SCHEMA_VERSION: u32 = 2;
+
+struct Contract {
+    prefix: &'static str,
+    producer: &'static str,
+    domain: &'static [u8],
+    grammar_package: &'static str,
+    parser_package: &'static str,
+}
+
+fn contract(version: u32) -> Result<Contract, CapturedError> {
+    match version {
+        1 => Ok(Contract {
+            prefix: "ts-primary-v1:",
+            producer: "t0.adapter-ts/direct-lexical-v1",
+            domain: b"cartograph:ts-primary-receipt:v1\0",
+            // Historical pins are frozen independently of the current producer.
+            grammar_package: "tree-sitter-typescript@0.23.2",
+            parser_package: "tree-sitter@0.26.12",
+        }),
+        2 => Ok(Contract {
+            prefix: "ts-primary-v2:",
+            producer: "t0.adapter-ts/direct-lexical-v2",
+            domain: b"cartograph:ts-primary-receipt:v2\0",
+            grammar_package: GRAMMAR_PACKAGE,
+            parser_package: PARSER_PACKAGE,
+        }),
+        _ => Err(CapturedError::Invalid("receipt contract version")),
+    }
+}
 // Exact dependency pins in Cargo.toml keep these producer inputs truthful.
 const GRAMMAR_PACKAGE: &str = "tree-sitter-typescript@0.23.2";
 const PARSER_PACKAGE: &str = "tree-sitter@0.26.12";
@@ -63,6 +91,18 @@ pub enum RangeRole {
     DependencyDeclaration,
     /// Redacted original source, indexed by redaction.
     Redaction,
+    /// Local declaration, indexed by definition (v2 only).
+    DefinitionDeclaration,
+    /// Original admitted use, using a global lexical per-role counter (v2 only).
+    DefinitionUse,
+    /// Original initializer, indexed by definition (v2 only).
+    DefinitionInitializer,
+    /// Arena expression, using a global producer-order counter (v2 only).
+    DefinitionExpression,
+    /// Initializer prerequisite, using a global per-role counter (v2 only).
+    DefinitionDependency,
+    /// Binding declaration paired with its initializer dependency index (v2 only).
+    DefinitionDependencyDeclaration,
 }
 
 /// One unchanged original citation and its exact retained raw-byte binding.
@@ -230,17 +270,21 @@ fn content_id(content: &Content) -> Result<String, CapturedError> {
         .map_err(|_| CapturedError::Invalid("receipt serialization"))?;
     let bytes = serde_json::to_vec(&canonical(value))
         .map_err(|_| CapturedError::Invalid("receipt serialization"))?;
-    let mut input = b"cartograph:ts-primary-receipt:v1\0".to_vec();
+    let contract = contract(content.schema_version)?;
+    let mut input = contract.domain.to_vec();
     input.extend(bytes);
     Ok(format!(
-        "{RECEIPT_PREFIX}{}",
+        "{}{}",
+        contract.prefix,
         core_prov::content_hash(&input)
     ))
 }
 
 fn inventory(
     props: &serde_json::Value,
+    version: u32,
 ) -> Result<Vec<(RangeRole, u32, EvidenceRef)>, CapturedError> {
+    contract(version)?;
     let provenance: Provenance = serde_json::from_value(
         props
             .get("prov")
@@ -269,6 +313,9 @@ fn inventory(
     if let Some(value) = props.get("rule") {
         let rule = GuardedExitEvidence::from_value(value.clone())
             .map_err(|_| CapturedError::Invalid("rule source inventory"))?;
+        if rule.schema_version != version {
+            return Err(CapturedError::Invalid("rule and receipt version"));
+        }
         push(RangeRole::RuleExit, 0, &rule.exit_source)?;
         for (index, condition) in rule.conditions.iter().enumerate() {
             push(RangeRole::ConditionBranch, index, &condition.branch_source)?;
@@ -291,6 +338,52 @@ fn inventory(
                 push(RangeRole::DependencyDeclaration, index, declaration)?;
             }
         }
+        if let Some(definitions) = &rule.local_definitions {
+            let mut use_index = 0;
+            let mut expression_index = 0;
+            let mut dependency_index = 0;
+            for (index, definition) in definitions.iter().enumerate() {
+                push(
+                    RangeRole::DefinitionDeclaration,
+                    index,
+                    &definition.declaration,
+                )?;
+                for usage in &definition.uses {
+                    push(RangeRole::DefinitionUse, use_index, usage)?;
+                    use_index += 1;
+                }
+                push(
+                    RangeRole::DefinitionInitializer,
+                    index,
+                    &definition.initializer.source,
+                )?;
+                for node in &definition.expression.nodes {
+                    push(
+                        RangeRole::DefinitionExpression,
+                        expression_index,
+                        &node.expression.source,
+                    )?;
+                    expression_index += 1;
+                }
+                for dependency in &definition.dependencies {
+                    push(
+                        RangeRole::DefinitionDependency,
+                        dependency_index,
+                        &dependency.source,
+                    )?;
+                    if let DependencyResolution::Binding { declaration, .. } =
+                        &dependency.resolution
+                    {
+                        push(
+                            RangeRole::DefinitionDependencyDeclaration,
+                            dependency_index,
+                            declaration,
+                        )?;
+                    }
+                    dependency_index += 1;
+                }
+            }
+        }
         for (index, redaction) in rule.redactions.iter().enumerate() {
             push(RangeRole::Redaction, index, &redaction.source)?;
         }
@@ -298,7 +391,7 @@ fn inventory(
     Ok(ranges)
 }
 
-fn valid_inventory_shape(ranges: &[ReceiptRange]) -> bool {
+fn valid_inventory_shape(ranges: &[ReceiptRange], version: u32) -> bool {
     let mut next = 0;
     let mut take = |role, index| {
         if ranges
@@ -337,6 +430,39 @@ fn valid_inventory_shape(ranges: &[ReceiptRange]) -> bool {
             take(RangeRole::DependencyDeclaration, index);
             index += 1;
         }
+        if version == 2 {
+            let mut definition = 0;
+            let mut usage = 0;
+            let mut expression = 0;
+            let mut dependency = 0;
+            while take(RangeRole::DefinitionDeclaration, definition) {
+                let previous_uses = usage;
+                while take(RangeRole::DefinitionUse, usage) {
+                    usage += 1;
+                }
+                if usage == previous_uses || !take(RangeRole::DefinitionInitializer, definition) {
+                    return false;
+                }
+                let previous_expressions = expression;
+                while take(RangeRole::DefinitionExpression, expression) {
+                    expression += 1;
+                }
+                if expression == previous_expressions {
+                    return false;
+                }
+                while take(RangeRole::DefinitionDependency, dependency) {
+                    take(RangeRole::DefinitionDependencyDeclaration, dependency);
+                    dependency += 1;
+                }
+                definition += 1;
+            }
+            if definition as usize > core_graph::rules::MAX_LOCAL_DEFINITIONS
+                || expression as usize > core_graph::rules::MAX_DEFINITION_NODES
+                || dependency as usize > core_graph::rules::MAX_INITIALIZER_DEPENDENCIES
+            {
+                return false;
+            }
+        }
         index = 0;
         while take(RangeRole::Redaction, index) {
             index += 1;
@@ -353,7 +479,7 @@ impl Receipt {
         fact_digest: String,
         props: &serde_json::Value,
     ) -> Result<Self, CapturedError> {
-        let ranges = inventory(props)?
+        let ranges = inventory(props, RECEIPT_SCHEMA_VERSION)?
             .into_iter()
             .map(|(role, index, evidence)| {
                 let captured = file.span(evidence.byte_start, evidence.byte_end)?;
@@ -366,14 +492,14 @@ impl Receipt {
             })
             .collect::<Result<Vec<_>, CapturedError>>()?;
         let content = Content {
-            schema_version: 1,
+            schema_version: RECEIPT_SCHEMA_VERSION,
             source_id: file.reference().source_id.clone(),
             repo_key: id.repo.into(),
             file: file.reference().clone(),
-            producer_contract: PRODUCER_CONTRACT.into(),
+            producer_contract: contract(RECEIPT_SCHEMA_VERSION)?.producer.into(),
             grammar: Grammar::for_path(&file.reference().path),
-            grammar_package: GRAMMAR_PACKAGE.into(),
-            parser_package: PARSER_PACKAGE.into(),
+            grammar_package: contract(RECEIPT_SCHEMA_VERSION)?.grammar_package.into(),
+            parser_package: contract(RECEIPT_SCHEMA_VERSION)?.parser_package.into(),
             fact_key,
             fact_digest,
             ranges,
@@ -473,11 +599,11 @@ impl Receipt {
     pub fn validate(&self) -> Result<(), CapturedError> {
         let content = &self.content;
         validate_identity(&content.file, &content.repo_key)?;
-        if content.schema_version != 1
-            || content.source_id != content.file.source_id
-            || content.producer_contract != PRODUCER_CONTRACT
-            || content.grammar_package != GRAMMAR_PACKAGE
-            || content.parser_package != PARSER_PACKAGE
+        let contract = contract(content.schema_version)?;
+        if content.source_id != content.file.source_id
+            || content.producer_contract != contract.producer
+            || content.grammar_package != contract.grammar_package
+            || content.parser_package != contract.parser_package
             || content.grammar != Grammar::for_path(&content.file.path)
         {
             return Err(CapturedError::Invalid("receipt contract"));
@@ -497,14 +623,14 @@ impl Receipt {
             .iter()
             .any(|value| !bounded_identity(value, MAX_ID_BYTES))
             || !hash_has_prefix(&content.fact_digest, digest_prefix)
-            || !hash_has_prefix(&self.receipt_id, RECEIPT_PREFIX)
+            || !hash_has_prefix(&self.receipt_id, contract.prefix)
         {
             return Err(CapturedError::Invalid("receipt fact identity"));
         }
         if content.ranges.is_empty() || content.ranges.len() > MAX_RECEIPT_RANGES {
             return Err(CapturedError::Limit("receipt ranges"));
         }
-        if !valid_inventory_shape(&content.ranges) {
+        if !valid_inventory_shape(&content.ranges, content.schema_version) {
             return Err(CapturedError::Invalid("receipt range inventory order"));
         }
         let mut seen = std::collections::BTreeSet::new();
@@ -539,7 +665,7 @@ impl Receipt {
     }
 
     fn matches_inventory(&self, props: &serde_json::Value) -> bool {
-        inventory(props).is_ok_and(|ranges| {
+        inventory(props, self.content.schema_version).is_ok_and(|ranges| {
             ranges.len() == self.content.ranges.len()
                 && ranges.iter().zip(&self.content.ranges).all(
                     |((role, index, evidence), range)| {
@@ -607,7 +733,7 @@ mod tests {
             .find(|receipt| receipt.ranges().len() > 1)
             .unwrap();
         let cases: [fn(&mut Content); 9] = [
-            |content| content.schema_version = 2,
+            |content| content.producer_contract = "t0.adapter-ts/direct-lexical-v1".into(),
             |content| content.grammar = Grammar::Tsx,
             |content| content.ranges[0].index = 1,
             |content| content.ranges.swap(0, 1),
@@ -656,3 +782,6 @@ mod tests {
         assert!(!omitted.matches_node(node));
     }
 }
+
+#[cfg(test)]
+mod v2_tests;

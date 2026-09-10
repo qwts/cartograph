@@ -263,6 +263,55 @@ export const FullArtifactSetAndInlineProvenance: Story = {
   },
 };
 
+export const LocalConstInitializersKeepObservationAuthority: Story = {
+  // AC-0170: the stored artifact is displayed and copied with its qualification;
+  // initializer syntax does not become a curatable or complete business rule.
+  args: {
+    bundle: {
+      ...BUNDLE,
+      artifacts: [{
+        ...SOURCE_RULE_ARTIFACT,
+        content: '# Source rule evidence\n\nSame-callable branch condition: (allowed)\n\n### Local const initializers\n\nInitializer as written; value at use and business meaning are not established.\n\nBinding: binding:allowed\n\nDeclaration source: fixture:rules.ts bytes 20..65 @ workdir\n\nUse sources: fixture:rules.ts bytes 72..79 @ workdir\n\nStored initializer: item.enabled !== false\n\nStructured expression evidence: Binary StrictNotEqual; runtime value unresolved\n\nConsumer effect: not established.\n',
+      }],
+      assertion_count: SOURCE_RULE_ARTIFACT.assertions.length,
+    },
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const source = canvas.getByTestId('spec-artifact-source');
+    await expect(source).toHaveTextContent('Same-callable branch condition: (allowed)');
+    await expect(source).toHaveTextContent('Initializer as written; value at use and business meaning are not established.');
+    await expect(source).toHaveTextContent('Stored initializer: item.enabled !== false');
+    await expect(source).toHaveTextContent('rules.ts bytes 20..65 @ workdir');
+    await expect(source).toHaveTextContent('runtime value unresolved');
+    await expect(canvas.getByText(/Source observations only/)).toBeInTheDocument();
+    const observed = within(canvas.getByText(SOURCE_RULE.summary).closest('li') as HTMLElement);
+    await expect(observed.getByRole('button', { name: 'Accept' })).toBeDisabled();
+    await userEvent.click(canvas.getByRole('button', { name: 'Copy artifact' }));
+    await expect(args.onCopyArtifact).toHaveBeenCalledWith(args.bundle?.artifacts[0]);
+  },
+};
+
+export const LegacyRuleDefinitionsWereNotCollected: Story = {
+  // AC-0170: v1 history remains visible without implying a fresh empty analysis.
+  args: {
+    bundle: {
+      ...BUNDLE,
+      artifacts: [{
+        ...SOURCE_RULE_ARTIFACT,
+        content: '# Source rule evidence\n\n### Local const initializers\n\nInitializer as written; value at use and business meaning are not established.\n\nLocal-definition evidence was not collected in this version 1 observation.\n',
+      }],
+      assertion_count: SOURCE_RULE_ARTIFACT.assertions.length,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId('spec-artifact-source')).toHaveTextContent('Local-definition evidence was not collected in this version 1 observation.');
+    await expect(canvas.getByText(/Source observations only/)).toHaveTextContent('Complete execution predicates and consumer effects are not established.');
+    await expect(canvas.getByText(SOURCE_RULE.summary)).toBeInTheDocument();
+  },
+};
+
 export const SecurityFindings: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
