@@ -407,3 +407,19 @@
 - **Security:** Private host-generated ownership only; no caller tokens, force takeover, target writes, added egress or implicit model replay.
 - **Performance:** Short SQLite transitions, owned plans and try-only OS reservations; no mutex spans long work or blocking lock acquisition.
 - **Trace:** Durable runtime prerequisite #393 (SPEC-07) · `app`, `ui` · — · T-0156..0163
+
+### US-0030 — Inspect cited local definitions behind rule conditions
+- **Actor:** Engineer or agent investigating business-rule evidence
+- **As a** engineer **I want** rule conditions linked to supported local initializer structure and its gaps **so that** I can inspect source reasoning without mistaking it for established runtime or business meaning.
+- **Priority:** Must · **Status:** In-Progress
+- **AC-0164** Given stored rule evidence, when v1 or v2 is read or newly produced, then v1 retains its original wire meaning and bytes, v2 requires bounded local-definition evidence, and null, malformed or unsupported version combinations fail explicitly without rewriting historical content.
+- **AC-0165** Given a condition dependency, when a local definition is recovered, then the declaration is a scope-proven directly initialized simple const in the same callable with structured before-use proof; shadowing, TDZ, mutation, unsupported scope crossings and non-admitted bindings retain explicit gaps.
+- **AC-0166** Given an admitted initializer, when its expression is captured, then a cited flat arena preserves known operator/operand order, grouping, short-circuit and member syntax without substitution or evaluation, while runtime values and unsupported forms remain explicitly unestablished.
+- **AC-0167** Given source expressions or excessive analysis, when local definitions are emitted, then every stored display/literal uses the source-aware sanitizer and all definition/node/dependency/depth/byte limits fail visibly without leaking withheld text or claiming truncated expressions complete.
+- **AC-0168** Given nested definition evidence and revision changes, when source traversal or ordinary cache retargeting runs, then every declaration, use, initializer, expression, dependency and redaction reference is visited in the declared order and the complete fact hash reflects the actual revision.
+- **AC-0169** Given captured parsing and historical receipts, when v2 definitions are produced or current facts change, then new versioned receipts bind the complete fact and every original range, v1 identities remain unchanged and readable, and oversized, stale, missing or mismatched inventories cannot acquire a partial or substituted current association.
+- **AC-0170** Given shared context and the source rule inventory, when definitions are shown, then both surfaces retain the same structured evidence and citations, safely render stored expressions, disclose v1 evidence absence and unresolved value/business meaning, and preserve provenance filtering and the original condition.
+- **AC-0171** Given the frozen Vendure oracle/input, when the local-definition increment is assessed, then repeated source-only runs and an independent source audit record separate revision/hash/score artifacts, preserve the eight-rule denominator and 41-case obligations, and distinguish definition improvement from complete rules or producer input closure.
+- **Security:** T0 is model-free; no target writes, raw-source rereads in shared projections, secret-bearing fallbacks, tier upgrades or historical proposal rewrites.
+- **Performance:** Bounded flat arenas and traversal; 16 definitions, 64 expression nodes and 128 initializer dependencies per rule, depth 8 and definition-chain depth 4, with existing payload/receipt caps retained.
+- **Trace:** H2 prerequisite #398 (SPEC-08) · adapters-lang-ts, core-graph, spec, context-hub, app, ui · — · T-0164..0171

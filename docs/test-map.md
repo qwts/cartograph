@@ -18,6 +18,14 @@ proves that a procedure exists, not that its AC or delivery gate has passed.
 
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
+| T-0164 | AC-0164 | reserved | — | Local rule definitions #398; SPEC-08 |
+| T-0165 | AC-0165 | reserved | — | Local rule definitions #398; SPEC-08 |
+| T-0166 | AC-0166 | reserved | — | Local rule definitions #398; SPEC-08 |
+| T-0167 | AC-0167 | reserved | — | Local rule definitions #398; SPEC-08 |
+| T-0168 | AC-0168 | reserved | — | Local rule definitions #398; SPEC-08 |
+| T-0169 | AC-0169 | reserved | — | Local rule definitions #398; SPEC-08 |
+| T-0170 | AC-0170 | reserved | — | Local rule definitions #398; SPEC-08 |
+| T-0171 | AC-0171 | reserved | — | Local rule definitions #398; SPEC-08 |
 | T-0156 | AC-0156 | rust | app::execution_metadata_preserves_legacy_history_and_namespace, app::invalid_metadata_and_ignored_claims_fail_closed, app::generation_overflow_and_foreign_reservations_leave_history_unchanged | Private versioned metadata, unchanged legacy fields, bounded generation and foreign-store rejection |
 | T-0157 | AC-0157 | rust | app::execution_clones_hold_ownership_until_last_worker_exits, app::execution_locks_survive_process_exit_without_stealing_live_work, app::foreign_missing_or_substituted_locks_never_grant_ownership, app::symlink_special_and_widened_lock_entries_fail_closed | Real OS ownership, final-holder release, independent process exit and rooted lock identity |
 | T-0158 | AC-0158 | rust | app::cancelled_live_execution_excludes_retry_and_updates_are_fenced, app::cleared_execution_stops_without_erasing_other_history, app::interrupted_jobs_are_recovered_and_resumable | Exact-attempt progress/settlement; cancelled rows preserved and missing/stale/interrupted attempts stop distinctly |

@@ -1,6 +1,7 @@
 # SPEC-02 — Source-backed rule evidence
 
-Status: implementation in progress in #381. Extends SPEC-01's H2 gate;
+Status: guarded-exit evidence delivered in #381; local-definition extension #398
+is specified in [SPEC-08](SPEC-08_local-rule-definitions.md). Extends SPEC-01's H2 gate;
 it does not by itself fulfill the Vendure cart-readiness benchmark.
 
 ## Purpose and stages
