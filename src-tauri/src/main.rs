@@ -1876,7 +1876,7 @@ async fn run_escalation(
     }
     let job = (|| {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        jobs.finish(job_id, &[proposal.proposal_id.clone()])
+        jobs.finish(job_id, std::slice::from_ref(&proposal.proposal_id))
             .map_err(|e| e.to_string())
     })()
     .map_err(&fail)?;
