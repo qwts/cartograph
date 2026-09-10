@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import { usePrimarySourceStore, type CapturedDescription, type CapturedText } from './primarySourceStore';
+import { usePrimarySourceStore, type CapturedDescription, type CapturedText, type RetainedSource } from './primarySourceStore';
 import { useAppStore, type GraphNode } from './store';
 
 const node = (id: string): GraphNode => ({ id, label: 'BusinessRule', props: {} });
@@ -13,6 +13,7 @@ const description = (id: string): CapturedDescription => ({
 
 beforeEach(() => {
   vi.stubGlobal('window', {});
+  usePrimarySourceStore.setState({ sources: [], retentionError: null, retentionMessage: null });
 });
 
 afterEach(() => {
@@ -20,6 +21,72 @@ afterEach(() => {
   vi.unstubAllGlobals();
   usePrimarySourceStore.getState().clear();
   usePrimarySourceStore.getState().dismissPreview();
+});
+
+describe('retained-source inventory reloads (AC-0154)', () => {
+  const sources: RetainedSource[] = [{ source_id: 'src_current', repo_key: 'local/src_current', display_name: 'current' }];
+
+  it('clears an earlier inventory error when a reload starts and succeeds', async () => {
+    let reply: (value: RetainedSource[]) => void = () => {};
+    let calls = 0;
+    mockIPC(() => {
+      calls += 1;
+      if (calls === 1) throw new Error('inventory unavailable');
+      return new Promise<RetainedSource[]>((resolve) => { reply = resolve; });
+    });
+    await usePrimarySourceStore.getState().loadSources();
+    expect(usePrimarySourceStore.getState().retentionError).toBe('Retained-source inventory is unavailable.');
+    const loading = usePrimarySourceStore.getState().loadSources();
+    expect(usePrimarySourceStore.getState().retentionError).toBeNull();
+    reply(sources);
+    await loading;
+    expect(usePrimarySourceStore.getState().sources).toEqual(sources);
+    expect(usePrimarySourceStore.getState().retentionError).toBeNull();
+  });
+
+  it('ignores an older inventory failure after a newer reload succeeds', async () => {
+    let reject: (reason: Error) => void = () => {};
+    let calls = 0;
+    mockIPC(() => {
+      calls += 1;
+      return calls === 1 ? new Promise<RetainedSource[]>((_, fail) => { reject = fail; }) : sources;
+    });
+    const earlier = usePrimarySourceStore.getState().loadSources();
+    await usePrimarySourceStore.getState().loadSources();
+    reject(new Error('late inventory failure'));
+    await earlier;
+    expect(usePrimarySourceStore.getState().sources).toEqual(sources);
+    expect(usePrimarySourceStore.getState().retentionError).toBeNull();
+  });
+
+  it('ignores an older inventory success after the latest reload fails', async () => {
+    let reply: (value: RetainedSource[]) => void = () => {};
+    let calls = 0;
+    mockIPC(() => {
+      calls += 1;
+      if (calls === 1) return new Promise<RetainedSource[]>((resolve) => { reply = resolve; });
+      throw new Error('latest inventory failure');
+    });
+    const earlier = usePrimarySourceStore.getState().loadSources();
+    await usePrimarySourceStore.getState().loadSources();
+    reply(sources);
+    await earlier;
+    expect(usePrimarySourceStore.getState().sources).toEqual([]);
+    expect(usePrimarySourceStore.getState().retentionError).toBe('Retained-source inventory is unavailable.');
+  });
+
+  it('preserves an unrelated retention-preview error on successful inventory reload', async () => {
+    mockIPC((command) => {
+      if (command === 'preview_forget_source') throw new Error('preview unavailable');
+      return sources;
+    });
+    await usePrimarySourceStore.getState().previewSource('src_current');
+    const previewError = usePrimarySourceStore.getState().retentionError;
+    expect(previewError).toContain('retention preview');
+    await usePrimarySourceStore.getState().loadSources();
+    expect(usePrimarySourceStore.getState().sources).toEqual(sources);
+    expect(usePrimarySourceStore.getState().retentionError).toBe(previewError);
+  });
 });
 
 describe('captured source selection identity (AC-0154)', () => {

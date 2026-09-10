@@ -173,6 +173,14 @@ fn plugin_settings_root(plugin: &adapters_plugin_host::discovery::DiscoveredPlug
         .unwrap_or_else(|| "user".to_string())
 }
 
+/// Discovery metadata stays coupled to the managed roots that supplied it.
+/// Keep this value alive through every dependent source read and publication;
+/// a discovered path alone cannot prevent participating clone replacement.
+struct SessionPluginDiscovery {
+    plugins: Vec<adapters_plugin_host::discovery::DiscoveredPlugin>,
+    _source_operation: SourceOperation,
+}
+
 /// Discover plugin artifacts: `.cartograph/adapters/` inside every resolved
 /// registered ingest root (never the raw Connect input — a GitHub URL or
 /// manifest path is not a directory, #203 review), then the user-level
@@ -182,7 +190,7 @@ fn plugin_settings_root(plugin: &adapters_plugin_host::discovery::DiscoveredPlug
 fn discover_session_plugins<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
-) -> Result<Vec<adapters_plugin_host::discovery::DiscoveredPlugin>, String> {
+) -> Result<SessionPluginDiscovery, String> {
     let user_dir = app
         .path()
         .app_data_dir()
@@ -205,7 +213,10 @@ fn discover_session_plugins<R: tauri::Runtime>(
                 .map(std::path::Path::to_path_buf)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(adapters_plugin_host::discovery::discover(&roots, &user_dir))
+    Ok(SessionPluginDiscovery {
+        plugins: adapters_plugin_host::discovery::discover(&roots, &user_dir),
+        _source_operation: operation,
+    })
 }
 
 /// A plugin cleared for extraction on one project root (#201): discovered,
@@ -304,8 +315,8 @@ fn list_plugins(
 ) -> Result<Vec<PluginStatus>, String> {
     let discovered = discover_session_plugins(&app, &state)?;
     let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
-    let mut statuses = Vec::with_capacity(discovered.len());
-    for plugin in discovered {
+    let mut statuses = Vec::with_capacity(discovered.plugins.len());
+    for plugin in discovered.plugins {
         let enabled = settings_store
             .enabled_plugins(&plugin_settings_root(&plugin))
             .map_err(|e| e.to_string())?
@@ -398,9 +409,13 @@ fn plugin_gate_blocking<R: tauri::Runtime>(
     }
 
     report_progress(app, &state, execution, "discover", 10.0).map_err(&fail)?;
-    let plugin = discover_session_plugins(app, &state)
-        .map_err(&fail)?
-        .into_iter()
+    // Retain the discovery's shared source guards through both filesystem
+    // reads, gate execution and verdict publication. This coordinates managed
+    // checkout replacement, not external edits or user-level plugin writes.
+    let discovery = discover_session_plugins(app, &state).map_err(&fail)?;
+    let plugin = discovery
+        .plugins
+        .iter()
         .find(|plugin| plugin.id == plugin_id)
         .ok_or_else(|| fail(format!("no discovered plugin with id {plugin_id}")))?;
     // Hash the bytes actually gated, not the discovery-time snapshot: the

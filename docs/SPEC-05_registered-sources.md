@@ -81,6 +81,10 @@ managed root also acquires a source guard for its entire root-dependent read pas
 shared guards prevent clone replacement while those reads are in progress. The
 guard does not prevent an editor or another nonparticipating process from writing.
 
+Plugin discovery returns metadata together with its source guards. Conformance
+gating retains those guards through the WASM and corpus reads, gate execution,
+and durable verdict publication, including a failed corpus verdict.
+
 Plan the required source guard set before taking graph/cache/state mutexes. Acquire
 distinct source IDs in sorted order using try-only locking, release all acquired
 guards on failure, and reuse a borrowed existing guard for nested work. A helper

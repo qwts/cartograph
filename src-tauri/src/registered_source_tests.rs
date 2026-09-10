@@ -1022,6 +1022,131 @@ fn ready_after_reopen(app_data: &Path, source: &RegisteredSource) -> bool {
 }
 
 #[test]
+fn managed_plugin_gate_retains_source_guards_through_verdict() {
+    if isolated_managed_operation_case("managed_plugin_gate_retains_source_guards_through_verdict")
+    {
+        return;
+    }
+    // AC-0147: exercise the real discovery/gate pipeline. Synchronous host
+    // events place replacement attempts between the WASM and corpus reads,
+    // before verdict storage, and after its durable publication. No timer or
+    // test-only pipeline hook determines the ordering.
+    use tauri::Listener;
+    const PLUGIN: &str = "t0.plugin-fixture";
+    const WASM: &[u8] =
+        include_bytes!("../../crates/adapters-plugin-host/tests/fixtures/compiled/ok-adapter.wasm");
+    let dir = tempfile::tempdir().unwrap();
+    let app_data = directory(dir.path(), "private");
+    let state = app_state(&app_data);
+    let source = ready_managed_source(&state, "plugin-gate");
+    let adapters = source.root().join(".cartograph/adapters");
+    std::fs::create_dir_all(&adapters).unwrap();
+    std::fs::write(adapters.join(format!("{PLUGIN}.wasm")), WASM).unwrap();
+    let corpus_path = adapters.join(format!("{PLUGIN}.golden.json"));
+    std::fs::write(
+        &corpus_path,
+        json!({
+            "extensions": ["foo"],
+            "cases": [{
+                "path": "src/lib.rs",
+                "source": "hello world",
+                "nodes": [{"id":"golden:src/lib.rs","label":"TestNode","props":{"len":11}}],
+                "edges": [{"src":"golden:src/lib.rs","dst":"golden:src/lib.rs","label":"SELF","props":{}}]
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    app.manage(state);
+    let state = app.state::<AppState>();
+    let hash = core_prov::content_hash(WASM);
+
+    for corpus_present in [true, false] {
+        if !corpus_present {
+            // The preceding gate released its guard. Change the fixture under
+            // the real exclusive source lock before testing a failed verdict.
+            let guard = source.managed().unwrap().unwrap().try_write().unwrap();
+            std::fs::remove_file(&corpus_path).unwrap();
+            drop(guard);
+        }
+        let (job, execution) = start_job(&state, &format!("plugin-gate:{PLUGIN}")).unwrap();
+        let job_id = job.id;
+        let other_registry =
+            Mutex::new(SourceRegistry::open(app_data.join("state.db"), &app_data).unwrap());
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observations = Arc::clone(&observed);
+        let source_for_attempt = source.clone();
+        let event_id = app.listen("job://changed", move |event| {
+            let job: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            if job["id"].as_i64() != Some(job_id) {
+                return;
+            }
+            let boundary = if job["status"] == "done" {
+                "done"
+            } else {
+                match job["stage"].as_str() {
+                    Some("gate") => "gate",
+                    Some("record") => "record",
+                    _ => return,
+                }
+            };
+            // A second registry connection represents another participating
+            // host operation. Busy must occur before it invalidates readiness.
+            let blocked = matches!(
+                SourceOperation::acquire(
+                    &other_registry,
+                    [(source_for_attempt.clone(), true)],
+                ),
+                Err(error) if error.contains("busy")
+            );
+            let ready = other_registry
+                .lock()
+                .unwrap()
+                .get_by_id(&source_for_attempt.source_id)
+                .unwrap()
+                .unwrap()
+                .is_ready();
+            observations
+                .lock()
+                .unwrap()
+                .push((boundary.to_string(), blocked, ready));
+        });
+
+        let report = plugin_gate_blocking(PLUGIN, &execution, app.handle()).unwrap();
+        app.unlisten(event_id);
+        assert_eq!(report["passed"], json!(corpus_present));
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![
+                ("gate".to_string(), true, true),
+                ("record".to_string(), true, true),
+                ("done".to_string(), true, true),
+            ]
+        );
+        let stored = state
+            .settings
+            .lock()
+            .unwrap()
+            .plugin_gate(PLUGIN, &hash)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.0, corpus_present);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored.1).unwrap(),
+            report
+        );
+        assert!(ready_after_reopen(&app_data, &source));
+        // Both successful and failed verdicts release the owned guard on
+        // return; this process spawns no children while the gate holds it.
+        let released = source.managed().unwrap().unwrap().try_write().unwrap();
+        drop(released);
+    }
+}
+
+#[test]
 fn managed_operation_invalidates_ready_source_before_checkout_validation() {
     if isolated_managed_operation_case(
         "managed_operation_invalidates_ready_source_before_checkout_validation",
