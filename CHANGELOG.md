@@ -1,5 +1,12 @@
 # cartograph
 
+## 0.12.0
+
+### Minor Changes
+
+- c9bf7b1: Keep similarly named repositories distinct with persistent source identities and host-resolved evidence reads. Isolate managed clones during analysis, preserve historical proposal identities, and require fresh ingestion after the graph identity migration. Legacy path-only jobs remain history and require a new ingest.
+- c9bf7b1: Retain primary source for direct TypeScript rule observations, with exact captured inspection and source-specific retention controls. Captured evidence preserves incomplete input coverage; existing proposals remain unverified.
+
 ## 0.11.0
 
 ### Minor Changes
