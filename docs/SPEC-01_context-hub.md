@@ -38,6 +38,8 @@ requires reconciliation. The recovered graph remains separately addressable.
 The `context-hub` crate provides an immutable recovered-graph snapshot and a
 transport-independent query contract. The app exposes it through a Tauri command
 on a blocking worker, with the graph lock held only while copying the graph.
+Nodes and edges are copied within one SQLite read transaction so another app
+process cannot interleave a commit and create a snapshot that never existed.
 It makes no model, network, filesystem-evidence, or target-write calls.
 
 - A snapshot identifies the canonical complete node/edge content with a versioned
