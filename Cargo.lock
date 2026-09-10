@@ -4037,6 +4037,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "source-capture"
+version = "0.11.0"
+dependencies = [
+ "blake3",
+ "cap-fs-ext",
+ "cap-std",
+ "git2",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "spec"
 version = "0.11.0"
 dependencies = [
@@ -4048,6 +4063,7 @@ dependencies = [
  "flowtracer",
  "serde",
  "serde_json",
+ "source-capture",
  "tempfile",
 ]
 

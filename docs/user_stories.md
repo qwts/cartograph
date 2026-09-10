@@ -343,3 +343,16 @@
 - **Security:** No raw task-source archive, caller-body review authority, source writes or model execution from staging/review.
 - **Performance:** Staged records have a 128 KiB payload cap; history reads have bounded pages and explicit continuation.
 - **Trace:** H3 prerequisite (SPEC-01/SPEC-03) · `agents`, `app`, `ui` · — · T-0126..0131
+
+### US-0026 — Retain exact source captures for recovery evidence
+- **Actor:** Recovery engine and developer inspecting evidence
+- **As a** developer **I want** bounded immutable source captures **so that** later evidence can refer to the bytes actually retained without trusting a mutable checkout or a commit-shaped label.
+- **Priority:** Must · **Status:** In-Progress
+- **AC-0132** Given selected raw source buffers and a host-owned repository identity, when a capture is built, then a versioned canonical manifest binds kind, membership, paths, lengths and digests; reordered selection is identical while changed bytes, repository or kind are distinct, without serializing raw bytes in metadata or diagnostics.
+- **AC-0133** Given selected local paths, when working-tree capture runs, then rooted regular-file reads reject symlinks, escaping paths, special files and exceeded limits; the acquired immutable buffer survives later file mutation without claiming an atomic filesystem or Git snapshot.
+- **AC-0134** Given a full local Git commit and selected paths, when Git-object capture runs, then exact tree/blob bytes are retained independently of checkout conversion and HEAD movement; unsupported entries and missing objects fail without hooks, filters, shell commands or network fallback.
+- **AC-0135** Given a capture and a bounded local store, when persisted and reopened, then manifests and byte objects publish atomically, identical persistence is idempotent, corrupted or mismatched identity fails closed, capacity errors preserve prior data, and strict nonempty bounded span reads validate the complete file reference before slicing the same buffer; restart retains the effective caller span cap, duplicate persistence can only tighten it without changing content identity, and missing or invalid stored policy fails closed.
+- **AC-0136** Given a retained captured buffer, when the real TS parser consumes it and its span is read after source mutation and store restart, then the parser and reader see the captured bytes while legacy EvidenceRef and staged identities remain unchanged; this fixture does not certify production ingestion or complete H3.
+- **Security:** Local selected-file acquisition only; no target writes, repository execution, model calls or network; private raw-byte retention is separate from graph/proposal/export payloads and does not authorize egress.
+- **Performance:** Hard acquisition, path, manifest, span and logical-store limits from SPEC-04; failures return explicitly without silently incomplete capture.
+- **Trace:** H3 (SPEC-01), #387 prerequisite of #385 · `source-capture`, `spec` · — · T-0132..0136
