@@ -110,23 +110,107 @@ function create(enabled: boolean) {
 
 #[test]
 fn malformed_guarded_exits_never_panic_or_store_invalid_rule_payloads() {
-    // AC-0123: parser recovery cannot publish a malformed typed observation.
-    let mut explicit_omission_seen = false;
+    // AC-0123: every recovered exit/condition/branch is an explicit omission,
+    // including ERROR trees where no return/throw statement survives recovery.
     for source in [
         "function f(){ if (ready) throw; }",
         "function f(){ if (ready) throw (",
         "function f(){ if () return false; }",
+        "function f(){ if (ready &&) return false; }",
         "function f(){ if (ready) return ( ; }",
+        "function f(){ if (ready) throw ( ; }",
+        "function f(){ if (ready) { return false; else return true; } }",
+        "function f(){ if (ready) { return false;",
     ] {
         let out = recover(source);
-        explicit_omission_seen |= out.nodes.iter().any(|node| {
-            node.label == "Gap" && node.props["reason_code"] == "unsupported_rule_syntax"
-        });
-        for node in out.nodes.iter().filter(|node| node.label == "BusinessRule") {
-            assert!(GuardedExitEvidence::from_value(node.props["rule"].clone()).is_ok());
-        }
+        assert!(
+            out.nodes.iter().all(|node| node.label != "BusinessRule"),
+            "parser recovery published a rule for {source:?}"
+        );
+        let omissions: Vec<_> = out
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.label == "Gap" && node.props["reason_code"] == "unsupported_rule_syntax"
+            })
+            .collect();
+        assert_eq!(
+            omissions.len(),
+            1,
+            "missing bounded omission for {source:?}"
+        );
+        let gap = omissions[0];
+        let provenance: core_prov::Provenance =
+            serde_json::from_value(gap.props["prov"].clone()).unwrap();
+        assert_eq!(provenance.confidence_tier, ConfidenceTier::Gap);
+        assert!(provenance.evidence.iter().any(|evidence| {
+            evidence.byte_start < evidence.byte_end && evidence.byte_end <= source.len() as u64
+        }));
+        assert!(out.edges.iter().any(|edge| {
+            edge.dst == gap.id
+                && edge.label == "DEPENDS_ON"
+                && out.nodes.iter().any(|node| node.id == edge.src)
+        }));
     }
-    assert!(explicit_omission_seen);
+}
+
+#[test]
+fn valid_bare_guarded_returns_remain_local_exit_observations() {
+    // AC-0122/AC-0123: a bare return is valid syntax; throw requires a value.
+    let out =
+        recover("function f(ready: boolean){ if (ready) return; else return /* comment */; }");
+    let observations = rules(&out);
+    assert_eq!(observations.len(), 2);
+    for (_, rule) in observations {
+        assert!(matches!(rule.effect, LocalExit::Return { value: None }));
+        assert_eq!(rule.conditions.len(), 1);
+    }
+    assert!(
+        out.nodes
+            .iter()
+            .all(|node| node.props["reason_code"] != "unsupported_rule_syntax")
+    );
+}
+
+#[test]
+fn unowned_recovered_rule_syntax_is_cited_on_the_existing_file() {
+    // AC-0123: an incomplete ERROR tree does not justify inventing a callable
+    // or claiming a recovered exit. It still requires a cited file omission.
+    let out = recover("if (ready) throw (");
+    assert!(rules(&out).is_empty());
+    let file = out.nodes.iter().find(|node| node.label == "File").unwrap();
+    let gap = out
+        .nodes
+        .iter()
+        .find(|node| node.props["reason_code"] == "unsupported_rule_syntax")
+        .unwrap();
+    assert!(
+        out.edges.iter().any(|edge| {
+            edge.src == file.id && edge.dst == gap.id && edge.label == "DEPENDS_ON"
+        })
+    );
+}
+
+#[test]
+fn malformed_rule_syntax_stops_remaining_file_analysis_without_losing_prior_rules() {
+    // AC-0123: preserve prior supported observations, omit the malformed exit,
+    // and stop before later rules instead of repeatedly emitting recovery gaps.
+    let out = recover(
+        "function f(){ if (first) return true; if (ready) return ( ; if (later) return false; }",
+    );
+    let observations = rules(&out);
+    assert_eq!(observations.len(), 1);
+    assert_eq!(
+        observations[0].1.conditions[0].expression.display.as_str(),
+        "(first)"
+    );
+    assert_eq!(
+        out.nodes
+            .iter()
+            .filter(|node| node.props["reason_code"] == "unsupported_rule_syntax")
+            .count(),
+        1
+    );
 }
 
 #[test]
