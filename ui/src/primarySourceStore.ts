@@ -71,6 +71,9 @@ interface PrimarySourceState {
   forget: () => Promise<void>;
 }
 
+const INVENTORY_ERROR = 'Retained-source inventory is unavailable.';
+let inventoryRequest = 0;
+
 export const usePrimarySourceStore = create<PrimarySourceState>((set, get) => ({
   selection: 0, subject: null, subjectFact: null, description: null, text: null, rangeIndex: null, loading: false, error: null,
   sources: [], preview: null, retentionSelection: 0, retentionBusy: false,
@@ -118,10 +121,15 @@ export const usePrimarySourceStore = create<PrimarySourceState>((set, get) => ({
   },
   clear: () => set((state) => ({ selection: state.selection + 1, subject: null, subjectFact: null, description: null, text: null, rangeIndex: null, loading: false, error: null })),
   loadSources: async () => {
+    const request = ++inventoryRequest;
+    if (get().retentionError === INVENTORY_ERROR) set({ retentionError: null });
     try {
       const sources = await invokeOr<RetainedSource[]>('list_retained_sources', []);
-      set({ sources });
-    } catch { set({ retentionError: 'Retained-source inventory is unavailable.' }); }
+      if (request !== inventoryRequest) return;
+      set((state) => ({ sources, retentionError: state.retentionError === INVENTORY_ERROR ? null : state.retentionError }));
+    } catch {
+      if (request === inventoryRequest) set({ retentionError: INVENTORY_ERROR });
+    }
   },
   previewSource: async (sourceId) => {
     const retentionSelection = get().retentionSelection + 1;
