@@ -355,5 +355,22 @@
     "id": "MT-H2-03",
     "result": "passed",
     "complete_H2_gate": "not_passed"
+  },
+  "release_recheck": {
+    "cartograph_commit": "5e4eb4ba69b6fa67d150d4b2af3a05d16bc7144f",
+    "application_version": "0.12.0",
+    "runs": [
+      "vendure-local-definitions-final-3",
+      "vendure-local-definitions-final-4"
+    ],
+    "wall_seconds": [
+      27.26,
+      13.48
+    ],
+    "all_four_artifacts_byte_identical_to_scored_runs": true,
+    "both_audits_byte_identical_to_recorded_audit": true,
+    "input_membership_and_hashes_unchanged": true,
+    "oracle_unchanged": true,
+    "working_tree_clean_at_run": true
   }
 }
