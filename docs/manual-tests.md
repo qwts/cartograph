@@ -462,9 +462,14 @@ procedures above or establish the complete domain-truth gate.
    bundle, inventory and metadata bytes; record hashes, sizes and revisions in a
    separate local-definitions baseline. Do not install or execute target code.
 3. Have an independent reviewer compare the emitted declarations, admitted uses,
-   initializer structure and dependencies to original source. Audit the tracking
-   condition and mutated-array negative cases in the frozen plan. State any
-   portions whose syntax or semantics were not fully audited.
+   initializer structure and dependencies to original source. The checked-in
+   `scripts/audit-local-definitions.cjs` uses the installed UI TypeScript 6.0.3
+   parser/binder independently of the producer. Run
+   `node scripts/audit-local-definitions.cjs SOURCE_ROOT INPUT_MANIFEST OUTPUT_DIR NEW_AUDIT_JSON`
+   with the staged root, frozen manifest and each output directory; retain its
+   result and script hash. It never executes target modules or resolves imports.
+   Audit the tracking condition and mutated-array negative cases in the frozen
+   plan separately. State any syntax or semantics not covered by those checks.
 4. Retain separate score JSON and Markdown describing source-evidence gains,
    remaining gaps, unexpected claims and review limits. Preserve historical
    baseline/score files. A changed complete-rule score requires the entire frozen
