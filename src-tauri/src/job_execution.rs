@@ -1,7 +1,10 @@
 //! Private, persistent execution locks. A reservation never outlives its last
 //! execution holder, and terminal database state does not release a live worker.
 
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsSyncExt};
+use cap_fs_ext::{
+    DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsMaybeDirExt,
+    OpenOptionsSyncExt,
+};
 use cap_std::fs::{Dir, DirBuilder, OpenOptions};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -61,7 +64,9 @@ impl ExecutionReservation {
             .locks
             .symlink_metadata(self.target.id.to_string())
             .map_err(lock_error)?;
-        let opened = self.file.metadata().map_err(lock_error)?;
+        // cap metadata fills Windows identity from the held handle on stable
+        // Rust too; std Metadata's by-handle extension is feature-probed.
+        let opened = cap_std::fs::Metadata::from_file(&self.file).map_err(lock_error)?;
         if !current.is_file()
             || current.nlink() != 1
             || current.dev() != opened.dev()
@@ -71,7 +76,7 @@ impl ExecutionReservation {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use cap_std::fs::PermissionsExt;
             if opened.permissions().mode() & 0o077 != 0 {
                 return Err(JobTransitionError::LockUnavailable);
             }
@@ -122,6 +127,10 @@ impl JobExecutionLocks {
             root,
             locks,
             name: namespace.value.clone(),
+            #[cfg(test)]
+            before_sync: std::sync::Mutex::new(None),
+            #[cfg(all(test, windows))]
+            volume_probe: std::sync::Mutex::new(None),
         });
         storage.verify()?;
         Ok(Self { namespace, storage })
@@ -155,6 +164,8 @@ impl JobExecutionLocks {
             storage: self.storage.clone(),
         };
         reservation.verify()?;
+        reservation.storage.sync_reservation(&reservation.file)?;
+        reservation.verify()?;
         Ok(reservation)
     }
 }
@@ -167,9 +178,95 @@ struct LockStorage {
     root: Dir,
     locks: Dir,
     name: String,
+    #[cfg(test)]
+    before_sync: std::sync::Mutex<Option<SyncHook>>,
+    #[cfg(all(test, windows))]
+    volume_probe: std::sync::Mutex<Option<VolumeProbe>>,
+}
+
+#[cfg(test)]
+type SyncHook = Box<dyn FnMut(SyncStep) -> std::io::Result<()> + Send>;
+
+#[cfg(all(test, windows))]
+type VolumeProbe = Box<dyn FnMut() -> std::io::Result<windows::FileSystemName> + Send>;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncStep {
+    File,
+    Namespace,
+    Root,
+    AppData,
 }
 
 impl LockStorage {
+    fn sync_reservation(&self, file: &File) -> Result<(), JobTransitionError> {
+        // A later SQLite claim may survive power loss. Persist the same locked
+        // inode and every newly-created directory entry before allowing it.
+        // Repeat the whole chain even for an existing file: another process or
+        // a failed earlier reservation may have created it without finishing sync.
+        #[cfg(test)]
+        self.before_sync(SyncStep::File)?;
+        #[cfg(windows)]
+        self.require_ntfs(file)?;
+        file.sync_all().map_err(lock_error)?;
+        #[cfg(test)]
+        self.before_sync(SyncStep::Namespace)?;
+        self.sync_directory(&self.locks)?;
+        #[cfg(test)]
+        self.before_sync(SyncStep::Root)?;
+        self.sync_directory(&self.root)?;
+        #[cfg(test)]
+        self.before_sync(SyncStep::AppData)?;
+        self.sync_directory(&self.app)?;
+        Ok(())
+    }
+
+    fn sync_directory(&self, directory: &Dir) -> Result<(), JobTransitionError> {
+        // Linux rooted Dir handles may use unsyncable O_PATH. Reopen the
+        // retained directory itself, never its ambient path. On Windows,
+        // maybe_dir supplies backup semantics and excludes delete sharing;
+        // FlushFileBuffers additionally requires GENERIC_WRITE access.
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .maybe_dir(true)
+            .follow(FollowSymlinks::No)
+            .nonblock(true);
+        #[cfg(windows)]
+        options.write(true);
+        let file = directory.open_with(".", &options).map_err(lock_error)?;
+        let opened = file.metadata().map_err(lock_error)?;
+        if !opened.is_dir() || !same_entry(&opened, &directory.dir_metadata().map_err(lock_error)?)
+        {
+            return Err(JobTransitionError::LockUnavailable);
+        }
+        #[cfg(windows)]
+        self.require_ntfs(&file)?;
+        file.sync_all().map_err(lock_error)
+    }
+
+    #[cfg(windows)]
+    fn require_ntfs(
+        &self,
+        file: &impl std::os::windows::io::AsRawHandle,
+    ) -> Result<(), JobTransitionError> {
+        #[cfg(test)]
+        if let Some(probe) = self.volume_probe.lock().map_err(lock_error)?.as_mut() {
+            return windows::require_ntfs(&probe().map_err(lock_error)?);
+        }
+        let name = windows::file_system_name(file).map_err(lock_error)?;
+        windows::require_ntfs(&name)
+    }
+
+    #[cfg(test)]
+    fn before_sync(&self, step: SyncStep) -> Result<(), JobTransitionError> {
+        if let Some(hook) = self.before_sync.lock().map_err(lock_error)?.as_mut() {
+            hook(step).map_err(lock_error)?;
+        }
+        Ok(())
+    }
+
     fn verify(&self) -> Result<(), JobTransitionError> {
         if dunce::canonicalize(&self.app_path).map_err(lock_error)? != self.app_path {
             return Err(JobTransitionError::LockUnavailable);
@@ -308,4 +405,9 @@ fn private_file(parent: &Dir, name: &str, create: bool) -> Result<File, JobTrans
 }
 
 #[cfg(test)]
+#[path = "job_execution/tests.rs"]
 mod tests;
+
+#[cfg(windows)]
+#[path = "job_execution/windows.rs"]
+mod windows;

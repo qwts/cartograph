@@ -10,9 +10,11 @@
 use crate::job_execution::ExecutionNamespace;
 use rusqlite::{Connection, TransactionBehavior, params};
 
+#[path = "jobs/execution.rs"]
 mod execution;
 pub(crate) use execution::{ClaimMode, ClaimPlan, ExecutionCheck, ExecutionUpdate};
 #[cfg(test)]
+#[path = "jobs/ownership_tests.rs"]
 mod ownership_tests;
 use serde::Serialize;
 use std::path::Path;

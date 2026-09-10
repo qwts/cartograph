@@ -93,7 +93,10 @@ pub(super) fn initialize(
 ) -> rusqlite::Result<ExecutionNamespace> {
     let store_path = dunce::canonicalize(path).map_err(|_| rusqlite::Error::InvalidQuery)?;
     use cap_fs_ext::MetadataExt;
-    if std::fs::metadata(&store_path)
+    // Query the opened file through cap's stable handle metadata; the std
+    // Windows by-handle extension is not available on every stable toolchain.
+    let store_file = std::fs::File::open(&store_path).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if cap_std::fs::Metadata::from_file(&store_file)
         .map_err(|_| rusqlite::Error::InvalidQuery)?
         .nlink()
         != 1

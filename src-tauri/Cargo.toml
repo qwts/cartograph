@@ -39,6 +39,10 @@ llm = { workspace = true }
 semantic = { workspace = true }
 agents = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# Handle-based filesystem capability checks for durable execution storage.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 core-graph = { workspace = true, features = ["test-support"] }
 tempfile = "3"
