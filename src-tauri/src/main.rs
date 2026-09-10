@@ -163,7 +163,7 @@ fn plugin_settings_root(plugin: &adapters_plugin_host::discovery::DiscoveredPlug
 }
 
 /// Discover plugin artifacts: `.cartograph/adapters/` inside every resolved
-/// ingest root this session (never the raw Connect input — a GitHub URL or
+/// registered ingest root (never the raw Connect input — a GitHub URL or
 /// manifest path is not a directory, #203 review), then the user-level
 /// adapters directory. Project wins on id conflict. Enablement joins on the
 /// exact artifact hash, so replaced bytes are disabled again. Discovery

@@ -1,4 +1,5 @@
 import { HelpTip } from './HelpTip';
+import { createRepositoryLabeler } from '../repositoryLabels';
 import type {
   FindingsSummary,
   IngestSummary,
@@ -63,8 +64,7 @@ export function WorkspaceSurface({
   onOpenArtifact,
 }: WorkspaceSurfaceProps) {
   const recovered = findings !== null && findings.graph_facts > 0;
-  const repoLabel = (repo: string) =>
-    systemContents?.find((entry) => entry.repo === repo)?.display_name?.trim() || repo;
+  const repoLabel = createRepositoryLabeler(systemContents);
 
   const systemName =
     (summary?.repo ? repoLabel(summary.repo) : null) ??

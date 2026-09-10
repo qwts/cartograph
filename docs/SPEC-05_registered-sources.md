@@ -133,7 +133,9 @@ current working tree, not the bytes cited by an earlier parse or a multi-file sn
 Remove operational roots and mutable display metadata from canonical Repo props.
 Repo fact bytes use a declared versioned tuple of registered repository key and
 recovered revision label. Return human-readable name/root metadata through the
-operational `SystemRepo` DTO where needed, not through fact provenance. Existing
+operational `SystemRepo` DTO where needed, not through fact provenance. When
+current sources share a display name, retain the name and include each exact
+repository key in its visible label; cosmetic labels must not hide distinct sources. Existing
 `EvidenceRef` wire fields remain unchanged; newly recovered facts use registered
 repository keys. Old staging identities and evidence bindings remain untouched.
 

@@ -929,8 +929,7 @@ fn managed_origin_rebinding_is_rejected_before_clone() {
     std::os::unix::fs::symlink(&other, &origin).unwrap();
     let error = operation
         .clone_source(&source, None)
-        .err()
-        .expect("changed origin must fail");
+        .expect_err("changed origin must fail");
     assert!(error.contains("registered clone origin changed"));
     assert!(!source.root().exists());
     assert_eq!(

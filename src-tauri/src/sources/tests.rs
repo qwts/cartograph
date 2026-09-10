@@ -346,8 +346,7 @@ fn corrupt_registry_versions_bindings_and_schema_fail_closed() {
         conn.execute_batch(mutation).unwrap();
         let error = registry
             .list()
-            .err()
-            .expect("existing handle must reject corruption");
+            .expect_err("existing handle must reject corruption");
         assert!(!error.contains("outside"));
         assert!(!error.contains("NOT_A_VALID"));
         // A well-formed changed installation ID is only detectable against the
