@@ -25,7 +25,9 @@ count as five recovered Vendure entry constraints.
   the placeholder as an original source name. Computed keys record
   `computed_name: true`; inventories label their references as "computed source
   name omitted; runtime key unresolved", including class/object methods and
-  property-bound callbacks. Shared context retains that computed-name metadata.
+  property-bound callbacks. Owner, dependency-target and relationship-target
+  references share this disclosure. Shared context retains that computed-name
+  metadata.
 - Existing unambiguous top-level function/class-method identities remain stable.
   New object/nested callable identities include their lexical scope and a stable
   source-position discriminator where necessary. Same-named methods in separate
