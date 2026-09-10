@@ -292,6 +292,8 @@ pub enum RedactionReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleGapReason {
+    /// Parser recovery could not produce a valid cited source observation.
+    UnsupportedRuleSyntax,
     /// A condition, expression, rule or per-file analysis bound was reached.
     AnalysisLimit,
     /// Full reachability and execution predicates have not been established.

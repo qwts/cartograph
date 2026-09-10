@@ -64,6 +64,9 @@ fn reason_description(reason: &str) -> &'static str {
         "analysis_limit" => {
             "A source-rule capture limit was reached; additional analysis remains incomplete."
         }
+        "unsupported_rule_syntax" => {
+            "Incomplete source syntax prevented a valid rule observation; this rule and remaining file analysis were omitted."
+        }
         _ => "Source-rule interpretation remains incomplete.",
     }
 }
@@ -274,17 +277,24 @@ fn branches(mut exit: TsNode<'_>) -> (Vec<(TsNode<'_>, TsNode<'_>, BranchPolarit
     (conditions, limited)
 }
 
-fn omission_gap(cx: &FileCx<'_>, at: TsNode<'_>, owner: &str, out: &mut Extraction) {
+fn omission_gap(
+    cx: &FileCx<'_>,
+    at: TsNode<'_>,
+    owner: &str,
+    reason: RuleGapReason,
+    out: &mut Extraction,
+) {
     let id = format!(
         "gap:{}@{}#rule-analysis@{}",
         cx.id.repo,
         cx.path,
         at.start_byte()
     );
+    let reason = reason_key(reason);
     let props = serde_json::json!({
         "rule_evidence_gap": true,
-        "reason_code": "analysis_limit",
-        "reason": "A source-rule analysis limit was reached; this rule and remaining file analysis were omitted.",
+        "reason_code": reason,
+        "reason": reason_description(&reason),
         "scope": "rule_or_remaining_file_analysis",
         "prov": cx.prov_with_confidence(&at, ConfidenceTier::Gap, &format!("Gap {id}")),
     });
@@ -377,11 +387,11 @@ pub(super) fn extract<'tree>(
                 continue;
             }
             if rule_count == MAX_RULES_PER_FILE || file_bytes >= MAX_FILE_RULE_BYTES {
-                omission_gap(cx, exit, &owner_id, out);
+                omission_gap(cx, exit, &owner_id, RuleGapReason::AnalysisLimit, out);
                 return;
             }
             if limited {
-                omission_gap(cx, exit, &owner_id, out);
+                omission_gap(cx, exit, &owner_id, RuleGapReason::AnalysisLimit, out);
                 return;
             }
             let rule_id = format!("rule:{}@{}#exit@{}", cx.id.repo, cx.path, exit.start_byte());
@@ -459,13 +469,22 @@ pub(super) fn extract<'tree>(
                 },
                 redactions,
             };
-            debug_assert!(evidence.validate().is_ok());
+            if evidence.validate().is_err() {
+                omission_gap(
+                    cx,
+                    exit,
+                    &owner_id,
+                    RuleGapReason::UnsupportedRuleSyntax,
+                    out,
+                );
+                return;
+            }
             let payload = serde_json::to_value(evidence).expect("rule serializes");
             let canonical = serde_json::to_string(&payload).expect("rule serializes");
             if canonical.len() > MAX_RULE_BYTES
                 || file_bytes + canonical.len() > MAX_FILE_RULE_BYTES
             {
-                omission_gap(cx, exit, &owner_id, out);
+                omission_gap(cx, exit, &owner_id, RuleGapReason::AnalysisLimit, out);
                 return;
             }
             file_bytes += canonical.len();

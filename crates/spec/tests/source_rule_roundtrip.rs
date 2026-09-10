@@ -13,10 +13,21 @@ use std::collections::BTreeSet;
 fn source_rules_survive_storage_context_and_exports_without_secret_disclosure() {
     // AC-0124/AC-0125: the actual producer's sanitized facts cross all three
     // consumer boundaries; consumers must not reload raw evidence text.
+    // Literal callable keys also stay out of stored names and owner references.
     let source = br#"function decide(enabled: boolean) {
       if (enabled /* private-comment-canary */) return { password: "tiny-secret-canary", key: "\x67hp_abcdefgh5678" };
       if (!enabled) return false;
-    }"#;
+    }
+    class Actions {
+      "ghp_classkey1234"(enabled: boolean) { if (enabled) return false; }
+      "\x67hp_classkey5678"(enabled: boolean) { if (enabled) return null; }
+    }
+    const actions = {
+      "sk-objectkey1234"(enabled: boolean) { if (enabled) return false; },
+      "\x73k-objectkey5678"(enabled: boolean) { if (enabled) return null; },
+      "ghp_callback1234": (enabled: boolean) => { if (enabled) return false; },
+      "\x67hp_callback5678": function(enabled: boolean) { if (enabled) return null; }
+    };"#;
     let extracted = extract_source(
         source,
         "source.ts",
@@ -48,7 +59,7 @@ fn source_rules_survive_storage_context_and_exports_without_secret_disclosure() 
             ..QueryRequest::default()
         })
         .unwrap();
-    assert_eq!(page.facts.len(), 2);
+    assert_eq!(page.facts.len(), 8);
     assert!(page.next_cursor.is_none());
     let mut false_seen = false;
     for fact in &page.facts {
@@ -75,6 +86,7 @@ fn source_rules_survive_storage_context_and_exports_without_secret_disclosure() 
                 .contains("Consumer effect: not established")
         );
         assert!(inventory.content.contains("boolean false"));
+        assert!(inventory.content.contains("source name omitted"));
         assert!(inventory.content.contains("\\[REDACTED\\]"));
         let all = serde_json::to_string(&(&nodes, &edges, &page, &bundle)).unwrap();
         for secret in [
@@ -82,6 +94,12 @@ fn source_rules_survive_storage_context_and_exports_without_secret_disclosure() 
             "tiny-secret-canary",
             "ghp_abcdefgh5678",
             "\\x67hp_abcdefgh5678",
+            "ghp_classkey1234",
+            "classkey5678",
+            "sk-objectkey1234",
+            "objectkey5678",
+            "ghp_callback1234",
+            "callback5678",
         ] {
             assert!(!all.contains(secret), "leaked synthetic source canary");
         }

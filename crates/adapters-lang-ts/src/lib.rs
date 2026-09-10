@@ -1144,6 +1144,9 @@ pub fn extract_source(
             "kind": if is_component { "Component" } else if function.kind() == "method_definition" { "Method" } else { "Function" },
             "prov": cx.prov(&evidence, &format!("Symbol {sid}")),
         });
+        if callable::omitted_property_name(function) {
+            props["name_capture"] = serde_json::json!("nonidentifier_key_omitted");
+        }
         if let Some(class) = class {
             props["class"] = serde_json::json!(class);
             props["member_kind"] = serde_json::json!(callable::member_kind(function));

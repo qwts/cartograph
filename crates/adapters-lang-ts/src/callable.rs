@@ -191,13 +191,50 @@ pub(super) fn binding_name(cx: &FileCx<'_>, function: TsNode<'_>) -> Option<Stri
     .map(|name| cx.text(&name).to_owned())
 }
 
+fn property_name(cx: &FileCx<'_>, key: Option<TsNode<'_>>) -> String {
+    match key {
+        Some(key)
+            if matches!(
+                key.kind(),
+                "identifier" | "property_identifier" | "private_property_identifier"
+            ) =>
+        {
+            cx.text(&key).into()
+        }
+        Some(key) if key.kind() != "computed_property_name" => {
+            // Quoted/number keys are literal source, including encoded secrets.
+            // Identities bypass expression capture, so use their source position
+            // without persisting the value or a digest derived from it.
+            format!("key@{}", key.start_byte())
+        }
+        _ => "computed".into(),
+    }
+}
+
+pub(super) fn omitted_property_name(function: TsNode<'_>) -> bool {
+    let key = if function.kind() == "method_definition" {
+        function.child_by_field_name("name")
+    } else {
+        function
+            .parent()
+            .filter(|parent| parent.kind() == "pair")
+            .and_then(|pair| pair.child_by_field_name("key"))
+    };
+    key.is_some_and(|key| {
+        !matches!(
+            key.kind(),
+            "identifier"
+                | "property_identifier"
+                | "private_property_identifier"
+                | "computed_property_name"
+        )
+    })
+}
+
 pub(super) fn name(cx: &FileCx<'_>, function: TsNode<'_>) -> String {
     if function.kind() == "method_definition" {
         let key = function.child_by_field_name("name");
-        let name = key
-            .filter(|key| key.kind() != "computed_property_name")
-            .map(|key| cx.text(&key).to_owned())
-            .unwrap_or_else(|| "computed".into());
+        let name = property_name(cx, key);
         if let Some(class) = direct_class(function) {
             return if key.is_some_and(|key| key.kind() == "computed_property_name") {
                 format!(
@@ -228,10 +265,7 @@ pub(super) fn name(cx: &FileCx<'_>, function: TsNode<'_>) -> String {
         && let Some(object) = pair.parent().filter(|parent| parent.kind() == "object")
     {
         let key = pair.child_by_field_name("key");
-        let hint = key
-            .filter(|key| key.kind() != "computed_property_name")
-            .map(|key| cx.text(&key).to_owned())
-            .unwrap_or_else(|| "computed".into());
+        let hint = property_name(cx, key);
         return format!(
             "{}.{hint}@{}",
             object_name(cx, object),

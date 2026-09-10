@@ -16,6 +16,13 @@ count as five recovered Vendure entry constraints.
 - Object-literal methods and property-bound arrow/function callbacks are actual
   source symbols with exact T0 provenance and DEFINED_IN edges. An object nested
   within a class must not have its method attributed to that enclosing class.
+- Nonidentifier callable keys use source-offset identities; quoted literals and
+  decoded secrets must not enter names, owner IDs or relationship IDs through
+  the ownership pass. Neither raw withheld values nor secret-only hashes may
+  participate in those identities.
+  The symbol records `name_capture: nonidentifier_key_omitted`; inventories
+  explicitly label the omitted source name instead of presenting the placeholder
+  as an original source name.
 - Existing unambiguous top-level function/class-method identities remain stable.
   New object/nested callable identities include their lexical scope and a stable
   source-position discriminator where necessary. Same-named methods in separate
@@ -117,6 +124,10 @@ payloads; each rule permits 32 conditions, 256 ancestor steps, 8 KiB per capture
 expression and 64 KiB of serialized payload. Exceeding a capture/work bound emits
 an `analysis_limit` Gap; an oversized rule is omitted explicitly rather than
 published as a complete observation.
+Validate every typed rule before emission in both debug and release builds.
+Incomplete parser recovery (including zero-width missing expressions) emits an
+`unsupported_rule_syntax` Gap instead of panicking or storing invalid evidence;
+the diagnostic never includes raw parser/source text.
 
 Inventories/exports render stored sanitized fragments. They must not append raw
 evidence dereferences automatically; later MCP evidence-content tools apply the

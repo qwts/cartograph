@@ -41,6 +41,7 @@ function create(enabled: boolean) {
     other: (valid: boolean) => { if (valid) return null; return; }
   };
 }
+
 "#;
     let out = recover(code);
     let rules = rules(&out);
@@ -105,6 +106,27 @@ function create(enabled: boolean) {
             assert_eq!(condition.expression.source.commit_sha, "revision-a");
         }
     }
+}
+
+#[test]
+fn malformed_guarded_exits_never_panic_or_store_invalid_rule_payloads() {
+    // AC-0123: parser recovery cannot publish a malformed typed observation.
+    let mut explicit_omission_seen = false;
+    for source in [
+        "function f(){ if (ready) throw; }",
+        "function f(){ if (ready) throw (",
+        "function f(){ if () return false; }",
+        "function f(){ if (ready) return ( ; }",
+    ] {
+        let out = recover(source);
+        explicit_omission_seen |= out.nodes.iter().any(|node| {
+            node.label == "Gap" && node.props["reason_code"] == "unsupported_rule_syntax"
+        });
+        for node in out.nodes.iter().filter(|node| node.label == "BusinessRule") {
+            assert!(GuardedExitEvidence::from_value(node.props["rule"].clone()).is_ok());
+        }
+    }
+    assert!(explicit_omission_seen);
 }
 
 #[test]
@@ -224,10 +246,21 @@ fn nested_and_oversized_rule_capture_is_bounded_with_visible_omissions() {
 fn source_rule_literals_are_sanitized_before_complete_graph_serialization() {
     // AC-0124: decoded tokens, short sensitive values, and comments never land
     // in any newly emitted rule property, diagnostic, or secret-only digest.
+    // Quoted callable keys must not bypass capture through owner identities.
     let code = r#"function check(enabled: boolean) {
       if (enabled /* comment-canary-private */) return { password: "tiny", apiKey: "abc", token: "ghp_abcdefgh1234", escaped: "\x67hp_abcdefgh5678", allowed: false };
       if (!enabled) return false;
-    }"#;
+    }
+    class Actions {
+      "ghp_classkey1234"(enabled: boolean) { if (enabled) return false; }
+      "\x67hp_classkey5678"(enabled: boolean) { if (enabled) return null; }
+    }
+    const actions = {
+      "sk-objectkey1234"(enabled: boolean) { if (enabled) return false; },
+      "\x73k-objectkey5678"(enabled: boolean) { if (enabled) return null; },
+      "ghp_callback1234": (enabled: boolean) => { if (enabled) return false; },
+      "\x67hp_callback5678": function(enabled: boolean) { if (enabled) return null; }
+    };"#;
     let out = recover(code);
     let serialized = serde_json::to_string(&(&out.nodes, &out.edges)).unwrap();
     for canary in [
@@ -237,6 +270,12 @@ fn source_rule_literals_are_sanitized_before_complete_graph_serialization() {
         "ghp_abcdefgh1234",
         "ghp_abcdefgh5678",
         "\\x67hp_abcdefgh5678",
+        "ghp_classkey1234",
+        "classkey5678",
+        "sk-objectkey1234",
+        "objectkey5678",
+        "ghp_callback1234",
+        "callback5678",
     ] {
         assert!(
             !serialized.contains(canary),
@@ -244,7 +283,23 @@ fn source_rule_literals_are_sanitized_before_complete_graph_serialization() {
         );
     }
     let rules = rules(&out);
-    assert!(!rules[0].1.redactions.is_empty());
+    assert_eq!(rules.len(), 8);
+    assert_eq!(
+        rules
+            .iter()
+            .filter(|(_, rule)| rule.owner_id.contains(".key@"))
+            .count(),
+        6
+    );
+    assert_eq!(
+        rules
+            .iter()
+            .map(|(_, rule)| &rule.owner_id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        7
+    );
+    assert!(rules.iter().any(|(_, rule)| !rule.redactions.is_empty()));
     assert!(rules.iter().any(
         |(_, rule)| matches!(&rule.effect, LocalExit::Return { value: Some(value) }
         if value.literal == Some(LiteralEvidence::Known { value: KnownLiteral::Boolean(false) }))
