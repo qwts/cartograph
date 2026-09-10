@@ -13,7 +13,7 @@
 
 ### Decisions locked (this document is built on these)
 1. **Runtime:** Tauri 2 — Rust core + web UI. Targets macOS (primary) and Windows.
-2. **Scope:** Spec **recovery** only. The deliverable is the recovered specification. No code regeneration/scaffolding — explicit non-goal.
+2. **Scope:** Spec recovery is the evidence foundation of a persistent domain context hub. [SPEC-01](SPEC-01_context-hub.md) and ADR-0019 extend the post-M10 scope to shared context, specialists, MCP/ACP interoperability, and feature evaluation. Target-code writes and automatic regeneration remain outside the current implementation.
 3. **LLM posture:** Pluggable provider interface; **local-first** (Ollama default); cloud providers (Claude/Grok/GPT/Gemini) are **opt-in per analysis tier** with explicit egress consent.
 
 ### Decide-and-stated defaults (override inline if wrong)
@@ -21,7 +21,7 @@
 - IaC: **Terraform (HCL) + Pulumi**. Cloud resolver: **AWS first → Azure → GCP**.
 - Event systems first: **AWS (SQS/SNS/EventBridge) + Kafka + in-process/domain-event buses**.
 - Client frameworks first: **React/Next → Vue → Svelte**, plus a cross-cutting **GraphQL** operation extractor.
-- Graph store: **Kuzu** (embedded) with a **SQLite recursive-CTE** fallback path.
+- Graph store: **SQLite/WAL with recursive CTEs**, per ADR-0008.
 - GitHub: **GitHub App auth** + `git2` clone, with **PAT** fallback and optional `gh` CLI shell-out.
 
 ---
@@ -39,8 +39,8 @@ A running system's true specification is distributed across IaC, cloud topology,
 - **G5** Guarantee **integrity**: every asserted fact carries provenance and a confidence tier; the system prefers an explicit **gap** over an unsupported assertion (Score=0 preference).
 
 ### 1.3 Non-Goals (explicit)
-- **NG1** Not a code editor / IDE / Copilot surface. No editing of target code.
-- **NG2** No code regeneration, scaffolding, migration, or "rebuild" automation. Output is a *specification*, full stop.
+- **NG1** No editing of the ingested target code. External development agents can consume context and request investigations under SPEC-01.
+- **NG2** No automatic code regeneration or target-code scaffolding in the current implementation. ADR-0019 defines modernization planning and a separately authorized external execution boundary.
 - **NG3** Not a clone of any existing documentation, mapping, or APM product. Layer-tracing + provenance-first integrity is the differentiator.
 - **NG4** Not a runtime observability platform. Dynamic-tier inputs are consumed if present; the app does not deploy agents into production.
 - **NG5** No multi-user/server backend in v1. Single-user desktop, local-first.
@@ -189,6 +189,11 @@ Export honors **R-INT-5**: `verified-only` vs `best-effort`.
 ### 5.4 BusinessRule extraction
 T0: guard conditions, validation schemas (zod/pydantic/JSON-Schema), authorization checks, computed values in handlers → `BusinessRule{predicate, location}` linked via `GOVERNS`. T2/T3 only *name/cluster* rules; they never invent predicates.
 
+The staged implementation contract is [SPEC-02](SPEC-02_rule-evidence.md).
+It starts with real lexical owners, then sanitized guarded-exit observations and
+explicit interpretation/dependency gaps. A conditional return alone does not
+establish a business validation or a complete execution predicate.
+
 ---
 
 ## 6. ADR Recovery
@@ -226,8 +231,9 @@ MVC mapping: **Rust core = Model + Controller**, **web UI = View**. Plugin-based
 ### 8.1 Crate map (Rust workspace)
 | Crate | Responsibility | Tier(s) |
 |---|---|---|
-| `core-graph` | Kuzu binding, schema, query API | — |
+| `core-graph` | SQLite/WAL schema and graph store API | — |
 | `core-prov` | Provenance + confidence model, content-addressing | — |
+| `context-hub` | Bounded, revision-bound context reads shared across transports (SPEC-01) | — |
 | `ingest` | GitHub App auth (`octocrab`), clone (`git2`), repo discovery, **topology manifest** | T0 |
 | `adapters-lang-*` | Language adapters wrapping **tree-sitter** grammars (one crate per family) | T0 |
 | `adapters-fw` | Framework registries (HTTP/event SDK signatures) | T0 |
@@ -279,7 +285,7 @@ the plugin artifact's content hash in every emitted fact's provenance alongside
 `extractor_id@version` so the §5 determinism invariant extends to plugin facts.
 
 ### 8.3 Data stores
-- **Graph:** Kuzu (fallback SQLite recursive-CTE).
+- **Graph:** SQLite/WAL with recursive CTEs (ADR-0008).
 - **Relational/state spine:** SQLite/WAL — jobs, provenance log, artifact versions, eval results, config.
 - **Embedding index:** `usearch` (fallback `sqlite-vec`), verified at M7 per ADR-0010.
 - **Evidence blobs:** content-addressed files under app data dir; referenced by `content_hash`.

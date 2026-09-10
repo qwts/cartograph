@@ -1,0 +1,636 @@
+{
+  "schema": "cartograph.eval.rule-score.v1",
+  "schema_version": 1,
+  "benchmark_id": "vendure-cart-readiness",
+  "status": "source_only_baseline_scored_acceptance_not_achieved",
+  "review": {
+    "reviewer": "Codex context_tests",
+    "reviewer_kind": "agent",
+    "human_approval": false,
+    "review_date_utc": "2026-09-10",
+    "method": "Compared actual graph, metadata, bundle and source-rule inventory with the frozen oracle. Audited six directly relevant local exit observations against the pinned source. Inspected selected caller/consumer observations and generic graph calls as dependency evidence, not as full extra-observation audits.",
+    "independence_limit": "Agent review after the oracle was frozen; this reviewer contributed generic Cartograph implementation work and is not an independent human auditor.",
+    "oracle_modified": false
+  },
+  "target": {
+    "repository": "https://github.com/vendurehq/vendure",
+    "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104"
+  },
+  "cartograph": {
+    "commit_sha": "c01c2e77b07d3a39b010cc5284972a3feed4b897",
+    "commit_provenance": "Run revision supplied by root; score is additionally pinned to the actual output file hashes."
+  },
+  "oracle": {
+    "path": "docs/evals/vendure-cart-readiness.expected.json",
+    "sha256": "dcd9833e8f9be2269a6711f8bd04119c83931f6de45e04d17d1b99da9d51295d",
+    "frozen_before_first_output": true
+  },
+  "output": {
+    "run_id": "vendure-cart-readiness-run-1",
+    "snapshot_id": "context-v1:6543894b0f31ef8683c42b7f4da5f476623aa5e4ad41fab9c5edcf3b538b31d8",
+    "scope": "source-only TypeScript adapter and stored-fact spec projection; no full ingest, flow inference, target execution or acceptance scoring",
+    "files_sha256": {
+      "graph.json": "134db5e4f52d337cb1208856b0fe58f985f44296681bc55feb86bfb427b46a08",
+      "metadata.json": "f8b81706869bac3737b2be4bce21eb610013406e6403b322600899680b210183",
+      "bundle.json": "2ef117cc8d04b1d5e842edb8e5b2c8202fdb2d6e7fcfcb90a65790f5dda5d0f3",
+      "rule-evidence.md": "1ee20748a7693825a9e2e91e68699ea0135cf4ebae6d4c0e523f19a6c95663b3"
+    },
+    "input_manifest_path": "docs/evals/vendure-cart-readiness.input.json",
+    "production_input_file_count": 17
+  },
+  "score": {
+    "full_confirmed_matches": {
+      "core_entry_guards": {
+        "matched": 0,
+        "expected": 5
+      },
+      "supporting_stock_rules": {
+        "matched": 0,
+        "expected": 3
+      },
+      "total": {
+        "matched": 0,
+        "expected": 8
+      }
+    },
+    "relevant_local_exit_anchors": {
+      "count": 6,
+      "core_rule_sites": 5,
+      "supporting_rule_sites": 1,
+      "metric_kind": "local_observation_presence_not_rule_recall",
+      "counts_as_full_match": false
+    },
+    "local_anchor_audit": {
+      "audited": 6,
+      "total_guarded_exit_observations": 139,
+      "not_fully_audited": 133,
+      "false_local_syntax_assertions_found_in_audited_anchors": 0,
+      "scope_limit": "Only the six directly matched local anchors received this source audit; no precision claim is made for the remaining 133 observations or the complete graph."
+    },
+    "full_rule_precision": {
+      "status": "not_estimable",
+      "value": null,
+      "complete_confirmed_rule_claims": 0,
+      "reason": "The relevant output asserts local guarded exits and explicitly disclaims complete predicates and consumer effects. Zero complete claims does not establish 100 percent precision or satisfy the precision acceptance gate."
+    },
+    "decision_cases": {
+      "status": "not_executed",
+      "executed": 0,
+      "total": 41,
+      "passed": null,
+      "failed": null,
+      "reason": "Reading source and comparing stored observations is not execution of the frozen decision-case matrix."
+    },
+    "negative_claim_review": {
+      "status": "limited_to_audited_local_observations",
+      "forbidden_stronger_claim_found_in_audited_anchors": false,
+      "scope_limit": "The inventory explicitly limits interpretation. This is not an exhaustive negative-claim audit of every generated observation, nor an executed case result."
+    },
+    "acceptance_result": "not_passed",
+    "reason": "No complete rule matches, decision cases unexecuted, and extraction input does not contain the full frozen source dependency closure."
+  },
+  "per_rule": [
+    {
+      "expected_rule_id": "VEN-READY-01",
+      "title": "Referenced variant availability",
+      "category": "core_entry_guard",
+      "full_confirmed_match": false,
+      "classification": "relevant_local_exit_observation_only",
+      "local_exit_anchors": [
+        {
+          "id": "rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12446",
+          "owner_id": "sym:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#configureDefaultOrderProcess/orderProcess@6228.onTransitionStart@9799",
+          "source": {
+            "byte_end": 12527,
+            "byte_start": 12446,
+            "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+            "path": "packages/core/src/config/order/default-order-process.ts",
+            "repo": "vendurehq/vendure",
+            "line_start": 314
+          },
+          "producing_tier": "Deterministic",
+          "confidence_of_local_observation": "Confirmed",
+          "extractor_id": "t0.adapter-ts",
+          "source_order_within_callable": 4,
+          "captured_conditions": [
+            {
+              "polarity": "truthy_branch",
+              "display": "(\n                options.checkAllVariantsExist !== false &&\n                fromState === 'AddingItems' &&\n                toState !== 'Cancelled' &&\n                order.lines.length > 0\n            )",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 11804,
+                "byte_start": 11601,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            },
+            {
+              "polarity": "truthy_branch",
+              "display": "(availableVariants.length !== variantIds.length)",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 12423,
+                "byte_start": 12375,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            }
+          ],
+          "local_effect_capture": "redacted",
+          "local_effect_display": "[REDACTED]",
+          "interpretation": {
+            "consumer_effect": "not_established",
+            "execution_predicate": "not_established",
+            "gap_ids": [
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12446:consumer_semantics_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12446:execution_predicate_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12446:loop_dependency",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12446:mutation",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12446:preceding_exit",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12446:redacted_expression"
+            ]
+          },
+          "source_audit": "Exit span, captured condition text, owner containment and GOVERNS edge agree with pinned source; no complete business-rule interpretation is established."
+        }
+      ],
+      "observed_evidence": [
+        "Captures the strict-false option, AddingItems state, non-Cancelled destination, nonempty lines, and availableVariants.length !== variantIds.length as same-callable condition syntax.",
+        "Binding references point to options, states, order, availableVariants and variantIds declarations; these references are not expanded into query semantics.",
+        "The return is identified as a string literal with its contents withheld; locale or message-key matching is not used in this assessment."
+      ],
+      "remaining_semantic_gaps": [
+        "The output explicitly leaves the complete execution predicate not_established; lexical source order does not resolve preceding exits or runtime reachability.",
+        "The output explicitly leaves the consumer effect not_established; generic caller/callee facts do not establish how this return controls the configured transition.",
+        "The option check is captured, but the default configuration and configureDefaultOrderProcess({}) invocation are not semantically linked to this rule.",
+        "No recovered semantic proof of distinct referenced IDs, the variant/product deletion-null query predicates, or query count meaning. The unique helper is also outside the extraction input."
+      ]
+    },
+    {
+      "expected_rule_id": "VEN-READY-02",
+      "title": "At least one order line",
+      "category": "core_entry_guard",
+      "full_confirmed_match": false,
+      "classification": "relevant_local_exit_observation_only",
+      "local_exit_anchors": [
+        {
+          "id": "rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12732",
+          "owner_id": "sym:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#configureDefaultOrderProcess/orderProcess@6228.onTransitionStart@9799",
+          "source": {
+            "byte_end": 12798,
+            "byte_start": 12732,
+            "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+            "path": "packages/core/src/config/order/default-order-process.ts",
+            "repo": "vendurehq/vendure",
+            "line_start": 319
+          },
+          "producing_tier": "Deterministic",
+          "confidence_of_local_observation": "Confirmed",
+          "extractor_id": "t0.adapter-ts",
+          "source_order_within_callable": 5,
+          "captured_conditions": [
+            {
+              "polarity": "truthy_branch",
+              "display": "(toState === 'ArrangingPayment')",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 12607,
+                "byte_start": 12575,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            },
+            {
+              "polarity": "truthy_branch",
+              "display": "(options.arrangingPaymentRequiresContents !== false && order.lines.length === 0)",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 12709,
+                "byte_start": 12629,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            }
+          ],
+          "local_effect_capture": "redacted",
+          "local_effect_display": "[REDACTED]",
+          "interpretation": {
+            "consumer_effect": "not_established",
+            "execution_predicate": "not_established",
+            "gap_ids": [
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12732:consumer_semantics_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12732:execution_predicate_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12732:loop_dependency",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12732:mutation",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12732:preceding_exit",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12732:redacted_expression"
+            ]
+          },
+          "source_audit": "Exit span, captured condition text, owner containment and GOVERNS edge agree with pinned source; no complete business-rule interpretation is established."
+        }
+      ],
+      "observed_evidence": [
+        "Captures toState === ArrangingPayment and options.arrangingPaymentRequiresContents !== false && order.lines.length === 0.",
+        "Captures a local string return with its contents withheld."
+      ],
+      "remaining_semantic_gaps": [
+        "The output explicitly leaves the complete execution predicate not_established; lexical source order does not resolve preceding exits or runtime reachability.",
+        "The output explicitly leaves the consumer effect not_established; generic caller/callee facts do not establish how this return controls the configured transition.",
+        "The option check is captured, but the default configuration and configureDefaultOrderProcess({}) invocation are not semantically linked to this rule."
+      ]
+    },
+    {
+      "expected_rule_id": "VEN-READY-03",
+      "title": "Customer association",
+      "category": "core_entry_guard",
+      "full_confirmed_match": false,
+      "classification": "relevant_local_exit_observation_only",
+      "local_exit_anchors": [
+        {
+          "id": "rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12930",
+          "owner_id": "sym:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#configureDefaultOrderProcess/orderProcess@6228.onTransitionStart@9799",
+          "source": {
+            "byte_end": 12993,
+            "byte_start": 12930,
+            "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+            "path": "packages/core/src/config/order/default-order-process.ts",
+            "repo": "vendurehq/vendure",
+            "line_start": 322
+          },
+          "producing_tier": "Deterministic",
+          "confidence_of_local_observation": "Confirmed",
+          "extractor_id": "t0.adapter-ts",
+          "source_order_within_callable": 6,
+          "captured_conditions": [
+            {
+              "polarity": "truthy_branch",
+              "display": "(toState === 'ArrangingPayment')",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 12607,
+                "byte_start": 12575,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            },
+            {
+              "polarity": "truthy_branch",
+              "display": "(options.arrangingPaymentRequiresCustomer !== false && !order.customer)",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 12907,
+                "byte_start": 12836,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            }
+          ],
+          "local_effect_capture": "redacted",
+          "local_effect_display": "[REDACTED]",
+          "interpretation": {
+            "consumer_effect": "not_established",
+            "execution_predicate": "not_established",
+            "gap_ids": [
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12930:consumer_semantics_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12930:execution_predicate_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12930:loop_dependency",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12930:mutation",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12930:preceding_exit",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@12930:redacted_expression"
+            ]
+          },
+          "source_audit": "Exit span, captured condition text, owner containment and GOVERNS edge agree with pinned source; no complete business-rule interpretation is established."
+        }
+      ],
+      "observed_evidence": [
+        "Captures toState === ArrangingPayment and options.arrangingPaymentRequiresCustomer !== false && !order.customer.",
+        "Captures a local string return with its contents withheld; it does not assert authentication, verification or customer-detail completeness."
+      ],
+      "remaining_semantic_gaps": [
+        "The output explicitly leaves the complete execution predicate not_established; lexical source order does not resolve preceding exits or runtime reachability.",
+        "The output explicitly leaves the consumer effect not_established; generic caller/callee facts do not establish how this return controls the configured transition.",
+        "The option check is captured, but the default configuration and configureDefaultOrderProcess({}) invocation are not semantically linked to this rule."
+      ]
+    },
+    {
+      "expected_rule_id": "VEN-READY-04",
+      "title": "Shipping-line presence",
+      "category": "core_entry_guard",
+      "full_confirmed_match": false,
+      "classification": "relevant_local_exit_observation_only",
+      "local_exit_anchors": [
+        {
+          "id": "rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@13226",
+          "owner_id": "sym:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#configureDefaultOrderProcess/orderProcess@6228.onTransitionStart@9799",
+          "source": {
+            "byte_end": 13296,
+            "byte_start": 13226,
+            "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+            "path": "packages/core/src/config/order/default-order-process.ts",
+            "repo": "vendurehq/vendure",
+            "line_start": 328
+          },
+          "producing_tier": "Deterministic",
+          "confidence_of_local_observation": "Confirmed",
+          "extractor_id": "t0.adapter-ts",
+          "source_order_within_callable": 7,
+          "captured_conditions": [
+            {
+              "polarity": "truthy_branch",
+              "display": "(toState === 'ArrangingPayment')",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 12607,
+                "byte_start": 12575,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            },
+            {
+              "polarity": "truthy_branch",
+              "display": "(\n                    options.arrangingPaymentRequiresShipping !== false &&\n                    (!order.shippingLines || order.shippingLines.length === 0)\n                )",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 13203,
+                "byte_start": 13031,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            }
+          ],
+          "local_effect_capture": "redacted",
+          "local_effect_display": "[REDACTED]",
+          "interpretation": {
+            "consumer_effect": "not_established",
+            "execution_predicate": "not_established",
+            "gap_ids": [
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@13226:consumer_semantics_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@13226:execution_predicate_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@13226:loop_dependency",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@13226:mutation",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@13226:preceding_exit",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@13226:redacted_expression"
+            ]
+          },
+          "source_audit": "Exit span, captured condition text, owner containment and GOVERNS edge agree with pinned source; no complete business-rule interpretation is established."
+        }
+      ],
+      "observed_evidence": [
+        "Captures toState === ArrangingPayment, the strict-false shipping option, and absent-or-empty shippingLines syntax.",
+        "Captures a local string return with its contents withheld; it does not assert address validity or current shipping eligibility."
+      ],
+      "remaining_semantic_gaps": [
+        "The output explicitly leaves the complete execution predicate not_established; lexical source order does not resolve preceding exits or runtime reachability.",
+        "The output explicitly leaves the consumer effect not_established; generic caller/callee facts do not establish how this return controls the configured transition.",
+        "The option check is captured, but the default configuration and configureDefaultOrderProcess({}) invocation are not semantically linked to this rule."
+      ]
+    },
+    {
+      "expected_rule_id": "VEN-READY-05",
+      "title": "Per-line quantity within saleable stock",
+      "category": "core_entry_guard",
+      "full_confirmed_match": false,
+      "classification": "relevant_local_exit_observation_only",
+      "local_exit_anchors": [
+        {
+          "id": "rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034",
+          "owner_id": "sym:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#configureDefaultOrderProcess/orderProcess@6228.onTransitionStart@9799",
+          "source": {
+            "byte_end": 14431,
+            "byte_start": 14034,
+            "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+            "path": "packages/core/src/config/order/default-order-process.ts",
+            "repo": "vendurehq/vendure",
+            "line_start": 342
+          },
+          "producing_tier": "Deterministic",
+          "confidence_of_local_observation": "Confirmed",
+          "extractor_id": "t0.adapter-ts",
+          "source_order_within_callable": 8,
+          "captured_conditions": [
+            {
+              "polarity": "truthy_branch",
+              "display": "(toState === 'ArrangingPayment')",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 12607,
+                "byte_start": 12575,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            },
+            {
+              "polarity": "truthy_branch",
+              "display": "(options.arrangingPaymentRequiresStock !== false)",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 13383,
+                "byte_start": 13334,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            },
+            {
+              "polarity": "truthy_branch",
+              "display": "(variantsWithInsufficientSaleableStock.length)",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 14007,
+                "byte_start": 13961,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/config/order/default-order-process.ts",
+                "repo": "vendurehq/vendure"
+              }
+            }
+          ],
+          "local_effect_capture": "unsupported",
+          "local_effect_display": "[UNSUPPORTED EXPRESSION]",
+          "interpretation": {
+            "consumer_effect": "not_established",
+            "execution_predicate": "not_established",
+            "gap_ids": [
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:consumer_semantics_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:execution_predicate_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:loop_dependency",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:mutation",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:preceding_exit",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:redacted_expression",
+              "gap:rule:vendurehq/vendure@packages/core/src/config/order/default-order-process.ts#exit@14034:unresolved_call"
+            ]
+          },
+          "source_audit": "Exit span, captured condition text, owner containment and GOVERNS edge agree with pinned source; no complete business-rule interpretation is established."
+        }
+      ],
+      "observed_evidence": [
+        "Captures toState === ArrangingPayment, the strict-false stock option, and variantsWithInsufficientSaleableStock.length.",
+        "A binding reference identifies the accumulator declaration, but does not interpret writes to that array.",
+        "The return expression is explicitly unsupported; loop, mutation and unresolved-call gaps remain visible."
+      ],
+      "remaining_semantic_gaps": [
+        "The output explicitly leaves the complete execution predicate not_established; lexical source order does not resolve preceding exits or runtime reachability.",
+        "The output explicitly leaves the consumer effect not_established; generic caller/callee facts do not establish how this return controls the configured transition.",
+        "The option check is captured, but the default configuration and configureDefaultOrderProcess({}) invocation are not semantically linked to this rule.",
+        "The per-line quantity > availableStock comparison and equality boundary are not represented in this exit observation.",
+        "Accumulator behavior, per-line rather than aggregate comparison, affected-variant order/duplication, and the returned affected-variant expression are not established.",
+        "The saleable-stock dependency chain and the numeric semantics of VEN-READY-06 through VEN-READY-08 are not recovered."
+      ]
+    },
+    {
+      "expected_rule_id": "VEN-READY-06",
+      "title": "Inventory tracking bypass",
+      "category": "supporting_stock_rule",
+      "full_confirmed_match": false,
+      "classification": "relevant_local_exit_observation_only",
+      "local_exit_anchors": [
+        {
+          "id": "rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869",
+          "owner_id": "sym:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#ProductVariantService.getSaleableStockLevel",
+          "source": {
+            "byte_end": 13900,
+            "byte_start": 13869,
+            "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+            "path": "packages/core/src/service/services/product-variant.service.ts",
+            "repo": "vendurehq/vendure",
+            "line_start": 330
+          },
+          "producing_tier": "Deterministic",
+          "confidence_of_local_observation": "Confirmed",
+          "extractor_id": "t0.adapter-ts",
+          "source_order_within_callable": 0,
+          "captured_conditions": [
+            {
+              "polarity": "truthy_branch",
+              "display": "(inventoryNotTracked)",
+              "capture": "complete_syntax",
+              "source": {
+                "byte_end": 13854,
+                "byte_start": 13833,
+                "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+                "path": "packages/core/src/service/services/product-variant.service.ts",
+                "repo": "vendurehq/vendure"
+              }
+            }
+          ],
+          "local_effect_capture": "complete_syntax",
+          "local_effect_display": "Number.MAX_SAFE_INTEGER",
+          "interpretation": {
+            "consumer_effect": "not_established",
+            "execution_predicate": "not_established",
+            "gap_ids": [
+              "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:consumer_semantics_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:execution_predicate_unknown",
+              "gap:rule:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#exit@13869:unresolved_binding"
+            ]
+          },
+          "source_audit": "Exit span, captured condition text, owner containment and GOVERNS edge agree with pinned source; no complete business-rule interpretation is established."
+        }
+      ],
+      "observed_evidence": [
+        "Captures the condition identifier inventoryNotTracked and a binding-source reference to its initializer.",
+        "Captures the local return expression Number.MAX_SAFE_INTEGER; its Number binding is unresolved.",
+        "Separate graph calls from getSaleableStockLevel to GlobalSettingsService.getSettings and StockLevelService.getAvailableStock exist."
+      ],
+      "remaining_semantic_gaps": [
+        "The initializer is not expanded into the FALSE/INHERIT/global-trackInventory predicate; a declaration citation alone is not that semantic rule.",
+        "The output does not establish the numeric value or builtin identity of Number.MAX_SAFE_INTEGER.",
+        "The complete execution predicate and consumer effect are explicitly not_established.",
+        "Persisted-settings meaning, schema defaults, and the relationship between this value and the stock-entry guard are not established."
+      ]
+    },
+    {
+      "expected_rule_id": "VEN-READY-07",
+      "title": "Tracked saleable-stock calculation",
+      "category": "supporting_stock_rule",
+      "full_confirmed_match": false,
+      "classification": "no_rule_observation",
+      "local_exit_anchors": [],
+      "observed_evidence": [
+        "ProductVariantService.getSaleableStockLevel is a confirmed source symbol.",
+        "Calls to GlobalSettingsService.getSettings and StockLevelService.getAvailableStock are present; these establish call targets rather than threshold/arithmetic semantics."
+      ],
+      "remaining_semantic_gaps": [
+        "There is no BusinessRule observation for the unguarded final arithmetic return.",
+        "The fallback branch of inventory tracking, global-versus-local threshold selection, subtraction, absence of a zero clamp, and stock-consumer semantics are not recovered."
+      ],
+      "expected_source_without_rule_observation": {
+        "repo": "vendurehq/vendure",
+        "path": "packages/core/src/service/services/product-variant.service.ts",
+        "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+        "byte_start": 14227,
+        "byte_end": 14294,
+        "line_start": 340
+      },
+      "related_symbol_id": "sym:vendurehq/vendure@packages/core/src/service/services/product-variant.service.ts#ProductVariantService.getSaleableStockLevel"
+    },
+    {
+      "expected_rule_id": "VEN-READY-08",
+      "title": "Active-channel stock totals",
+      "category": "supporting_stock_rule",
+      "full_confirmed_match": false,
+      "classification": "no_rule_observation",
+      "local_exit_anchors": [],
+      "observed_evidence": [
+        "MultiChannelStockLocationStrategy.getAvailableStock is a confirmed source symbol.",
+        "Its call to stockLevelAppliesToActiveChannel is present."
+      ],
+      "remaining_semantic_gaps": [
+        "There is no BusinessRule observation for the loop totals or final totals return.",
+        "Active-channel membership semantics, filtering, summation of both quantities, the zero-row result, variant-specific loading, and configured default-strategy selection are not recovered as this rule.",
+        "RequestContext and the base stock-location strategy are outside the extraction input, limiting the frozen dependency closure."
+      ],
+      "expected_source_without_rule_observation": {
+        "repo": "vendurehq/vendure",
+        "path": "packages/core/src/config/catalog/multi-channel-stock-location-strategy.ts",
+        "commit_sha": "2cc309deb5394af176314552ac7320a7b26a0104",
+        "byte_start": 4560,
+        "byte_end": 4599,
+        "line_start": 100
+      },
+      "related_symbol_id": "sym:vendurehq/vendure@packages/core/src/config/catalog/multi-channel-stock-location-strategy.ts#MultiChannelStockLocationStrategy.getAvailableStock"
+    }
+  ],
+  "input_dependency_limits": {
+    "missing_frozen_oracle_production_files": [
+      "packages/common/src/unique.ts",
+      "packages/core/src/api/common/request-context.ts",
+      "packages/core/src/config/catalog/default-stock-location-strategy.ts",
+      "packages/core/src/entity/global-settings/global-settings.entity.ts",
+      "packages/core/src/entity/product-variant/product-variant.entity.ts"
+    ],
+    "missing_count": 5,
+    "denominator_unchanged": true,
+    "interpretation": "These are input-closure limitations in addition to observed extractor limitations. Do not silently shrink the oracle or attribute every missing semantic dependency solely to the extractor."
+  },
+  "determinism": {
+    "status": "identical_second_run_reported_by_root",
+    "independently_rerun_by_scoring_reviewer": false,
+    "reported_identical_outputs": [
+      "graph.json",
+      "bundle.json",
+      "metadata.json",
+      "rule-evidence.md"
+    ],
+    "evidence_provenance": "Root reported the identical second run before this score was persisted; separate run evidence remains root-owned.",
+    "reported_direct_debug_binary_seconds": 6.25,
+    "limit": "Deterministic output does not establish semantic rule recovery or decision fidelity."
+  },
+  "revision_policy": {
+    "applies_to_output_graph_sha256": "134db5e4f52d337cb1208856b0fe58f985f44296681bc55feb86bfb427b46a08",
+    "later_revision": "A later Cartograph revision may reference this scoring only if the scored outputs remain identical; record the additional revision and comparison evidence separately. Otherwise perform and record a new assessment without overwriting this baseline or oracle."
+  },
+  "notes": [
+    "139 is the total observation count, not 139 additional observations beyond the six relevant anchors.",
+    "T0/Confirmed on the six observations describes confirmed local syntax, not complete confirmed business rules.",
+    "No locale catalogs, translated message values, or message-key shortcuts were used to award a rule match.",
+    "No Cartograph product code, upstream source, oracle, or root-owned baseline JSON was modified by this scoring task."
+  ]
+}

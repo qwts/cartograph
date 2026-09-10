@@ -1,0 +1,7 @@
+---
+"cartograph": minor
+---
+
+Recover cited TypeScript guarded returns and throws with correct lexical owners, sanitized source expressions, and explicit dependency and interpretation gaps. Add a source rule evidence inventory to the Spec Workbench and exports. Computed callable names are explicitly omitted and their runtime keys marked unresolved. Nested Nest controller endpoints retain their actual lexical handler identities, and malformed guarded exits produce explicit omission gaps. These observations preserve local syntax without claiming complete business-rule recovery.
+
+Repositories require re-ingestion after upgrade: the disposable graph cache is invalidated so old ambiguous ownership links cannot remain visible.

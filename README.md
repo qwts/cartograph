@@ -1,9 +1,9 @@
 # Cartograph
 
-**Cross-layer spec-recovery engine.** Cartograph ingests the repos that make up a
-running system and recovers its true specification — business flows, business
-rules, ADRs, data model — as a unified, provenance-tagged knowledge graph across
-five layers: infrastructure, cloud, server, events, and client.
+**A domain context hub built on cross-layer spec recovery.** Cartograph ingests
+repositories into a provenance-tagged graph across infrastructure, cloud, server,
+events, and client. Its product direction connects business rules, features,
+designs, decisions, and gaps for humans and agents using the same context.
 
 The core thesis is a **four-tier escalation ladder**: every fact is produced by
 the lowest tier that can establish it, and carries provenance + a confidence
@@ -16,15 +16,18 @@ tier. The engine prefers an explicit **Gap** over an unsupported assertion.
 | T2 Semantic | Local embeddings, similarity/contract matching | InferredStrong |
 | T3 Agentic | Bounded LLM agents proposing links with cited evidence | InferredWeak |
 
-Deliverable: an **official specification** (user stories + acceptance criteria,
-ADRs, flow dossiers, traceability matrix, gap & drift registers) trustworthy
-enough that a third party could re-specify the system from the document alone.
+The specification compiler produces flow dossiers, decision records, and gap and
+drift registers. Domain recovery and complete feature/acceptance-criteria recovery
+still need validation; the presence of an artifact is not proof of completeness.
 
 ## Status
 
-M0 (skeleton + stores): Tauri 2 shell boots, SQLite graph store and durable
-job spine round-trip. Next: M1 deterministic TS extraction. See the
-[milestone plan](docs/SPEC-00_master.md#14-milestone-plan-m0m10).
+The 0.10.3 baseline has a working desktop recovery engine, language/infrastructure
+adapters, graph and flow views, provenance, bounded agent proposals, and exports.
+The next stage is the [domain context hub](docs/SPEC-01_context-hub.md): shared
+reads first, then validated business-domain recovery, consistent curation,
+specialist tasks, MCP/ACP interoperability, and feature architecture evaluation.
+Those stages have separate delivery gates and are not all shipped capabilities.
 
 ```sh
 # prerequisites: Node (see .nvmrc) and Rust via rustup — https://rustup.rs
@@ -38,6 +41,8 @@ npm run tauri dev   # first run compiles the Rust workspace — takes a few minu
 | Document | Purpose |
 |---|---|
 | [docs/SPEC-00_master.md](docs/SPEC-00_master.md) | Master specification — single source of truth |
+| [docs/SPEC-01_context-hub.md](docs/SPEC-01_context-hub.md) | Domain context, MCP/ACP architecture, and delivery gates |
+| [docs/SPEC-02_rule-evidence.md](docs/SPEC-02_rule-evidence.md) | Scoped rule evidence, redaction, and interpretation boundaries |
 | [docs/cartograph_project_brief.md](docs/cartograph_project_brief.md) | Short project brief |
 | [docs/user_stories.md](docs/user_stories.md) | User stories + acceptance criteria (US/AC schema) |
 | [docs/US-TM.md](docs/US-TM.md) | Traceability matrix: US ↔ AC ↔ crate ↔ milestone ↔ ADR ↔ test |

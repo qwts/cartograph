@@ -375,3 +375,370 @@ PR — per-PR verification is CI's job.
    browser — never inside the webview.
 5. **About Cartograph** shows the app name and the version from
    `tauri.conf.json`.
+
+## Planned context-hub acceptance
+
+The following procedures bind T-0106–T-0118 for [SPEC-01](SPEC-01_context-hub.md).
+**All H2–H7 acceptance gates remain PLANNED; all procedures below are
+UNEXECUTED.** They are future milestone acceptance work, not H1 validation.
+Defining a procedure, a passing traceability check, or a partial implementation
+does not establish a pass. H1 retains its automated T-0101–T-0105 bindings.
+
+Before running a procedure, record the Cartograph commit/build, platform, target
+repository and immutable input identity, configuration, reviewer, and the actual
+documented UI/API actions used. Its prerequisites must be implemented and
+available; otherwise record **BLOCKED**, with the missing capability and issue.
+Do not substitute mock-only results for an end-to-end or real-runtime requirement.
+Use disposable local fixtures and synthetic canaries for negative cases. Preserve
+redacted transcripts, screenshots, output hashes, and case-level expected/actual
+results in the owning milestone task issue; record PASS or FAIL only after all
+steps execute. An observed violation is FAIL even if other cases pass.
+
+## MT-H2-01 — Pinned domain recovery and measured coverage (AC-0106, T-0106)
+
+**Gate: H2 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: domain/feature and rule recovery is available; the independent
+expected-set review and decision-case matrix in the
+[Vendure benchmark](evals/vendure-cart-readiness.md) are complete and frozen.
+
+1. Prepare the benchmark's exact commit and declared default configuration;
+   record their identities and the independently reviewed oracle checksum.
+   Keep the oracle and corroborating upstream tests outside extraction input.
+2. Recover the declared production-source scope twice with identical inputs.
+   Open the cart-readiness feature and follow each rule's predicate, configuration
+   condition, consequence, and dependency citations to the pinned source.
+3. Score all eight expected rules and every frozen decision case using the
+   benchmark procedure. Record entry guards and supporting stock rules separately,
+   plus extra assertions, duplicates, inferred proposals, missing rules, and gaps.
+   Inspect an unsupported dependency path and an unknown runtime input explicitly.
+4. Compare rule identities and content hashes between the two runs. Have a
+   reviewer explain each rejection and override from the hub and its citations.
+
+**Pass:** all benchmark acceptance gates hold: 5/5 entry guards and 3/3 supporting
+rules, zero unsupported confirmed assertions, complete required citations, every
+frozen decision case correct, and identical-input determinism. Unsupported paths
+and unknown inputs remain visible; inference does not count as confirmed coverage.
+**Fail:** any gate misses, including a plausible rule name without its predicate
+or evidence. Retain the scored manifest, case decisions, output hashes, coverage
+report, and reviewer findings; partial recovery is a measured result, not H2 pass.
+
+## MT-H2-02 — Implementation, intent, inference, and future design (AC-0107, T-0107)
+
+**Gate: H2 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: typed domain views and their provenance display are implemented.
+Prepare a pinned fixture with a code guard `quantity > 5`, a design document
+stating an intended limit of 10, a cited T3 interpretation, and a proposed future
+limit of 20. Include a second feature with code but no supplied design document.
+
+1. Ingest the fixture and open the feature's behavior and design views. Inspect
+   each of the four records, its meaning, producing tier/confidence, and citation.
+2. Follow the code and document citations. Verify the documented limit is shown
+   as written intent despite its conflict with implementation. Review the T3
+   interpretation and future design without applying a source-code change.
+3. Open the second feature and ask for its design evidence and design gaps.
+   Read the corresponding context output as well as the visible explanation.
+
+**Pass:** the four meanings remain distinguishable; neither the document nor an
+accepted interpretation proves implementation, and future design remains future.
+The second feature reports unknown intent or missing evidence, without asserting
+that no design exists. **Fail:** any conflation or tier upgrade. Retain the fixture
+identities, four record/citation pairs, and screenshots/context responses for both
+the conflicting-intent and missing-document cases.
+
+## MT-H3-01 — Shared curation and stale-evidence reconciliation (AC-0108, T-0108)
+
+**Gate: H3 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: durable proposals, shared curated projection, revision-bound source
+evidence, and re-ingestion reconciliation are implemented. Prepare two cited T3
+proposals against distinct source spans, plus an unaccepted control proposal.
+
+1. Record the recovered graph and proposal identities, producing tiers, and
+   evidence basis. Accept the first two proposals through human review.
+2. Read the curated UI, context API, and best-effort export at the same revision.
+   Match proposal identities and review state across all three. Also read the
+   separately addressable recovered view and the verified-only export.
+3. Change only the first proposal's cited source in a disposable fixture revision
+   and re-ingest it. Inspect both proposals through all three curated surfaces.
+   Attempt to reuse the first proposal without reconciling its changed evidence.
+4. Perform the documented reconciliation/review flow against the new source and
+   read all three surfaces again. Reopen the original revision and review history.
+
+**Pass:** the same accepted projection appears consistently where the export
+policy permits it; T3 remains InferredWeak and is excluded from verified-only.
+Acceptance never rewrites recovered facts or includes the unaccepted control.
+Changed evidence makes the affected proposal visibly stale until reconciled;
+unchanged evidence is distinguished, and original provenance/history remains
+inspectable. **Fail:** stale content silently remains current, a surface disagrees,
+or acceptance upgrades tier. Retain before/after responses, export hashes, review
+receipts, source revisions, and the reconciliation outcome.
+
+## MT-H3-02 — Named project isolation across restart (AC-0109, T-0109)
+
+**Gate: H3 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: persistent named contexts, domain membership, review history, and
+task references are implemented. Prepare projects A and B with the same relative
+path and symbol names but different rule values and immutable input identities.
+
+1. Create named contexts A and B. In each, ingest its fixture, associate a domain,
+   make a distinct review decision, and retain a task reference. Record all IDs.
+2. Switch A → B → A. Inspect domain evidence, source revision, decisions, and task
+   references in each; follow the links to their owning records and sources.
+3. Quit fully and relaunch. Repeat the inspection, then re-ingest a changed
+   revision of A and switch to B again.
+4. Through the documented context interface, request A's scoped record/task while
+   selecting B. Verify it is rejected or explicitly identified as outside B,
+   rather than rebound to B's same-named source.
+
+**Pass:** names and records survive restart, every link retains its actual project
+and revision, and A's update/reviews do not alter B. **Fail:** missing history,
+silent project substitution, or cross-project evidence/task leakage. Retain the
+project/revision/record matrix and responses before and after restart and update.
+
+## MT-H4-01 — Shared durable investigation coordinator (AC-0110, T-0110)
+
+**Gate: H4 PLANNED; MCP entry requires H5 support. Procedure: UNEXECUTED.**
+
+Prerequisites: app and MCP investigation entry points and the shared durable
+coordinator are implemented. Configure a named/versioned specialist, permitted
+feature scope, tier ceiling, and finite time/token/tool budgets. Declare the
+task-start latency bound before the run.
+
+1. Start one permitted investigation in the app and a second through MCP against
+   the same project/revision. Record request-to-task-ID latency for both.
+2. Retrieve each task from both interfaces. Compare its durable ID, project,
+   revision, scope, named agent/version, tier ceiling, input references, budgets,
+   origin, and parent identity (absent for these root tasks).
+3. Let the tasks complete; read their cited findings and task status through both
+   interfaces. Restart the app and retrieve both tasks again by their original IDs.
+
+**Pass:** both ingress paths use the same durable task records and enforce the
+declared limits; IDs arrive within the declared bound without waiting for model
+completion, and metadata/results remain consistent after restart. Distinct starts
+need not share one ID. **Fail:** transport-local task copies disagree, required
+metadata is missing, or task identity/results are lost. Retain the request/status
+transcripts, durations, task records, and restart evidence.
+
+## MT-H5-01 — ACP capabilities, environment, and egress (AC-0111, T-0111)
+
+**Gates: H4–H5 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: ACP negotiation, coordinator policy, enforced runtime filesystem
+boundary, and per-tier consent are implemented. Use a compatible local runtime,
+a disposable read-only target, a permitted output directory, and synthetic
+canaries outside both. Enable tool/runtime/network audit capture.
+
+1. Record negotiated protocol/runtime capabilities and configured tool, path,
+   tier, and egress permissions. Run a permitted context read and output write.
+2. Request an unnegotiated tool, a target-code write, an out-of-scope canary read,
+   and a confirmed-fact write. Repeat the requests when instructions embedded in
+   repository text claim to grant those permissions. Compare target hashes and
+   confirmed graph contents before and after.
+3. Under local-only policy, request cloud execution and verify no cloud runtime
+   launch or outbound payload occurs. Exercise the opted-in test provider with
+   denied consent, then with consent for one exact redacted payload and tier;
+   change that payload or tier and retry without new consent.
+4. Complete an allowed investigation and inspect its returned proposal citations
+   and confidence ceiling. Check the audit for tools/paths used during execution.
+
+**Pass:** only negotiated and authorized operations execute; denied reads do not
+return canaries, source/confirmed facts remain unchanged, and egress requires
+matching per-tier consent. Allowed results are cited proposals. **Fail:** any
+unauthorized execution, disclosure, egress, or fact upgrade, even if the runtime
+reported a permission dialog. Retain redacted negotiation/denial/network records,
+hash comparisons, consent receipts, and the successful proposal.
+
+## MT-H5-02 — Cancellation, disconnect, and uncertain runtime outcomes (AC-0112, T-0112)
+
+**Gates: H4–H5 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: durable task lifecycle and runtime reconciliation are implemented.
+Use a controllable runtime that exposes invocation IDs and can pause before work,
+during work, and after producing a result but before host acknowledgement.
+
+1. Start a task, wait for progress, and cancel it. Observe the runtime cancellation
+   receipt and terminal state; query that task after reconnecting and restarting.
+2. Start a second task, disconnect only the caller during work, and reconnect.
+   Retrieve its progress and eventual result by the original ID; confirm the
+   reconnect did not create another runtime invocation.
+3. Start a third task and terminate the app while the runtime is paused before
+   acknowledging its outcome. Relaunch and inspect the persisted task. Request a
+   retry before reconciling the runtime invocation, then reconcile it using the
+   documented recovery flow and retrieve the resulting terminal record.
+4. Repeat the crash case with a runtime that cannot establish whether it finished.
+   Inspect the unresolved state and attempted retry behavior.
+
+**Pass:** progress/terminal records remain queryable, cancellation reaches the
+runtime, and disconnect/restart do not silently duplicate work. An uncertain
+outcome stays explicit and prevents automatic retry until reconciled; an
+unreconcilable outcome is not invented as success. **Fail:** lost outcomes,
+unpropagated cancellation, or duplicate invocation without reconciliation. Retain
+task and invocation IDs, progress/cancel transcripts, restart records, and the
+recovery decision for each case.
+
+## MT-H5-03 — Delegation ancestry, deduplication, and shared limits (AC-0113, T-0113)
+
+**Gate: H5 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: nested MCP/ACP delegation and coordinator accounting are implemented.
+Configure a depth limit of two descendant levels, finite shared tool/token/time
+budgets, and a reproducible worker that requests specified child investigations.
+
+1. Start a root MCP investigation. Have its ACP worker create a permitted child;
+   read both records and verify project/revision, parent ancestry, and budget
+   accounting remain connected to the root.
+2. Submit the same child request concurrently and again after reconnect, using
+   the documented deduplication identity. Count actual runtime invocations.
+3. Attempt direct self-delegation, A → B → A ancestry recursion, and a chain
+   extending beyond the configured depth. Inspect returned errors and task records.
+4. Run two valid children whose combined requests exceed each shared budget in
+   turn. Inspect the root/child usage ledger and any attempted later delegation.
+
+**Pass:** duplicate requests do not duplicate execution, cycles and excess depth
+are rejected explicitly, and children cannot reset or multiply their shared
+allowance. Exhaustion stops further work with the responsible bound visible.
+**Fail:** an unbounded loop, missing ancestry, or execution beyond the configured
+enforced limits. Retain the task tree, deduplication keys, invocation counts,
+configured limits, usage ledger, and denial records.
+
+## MT-H5-04 — Real external MCP caller and ACP runtime (AC-0114, T-0114)
+
+**Gate: H5 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: a released external development application's MCP caller, a real
+compatible ACP runtime, and Cartograph's documented connection instructions.
+Record all product/runtime versions, negotiated capabilities, and finite budgets.
+Mock protocol fixtures alone do not satisfy this procedure.
+
+1. Connect the external caller and read a scoped Cartograph context page. Follow
+   a citation and compare its project/revision with the app's corresponding view.
+2. Start an ACP investigation through MCP. Record its durable task ID and observe
+   real progress while it runs; disconnect/reconnect the caller and retrieve the
+   completed cited result. Inspect the same task in Cartograph.
+3. Start a separate investigation, observe progress, cancel from the caller, and
+   retrieve its terminal outcome after reconnecting. Verify runtime cancellation.
+4. Record whether MCP Tasks was negotiated. Execute these lifecycle steps through
+   negotiated Tasks support when present; also exercise the explicit
+   start/status/result/cancel compatibility path with Tasks disabled or a second
+   real caller that does not negotiate it. Record the actual tool names used.
+
+**Pass:** the real caller completes context read, investigation, progress,
+reconnect, cancellation, and cited-result retrieval with the same durable records
+as the app; the explicit lifecycle baseline also works without Tasks support.
+**Fail:** any required step needs a mock or loses identity/provenance. Retain
+redacted connection instructions, negotiation and lifecycle transcripts, runtime
+invocation IDs, and the cited result; name any incompatible capabilities.
+
+## MT-H6-01 — Cited structural measurements and missing coverage (AC-0115, T-0115)
+
+**Gate: H6 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: feature-scoped structural evaluation is implemented. Prepare a
+small pinned multi-file feature with a known dependency cycle and independently
+counted size, fan-in/out, and cohesion-proxy expectations under the documented
+metric definitions; include available Git history and an external dependency.
+
+1. Evaluate the declared feature twice at the same revision and budget. Compare
+   every reported measurement with the independently calculated values and follow
+   its source/revision citation. Record the selected and excluded scope.
+2. Repeat with dependency evidence unavailable, and separately with history
+   unavailable. Preserve the same source content and record changed input coverage.
+3. Inspect measurement, coverage, and confidence fields independently. Attempt to
+   follow a prior-revision citation after re-ingesting a changed fixture revision.
+
+**Pass:** measurements match their documented definitions and pinned evidence;
+identical inputs agree. Missing dependency/history inputs are explicitly reported
+as incomplete coverage, not zero dependencies/changes or a confidence substitute.
+Old evidence remains tied to its revision. **Fail:** incorrect counts, uncited or
+misbound measurements, or hidden coverage loss. Retain the independent worksheet,
+input/output identities, and full versus incomplete-coverage reports.
+
+## MT-H6-02 — Contextual responsibility hotspots (AC-0116, T-0116)
+
+**Gate: H6 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: structural evaluation and the architecture specialist are
+implemented. Before viewing its output, a reviewer selects two comparably large
+files: one cohesive unit with a documented reason to remain together, and one
+combining distinct responsibilities with documented coupling concerns. Freeze
+their revision, responsibilities, constraints, and expected supporting evidence.
+
+1. Evaluate each file in its feature/dependency scope with the same declared
+   budgets. Inspect the measurements separately from the specialist's judgment.
+2. For every hotspot assertion or exception, follow citations for responsibility,
+   cohesion, coupling, and design constraints; compare them with the frozen review.
+3. Remove the design document from a disposable input variant and repeat. Inspect
+   whether the specialist acknowledges unknown constraints and revises uncertainty.
+
+**Pass:** size alone yields no confirmed god-file claim. The justified large file
+is not condemned solely for its size, and the responsibility hotspot is assessed
+using cited context with scope, uncertainty, impact, and remedy. Interpretations
+retain their inferred tier; missing constraints remain unknown. **Fail:** a
+size-threshold-only verdict, invented rationale, or confirmed subjective judgment.
+Retain both reports, the independent comparison, and the missing-document result.
+
+## MT-H6-03 — Approved design, separate implementation, and re-ingestion (AC-0117, T-0117)
+
+**Gates: H6–H7 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: future-design review and before/after comparison are implemented.
+Freeze a baseline repository revision, approved future design, and executable
+acceptance cases. Obtain separate human authorization naming the external coding
+agent, disposable implementation checkout, allowed change, and permitted commands.
+
+1. Save the original recovered evidence and approved design/review IDs. Have the
+   separately authorized external agent implement the change in its checkout.
+   Confirm Cartograph's analysis itself has not written the ingested target.
+2. Execute the approved acceptance cases against the changed checkout and retain
+   observed results, command/runtime identities, and the tested source revision.
+   Re-ingest that exact revision and compare it with the baseline and design.
+3. Repeat the comparison on a controlled failing variant that violates one
+   acceptance case. Also inspect a variant with no observed test result.
+4. Reopen the original evidence and review history after both comparisons.
+
+**Pass:** before/after evidence remains distinct and tied to actual revisions;
+the report maps the change to approved design and observed tests, identifies the
+failing case, and keeps unobserved behavior unknown. It never silently asserts
+complete behavioral equivalence or rewrites original evidence. **Fail:** missing
+authorization boundary, target writes from analysis, lost baseline, or a success
+claim contradicted by a failing/missing test. Retain authorization, design/AC
+references, diffs, test records, and both comparison reports.
+
+## MT-H7-01 — Independent market pilot with recorded outcomes (AC-0118, T-0118)
+
+**Gate: H7 PLANNED. Procedure: UNEXECUTED.**
+
+Prerequisites: the preceding capabilities needed by the pilot are implemented;
+an independently recruited new user has an authorized repository and the normal
+distribution/onboarding instructions. Before observing results, freeze the pilot
+scope, independent answer rubric, setup and investigation time/cost thresholds,
+acceptable coverage, citation/accuracy targets, and improvement acceptance cases.
+
+1. Observe the user install/configure Cartograph and ingest the chosen revision
+   without operator intervention. Time setup and record every failure, recovery,
+   credential prompt, coverage explanation, and instance of assistance separately.
+2. Have the user find the feature breakdown and business rules for one domain,
+   distinguish implemented behavior from documented/future design, identify design
+   gaps, and investigate one architecture concern. Record elapsed time, runtime
+   and token use/cost, the exact answers, citations, and disclosed uncovered scope.
+3. Have an independent reviewer score those answers against the frozen rubric,
+   following citations to the actual source. Record correct/total answers,
+   supported/total assertions, uncovered cases, and disagreements.
+4. Have the user select one improvement, review its design/acceptance criteria,
+   and complete the separately authorized implementation and re-ingestion flow
+   in MT-H6-03. Record test results, evidence comparison, and the user's review.
+5. Compare observed setup, answer quality, coverage, time/cost, and improvement
+   results with the preregistered thresholds. Record the user's unresolved friction
+   and any follow-up issues before deciding this pilot's result.
+
+**Pass:** the new user completes the workflow independently, meets the frozen
+thresholds, and reviews one improvement supported by observed acceptance evidence.
+**Fail:** assistance was required for completion, a threshold misses, evidence is
+unsupported, or the improvement is unreviewed. Retain the anonymized session
+record, scored rubric, measurements, and improvement artifacts. This procedure
+records one pilot; broader market readiness still requires the several external
+users and launch requirements named in SPEC-01, rather than extrapolating from
+one successful participant.

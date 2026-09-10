@@ -112,6 +112,7 @@ struct PendingCall {
     resolved_edge: Edge,
     gap_node: Node,
     gap_edge: Edge,
+    requires_instance_method: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -169,6 +170,7 @@ fn retarget_props_commit(props: &mut serde_json::Value, commit: &str) {
         evidence.commit_sha = commit.to_string();
     }
     props["prov"] = serde_json::to_value(provenance).expect("provenance serializes");
+    rule_evidence::retarget_commit(props, commit);
 }
 
 /// Point a fact's evidence at one exact span — used to re-cite facts
@@ -325,6 +327,7 @@ fn pending_call(
     let gap_id = format!("gap:call:{}@{}@{}", cx.id.repo, cx.path, call.start_byte());
     let reason = "unresolved call target after import/type resolution";
     PendingCall {
+        requires_instance_method: false,
         resolved_edge: Edge {
             src: src.clone(),
             dst,
@@ -398,27 +401,116 @@ fn emit_eval_extraction(
     // by id, so sharing one would let either fact clobber the other (#217
     // review) — and offset-keyed inner ids (anonymous symbols, deeper eval
     // levels) can never collide with the outer file's own.
+    // The wrapper is an execution owner, not a lexical scope that existed in
+    // the source string. Project that one synthetic scope out explicitly.
+    // Unique root declarations keep their established `eval@N.name` identity;
+    // nested/block/object scopes and ambiguous declarations retain their source
+    // discriminators. The same projection applies to both ends of every edge.
+    let wrapper_prefix = format!("{marker}/");
+    let root_name = |name: &str| -> String {
+        match name.rsplit_once('@') {
+            Some((name, offset))
+                if !name.contains('.')
+                    && !name.contains('/')
+                    && !offset.is_empty()
+                    && offset.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                name.into()
+            }
+            _ => name.into(),
+        }
+    };
+    let mut root_scopes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for node in &inner.nodes {
+        if let Some((_, suffix)) = node.id.split_once('#')
+            && let Some(relative) = suffix.strip_prefix(&wrapper_prefix)
+        {
+            let scope = relative
+                .split('/')
+                .next()
+                .expect("split always has a first segment");
+            root_scopes
+                .entry(root_name(scope))
+                .or_default()
+                .insert(scope.into());
+        }
+    }
+    let relative_name = |suffix: &str| -> String {
+        let Some(relative) = suffix.strip_prefix(&wrapper_prefix) else {
+            return suffix.into();
+        };
+        let (scope, rest) = relative
+            .split_once('/')
+            .map_or((relative, None), |(scope, rest)| (scope, Some(rest)));
+        let candidate = root_name(scope);
+        let scope = if root_scopes
+            .get(&candidate)
+            .is_some_and(|scopes| scopes.len() == 1)
+        {
+            candidate.as_str()
+        } else {
+            scope
+        };
+        match rest {
+            Some(rest) => format!("{scope}/{rest}"),
+            None => scope.into(),
+        }
+    };
     let rewrite = |id: &str| -> String {
         match id.split_once('#') {
             Some((head, suffix)) if suffix == marker => format!("{head}#eval@{offset}"),
-            Some((head, suffix)) => format!("{head}#eval@{offset}.{suffix}"),
+            Some((head, suffix)) => format!("{head}#eval@{offset}.{}", relative_name(suffix)),
             None => id.to_string(),
         }
     };
     let file = file_id(cx.id.repo, cx.path);
+    // Decoded expression offsets are not original-file spans. Keep existing
+    // eval symbol/call extraction, but defer its new source-rule observations
+    // until an exact decoded-to-literal source mapping exists (AC-0123).
+    let deferred_rules: BTreeSet<_> = inner
+        .nodes
+        .iter()
+        .filter(|node| node.label == "BusinessRule" || node.props["rule_evidence_gap"] == true)
+        .map(|node| node.id.clone())
+        .collect();
+    if !deferred_rules.is_empty() {
+        let gap_id = format!("gap:{}@{}#eval-rules@{offset}", cx.id.repo, cx.path);
+        let props = serde_json::json!({
+            "rule_evidence_gap": true,
+            "reason_code": "eval_source_mapping_unknown",
+            "reason": "Source-rule evidence from decoded eval code awaits an exact mapping to original source spans.",
+            "prov": cx.prov_with_confidence(&evidence, ConfidenceTier::Gap, &format!("Gap {gap_id}")),
+        });
+        out.nodes.push(Node {
+            id: gap_id.clone(),
+            label: "Gap".into(),
+            props: props.clone(),
+        });
+        out.edges.push(Edge {
+            src: entry.clone(),
+            dst: gap_id,
+            label: "DEPENDS_ON".into(),
+            props,
+        });
+    }
     for mut node in inner.nodes {
-        if node.id == file {
+        if node.id == file || deferred_rules.contains(&node.id) {
             continue; // the outer extraction already owns the File node
         }
         node.id = rewrite(&node.id);
         if node.id == entry {
             node.props["name"] = serde_json::json!(format!("<eval@{offset}>"));
+        } else if let Some(name) = node.props.get("name").and_then(serde_json::Value::as_str) {
+            node.props["name"] = serde_json::json!(relative_name(name));
         }
         node.props["via"] = serde_json::json!("eval");
         retarget_props_span(&mut node.props, start, end);
         out.nodes.push(node);
     }
     for mut edge in inner.edges {
+        if deferred_rules.contains(&edge.src) || deferred_rules.contains(&edge.dst) {
+            continue;
+        }
         edge.src = rewrite(&edge.src);
         edge.dst = rewrite(&edge.dst);
         edge.props["via"] = serde_json::json!("eval");
@@ -470,20 +562,12 @@ fn sym_id(repo: &str, path: &str, name: &str) -> String {
 
 fn enclosing_class_name(cx: &FileCx, mut node: TsNode) -> Option<String> {
     while let Some(parent) = node.parent() {
-        if parent.kind() == "class_declaration" {
-            return parent
-                .child_by_field_name("name")
-                .map(|name| cx.text(&name).to_string());
+        if matches!(parent.kind(), "class_declaration" | "class") {
+            return Some(callable::class_name(cx, parent));
         }
         node = parent;
     }
     None
-}
-
-fn qualified_method_name(cx: &FileCx, method: TsNode, name: &str) -> String {
-    enclosing_class_name(cx, method)
-        .map(|class| format!("{class}.{name}"))
-        .unwrap_or_else(|| name.to_string())
 }
 
 /// Reduce a syntactic TypeScript type annotation to a class/type identifier
@@ -504,6 +588,11 @@ fn simple_type_name(raw: &str) -> Option<String> {
         .next()
         .unwrap_or("")
         .trim_end_matches('?');
+    // Namespace types and arrays do not establish an instance of the same-
+    // spelled local class. These shapes need their own binding/type proof.
+    if base.contains('.') || raw.split('<').next().is_some_and(|base| base.contains('[')) {
+        return None;
+    }
     let name = base.rsplit('.').next().unwrap_or(base);
     (!name.is_empty()).then(|| name.to_string())
 }
@@ -547,10 +636,14 @@ fn decorator_call<'tree>(
     }
 }
 
-/// tree-sitter-typescript represents decorators as named siblings immediately
-/// preceding the class or method they decorate (including through `export`).
+/// The grammar places decorators on a plain class directly, but before a
+/// method or an exported class as named siblings within its parent.
 fn leading_decorators(mut node: TsNode) -> Vec<TsNode> {
-    let mut decorators = Vec::new();
+    let mut cursor = node.walk();
+    let mut decorators: Vec<_> = node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "decorator")
+        .collect();
     while let Some(previous) = node.prev_named_sibling() {
         if previous.kind() != "decorator" {
             break;
@@ -558,7 +651,7 @@ fn leading_decorators(mut node: TsNode) -> Vec<TsNode> {
         decorators.push(previous);
         node = previous;
     }
-    decorators.reverse();
+    decorators.sort_by_key(|decorator| decorator.start_byte());
     decorators
 }
 
@@ -698,39 +791,8 @@ fn reconcile_guessed_edge_targets(
 
 /// Walk ancestors to the enclosing named function (or anonymous handler)
 /// and return its symbol id, if any.
-fn enclosing_symbol(cx: &FileCx, mut node: TsNode) -> Option<String> {
-    while let Some(parent) = node.parent() {
-        match parent.kind() {
-            "function_declaration" => {
-                let name = parent.child_by_field_name("name")?;
-                return Some(sym_id(cx.id.repo, cx.path, cx.text(&name)));
-            }
-            "method_definition" => {
-                let name = parent.child_by_field_name("name")?;
-                let qualified = qualified_method_name(cx, parent, cx.text(&name));
-                return Some(sym_id(cx.id.repo, cx.path, &qualified));
-            }
-            "arrow_function" | "function_expression" => {
-                // Named via `const f = () => {}`?
-                if let Some(decl) = parent
-                    .parent()
-                    .filter(|p| p.kind() == "variable_declarator")
-                    && let Some(name) = decl.child_by_field_name("name")
-                {
-                    return Some(sym_id(cx.id.repo, cx.path, cx.text(&name)));
-                }
-                // Anonymous (e.g. inline route handler): stable offset-keyed id,
-                // shared with the endpoint extractor.
-                return Some(sym_id(
-                    cx.id.repo,
-                    cx.path,
-                    &format!("anon@{}", parent.start_byte()),
-                ));
-            }
-            _ => node = parent,
-        }
-    }
-    None
+fn enclosing_symbol(cx: &FileCx, node: TsNode) -> Option<String> {
+    callable::enclosing(cx, node)
 }
 
 /// Walk ancestors and return the *nearest* enclosing capitalized function
@@ -756,7 +818,7 @@ fn enclosing_component(cx: &FileCx, node: TsNode) -> Option<String> {
         if let Some(name) = name
             && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
         {
-            return Some(sym_id(cx.id.repo, cx.path, &name));
+            return Some(callable::id(cx, parent));
         }
         current = parent;
     }
@@ -1059,101 +1121,69 @@ pub fn extract_source(
         props: serde_json::json!({ "path": path, "prov": cx.prov(&root, &format!("File {path}")) }),
     });
 
-    // --- Symbols: function declarations and arrow/function consts -----------
-    let q_funcs = Query::new(
-        &language,
-        r#"
-        (function_declaration name: (identifier) @name) @def
-        (variable_declarator
-            name: (identifier) @name
-            value: [(arrow_function) (function_expression)]) @def
-        "#,
-    )
-    .expect("static query");
-    let mut locals: HashMap<String, String> = HashMap::new();
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&q_funcs, root, source);
-    while let Some(m) = matches.next() {
-        let name_node = m.nodes_for_capture_index(0).next().or_else(|| {
-            m.captures
-                .iter()
-                .find(|c| q_funcs.capture_names()[c.index as usize] == "name")
-                .map(|c| c.node)
+    // One lexical identity implementation serves emitted symbols and every
+    // consumer that needs an owner (calls, events, fetches, and later rules).
+    let syntax_nodes = callable::walk(root);
+    let bindings = callable::Bindings::new(&cx, root, &syntax_nodes);
+    let mut methods: HashMap<(String, String), String> = HashMap::new();
+    for function in syntax_nodes
+        .iter()
+        .copied()
+        .filter(|node| callable::is_callable(*node))
+    {
+        let name = callable::name(&cx, function);
+        let sid = callable::id(&cx, function);
+        let bound_name = callable::binding_name(&cx, function);
+        let is_component = is_tsx
+            && bound_name
+                .as_ref()
+                .is_some_and(|name| name.chars().next().is_some_and(|c| c.is_ascii_uppercase()));
+        let class = callable::direct_class(function).map(|class| callable::class_name(&cx, class));
+        let evidence = function
+            .parent()
+            .filter(|parent| parent.kind() == "variable_declarator")
+            .unwrap_or(function);
+        let mut props = serde_json::json!({
+            "name": name,
+            "kind": if is_component { "Component" } else if function.kind() == "method_definition" { "Method" } else { "Function" },
+            "prov": cx.prov(&evidence, &format!("Symbol {sid}")),
         });
-        let def_node = m
-            .captures
-            .iter()
-            .find(|c| q_funcs.capture_names()[c.index as usize] == "def")
-            .map(|c| c.node);
-        let (Some(name_node), Some(def_node)) = (name_node, def_node) else {
-            continue;
-        };
-        let name = cx.text(&name_node).to_string();
-        let sid = sym_id(id.repo, path, &name);
-        // A capitalized function in a .tsx file is a React component
-        // (SPEC-00 §3.5) — same node id, so call edges keep working.
-        let is_component = is_tsx && name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+        if callable::omitted_property_name(function) {
+            props["name_capture"] = serde_json::json!("nonidentifier_key_omitted");
+        }
+        if let Some(class) = class {
+            props["class"] = serde_json::json!(class);
+            props["member_kind"] = serde_json::json!(callable::member_kind(function));
+            props["instance_dispatch"] =
+                serde_json::json!(callable::instance_dispatch_candidate(&cx, function));
+            if let Some(key) = function.child_by_field_name("name")
+                && callable::instance_dispatch_candidate(&cx, function)
+            {
+                methods.insert((class, cx.text(&key).into()), sid.clone());
+            }
+        }
+        if function
+            .child_by_field_name("name")
+            .is_some_and(|key| key.kind() == "computed_property_name")
+            || function
+                .parent()
+                .filter(|parent| parent.kind() == "pair")
+                .and_then(|pair| pair.child_by_field_name("key"))
+                .is_some_and(|key| key.kind() == "computed_property_name")
+        {
+            props["computed_name"] = serde_json::json!(true);
+        }
         out.nodes.push(Node {
             id: sid.clone(),
             label: if is_component { "Component" } else { "Symbol" }.into(),
-            props: serde_json::json!({
-                "name": name,
-                "kind": if is_component { "Component" } else { "Function" },
-                "prov": cx.prov(&def_node, &format!("Symbol {sid}")),
-            }),
+            props,
         });
         out.edges.push(Edge {
             src: sid.clone(),
             dst: file_id(id.repo, path),
             label: "DEFINED_IN".into(),
-            props: serde_json::json!({ "prov": cx.prov(&def_node, &format!("DEFINED_IN {sid}")) }),
+            props: serde_json::json!({ "prov": cx.prov(&evidence, &format!("DEFINED_IN {sid}")) }),
         });
-        locals.insert(name, sid);
-    }
-
-    // Class methods use class-qualified ids so two classes may safely expose
-    // the same method name and typed member calls can target the right symbol.
-    let q_methods =
-        Query::new(&language, r#"(method_definition name: (_) @name) @def"#).expect("static query");
-    let mut methods: HashMap<(String, String), String> = HashMap::new();
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&q_methods, root, source);
-    while let Some(m) = matches.next() {
-        let mut name_node = None;
-        let mut def_node = None;
-        for capture in m.captures {
-            match q_methods.capture_names()[capture.index as usize] {
-                "name" => name_node = Some(capture.node),
-                "def" => def_node = Some(capture.node),
-                _ => {}
-            }
-        }
-        let (Some(name_node), Some(def_node)) = (name_node, def_node) else {
-            continue;
-        };
-        let Some(class) = enclosing_class_name(&cx, def_node) else {
-            continue;
-        };
-        let name = cx.text(&name_node).to_string();
-        let qualified = format!("{class}.{name}");
-        let sid = sym_id(id.repo, path, &qualified);
-        out.nodes.push(Node {
-            id: sid.clone(),
-            label: "Symbol".into(),
-            props: serde_json::json!({
-                "name": qualified,
-                "kind": "Method",
-                "class": class,
-                "prov": cx.prov(&def_node, &format!("Symbol {sid}")),
-            }),
-        });
-        out.edges.push(Edge {
-            src: sid.clone(),
-            dst: file_id(id.repo, path),
-            label: "DEFINED_IN".into(),
-            props: serde_json::json!({ "prov": cx.prov(&def_node, &format!("DEFINED_IN {sid}")) }),
-        });
-        methods.insert((class, name), sid);
     }
 
     // --- Imports: IMPORTS edges + imported-name -> foreign symbol map -------
@@ -1557,34 +1587,20 @@ pub fn extract_source(
             .child_by_field_name("arguments")
             .and_then(|args| {
                 let mut w = args.walk();
-                let children: Vec<_> =
-                    args.children(&mut w).filter(|c| c.is_named()).collect();
+                let children: Vec<_> = args.children(&mut w).filter(|c| c.is_named()).collect();
                 children.last().copied()
             })
             .and_then(|h| match h.kind() {
                 "identifier" => {
                     let name = cx.text(&h);
-                    locals.get(name).cloned().or_else(|| imported.get(name).cloned())
+                    bindings.local_target(h, name).or_else(|| {
+                        bindings
+                            .imported(h, name)
+                            .then(|| imported.get(name).cloned())
+                            .flatten()
+                    })
                 }
-                "arrow_function" | "function_expression" => {
-                    let sid = sym_id(id.repo, path, &format!("anon@{}", h.start_byte()));
-                    out.nodes.push(Node {
-                        id: sid.clone(),
-                        label: "Symbol".into(),
-                        props: serde_json::json!({
-                            "name": format!("<handler {verb} {route}>"),
-                            "kind": "Function",
-                            "prov": cx.prov(&h, &format!("Symbol {sid}")),
-                        }),
-                    });
-                    out.edges.push(Edge {
-                        src: sid.clone(),
-                        dst: file_id(id.repo, path),
-                        label: "DEFINED_IN".into(),
-                        props: serde_json::json!({ "prov": cx.prov(&h, &format!("DEFINED_IN {sid}")) }),
-                    });
-                    Some(sid)
-                }
+                "arrow_function" | "function_expression" => Some(callable::id(&cx, h)),
                 _ => None,
             });
         if let Some(handler) = handler_sym {
@@ -1600,30 +1616,29 @@ pub fn extract_source(
     // --- NestJS endpoints: @Controller prefix + import-proven method decorator
     let q_classes = Query::new(
         &language,
-        r#"(class_declaration name: (_) @name body: (class_body) @body) @class"#,
+        r#"(class_declaration body: (class_body) @body) @class"#,
     )
     .expect("static query");
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&q_classes, root, source);
     while let Some(m) = matches.next() {
-        let (mut class_node, mut class_name, mut body) = (None, None, None);
+        let (mut class_node, mut body) = (None, None);
         for capture in m.captures {
             match q_classes.capture_names()[capture.index as usize] {
                 "class" => class_node = Some(capture.node),
-                "name" => class_name = Some(cx.text(&capture.node).to_string()),
                 "body" => body = Some(capture.node),
                 _ => {}
             }
         }
-        let (Some(class_node), Some(class_name), Some(body)) = (class_node, class_name, body)
-        else {
+        let (Some(class_node), Some(body)) = (class_node, body) else {
             continue;
         };
         let controller = leading_decorators(class_node)
             .into_iter()
             .filter_map(|decorator| decorator_call(&cx, decorator))
-            .find(|(local, _, _)| {
-                import_modules.get(local).map(String::as_str) == Some(NEST.module_name)
+            .find(|(local, _, evidence)| {
+                bindings.imported(*evidence, local)
+                    && import_modules.get(local).map(String::as_str) == Some(NEST.module_name)
                     && imported_names.get(local).map(String::as_str) == Some(NEST.controller)
             });
         let Some((_, prefix, _)) = controller else {
@@ -1636,15 +1651,13 @@ pub fn extract_source(
             .children(&mut body_cursor)
             .filter(|child| child.kind() == "method_definition")
         {
-            let Some(method_name_node) = method_node.child_by_field_name("name") else {
-                continue;
-            };
-            let method_name = cx.text(&method_name_node).to_string();
             for (local, suffix, evidence) in leading_decorators(method_node)
                 .into_iter()
                 .filter_map(|decorator| decorator_call(&cx, decorator))
             {
-                if import_modules.get(&local).map(String::as_str) != Some(NEST.module_name) {
+                if !bindings.imported(evidence, &local)
+                    || import_modules.get(&local).map(String::as_str) != Some(NEST.module_name)
+                {
                     continue;
                 }
                 let exported = imported_names
@@ -1666,12 +1679,10 @@ pub fn extract_source(
                         "prov": cx.prov(&evidence, &format!("Endpoint {verb} {route}")),
                     }),
                 });
-                let handler = methods
-                    .get(&(class_name.clone(), method_name.clone()))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        sym_id(id.repo, path, &format!("{class_name}.{method_name}"))
-                    });
+                // The decorator names this exact method, so reuse its emitted
+                // lexical identity instead of performing member dispatch or
+                // fabricating a target from the unqualified class name.
+                let handler = callable::id(&cx, method_node);
                 out.edges.push(Edge {
                     src: ep_id,
                     dst: handler,
@@ -2120,11 +2131,12 @@ pub fn extract_source(
                 route_elements.push(el);
                 continue;
             }
-            let Some(dst) = locals
-                .get(name)
-                .cloned()
-                .or_else(|| imported.get(name).cloned())
-            else {
+            let Some(dst) = bindings.local_target(el, name).or_else(|| {
+                bindings
+                    .imported(el, name)
+                    .then(|| imported.get(name).cloned())
+                    .flatten()
+            }) else {
                 continue;
             };
             if let Some(src) = enclosing_symbol(&cx, el)
@@ -2175,10 +2187,13 @@ pub fn extract_source(
                                 "jsx_self_closing_element" | "jsx_opening_element"
                             ) && let Some(name) = n.child_by_field_name("name")
                             {
-                                element_comp = locals
-                                    .get(cx.text(&name))
-                                    .cloned()
-                                    .or_else(|| imported.get(cx.text(&name)).cloned());
+                                element_comp =
+                                    bindings.local_target(n, cx.text(&name)).or_else(|| {
+                                        bindings
+                                            .imported(n, cx.text(&name))
+                                            .then(|| imported.get(cx.text(&name)).cloned())
+                                            .flatten()
+                                    });
                                 break;
                             }
                             let mut w2 = n.walk();
@@ -2287,10 +2302,7 @@ pub fn extract_source(
             // A locally defined or imported `fetch` is application code, not
             // the browser API — confirming it against an endpoint would
             // corrupt the graph.
-            let fetch_shadowed = locals.contains_key("fetch")
-                || imported.contains_key("fetch")
-                || import_modules.contains_key("fetch");
-            if fn_name == "fetch" && !fetch_shadowed {
+            if fn_name == "fetch" && bindings.global_unshadowed(call, "fetch") {
                 let Some(url) = first_arg_classified(&args) else {
                     continue;
                 };
@@ -2377,10 +2389,12 @@ pub fn extract_source(
                     stmt.child_by_field_name("value")
                         .filter(|v| v.kind() == "identifier")
                         .and_then(|v| {
-                            locals
-                                .get(cx.text(&v))
-                                .cloned()
-                                .or_else(|| imported.get(cx.text(&v)).cloned())
+                            bindings.local_target(v, cx.text(&v)).or_else(|| {
+                                bindings
+                                    .imported(v, cx.text(&v))
+                                    .then(|| imported.get(cx.text(&v)).cloned())
+                                    .flatten()
+                            })
                         })
                 });
             if let Some(target) = target {
@@ -2411,8 +2425,31 @@ pub fn extract_source(
         "#,
     )
     .expect("static query");
-    let mut receiver_types: HashMap<String, String> = HashMap::new();
-    let mut this_properties: HashMap<(String, String), String> = HashMap::new();
+    #[derive(Clone)]
+    struct ReceiverProof {
+        name: String,
+        local_class: Option<String>,
+        imported_type: Option<(String, String)>,
+    }
+    // Resolve the type's identity where its annotation/constructor occurs.
+    // A later call may have a different shadowing class in its lexical scope.
+    let prove_receiver = |name: String, site: TsNode| -> Option<ReceiverProof> {
+        let local_class = bindings
+            .stable_declaration(site, &name)
+            .filter(|declaration| declaration.kind() == "class_declaration")
+            .map(|class| callable::class_name(&cx, class));
+        let imported_type = bindings
+            .imported(site, &name)
+            .then(|| imported_types.get(&name).cloned())
+            .flatten();
+        (local_class.is_some() || imported_type.is_some()).then_some(ReceiverProof {
+            name,
+            local_class,
+            imported_type,
+        })
+    };
+    let mut receiver_types: HashMap<usize, ReceiverProof> = HashMap::new();
+    let mut this_properties: HashMap<(String, String), ReceiverProof> = HashMap::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&q_typed_bindings, root, source);
     while let Some(m) = matches.next() {
@@ -2431,7 +2468,10 @@ pub fn extract_source(
         let Some(type_name) = simple_type_name(cx.text(&type_node)) else {
             continue;
         };
-        receiver_types.insert(name.clone(), type_name.clone());
+        let Some(proof) = prove_receiver(type_name, type_node) else {
+            continue;
+        };
+        receiver_types.insert(binding.id(), proof.clone());
 
         let class = enclosing_class_name(&cx, binding);
         let is_field = binding.kind() == "public_field_definition";
@@ -2447,33 +2487,25 @@ pub fn extract_source(
         if let Some(class) = class
             && (is_field || is_parameter_property)
         {
-            this_properties.insert((class, name), type_name);
+            this_properties.insert((class, name), proof);
         }
     }
 
-    let q_new_bindings = Query::new(
-        &language,
-        r#"
-        (variable_declarator
-            name: (identifier) @name
-            value: (new_expression
-                constructor: [(identifier) (member_expression)] @type))
-        "#,
-    )
-    .expect("static query");
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&q_new_bindings, root, source);
-    while let Some(m) = matches.next() {
-        let (mut name, mut type_node) = (None, None);
-        for capture in m.captures {
-            match q_new_bindings.capture_names()[capture.index as usize] {
-                "name" => name = Some(cx.text(&capture.node).to_string()),
-                "type" => type_node = simple_type_name(cx.text(&capture.node)),
-                _ => {}
-            }
-        }
-        if let (Some(name), Some(type_name)) = (name, type_node) {
-            receiver_types.entry(name).or_insert(type_name);
+    // Constructor proof is attached to the declaration, never a file-wide name.
+    for declaration in syntax_nodes
+        .iter()
+        .copied()
+        .filter(|node| node.kind() == "variable_declarator")
+    {
+        if let Some(constructor) = declaration
+            .child_by_field_name("value")
+            .filter(|value| value.kind() == "new_expression")
+            .and_then(|value| value.child_by_field_name("constructor"))
+            .filter(|constructor| constructor.kind() == "identifier")
+            && let Some(type_name) = simple_type_name(cx.text(&constructor))
+            && let Some(proof) = prove_receiver(type_name, constructor)
+        {
+            receiver_types.entry(declaration.id()).or_insert(proof);
         }
     }
 
@@ -2502,7 +2534,7 @@ pub fn extract_source(
         let Some(src_sym) = enclosing_symbol(&cx, call) else {
             continue; // top-level statement, not a symbol-to-symbol call
         };
-        if let Some(dst) = locals.get(callee_name).cloned() {
+        if let Some(dst) = bindings.local_target(call, callee_name) {
             if src_sym == dst {
                 continue; // direct recursion adds no path information at M1
             }
@@ -2514,7 +2546,9 @@ pub fn extract_source(
                     "prov": cx.prov(&call, &format!("CALLS {} at {}", callee_name, call.start_byte())),
                 }),
             });
-        } else if let Some(dst) = imported.get(callee_name).cloned() {
+        } else if bindings.imported(call, callee_name)
+            && let Some(dst) = imported.get(callee_name).cloned()
+        {
             // A relative import gives us a deterministic candidate id, but
             // only the directory-wide pass can prove that symbol exists.
             let semantic_name = imported_names
@@ -2556,15 +2590,22 @@ pub fn extract_source(
         let Some(src_sym) = enclosing_symbol(&cx, call) else {
             continue;
         };
-        let receiver_type = match receiver.kind() {
-            "identifier" => receiver_types.get(cx.text(&receiver)).cloned(),
-            "this" => enclosing_class_name(&cx, call),
+        let receiver_proof = match receiver.kind() {
+            "identifier" => bindings
+                .stable_declaration(receiver, cx.text(&receiver))
+                .and_then(|declaration| receiver_types.get(&declaration.id()))
+                .cloned(),
+            "this" => callable::this_class(&cx, call).map(|class| ReceiverProof {
+                name: class.clone(),
+                local_class: Some(class),
+                imported_type: None,
+            }),
             "member_expression" => {
                 let object = receiver.child_by_field_name("object");
                 let property = receiver.child_by_field_name("property");
                 match (object, property) {
                     (Some(object), Some(property)) if object.kind() == "this" => {
-                        enclosing_class_name(&cx, call).and_then(|class| {
+                        callable::this_class(&cx, call).and_then(|class| {
                             this_properties
                                 .get(&(class, cx.text(&property).to_string()))
                                 .cloned()
@@ -2575,21 +2616,21 @@ pub fn extract_source(
             }
             _ => None,
         };
-        let Some(receiver_type) = receiver_type else {
+        let Some(receiver_proof) = receiver_proof else {
             continue;
         };
-        let local_dst = methods
-            .get(&(receiver_type.clone(), method.clone()))
-            .cloned();
-        let imported_target =
-            imported_types
-                .get(&receiver_type)
-                .map(|(target_file, exported_type)| {
-                    (
-                        sym_id(id.repo, target_file, &format!("{exported_type}.{method}")),
-                        exported_type.clone(),
-                    )
-                });
+        let receiver_type = receiver_proof.name;
+        let local_dst = receiver_proof
+            .local_class
+            .and_then(|class| methods.get(&(class, method.clone())).cloned());
+        let imported_target = receiver_proof
+            .imported_type
+            .map(|(target_file, exported_type)| {
+                (
+                    sym_id(id.repo, &target_file, &format!("{exported_type}.{method}")),
+                    exported_type,
+                )
+            });
         let imported_dst = imported_target.as_ref().map(|(dst, _)| dst.clone());
         let Some(dst) = local_dst.clone().or(imported_dst) else {
             continue;
@@ -2613,16 +2654,19 @@ pub fn extract_source(
                 .as_ref()
                 .map(|(_, exported_type)| exported_type.as_str())
                 .unwrap_or(&receiver_type);
-            out.pending_calls.push(pending_call(
+            let mut pending = pending_call(
                 &cx,
                 call,
                 src_sym,
                 dst,
                 &format!("{exported_type}.{method}"),
-            ));
+            );
+            pending.requires_instance_method = true;
+            out.pending_calls.push(pending);
         }
     }
 
+    rule_evidence::extract(&cx, &syntax_nodes, &bindings, &mut out);
     Ok(out)
 }
 
@@ -2716,12 +2760,21 @@ pub fn extract_dir_incremental_with_progress(
     // a tsconfig edit must take effect even when every source parse is
     // cache-reused.
     resolution::resolve_bare_imports(&mut out, root, id, &known_files)?;
+    let instance_methods: BTreeSet<_> = out
+        .nodes
+        .iter()
+        .filter(|node| node.props["instance_dispatch"] == true)
+        .map(|node| node.id.clone())
+        .collect();
     for mut pending in std::mem::take(&mut out.pending_calls) {
         if let Some(real) = reconcile_guessed_extension(&pending.resolved_edge.dst, &known_symbols)
         {
             pending.resolved_edge.dst = real;
         }
-        if known_symbols.contains(&pending.resolved_edge.dst) {
+        if known_symbols.contains(&pending.resolved_edge.dst)
+            && (!pending.requires_instance_method
+                || instance_methods.contains(pending.resolved_edge.dst.as_str()))
+        {
             out.edges.push(pending.resolved_edge);
         } else {
             out.nodes.push(pending.gap_node);
@@ -2905,10 +2958,13 @@ fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::
     Ok(())
 }
 
+mod callable;
 pub mod chrome_messaging;
 pub(crate) mod const_resolution;
 pub mod indexeddb;
 pub(crate) mod resolution;
+mod rule_evidence;
+mod source_expression;
 pub mod webextension;
 
 #[cfg(test)]

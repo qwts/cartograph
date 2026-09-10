@@ -261,3 +261,68 @@
 - **Security:** AC-0097 is the security surface: fail-closed redaction (AC-0009 standard); no config value is stored unless allowlisted and non-secret-shaped.
 - **Performance:** Only name-matched config files are read; one sorted deterministic walk shared with Preflight's skip set.
 - **Trace:** post-M10 · `ingest`, `core-graph`, `spec`, `app`, UI · — · T-0096..0097
+
+### US-0020 — Query one evidence-bound context through shared transports
+- **Actor:** Human developer or development agent
+- **As a** context consumer **I want** bounded, revision-bound reads of recovered facts **so that** the app and agent integrations can cite the same project evidence.
+- **Priority:** Must · **Status:** In-Progress
+- **AC-0101** Given a recovered graph, when a snapshot is built or paged, then reordered facts yield the same snapshot identity, any property change invalidates it, duplicate identities fail explicitly, and stale or mismatched cursors are rejected.
+- **AC-0102** Given item and serialized-response byte budgets, when a query returns a page, then the entire response fits both budgets and exposes continuation explicitly; invalid budgets or a next fact that cannot fit fail rather than silently skipping it.
+- **AC-0103** Given valid, absent, malformed, or ceiling-violating provenance, when a fact is returned, then only validated provenance is authoritative, invalid provenance is explicitly Gap, raw provenance is removed from properties, and inferred facts retain their confidence ceiling.
+- **AC-0104** Given a label or neighborhood selection, when queried, then exact labels and the bounded undirected neighborhood select deterministically; absent domain facts return no invented concepts and unknown anchors fail explicitly.
+- **AC-0105** Given the app context-query command, when invoked, then graph copying and query work run off the calling thread, read nodes and edges in one database snapshot even across multiple app processes, return the recovered-graph view, and preserve graph contents without model or network calls.
+- **Security:** Read-only core API; no SQL, arbitrary filesystem paths, model execution, or transport-specific privilege in requests.
+- **Performance:** At most 500 facts, 1 MiB serialized response and three hops; large-graph snapshot caching/latency is a later measured gate, not guaranteed by output bounds.
+- **Trace:** H1 (SPEC-01) · `context-hub`, `core-graph`, `app` · — · T-0101..0105
+
+### US-0021 — Inspect and curate a persistent business-domain context
+- **Actor:** Human developer
+- **As a** developer **I want** domains linking features, rules, designs, decisions, tests and gaps **so that** I can understand behavior and intended architecture in one project context.
+- **Priority:** Must · **Status:** Ready
+- **AC-0106** Given the pinned external benchmark and declared configuration, when recovered, then features and business rules cite source evidence and report measured coverage against an independently reviewed expected set, with unsupported paths explicit.
+- **AC-0107** Given documented intent, inferred interpretations and future designs, when viewed beside implementation facts, then their meanings and producing tiers remain distinct and a missing document is described as unknown intent.
+- **AC-0108** Given an accepted proposal, when context, UI and exports are read, then the same reviewed projection includes it without upgrading its tier; source changes mark affected proposals stale until reconciled.
+- **AC-0109** Given multiple named project contexts, when the app restarts or changes project, then each domain's evidence, review history and task references remain scoped to its project and revision.
+- **Security:** Agents propose only; human acceptance cannot mint confirmed facts.
+- **Performance:** Domain queries expose scope and uncovered portions rather than claiming a complete inventory from partial extraction.
+- **Trace:** H2–H3 (SPEC-01) · `context-hub`, `agents`, `spec`, `app`, `ui` · — · T-0106..0109
+
+### US-0022 — Request durable specialist work through MCP and ACP
+- **Actor:** Human developer or external development agent
+- **As a** context consumer **I want** app or MCP requests to run bounded specialist investigations, including ACP runtimes **so that** agents can use and improve shared project context.
+- **Priority:** Must · **Status:** Ready
+- **AC-0110** Given a permitted investigation from the app or MCP, when started, then one shared coordinator returns a durable task id with project/revision, named agent version, scope, tier ceiling, origin and budget.
+- **AC-0111** Given an ACP runtime, when a task runs, then negotiated capabilities, environment permissions and per-tier egress constrain its tools; results are cited proposals rather than writes to confirmed facts or ingested target code.
+- **AC-0112** Given a running task, when a caller cancels, disconnects or the app restarts, then progress and terminal outcomes remain queryable, cancellation is propagated and uncertain runtime outcomes require reconciliation before retries.
+- **AC-0113** Given nested MCP-to-ACP delegation, when a worker requests further work, then ancestry, deduplication, depth and shared budgets bound recursion and prevent self-delegation loops.
+- **AC-0114** Given a real external MCP caller and compatible ACP runtime, when the interoperability acceptance procedure runs, then it reads context, starts an investigation, observes progress, cancels/reconnects and retrieves a cited result using negotiated Tasks support or explicit lifecycle tools.
+- **Security:** ACP permissions alone are not a sandbox; repository text never authorizes tools, filesystem access, or egress.
+- **Performance:** Long work returns task identity promptly; bounded progress and result retrieval survive transport lifetime.
+- **Trace:** H4–H5 (SPEC-01) · `context-hub`, `agents`, `app`, `ui` · — · T-0110..0114
+
+### US-0023 — Evaluate architecture and validate a modernization workflow
+- **Actor:** Human developer
+- **As a** developer **I want** feature-specific architecture findings and an evidence-backed improvement workflow **so that** I can prioritize justified changes and preserve business behavior.
+- **Priority:** Must · **Status:** Ready
+- **AC-0115** Given a feature scope, when evaluated, then deterministic structural measurements cite revision-bound evidence and report missing dependency/history coverage separately from confidence.
+- **AC-0116** Given a large file, when a specialist assesses it, then responsibility, cohesion, coupling and documented constraints inform the finding; size alone does not establish a god file and inferred judgments remain labeled.
+- **AC-0117** Given approved future design and acceptance criteria, when an external agent changes a separately authorized checkout, then re-ingestion compares the result to that design and observed tests without overwriting original evidence or silently declaring equivalence.
+- **AC-0118** Given a new pilot user, when they independently ingest and investigate a repository, then a recorded pilot measures setup completion, question accuracy/citations, coverage, investigation time/cost, and one reviewed improvement before market readiness is claimed.
+- **Security:** No target-code writes from analysis; implementation authorization is separate and scoped.
+- **Performance:** Evaluation is feature/domain scoped with explicit runtime and token budgets.
+- **Trace:** H6–H7 (SPEC-01) · `context-hub`, `agents`, `app`, `ui` · — · T-0115..0118
+
+### US-0024 — Recover source-backed rule evidence with real lexical owners
+- **Actor:** Developer investigating business behavior
+- **As a** developer **I want** cited callable owners and guarded-exit evidence **so that** business rules can be recovered without guessed dispatch or stronger predicates than the code establishes.
+- **Priority:** Must · **Status:** In-Progress
+- **AC-0119** Given TypeScript object methods and property-bound callbacks, when extracted, then each has exact T0 provenance, a real scope-qualified symbol and DEFINED_IN edge; same-named members of different objects and objects nested inside classes remain distinct.
+- **AC-0120** Given nested or shadowed callable declarations, when their calls are extracted, then the nearest actual callable owns the calls and direct-call targets require lexical binding proof; unrelated file-wide name matches and unknown member dispatch do not become confirmed links; nested Nest decorators require their actual unshadowed imported bindings.
+- **AC-0121** Given unchanged source and existing unambiguous top-level/class callables, when re-extracted, then identities and content hashes are deterministic and existing identities remain stable; anonymous route symbol and endpoint ownership continue to agree, and nested Nest controllers bind HANDLES to the actual qualified decorated-method symbol.
+- **AC-0122** Given supported guarded returns/throws, when recovered, then source conditions, branch polarity, owner, local effect and exact evidence are retained without treating return strings as rejection or an ancestor-condition list as a complete execution predicate.
+- **AC-0123** Given unresolved calls, mutation, loops or exception control flow, when rule evidence is recovered, then unsupported behavioral interpretation and dependencies remain explicit gaps rather than omitted prerequisites or invented semantics; parser-recovered exits or controlling branches yield an explicit unsupported_rule_syntax omission Gap rather than Confirmed rule evidence or a silently dropped throw.
+- **AC-0124** Given rule evidence with secret-shaped source literals, when stored or exported, then a shared deterministic redaction boundary prevents their disclosure while preserving source references and an explicit redaction indication.
+- **AC-0125** Given recovered rule evidence, when the inventory, shared context and exports are inspected, then owner, conditions, local effect, dependencies, confidence and incomplete interpretation are consistent; computed callable keys disclose omitted source names and unresolved runtime keys; the pinned benchmark records only fully supported matches.
+- **Security:** No model or source execution; no new raw predicate/return text stored before the redaction contract is implemented.
+- **Performance:** Ownership and rule passes share the parsed tree; unsupported complexity remains bounded and explicit.
+- **Trace:** H2 (SPEC-01/SPEC-02) · `adapters-lang-ts`, `core-graph`, `core-prov`, `core-redact`, `spec`, `context-hub`, `app` · — · T-0119..0125

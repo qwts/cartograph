@@ -166,11 +166,7 @@ fn is_env_file(rel: &str) -> bool {
 /// unbroken token-like run. Fail closed — a dropped setting is recoverable
 /// by reading the cited file; a leaked secret is not.
 fn secret_shaped(value: &str) -> bool {
-    value.len() >= 40
-        && !value.contains(char::is_whitespace)
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '_' | '-' | '=' | '.'))
+    core_redact::is_token_shaped(value)
 }
 
 /// Redact one settings value in place of storing it verbatim: strings are

@@ -72,6 +72,7 @@ dependencies = [
  "adapters-fw",
  "core-graph",
  "core-prov",
+ "core-redact",
  "iac",
  "serde_json",
  "streaming-iterator",
@@ -191,6 +192,7 @@ dependencies = [
  "adapters-lang-ts",
  "adapters-plugin-host",
  "agents",
+ "context-hub",
  "core-graph",
  "core-prov",
  "dunce",
@@ -641,6 +643,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "context-hub"
+version = "0.10.3"
+dependencies = [
+ "blake3",
+ "core-graph",
+ "core-prov",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -670,6 +684,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "core-graph"
 version = "0.10.3"
 dependencies = [
+ "core-prov",
  "rusqlite",
  "serde",
  "serde_json",
@@ -709,6 +724,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "core-redact"
+version = "0.10.3"
+dependencies = [
+ "regex",
 ]
 
 [[package]]
@@ -2301,6 +2323,7 @@ dependencies = [
  "adapters-fw",
  "core-graph",
  "core-prov",
+ "core-redact",
  "git2",
  "serde",
  "serde_json",
@@ -2631,7 +2654,7 @@ name = "llm"
 version = "0.10.3"
 dependencies = [
  "blake3",
- "regex",
+ "core-redact",
  "reqwest",
  "serde",
  "serde_json",
@@ -4017,7 +4040,9 @@ dependencies = [
 name = "spec"
 version = "0.10.3"
 dependencies = [
+ "adapters-lang-ts",
  "blake3",
+ "context-hub",
  "core-graph",
  "core-prov",
  "flowtracer",

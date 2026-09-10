@@ -6,12 +6,12 @@ files (`CLAUDE.md`) only add orientation; they must not duplicate this file.
 
 ## What Cartograph is
 
-A cross-layer **spec-recovery engine** (Tauri 2, Rust core, React UI). It
-ingests the repos of a running system and recovers its specification as a
-provenance-tagged knowledge graph across five layers (infra, cloud, server,
-events, client), then compiles official spec artifacts. Master spec:
-`docs/SPEC-00_master.md`. Read it before touching product code — it answers
-~95% of build-time questions.
+A local-first **domain context hub** (Tauri 2, Rust core, React UI), built on
+cross-layer spec recovery. It connects business behavior, designs, decisions,
+and gaps to provenance across infra, cloud, server, events, and client.
+Read `docs/SPEC-00_master.md` before product code; its staged extension
+`docs/SPEC-01_context-hub.md` defines shared context, specialists, and MCP/ACP
+interoperability. Delivery gates distinguish planned capabilities from shipped ones.
 
 ## Product invariants (violating these fails review)
 
@@ -25,8 +25,8 @@ events, client), then compiles official spec artifacts. Master spec:
   Gap node — never silently completed.
 - **R-INT-5** `verified-only` export excludes InferredWeak; `best-effort`
   includes it clearly annotated.
-- **Non-goals:** no editing of target code (NG1); no code
-  regeneration/scaffolding (NG2 — revisit criteria in `docs/VISION.md`);
+- **Non-goals:** no editing of ingested target code (NG1); no automatic code
+  regeneration/scaffolding in the current slice (NG2 — ADR-0019);
   no multi-user backend in v1 (NG5).
 - **Deterministic tier never calls the LLM.** Local-first; cloud egress is
   per-tier opt-in with explicit consent (fail closed).
@@ -145,6 +145,7 @@ Storybook itself: `npm run storybook` (from `ui/`).
 ## Documentation map
 
 - `docs/SPEC-00_master.md` — master spec (single source of truth)
+- `docs/SPEC-01_context-hub.md` — staged domain-hub and MCP/ACP extension
 - `docs/user_stories.md` / `docs/US-TM.md` — US/AC + traceability matrix
 - `docs/adr/` — ADRs for *this app's own* decisions
 - `docs/VISION.md` — post-v1 direction (SDLC-in-core); not license to build it

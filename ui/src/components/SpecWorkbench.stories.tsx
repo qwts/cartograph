@@ -129,6 +129,32 @@ const OVER_BROAD_GRANT: SpecAssertion = {
   },
 };
 
+const SOURCE_RULE: SpecAssertion = {
+  ...CONFIRMED,
+  id: 'node:rule:guarded-return',
+  subject_id: 'rule:guarded-return',
+  subject_kind: 'BusinessRule',
+  summary: 'Guarded local exit observation; behavioral interpretation not established',
+  provenance: {
+    ...CONFIRMED.provenance,
+    extractor_id: 't0.ts',
+    content_hash: '2'.repeat(64),
+  },
+};
+
+const RULE_DEPENDENCY: SpecAssertion = {
+  ...GAP,
+  id: 'edge:rule:guarded-return DEPENDS_ON gap:consumer',
+  subject_id: 'rule:guarded-return DEPENDS_ON gap:consumer',
+  subject_kind: 'DEPENDS_ON',
+  summary: 'Source-rule DEPENDS_ON relationship',
+  provenance: {
+    ...GAP.provenance,
+    extractor_id: 't0.ts',
+    content_hash: '3'.repeat(64),
+  },
+};
+
 function artifact(
   id: string,
   fileName: string,
@@ -145,10 +171,19 @@ function artifact(
   };
 }
 
+const SOURCE_RULE_ARTIFACT: SpecArtifact = {
+  ...artifact('rule-evidence', 'rule-evidence.md', 'Source rule evidence', [
+    SOURCE_RULE,
+    RULE_DEPENDENCY,
+  ]),
+  content: '# Source rule evidence\n\nGuarded local exit observations.\n\nComplete execution predicate: not established.\n\nConsumer effect: not established.\n\nLocal effect: Return(false).\n',
+};
+
 const BUNDLE: SpecBundle = {
   mode: 'best-effort',
   artifacts: [
     artifact('user-stories', 'user_stories.md', 'User stories', [CONFIRMED, INFERRED]),
+    SOURCE_RULE_ARTIFACT,
     artifact('us-tm', 'US-TM.md', 'US traceability matrix'),
     artifact('flow-dossiers', 'flow_dossiers.md', 'Flow dossiers', [CONFIRMED]),
     artifact('topology', 'topology.md', 'Resource topology', [CONFIRMED]),
@@ -166,7 +201,7 @@ const BUNDLE: SpecBundle = {
       content: '# Security findings\n\n| Finding | Type | Subject | Resource scope | Actions | US / AC | Confidence |\n|---|---|---|---|---|---|---|\n| Unauthenticated endpoint: GET /admin | unauthenticated_endpoint | ep:admin | GET /admin | — | US-0015 / AC-0041 | Confirmed |\n| Over-broad IAM grant | over_broad_grant | res:admin GRANTS res:orders | arn:aws:s3:::orders/* | s3:Get* | US-0015 / AC-0042 | InferredWeak |\n',
     },
   ],
-  assertion_count: 9,
+  assertion_count: 11,
   gap_count: 1,
   drift_count: 0,
   security_count: 2,
@@ -193,11 +228,11 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const FullArtifactSetAndInlineProvenance: Story = {
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     const nav = canvas.getByRole('navigation', { name: 'Official spec artifacts' });
-    await expect(within(nav).getAllByRole('button')).toHaveLength(9);
-    await expect(canvas.getByText('9 artifacts')).toBeInTheDocument();
+    await expect(within(nav).getAllByRole('button')).toHaveLength(10);
+    await expect(canvas.getByText('10 artifacts')).toBeInTheDocument();
     await expect(canvas.getByText('Capability: Place orders')).toBeInTheDocument();
     await expect(canvas.getByText('ADR: asynchronous fulfillment')).toBeInTheDocument();
     await expect(canvas.getByText('t2.semantic')).toBeInTheDocument();
@@ -206,6 +241,25 @@ export const FullArtifactSetAndInlineProvenance: Story = {
     await userEvent.click(within(nav).getByRole('button', { name: /Gap register/ }));
     await expect(canvas.getByText('Gap: runtime-computed channel identity')).toBeInTheDocument();
     await expect(canvas.queryByText('None recorded — treated as unresolved.')).not.toBeInTheDocument();
+
+    // AC-0125: the new artifact is navigable and copyable with its source-only
+    // qualifier, actual assertion units, and locked T0 observation intact.
+    const rulesLink = within(nav).getByRole('button', { name: /Source rule evidence/ });
+    await expect(within(rulesLink).getByText('2 assertions')).toBeInTheDocument();
+    await userEvent.click(rulesLink);
+    await expect(rulesLink).toHaveAttribute('aria-current', 'page');
+    const detail = within(canvas.getByRole('article', { name: 'Source rule evidence' }));
+    await expect(detail.getByText(/Source observations only/)).toHaveTextContent(
+      'Complete execution predicates and consumer effects are not established.',
+    );
+    await expect(detail.getByTestId('spec-artifact-source')).toHaveTextContent(
+      'Consumer effect: not established.',
+    );
+    const observed = within(detail.getByText(SOURCE_RULE.summary).closest('li') as HTMLElement);
+    await expect(observed.getByRole('button', { name: 'Accept' })).toBeDisabled();
+    await expect(observed.getByText('Confirmed T0 — locked, read-only')).toBeInTheDocument();
+    await userEvent.click(detail.getByRole('button', { name: 'Copy artifact' }));
+    await expect(args.onCopyArtifact).toHaveBeenCalledWith(SOURCE_RULE_ARTIFACT);
   },
 };
 

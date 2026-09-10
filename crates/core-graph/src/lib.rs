@@ -6,6 +6,8 @@
 //! embedded-graph-engine adapter implements the same trait if the OQ-3
 //! benchmark ever demands it.
 
+pub mod rules;
+
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -81,10 +83,11 @@ pub trait GraphStore {
 
 /// Version of the graph's fact schema — the node/edge *id scheme*, not the
 /// SQL shape. Bumped when ids change meaning (v2: repo-namespaced ids,
-/// US-0001 slice 2). A mismatched db is cleared on open: the graph is a
+/// US-0001 slice 2; v3: scope-qualified callable identities, AC-0120).
+/// A mismatched db is cleared on open: the graph is a
 /// disposable ingest artifact (ADR-0008), and stale-scheme rows can never
 /// be upserted again — they would shadow every re-ingest as zombies (#50).
-pub const GRAPH_SCHEMA_VERSION: u32 = 2;
+pub const GRAPH_SCHEMA_VERSION: u32 = 3;
 
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
 pub struct SqliteGraphStore {
@@ -100,6 +103,28 @@ impl SqliteGraphStore {
     /// Open an in-memory graph (tests, scratch analysis).
     pub fn open_in_memory() -> Result<Self, GraphError> {
         Self::init(Connection::open_in_memory()?)
+    }
+
+    /// Copy nodes and edges from one SQLite read snapshot, including when
+    /// another connection or process commits during the copy. The transaction
+    /// ends before the owned facts return for expensive downstream analysis.
+    pub fn read_snapshot(&self) -> Result<(Vec<Node>, Vec<Edge>), GraphError> {
+        self.read_snapshot_after_nodes(|| {})
+    }
+
+    fn read_snapshot_after_nodes(
+        &self,
+        after_nodes: impl FnOnce(),
+    ) -> Result<(Vec<Node>, Vec<Edge>), GraphError> {
+        // The connection is not shared across threads; `unchecked_transaction`
+        // permits a read-only &self API and rejects nested transactions at
+        // runtime. RAII rollback releases the snapshot on either read failure.
+        let transaction = self.conn.unchecked_transaction()?;
+        let nodes = self.all_nodes()?;
+        after_nodes();
+        let edges = self.all_edges()?;
+        transaction.commit()?;
+        Ok((nodes, edges))
     }
 
     fn init(conn: Connection) -> Result<Self, GraphError> {
@@ -353,11 +378,72 @@ impl GraphStore for SqliteGraphStore {
 mod tests {
     use super::*;
 
+    #[test]
+    fn read_snapshot_keeps_one_sqlite_revision_across_another_connection_commit() {
+        // AC-0105: a process-local mutex cannot exclude another app process.
+        // Commit through a second connection exactly between the two reads.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let mut reader = SqliteGraphStore::open(&path).unwrap();
+        reader.put_node(&node("a", "Symbol")).unwrap();
+        reader.put_edge(&edge("a", "a", "CALLS")).unwrap();
+        let mut writer = SqliteGraphStore::open(&path).unwrap();
+        let before = reader.read_snapshot().unwrap();
+        let during = reader
+            .read_snapshot_after_nodes(|| {
+                let tx = writer.conn.transaction().unwrap();
+                tx.execute("DELETE FROM edges", []).unwrap();
+                tx.execute("DELETE FROM nodes", []).unwrap();
+                tx.execute("INSERT INTO nodes (id, label) VALUES ('b', 'Symbol')", [])
+                    .unwrap();
+                tx.execute(
+                    "INSERT INTO edges (src, dst, label) VALUES ('b', 'b', 'CALLS')",
+                    [],
+                )
+                .unwrap();
+                tx.commit().unwrap();
+            })
+            .unwrap();
+        assert_eq!(during, before);
+        let after = reader.read_snapshot().unwrap();
+        assert_eq!(after.0, vec![node("b", "Symbol")]);
+        assert_eq!(after.1, vec![edge("b", "b", "CALLS")]);
+        assert_ne!(after, before);
+    }
+
+    #[test]
+    fn failed_read_snapshot_releases_the_transaction() {
+        // AC-0105: malformed stored properties must release the read snapshot
+        // on failure so a later corrected read can observe current data.
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        store.put_node(&node("a", "Symbol")).unwrap();
+        store.put_edge(&edge("a", "a", "CALLS")).unwrap();
+        store
+            .conn
+            .execute("UPDATE edges SET props = 'invalid'", [])
+            .unwrap();
+        assert!(store.read_snapshot().is_err());
+        assert!(store.conn.is_autocommit());
+        store
+            .conn
+            .execute("UPDATE edges SET props = '{}'", [])
+            .unwrap();
+        assert_eq!(store.read_snapshot().unwrap().1.len(), 1);
+        store
+            .conn
+            .execute("UPDATE nodes SET props = 'invalid'", [])
+            .unwrap();
+        assert!(store.read_snapshot().is_err());
+        assert!(store.conn.is_autocommit());
+    }
+
     // #50: an older id-scheme db is cleared on open (zombie rows from a
     // previous scheme can never be upserted and would shadow re-ingests);
     // a current-version db keeps its facts.
     #[test]
     fn version_mismatch_clears_the_graph_current_version_persists() {
+        // AC-0120: old file-wide ownership links must disappear on upgrade,
+        // before users have individually re-ingested their repositories.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         {
@@ -369,11 +455,22 @@ mod tests {
                     props: serde_json::json!({}),
                 })
                 .unwrap();
+            store
+                .put_node(&node("sym:acme/shop@a.ts#g", "Symbol"))
+                .unwrap();
+            store
+                .put_edge(&edge(
+                    "sym:acme/shop@a.ts#f",
+                    "sym:acme/shop@a.ts#g",
+                    "CALLS",
+                ))
+                .unwrap();
         }
         // Same version: facts survive reopen.
         {
             let store = SqliteGraphStore::open(&path).unwrap();
-            assert_eq!(store.node_count().unwrap(), 1);
+            assert_eq!(store.node_count().unwrap(), 2);
+            assert_eq!(store.edge_count().unwrap(), 1);
         }
         // Simulate a db written by an older scheme.
         {
