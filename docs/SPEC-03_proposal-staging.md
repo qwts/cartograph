@@ -23,6 +23,28 @@ the host's original bounded task, never a task reconstructed from caller input.
 Staging validates exact candidate choice and cited evidence as well as the broker
 provenance ceiling. Persisted payloads are bounded to 128 KiB per record.
 
+Before immutable content construction or any SQL write, staging checks provider
+annotations against every original evidence span and candidate summary, including
+uncited spans and unselected candidates. It removes Unicode whitespace for this
+comparison only, preserving case and punctuation. It rejects an annotation that
+contains a complete nonempty normalized supplied item, or any contiguous excerpt
+of 48 normalized Unicode scalar values. Empty/whitespace-only items contribute no
+match. This deliberately rejects even short/common complete items when they occur
+inside a rationale; rephrasing may be required. Annotation bytes and the total
+candidate-summary bytes are each capped at 128 KiB before comparison or task-basis
+hashing; the broker's existing evidence limits still apply. Rejection returns a
+fixed, source-free diagnostic and persists no part of the result. Accepted
+annotations remain byte-for-byte unchanged, preserving their existing identity.
+
+This is a bounded replay check, not a general confidentiality classifier for
+free-form model text. It does not establish that a paraphrase, encoded text,
+fragmented excerpts below the bound or unrelated secret is absent. Task source
+fields themselves are retained only as fingerprints. Human review notes are
+explicit user-supplied content under their existing separate review contract.
+Previously stored prototype records cannot be retrospectively checked from
+fingerprints alone; loading or accepting them does not certify this admission
+check or rewrite their immutable content.
+
 Review accepts only a staged ID, expected review revision, decision and optional
 note. It resolves the proposal on the host, updates the review with an atomic
 compare-and-set, and increments the revision. Unknown IDs and stale revisions
@@ -53,8 +75,8 @@ filters and line endings can differ).
 
 Therefore staged records explicitly carry `working_tree_unverified` evidence
 binding and `awaiting_reconciliation` context status. Neither stage persistence,
-snapshot equality nor acceptance establishes citation freshness. No raw source is
-added to the durable store. Verified source capture for both local and Git inputs,
+snapshot equality nor acceptance establishes citation freshness. There is no raw
+task-source archive; annotations follow the bounded admission policy above. Verified source capture for both local and Git inputs,
 with per-file parse fingerprints and fail-closed reconciliation, is tracked in
 #385 and is required before these records can enter curated context.
 
@@ -81,3 +103,5 @@ unverified source binding; and unchanged recovered facts/legacy separation. Test
 modified annotation/citations, unknown and stale review IDs, storage failures,
 restart, cancellation after completed instances, changed host span fingerprints,
 and the inability of acceptance or a commit-shaped citation to assert freshness.
+Replay regressions cover all supplied items, normalized excerpts, short-item
+false positives, fixed diagnostics, pre-write rejection/restart and input bounds.
