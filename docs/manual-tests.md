@@ -599,6 +599,38 @@ with separately CI-tested UI behavior; it is not native-app or external-MCP
 end-to-end evidence. MT-H4-01 and all H5 cross-ingress procedures remain unexecuted
 until their actual prerequisites and steps are run.
 
+The ignored native test `investigation_local_provider_acceptance` runs the actual
+Ollama provider through the production worker and captured-source reader. It uses
+a disposable fixture and private coordinator, never the developer's app data.
+Run it from an owner-operated terminal with an already installed local model;
+agents follow the governed remote-heavy-suite policy. No model download, cloud
+fallback, hidden repair or replay is performed. Normal CI compiles this test and
+leaves it ignored.
+
+```sh
+CARTOGRAPH_ACCEPTANCE_URL=http://127.0.0.1:11434/ \
+CARTOGRAPH_ACCEPTANCE_MODEL='<installed model name>' \
+CARTOGRAPH_ACCEPTANCE_MODEL_DIGEST='<digest from the local model inventory>' \
+CARTOGRAPH_ACCEPTANCE_RUNTIME='<runtime version and hardware>' \
+CARTOGRAPH_ACCEPTANCE_OUTPUT='/absolute/path/to/a/new-run-directory' \
+cargo test -p app investigation_local_provider_acceptance -- --ignored --nocapture
+```
+
+Use a clean checkout and an output directory outside it that does not exist. The
+manifest records the exact source commit. It records runtime/model identity
+as operator-supplied evidence, not a weight-content attestation; independently
+check it against the runtime inventory. The harness retains the fixture, private
+state/capture directory and `run.json` even when model acceptance fails. It checks
+real query/read/finish activity, captured citation readability with the checkout
+removed, unchanged graph authority, a separately requested auditor follow-up,
+and coordinator reopen equality. Read the journal and observed model identity;
+unknown usage remains unknown. Connection reopen is not a native app restart.
+
+Review the results against [the withheld fixture oracle](acceptance/specialist-guard-oracle.md).
+That file is never supplied to either model. The report always leaves independent
+citation review, native restart and destructive forgetting checks pending. A
+passing harness assertion alone does not execute all of MT-H4-02 or pass AC-0191.
+
 ## MT-H5-01 — ACP capabilities, environment, and egress (AC-0111, T-0111)
 
 **Gates: H4–H5 PLANNED. Procedure: UNEXECUTED.**
