@@ -201,7 +201,7 @@ fn report(plan: &TaskPlan) -> SelectionReport {
 #[derive(Debug)]
 pub(super) struct TaskPreparationError {
     pub message: String,
-    pub selection: Option<SelectionReport>,
+    pub selection: Option<Box<SelectionReport>>,
 }
 
 impl From<String> for TaskPreparationError {
@@ -284,7 +284,7 @@ fn failure(report: &SelectionReport, reason: &str) -> TaskPreparationError {
     }
     TaskPreparationError {
         message: reason.into(),
-        selection: Some(selection),
+        selection: Some(Box::new(selection)),
     }
 }
 
