@@ -21,6 +21,11 @@ on:
           - release-recovery
           - workflow-testing
           - explicit-rerun
+      local_provider_acceptance:
+        description: Run the pinned local-model investigation acceptance on this runner
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('merge-group-{0}', github.event.merge_group.head_ref) || github.sha }}
@@ -191,6 +196,41 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Setup Node.js for explicit local-provider acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.local_provider_acceptance
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install archive support for explicit local-provider acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.local_provider_acceptance
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@df404e2ce63fc1566eb2a60c92a8fabe009955b0
+        with:
+          task: Install pinned-runtime archive support
+          executable: sudo
+          arguments-json: '["apt-get","-o","Acquire::Retries=3","-o","Acquire::http::Timeout=30","-o","Acquire::https::Timeout=30","install","-y","zstd"]'
+          timeout-seconds: '120'
+
+      - name: Run explicit local-provider acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.local_provider_acceptance
+        uses: qwts/playbook-engineering/.github/actions/bounded-command@df404e2ce63fc1566eb2a60c92a8fabe009955b0
+        with:
+          task: Run pinned real-local-provider investigation acceptance
+          executable: node
+          arguments-json: '["scripts/run-local-investigation-acceptance.mjs"]'
+          timeout-seconds: '2400'
+
+      - name: Retain local-provider acceptance evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.local_provider_acceptance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-provider-acceptance-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cartograph-local-acceptance/evidence
+          # The synthetic fixture uses tempfile's hidden .tmp directory prefix.
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
   # Native lock, SQLite, and process-exit coverage uses the actual host modules
   # without building Tauri. This is an additional required complete-suite gate.

@@ -631,6 +631,24 @@ That file is never supplied to either model. The report always leaves independen
 citation review, native restart and destructive forgetting checks pending. A
 passing harness assertion alone does not execute all of MT-H4-02 or pass AC-0191.
 
+For a governed remote run, dispatch the existing CI workflow on the exact branch
+with purpose `exact-sha-preflight` and `local_provider_acceptance=true`. This
+explicit opt-in runs the same ignored test after the full Rust suite, on the same
+GitHub-hosted Linux runner. PR, queue, main-push and ordinary manual CI events do
+not install or invoke a model. The opt-in test is part of the Rust job, so a failed
+model run fails that CI run and still uploads its diagnostic evidence.
+
+The runner script pins [Ollama v0.34.0](https://github.com/ollama/ollama/releases/tag/v0.34.0)
+by release-archive SHA-256 and [Qwen3 8B](https://ollama.com/library/qwen3:8b) by the
+full model-manifest digest. It verifies the installed runtime version and model
+inventory before invoking the production provider. Inference is loopback-only;
+Ollama cloud features are disabled. Downloading the runtime/model is runner setup,
+not application behavior or a download performed by Cartograph. The context length,
+CPU/memory, pins and observed identities are recorded. Limits and model actions
+are unchanged; slow or invalid model output is a failed observation, not a reason
+to synthesize a response or replay an unknown task. The artifact contains the
+synthetic fixture and coordinator evidence, not model weights or raw responses.
+
 ## MT-H5-01 — ACP capabilities, environment, and egress (AC-0111, T-0111)
 
 **Gates: H4–H5 PLANNED. Procedure: UNEXECUTED.**

@@ -166,6 +166,24 @@ test('Windows ownership tests are required by the same exact-SHA complete-suite 
   assert.match(complete, /test "\$WINDOWS_JOB_OWNERSHIP" = success/u);
 });
 
+test('real-model acceptance is explicit, bounded, and retains evidence after failures', () => {
+  // AC-0191: routine CI cannot silently run a model or hide a failed opt-in run.
+  const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+  assert.match(workflow, /local_provider_acceptance:\n\s+description:.*\n\s+required: false\n\s+type: boolean\n\s+default: false/u);
+  const rust = workflow.split('\n  rust:\n')[1].split('\n  windows-job-ownership:\n')[0];
+  const model = rust.split('- name: Run explicit local-provider acceptance')[1]
+    .split('- name: Retain local-provider acceptance evidence')[0];
+  assert.match(model, /if: github\.event_name == 'workflow_dispatch' && inputs\.local_provider_acceptance/u);
+  assert.match(model, new RegExp(`bounded-command@${PLAYBOOK_RUNTIME_PIN}`, 'u'));
+  assert.match(model, /timeout-seconds: '2400'/u);
+  assert.doesNotMatch(model, /continue-on-error|attempts:/u);
+  const artifact = rust.split('- name: Retain local-provider acceptance evidence')[1];
+  assert.match(artifact, /if: always\(\) && github\.event_name == 'workflow_dispatch' && inputs\.local_provider_acceptance/u);
+  assert.match(artifact, /cartograph-local-acceptance\/evidence/u);
+  assert.match(artifact, /include-hidden-files: true/u);
+  assert.doesNotMatch(artifact, /cartograph-local-acceptance\/runtime/u);
+});
+
 test('the native ownership harness includes production modules without a Tauri dependency', () => {
   // AC-0157: exercise the same source and child-process test entrypoint on each
   // platform; a separate implementation would not establish host behavior.
