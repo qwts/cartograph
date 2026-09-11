@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+
 export interface EgressPayloadSpan {
   id: string;
   repo: string;
@@ -27,6 +29,11 @@ export interface EgressConsentDialogProps {
   busy?: boolean;
   onCancel: () => void;
   onConsent: (preview: EgressPreview) => void;
+  /** Investigation denial does not imply a local-provider fallback. */
+  cancelLabel?: string;
+  onClose?: () => void;
+  closeLabel?: string;
+  additionalDetails?: ReactNode;
 }
 
 /**
@@ -39,6 +46,10 @@ export function EgressConsentDialog({
   busy = false,
   onCancel,
   onConsent,
+  cancelLabel = 'Keep local',
+  onClose,
+  closeLabel = 'Review later',
+  additionalDetails,
 }: EgressConsentDialogProps) {
   const tierBadge =
     preview.tier === 'Agentic'
@@ -86,6 +97,8 @@ export function EgressConsentDialog({
           </div>
         </dl>
 
+        {additionalDetails && <div className="egress-section">{additionalDetails}</div>}
+
         <div className="egress-section">
           <h3>System instructions</h3>
           <pre>{preview.payload.system}</pre>
@@ -113,8 +126,9 @@ export function EgressConsentDialog({
 
         <footer className="egress-actions">
           <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>
-            Keep local
+            {cancelLabel}
           </button>
+          {onClose && <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>{closeLabel}</button>}
           <button type="button" disabled={busy} onClick={() => onConsent(preview)}>
             {busy ? 'Sending…' : 'Allow this action once'}
           </button>

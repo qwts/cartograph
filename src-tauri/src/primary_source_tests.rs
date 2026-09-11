@@ -159,6 +159,163 @@ fn proposal_page(state: &AppState) -> serde_json::Value {
     serde_json::to_value(state.proposals.lock().unwrap().list(20, None).unwrap()).unwrap()
 }
 
+/// Publish an actual captured fact's selected binding through the durable
+/// coordinator before reading any source. This exercises retention's JobStore
+/// seam without fabricating a source citation or invoking a provider.
+fn retain_investigation_selection(
+    state: &AppState,
+    source: &RegisteredSource,
+    binding: &SourceBinding,
+    nonce: &str,
+) -> (String, agents::investigation::InvestigationInputLedger) {
+    use crate::jobs::investigations::{InvestigationStopReason, InvestigationTransition};
+    use agents::investigation::*;
+    use agents::{TaskFactSelection, TaskSourceAssociation};
+    let (nodes, edges) = state.graph.lock().unwrap().read_snapshot().unwrap();
+    let snapshot = context_hub::ContextSnapshot::new(nodes, edges).unwrap();
+    let page = snapshot
+        .query(context_hub::QueryRequest {
+            scope: context_hub::QueryScope::All,
+            kind: Some(context_hub::FactKind::Node),
+            labels: vec!["BusinessRule".into()],
+            max_facts: 32,
+            max_bytes: 32 * 1024,
+            cursor: None,
+        })
+        .unwrap();
+    let raw = serde_json::to_vec(&page).unwrap();
+    let fact = crate::task_evidence::task_fact(&binding.fact);
+    let ledger = InvestigationInputLedger {
+        schema_version: 1,
+        graph_snapshot_id: snapshot.id().into(),
+        scope_snapshot_id: snapshot.id().into(),
+        revision: 1,
+        selected_facts: vec![TaskFactSelection {
+            fact: fact.clone(),
+            fact_digest: binding.emitted_fact_digest.clone(),
+            binding: Some(TaskSourceAssociation {
+                repo_key: binding.repo_key.clone(),
+                receipt_id: binding.receipt_id.clone(),
+                emitted_fact_digest: binding.emitted_fact_digest.clone(),
+            }),
+        }],
+        receipt_references: vec![InvestigationReceiptReference {
+            source_id: source.source_id.clone(),
+            repo_key: binding.repo_key.clone(),
+            receipt_id: binding.receipt_id.clone(),
+        }],
+        citations: vec![InvestigationCitation {
+            citation_id: "fact-1".into(),
+            fact,
+            fact_digest: binding.emitted_fact_digest.clone(),
+            source: None,
+            role: None,
+            index: None,
+            text_hash: None,
+            origin: InvestigationEvidenceOrigin::GraphMetadata,
+        }],
+        queries: vec![InvestigationQueryManifest {
+            query: InvestigationQuery {
+                scope: InvestigationScope::All,
+                kind: Some(InvestigationFactKind::Node),
+                labels: vec!["BusinessRule".into()],
+                max_facts: 32,
+                max_bytes: 32 * 1024,
+                cursor: None,
+            },
+            response_hash: core_prov::content_hash(&raw),
+            response_bytes: raw.len(),
+            returned_facts: page.facts.len(),
+            total_selected: page.total_selected,
+            has_more: page.next_cursor.is_some(),
+        }],
+        supplied_history_hash: None,
+        supplied_history_bytes: 0,
+    };
+    ledger.validate().unwrap();
+    let request = StartInvestigationRequest {
+        schema_version: 1,
+        request_nonce: nonce.into(),
+        specialist_id: SpecialistId::DomainAnalyst,
+        question: "Which recovered rule needs further evidence?".into(),
+        scope: InvestigationScope::All,
+        provider_mode: InvestigationProviderMode::Local,
+        limit_profile: "investigation-v1".into(),
+        expected_graph_revision: Some(snapshot.id().into()),
+        conversation_id: None,
+        parent_id: None,
+    };
+    let provider = InvestigationProvider {
+        mode: InvestigationProviderMode::Local,
+        provider_id: "local:retention-fixture".into(),
+        model: "fixture".into(),
+        endpoint: "http://127.0.0.1:11434".into(),
+        deployment: None,
+        protocol_version: None,
+        available: true,
+        unavailable_reason: None,
+    };
+    let detail = state
+        .jobs
+        .lock()
+        .unwrap()
+        .start_investigation(&request, Some(&provider))
+        .unwrap()
+        .detail;
+    let plan = state
+        .jobs
+        .lock()
+        .unwrap()
+        .claim_plan(detail.summary.job_id, ClaimMode::StartQueued)
+        .unwrap();
+    let (_, execution) = claim_job(state, &plan).unwrap();
+    let id = detail.summary.investigation_id;
+    {
+        // The same source-guard → short JobStore ordering as production input
+        // acquisition, retaining the lease until its immutable index is durable.
+        let guard = state.primary_sources.task_guard(&source.source_id).unwrap();
+        state
+            .primary_sources
+            .task_receipt(
+                &guard,
+                &binding.fact,
+                &binding.emitted_fact_digest,
+                &binding.repo_key,
+                &binding.receipt_id,
+            )
+            .unwrap();
+        let mut jobs = state.jobs.lock().unwrap();
+        let detail = jobs.investigation(&id).unwrap();
+        let admitted = jobs
+            .advance_investigation(
+                &execution,
+                detail.summary.revision,
+                InvestigationTransition::InputPrepared {
+                    ledger: Box::new(ledger.clone()),
+                    usage: InvestigationUsage {
+                        selected_facts: 1,
+                        ..detail.usage
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(admitted.usage.evidence_items, 0);
+        assert_eq!(admitted.usage.model_invocations, 0);
+    }
+    let mut jobs = state.jobs.lock().unwrap();
+    let cancelled = jobs.cancel_investigation(&id).unwrap();
+    jobs.advance_investigation(
+        &execution,
+        cancelled.summary.revision,
+        InvestigationTransition::StopWithElapsed {
+            reason: InvestigationStopReason::Cancelled,
+            active_milliseconds: cancelled.usage.active_milliseconds,
+        },
+    )
+    .unwrap();
+    (id, ledger)
+}
+
 struct HistoricalStage {
     id: String,
     immutable_json: String,
@@ -456,6 +613,141 @@ fn primary_source_republication_invalidates_historical_retention_preview() {
     );
     assert!(primary_source::read(&state, &fact, &original.receipt_id, 0).is_err());
     assert_eq!(receipt_rows(&app_data), original_receipts);
+}
+
+#[test]
+fn primary_source_investigation_references_bind_forget_confirmation() {
+    // AC-0188/0189: selecting a present receipt already creates a durable use,
+    // before source reads. New uses invalidate confirmations even when the
+    // capture, receipt and current graph inventories have not changed.
+    let dir = tempfile::tempdir().unwrap();
+    let app_data = directory(dir.path(), "private");
+    let root = directory(dir.path(), "project");
+    std::fs::write(root.join("source.ts"), STABLE_A).unwrap();
+    let state = app_state(&app_data);
+    let source = register_local_source(&state, &root).unwrap();
+    let parsed = parse(&state, &source, || {});
+    let fact = FactKey::from_node(&rule_node(&parsed));
+    let binding = publish(&state, &source, &parsed)
+        .into_iter()
+        .find(|binding| binding.fact == fact)
+        .unwrap();
+    drop(parsed);
+    let before = primary_source::preview(&state, &source.source_id).unwrap();
+    assert_eq!(before.investigation_references, 0);
+    let (first_id, first_ledger) =
+        retain_investigation_selection(&state, &source, &binding, "retention-first");
+    let first = primary_source::preview(&state, &source.source_id).unwrap();
+    assert_eq!(first.investigation_references, 1);
+    assert_eq!(first.capture_ids, before.capture_ids);
+    assert_eq!(first.receipts, before.receipts);
+    assert_eq!(first.current_references, before.current_references);
+    assert_eq!(first.staged_references, before.staged_references);
+    assert_ne!(first.fingerprint, before.fingerprint);
+    let (second_id, second_ledger) =
+        retain_investigation_selection(&state, &source, &binding, "retention-second");
+    let second = primary_source::preview(&state, &source.source_id).unwrap();
+    assert_eq!(second.investigation_references, 2);
+    assert_eq!(second.capture_ids, first.capture_ids);
+    assert_eq!(second.receipts, first.receipts);
+    assert_eq!(second.current_references, first.current_references);
+    assert_ne!(second.fingerprint, first.fingerprint);
+    assert_eq!(
+        primary_source::forget(&state, &source.source_id, &first.fingerprint)
+            .err()
+            .unwrap(),
+        "Retained source changed; refresh the preview before forgetting."
+    );
+    let other_root = directory(dir.path(), "other/project");
+    let other = register_local_source(&state, &other_root).unwrap();
+    assert_eq!(
+        primary_source::preview(&state, &other.source_id)
+            .unwrap()
+            .investigation_references,
+        0
+    );
+    let receipts = receipt_rows(&app_data);
+    state.jobs.lock().unwrap().clear_finished().unwrap();
+    state.graph.lock().unwrap().clear().unwrap();
+    std::fs::remove_dir_all(source.root()).unwrap();
+    drop(state);
+    let state = app_state(&app_data);
+    let resumed = primary_source::preview(&state, &source.source_id).unwrap();
+    assert_eq!(resumed.investigation_references, 2);
+    assert_eq!(resumed.capture_ids, before.capture_ids);
+    assert_eq!(resumed.current_references, 0);
+    let retained = [&first_id, &second_id]
+        .into_iter()
+        .map(|id| {
+            state
+                .jobs
+                .lock()
+                .unwrap()
+                .investigation_ledger(id)
+                .unwrap()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(retained, vec![first_ledger, second_ledger]);
+    assert_eq!(
+        primary_source::forget(&state, &source.source_id, &resumed.fingerprint).unwrap(),
+        resumed.captures as u64
+    );
+    let forgotten = primary_source::preview(&state, &source.source_id).unwrap();
+    assert_eq!(forgotten.captures, 0);
+    assert_eq!(forgotten.investigation_references, 2);
+    assert_eq!(receipt_rows(&app_data), receipts);
+    for (id, ledger) in [&first_id, &second_id].into_iter().zip(retained) {
+        assert_eq!(
+            state.jobs.lock().unwrap().investigation_ledger(id).unwrap(),
+            Some(ledger)
+        );
+    }
+}
+
+#[test]
+fn primary_source_invalid_investigation_reference_blocks_forgetting() {
+    // AC-0188/0189: a corrupt reference index is an explicit failure, never a
+    // smaller reassuring preview or authority to delete retained content.
+    let dir = tempfile::tempdir().unwrap();
+    let app_data = directory(dir.path(), "private");
+    let root = directory(dir.path(), "project");
+    std::fs::write(root.join("source.ts"), STABLE_A).unwrap();
+    let state = app_state(&app_data);
+    let source = register_local_source(&state, &root).unwrap();
+    let parsed = parse(&state, &source, || {});
+    let fact = FactKey::from_node(&rule_node(&parsed));
+    let binding = publish(&state, &source, &parsed)
+        .into_iter()
+        .find(|binding| binding.fact == fact)
+        .unwrap();
+    drop(parsed);
+    let (id, ledger) =
+        retain_investigation_selection(&state, &source, &binding, "retention-corrupt");
+    let preview = primary_source::preview(&state, &source.source_id).unwrap();
+    let conn = rusqlite::Connection::open(app_data.join("state.db")).unwrap();
+    conn.execute(
+        "INSERT INTO investigation_refs (task_id,input_revision,source_id,repo_key,receipt_id) VALUES (?1,?2,?3,?4,?5)",
+        rusqlite::params![id, i64::try_from(ledger.revision).unwrap(), source.source_id, source.repo_key,
+            format!("ts-primary-v2:{}", "0".repeat(64))],
+    ).unwrap();
+    assert!(primary_source::preview(&state, &source.source_id).is_err());
+    assert!(primary_source::forget(&state, &source.source_id, &preview.fingerprint).is_err());
+    let captures = source_capture::CaptureStore::open(
+        &app_data.join("retained-source/captures.sqlite"),
+        source_capture::StoreLimits::default(),
+    )
+    .unwrap();
+    let still_retained = captures
+        .source_inventory(&source_capture::SourceId::new(&source.source_id).unwrap())
+        .unwrap();
+    assert_eq!(
+        still_retained
+            .into_iter()
+            .map(|capture| capture.capture_id)
+            .collect::<Vec<_>>(),
+        preview.capture_ids
+    );
 }
 
 #[test]

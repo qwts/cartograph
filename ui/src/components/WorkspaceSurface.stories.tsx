@@ -80,6 +80,15 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+export const OpenInvestigations: Story = {
+  // AC-0190: investigations are part of Workspace, with the stable rail intact.
+  args: { onInvestigate: fn() },
+  play: async ({ canvasElement, args }) => {
+    await userEvent.click(within(canvasElement).getByRole('button', { name: 'Open investigations' }));
+    await expect(args.onInvestigate).toHaveBeenCalledTimes(1);
+  },
+};
+
 export const PartialRecovery: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);

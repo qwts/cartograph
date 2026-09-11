@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+pub mod investigation;
 pub mod prepared;
 pub mod source_basis;
 pub mod staging;

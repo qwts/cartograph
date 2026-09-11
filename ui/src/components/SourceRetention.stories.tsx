@@ -56,3 +56,15 @@ export const StagedEvidenceReferencesSurviveForgetting: Story = {
     await expect(canvas.getByText(/proposal history remains/)).toBeInTheDocument();
   },
 };
+
+// AC-0187/0188: investigation references participate before raw source is read.
+export const InvestigationReferencesSurviveForgetting: Story = {
+  args: { preview: { ...sources[0], captures: 1, files: 1, bytes: 120,
+    receipts: 2, current_references: 1, historical_references: 1,
+    investigation_references: 2, fingerprint: 'investigation-preview' } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/2 investigation references/)).toBeInTheDocument();
+    await expect(canvas.getByText(/Findings and their citation history remain/)).toBeInTheDocument();
+  },
+};

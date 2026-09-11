@@ -19,8 +19,8 @@ export const Open: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     const dialog = canvas.getByRole('dialog', { name: 'Command palette' });
-    // Eight surfaces plus the Help action (#154).
-    await expect(within(dialog).getAllByRole('option')).toHaveLength(9);
+    // AC-0190: eight unchanged shortcuts, plus Investigations and Help.
+    await expect(within(dialog).getAllByRole('option')).toHaveLength(10);
     await expect(within(dialog).getByText('Help')).toBeInTheDocument();
 
     // Click navigates and closes.
@@ -55,5 +55,19 @@ export const Closed: Story = {
   args: { open: false },
   play: async ({ canvasElement }) => {
     await expect(canvasElement.querySelector('.cmdk')).not.toBeInTheDocument();
+  },
+};
+
+export const InvestigationsPreservesShortcuts: Story = {
+  // AC-0190: this Workspace route does not renumber the eight existing shortcuts.
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const entry = canvas.getByRole('option', { name: /^Investigations/ });
+    await expect(entry.querySelector('kbd')).toBeNull();
+    const modifier = /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+    await expect([...canvasElement.querySelectorAll('kbd')].map((item) => item.textContent))
+      .toEqual([...Array.from({ length: 8 }, (_, index) => `${modifier}${index + 1}`), '?']);
+    await userEvent.click(entry);
+    await expect(args.onNavigate).toHaveBeenCalledWith('investigations');
   },
 };
