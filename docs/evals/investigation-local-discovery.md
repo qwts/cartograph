@@ -83,3 +83,30 @@ the returned prefix in the ledger. It preserves every existing limit and fails
 explicitly when one fact plus its inventory cannot fit. This fixes an observed
 host defect; successful source investigation still requires a separate actual
 provider run. The failed task is not replayed.
+
+## Fourth observation — discovery delivered, second call unknown
+
+[Run 34562301078](https://github.com/qwts/cartograph/actions/runs/34562301078)
+tested `f0a6d5477cf7ce9c4f758f683a1771adf007b1ab` with the same runtime/model
+pins on four AMD EPYC 9V45 CPU cores and 16,766,414,848 bytes of memory.
+Investigation `investigation:5eb33775f867e99ab0ec08984a930638` admitted the same
+documented query after 53,050 ms (1,352 reported input tokens, 42 output tokens).
+The host delivered eight of twelve facts in 15,533 bytes with a continuation
+cursor. The saved ledger and receipt index contain that returned prefix. This
+actual-provider observation confirms the page-sizing correction.
+
+The next call reached its 180-second request boundary without a durable admitted
+response. The first and second serialized input payloads were 5,923 and 29,360
+bytes respectively. The task ended `outcome_unknown` at 233,183 ms of active time,
+with two invocations, 4,096 reserved generated tokens and unknown aggregate
+provider-reported usage. The first call's measured usage remains in its response
+record. No source read or finding was produced; the auditor was skipped. The
+ordered journal, unchanged graph and coordinator reopen checks passed.
+
+The larger request and timeout establish a runtime acceptance problem, but do not
+identify whether prompt evaluation, generation or context fit caused it; the
+second call returned no timing or token counts. This run does not establish model
+quality or successful investigation. No replay or budget increase was performed.
+Validation on a suitable development runtime and independent citation review are
+still required. The native pagination regression and the ordinary code test
+steps passed; the explicitly selected actual-provider acceptance failed.
