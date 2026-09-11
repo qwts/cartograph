@@ -251,6 +251,7 @@ fn retain_investigation_selection(
         model: "fixture".into(),
         endpoint: "http://127.0.0.1:11434".into(),
         deployment: None,
+        protocol_version: None,
         available: true,
         unavailable_reason: None,
     };

@@ -169,6 +169,7 @@ pub(super) fn validate_provider(
     for value in [&provider.provider_id, &provider.model, &provider.endpoint]
         .into_iter()
         .chain(provider.deployment.iter())
+        .chain(provider.protocol_version.iter())
     {
         if value.is_empty() || value.len() > 2048 || redacted_history_text(value, 2048)? != *value {
             return Err(InvestigationStoreError::Invalid);

@@ -23,6 +23,10 @@ pub struct InvestigationProvider {
     pub model: String,
     pub endpoint: String,
     pub deployment: Option<String>,
+    /// Fixed bounded wire behavior used by this task. Older history has no
+    /// recorded value; do not reinterpret it as the current protocol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
     pub available: bool,
     pub unavailable_reason: Option<String>,
 }

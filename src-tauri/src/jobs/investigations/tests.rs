@@ -94,6 +94,7 @@ fn provider(mode: InvestigationProviderMode) -> InvestigationProvider {
         }
         .into(),
         deployment: None,
+        protocol_version: None,
         available: true,
         unavailable_reason: None,
     }

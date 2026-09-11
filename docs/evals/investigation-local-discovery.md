@@ -33,3 +33,24 @@ not fabricated query activity or relaxed admission. Its effect requires a separa
 actual-provider run on the new source revision. One failed observation is not a
 model-wide quality score. Native restart, destructive forgetting, independent
 citation review, full H4/H5 interoperability and market gates remain open.
+
+## Second observation — discovery @2, default local thinking
+
+The [next CI run](https://github.com/qwts/cartograph/actions/runs/34559635946)
+tested `18073367b65e6bb854f6ae6ce418a81a17d28284` using the same pinned runtime,
+model and context length. Domain analyst @2, fingerprint
+`9eb83715f67f8b022ec5a144de89c4a4a86e0c3ee86ab71e545677e0fe3e2b37`, reached the
+180-second request boundary on its first call without a durable admitted response.
+The task `investigation:211bedb5625dabd23f41b0a191d7ec78` remains
+`outcome_unknown`, with 180,029 ms active time, one invocation, a 2048-token
+reservation and absent provider-reported usage. No query, read or finish was
+admitted. It was not replayed. Its preserved journal and unchanged graph passed
+the structural checks; the auditor was skipped.
+
+This observation does not validate or invalidate the guidance: there is no model
+action to judge. The prior bounded Ollama request omitted `think`, so supported
+models inherited the runtime's default thinking behavior. The next transport
+revision requests optional thinking off for JSON actions and records its new
+protocol identity. This is a hypothesis about a better fit for bounded action
+turns, not a demonstrated cause or a completed acceptance result. Both previous
+observations remain part of the record.

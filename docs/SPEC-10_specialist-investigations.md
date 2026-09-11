@@ -200,6 +200,17 @@ original input fingerprint may bind identity without storing the original secret
 
 ## Budgets and provider acquisition
 
+Bounded transport version `bounded-json-completion@2` requests Ollama's JSON
+response mode with optional thinking disabled (`think: false`), so short action
+turns need not inherit a model's default extended reasoning trace. This is a
+request setting, not proof that every model honors it; models that still emit
+thinking remain subject to the complete response-body, generated-token and time
+ceilings. No private trace is stored or used to fabricate an action. Anthropic
+and legacy unbounded completion wire behavior remain unchanged. The new bounded
+protocol identity participates in exact consent hashing and is recorded in each
+new investigation's provider descriptor. Older records without that field retain
+unknown transport identity; reading them never assigns the current version.
+
 Initial hard ceiling profile (the host may narrow it, never silently enlarge it):
 
 | Work | Ceiling |

@@ -170,6 +170,27 @@ fn investigation_intent_identity_binds_original_text_before_redaction() {
 }
 
 #[test]
+fn investigation_provider_transport_identity_preserves_legacy_serialization() {
+    // AC-0185: older stored request/provider hashes must not acquire a current
+    // transport identity or change canonical bytes merely because they are read.
+    let original = r#"{"mode":"local","provider_id":"ollama:qwen3:8b","model":"qwen3:8b","endpoint":"http://127.0.0.1:11435/api/chat","deployment":null,"available":true,"unavailable_reason":null}"#;
+    let mut provider: InvestigationProvider = decode_record(original).unwrap();
+    assert_eq!(provider.protocol_version, None);
+    assert_eq!(serde_json::to_string(&provider).unwrap(), original);
+    provider.protocol_version = Some(llm::bounded::PROTOCOL_VERSION.into());
+    let current = serde_json::to_string(&provider).unwrap();
+    assert_ne!(current, original);
+    assert_eq!(
+        decode_record::<InvestigationProvider>(&current).unwrap(),
+        provider
+    );
+    assert_eq!(
+        provider.protocol_version.as_deref(),
+        Some("bounded-json-completion@2")
+    );
+}
+
+#[test]
 fn investigation_action_decoder_is_closed_and_never_extracts_or_repairs() {
     // AC-0184: untrusted objects never acquire an arbitrary tool or authority field.
     let valid = serde_json::to_string(&action()).unwrap();
@@ -436,6 +457,7 @@ fn investigation_detail_roundtrip_closes_flattened_and_nested_unknown_fields() {
             model: "fixture".into(),
             endpoint: "http://127.0.0.1:11434".into(),
             deployment: None,
+            protocol_version: None,
             available: true,
             unavailable_reason: None,
         },

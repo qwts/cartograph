@@ -51,6 +51,7 @@ impl InvestigationRuntime {
                 model: String::new(),
                 endpoint: String::new(),
                 deployment: None,
+                protocol_version: None,
                 available: false,
                 unavailable_reason: Some(
                     "A compatible provider is not configured. No model request has been made."
@@ -107,6 +108,7 @@ pub(super) fn descriptor(
         model: profile.requested_model,
         endpoint: profile.endpoint_id,
         deployment: None,
+        protocol_version: Some(profile.protocol_version),
         available: true,
         unavailable_reason: None,
     };

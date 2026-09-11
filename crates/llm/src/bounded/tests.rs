@@ -157,6 +157,11 @@ fn bounded_providers_send_exact_generation_limits_and_consented_payload() {
     let wire: Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(wire["options"]["num_predict"], 37);
     assert_eq!(wire["format"], "json");
+    assert_eq!(wire["think"], false);
+    assert_eq!(
+        local.bounded_profile().unwrap().protocol_version,
+        "bounded-json-completion@2"
+    );
     assert_eq!(wire["stream"], false);
     assert!(
         wire["messages"][1]["content"]
@@ -188,6 +193,7 @@ fn bounded_providers_send_exact_generation_limits_and_consented_payload() {
     assert_eq!(wire["model"], ClaudeLane::Opus.model_id());
     assert!(wire.get("fallbacks").is_none());
     assert!(wire.get("tools").is_none());
+    assert!(wire.get("think").is_none());
     assert!(
         request
             .headers

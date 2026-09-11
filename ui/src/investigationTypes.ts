@@ -30,6 +30,8 @@ export interface InvestigationProvider {
   model: string;
   endpoint: string;
   deployment: string | null;
+  /** Absent in older records; never infer the current protocol for that history. */
+  protocol_version?: string;
   available: boolean;
   unavailable_reason: string | null;
 }

@@ -41,7 +41,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 
 | US-0031 | AC-0172..0179 | agents, core-graph, app, ui | H3 | — | ADR-0021, ADR-0024, ADR-0027 | T-0172..0179 |
 
-| US-0032 | AC-0180..0191 | agents (immutable @1/@2 specialists), llm, core-graph, context-hub, app, ui | H4 | — | ADR-0019, ADR-0024, ADR-0025, ADR-0028 | T-0180..0191 |
+| US-0032 | AC-0180..0191 | agents (immutable @1/@2 specialists), llm (bounded transport @2), core-graph, context-hub, app, ui | H4 | — | ADR-0019, ADR-0024, ADR-0025, ADR-0028 | T-0180..0191 |
 
 ## Coverage assertions
 - Every Must-priority US is anchored to an original milestone, post-M10 work, or a SPEC-01 delivery gate; a milestone label alone does not establish completion.

@@ -30,6 +30,17 @@ unchanged. Keep the actual failed observation as evidence and evaluate @2 in a
 separate run. The host does not manufacture a tool action or reject an otherwise
 valid insufficient-evidence finish to force a successful benchmark.
 
+For bounded Ollama actions, explicitly request `think: false` alongside JSON
+format in transport @2. [Ollama enables thinking by default](https://docs.ollama.com/capabilities/thinking)
+for supported models, while this protocol needs one bounded JSON action per turn.
+The @2 specialist trial reached the existing 180-second request limit before an
+admitted response; it provides no evidence about whether the guidance worked.
+Requesting a concise mode is the next measured change, with no deadline or output
+budget increase. Models may ignore this setting (for example GPT-OSS expects
+reasoning levels), so the host never treats it as proof that reasoning is absent.
+Record the immutable bounded transport version in new provider descriptors and
+consent identity; preserve absent versions in older records as unknown.
+
 Use durable idempotent task identity and ordered events, exact per-step cloud
 consent, private execution fencing and explicit unknown outcomes. Preserve complete
 admitted findings against their original transient input even after cancellation.

@@ -12,7 +12,7 @@ use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 
 /// Immutable protocol identity, including fixed transport behavior.
-pub const PROTOCOL_VERSION: &str = "bounded-json-completion@1";
+pub const PROTOCOL_VERSION: &str = "bounded-json-completion@2";
 /// Connection ceiling of reusable bounded clients. A shorter total deadline also
 /// shortens connection establishment; clients never get rebuilt for an invocation.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -758,7 +758,10 @@ pub(super) fn complete_ollama(
         &serde_json::json!({
             "model": profile.requested_model,
             "messages": [{"role":"system", "content":request.payload().system}, {"role":"user", "content":user}],
-            "stream": false, "format": "json", "options": {"num_predict":request.limits().0.max_output_tokens}
+            // Short action turns should not inherit optional extended thinking.
+            // This is advisory to the model; full-body/time limits still apply.
+            "stream": false, "format": "json", "think": false,
+            "options": {"num_predict":request.limits().0.max_output_tokens}
         }),
         request.limits().0.request_bytes,
         FailureCode::RequestTooLarge,
