@@ -200,6 +200,12 @@ original input fingerprint may bind identity without storing the original secret
 
 ## Budgets and provider acquisition
 
+Query page byte limits cover the complete response, including evidence inventories.
+Return the largest fitting ordered prefix and its original-selection continuation
+cursor; a fact whose complete inventory cannot fit alone fails explicitly and is
+never skipped. Only returned facts join the cumulative ledger and receipt index.
+Page sizing within one frozen query is deterministic host work, not a model retry.
+
 Bounded transport version `bounded-json-completion@2` requests Ollama's JSON
 response mode with optional thinking disabled (`think: false`), so short action
 turns need not inherit a model's default extended reasoning trace. This is a

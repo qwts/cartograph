@@ -144,30 +144,33 @@ impl FrozenContext {
         sink: &mut impl AcquisitionSink,
     ) -> Result<(), HostError> {
         query.validate()?;
-        let page = self
-            .snapshot
-            .query(QueryRequest {
-                scope: scope(&query.scope),
-                kind: query.kind.map(|k| match k {
-                    InvestigationFactKind::Node => FactKind::Node,
-                    InvestigationFactKind::Edge => FactKind::Edge,
-                }),
-                labels: query.labels.clone(),
-                max_facts: query.max_facts,
-                max_bytes: query.max_bytes,
-                cursor: query.cursor.as_ref().map(|c| QueryCursor {
-                    snapshot_id: c.snapshot_id.clone(),
-                    selection_id: c.selection_id.clone(),
-                    offset: c.offset,
-                }),
-            })
-            .map_err(context_error)?;
-        let mut keys = self
+        let query_page = |max_facts| {
+            self.snapshot
+                .query(QueryRequest {
+                    scope: scope(&query.scope),
+                    kind: query.kind.map(|k| match k {
+                        InvestigationFactKind::Node => FactKind::Node,
+                        InvestigationFactKind::Edge => FactKind::Edge,
+                    }),
+                    labels: query.labels.clone(),
+                    max_facts,
+                    max_bytes: query.max_bytes,
+                    cursor: query.cursor.as_ref().map(|c| QueryCursor {
+                        snapshot_id: c.snapshot_id.clone(),
+                        selection_id: c.selection_id.clone(),
+                        offset: c.offset,
+                    }),
+                })
+                .map_err(context_error)
+        };
+        let prior_keys = self
             .ledger
             .selected_facts
             .iter()
             .map(|s| crate::task_evidence::graph_fact(&s.fact))
             .collect::<BTreeSet<_>>();
+        let page = query_page(query.max_facts)?;
+        let mut keys = prior_keys.clone();
         keys.extend(page.facts.iter().map(|f| graph_reference(&f.reference)));
         if keys.len() > MAX_SELECTED_FACTS {
             return Err(HostError::LimitExceeded);
@@ -179,15 +182,65 @@ impl FrozenContext {
         if authoritative != preliminary {
             return Err(HostError::InputChanged);
         }
+        let mut options = Vec::new();
+        for fact in &page.facts {
+            let selected = authoritative
+                .get(&graph_reference(&fact.reference))
+                .ok_or(HostError::InvalidInput)?;
+            options.push(guards.options(state, self, selected)?);
+        }
+        let mut response = InvestigationQueryPage {
+            context: page,
+            evidence_options: options,
+        };
+        let raw = loop {
+            match bounded_json(&response, query.max_bytes) {
+                Ok(raw) => break raw,
+                Err(HostError::LimitExceeded) if response.context.facts.len() > 1 => {
+                    // The core page budget excludes this host's evidence inventory.
+                    // Shrink only the ordered suffix and let the frozen service
+                    // produce the exact continuation; never skip a large fact.
+                    response.context = query_page(response.context.facts.len() - 1)?;
+                    response
+                        .evidence_options
+                        .truncate(response.context.facts.len());
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let mut returned_keys = prior_keys;
+        returned_keys.extend(
+            response
+                .context
+                .facts
+                .iter()
+                .map(|f| graph_reference(&f.reference)),
+        );
         let mut ledger = self.ledger.clone();
         ledger.revision = ledger
             .revision
             .checked_add(1)
             .ok_or(HostError::LimitExceeded)?;
-        ledger.selected_facts = authoritative.values().cloned().collect();
-        ledger.receipt_references = guards.references();
-        let mut options = Vec::new();
-        for fact in &page.facts {
+        ledger.selected_facts = authoritative
+            .iter()
+            .filter(|(key, _)| returned_keys.contains(*key))
+            .map(|(_, selected)| selected.clone())
+            .collect();
+        ledger.receipt_references = guards
+            .references()
+            .into_iter()
+            .filter(|reference| {
+                ledger
+                    .selected_facts
+                    .iter()
+                    .filter_map(|s| s.binding.as_ref())
+                    .any(|binding| {
+                        binding.repo_key == reference.repo_key
+                            && binding.receipt_id == reference.receipt_id
+                    })
+            })
+            .collect();
+        for fact in &response.context.facts {
             let key = graph_reference(&fact.reference);
             let selected = authoritative.get(&key).ok_or(HostError::InvalidInput)?;
             if !ledger.citations.iter().any(|c| {
@@ -211,13 +264,7 @@ impl FrozenContext {
                     origin: InvestigationEvidenceOrigin::GraphMetadata,
                 });
             }
-            options.push(guards.options(state, self, selected)?);
         }
-        let response = InvestigationQueryPage {
-            context: page,
-            evidence_options: options,
-        };
-        let raw = bounded_json(&response, query.max_bytes)?;
         let total_bytes = ledger
             .queries
             .iter()

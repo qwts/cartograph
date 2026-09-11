@@ -82,6 +82,7 @@ pub struct InvestigationCatalog {
 #[serde(deny_unknown_fields)]
 pub struct StartInvestigationRequest {
     pub schema_version: u32,
+    /// Caller-supplied idempotency key, not a cryptographic nonce or execution authority.
     pub request_nonce: String,
     pub specialist_id: SpecialistId,
     pub question: String,

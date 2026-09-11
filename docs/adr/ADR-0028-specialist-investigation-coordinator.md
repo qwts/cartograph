@@ -41,6 +41,11 @@ reasoning levels), so the host never treats it as proof that reasoning is absent
 Record the immutable bounded transport version in new provider descriptors and
 consent identity; preserve absent versions in older records as unknown.
 
+Size query pages with their evidence inventories included. The actual model's
+documented example request exposed a core page that fit its budget but failed
+after host metadata was attached. Preserve a fitting ordered prefix and the
+original selection cursor; never enlarge the budget or omit an oversized fact.
+
 Use durable idempotent task identity and ordered events, exact per-step cloud
 consent, private execution fencing and explicit unknown outcomes. Preserve complete
 admitted findings against their original transient input even after cancellation.

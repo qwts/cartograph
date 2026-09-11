@@ -301,6 +301,130 @@ impl Fixture {
 }
 
 #[test]
+fn investigation_query_pages_include_evidence_inventory_and_preserve_continuation() {
+    // AC-0182: the documented query must page the complete host response, not
+    // fail because its core page left no room for retained-source inventories.
+    struct Sink {
+        usage: InvestigationUsage,
+        publications: usize,
+    }
+    impl AcquisitionSink for Sink {
+        fn usage(&self) -> &InvestigationUsage {
+            &self.usage
+        }
+        fn reserve_validation(&mut self, _: u64) -> Result<(), HostError> {
+            panic!("query metadata must not read source bytes")
+        }
+        fn publish_input(
+            &mut self,
+            ledger: &InvestigationInputLedger,
+            usage: InvestigationUsage,
+        ) -> Result<(), HostError> {
+            ledger.validate()?;
+            self.usage = usage;
+            self.publications += 1;
+            Ok(())
+        }
+    }
+    let provider = Scripted::new(Mode::Finish);
+    let fixture = Fixture::new(&provider);
+    let state = fixture.app.state::<AppState>();
+    let mut context = FrozenContext::prepare(&state, &fixture.request, &[]).unwrap();
+    let expected = context
+        .snapshot
+        .query(context_hub::QueryRequest {
+            max_facts: 32,
+            max_bytes: 32768,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut query = InvestigationQuery {
+        scope: InvestigationScope::All,
+        kind: None,
+        labels: vec![],
+        max_facts: 12,
+        max_bytes: 16384,
+        cursor: None,
+    };
+    let mut sink = Sink {
+        usage: InvestigationUsage::default(),
+        publications: 0,
+    };
+    let mut seen = Vec::new();
+    loop {
+        context.query(&state, query.clone(), &mut sink).unwrap();
+        let raw = context.query_pages.last().unwrap();
+        assert!(raw.len() <= query.max_bytes);
+        let wrapper: Value = serde_json::from_str(raw).unwrap();
+        let page: context_hub::QueryResponse =
+            serde_json::from_value(wrapper["context"].clone()).unwrap();
+        assert_eq!(
+            page.facts.len(),
+            wrapper["evidence_options"].as_array().unwrap().len()
+        );
+        if sink.publications == 1 {
+            assert!(page.facts.len() < expected.facts.len());
+            assert!(page.next_cursor.is_some());
+        }
+        seen.extend(page.facts);
+        assert_eq!(context.ledger.selected_facts.len(), seen.len());
+        assert_eq!(context.ledger.citations.len(), seen.len());
+        let bindings = context
+            .ledger
+            .selected_facts
+            .iter()
+            .filter_map(|s| s.binding.as_ref())
+            .map(|b| (&b.repo_key, &b.receipt_id))
+            .collect::<std::collections::BTreeSet<_>>();
+        let indexed = context
+            .ledger
+            .receipt_references
+            .iter()
+            .map(|r| (&r.repo_key, &r.receipt_id))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            indexed, bindings,
+            "an omitted fact must not retain its receipt"
+        );
+        query.cursor = page.next_cursor.map(|c| InvestigationQueryCursor {
+            snapshot_id: c.snapshot_id,
+            selection_id: c.selection_id,
+            offset: c.offset,
+        });
+        if query.cursor.is_none() {
+            break;
+        }
+        assert!(sink.publications < 8);
+    }
+    assert_eq!(
+        seen, expected.facts,
+        "paging may neither skip nor duplicate facts"
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+    // One core fact fits 6000 bytes; its complete evidence inventory does not.
+    // Keep failure explicit, without silently skipping it or changing history.
+    let before = context.ledger.clone();
+    let publications = sink.publications;
+    let pages = context.query_pages.len();
+    query = InvestigationQuery {
+        scope: InvestigationScope::All,
+        kind: Some(InvestigationFactKind::Node),
+        labels: vec!["BusinessRule".into()],
+        max_facts: 1,
+        max_bytes: 6000,
+        cursor: None,
+    };
+    assert_eq!(
+        context.query(&state, query, &mut sink),
+        Err(HostError::LimitExceeded)
+    );
+    assert_eq!(context.ledger, before);
+    assert_eq!(context.query_pages.len(), pages);
+    assert_eq!(sink.publications, publications);
+}
+
+#[test]
 fn investigation_worker_queries_reads_captured_definition_and_persists_cited_finish() {
     // AC-0182/0183/0184/0188/0191: actual parser receipts, graph selection,
     // source retention, provider input and durable coordinator loop together.

@@ -54,3 +54,32 @@ revision requests optional thinking off for JSON actions and records its new
 protocol identity. This is a hypothesis about a better fit for bounded action
 turns, not a demonstrated cause or a completed acceptance result. Both previous
 observations remain part of the record.
+
+## Third observation — admitted discovery, host page-sizing failure
+
+[Run 34561178582](https://github.com/qwts/cartograph/actions/runs/34561178582)
+tested `bf5aab1d074e5a261f78eb3c869b2e8f16abc445`, specialist @2 and bounded
+transport @2 with the same verified Ollama/Qwen3 pins. The runner had four Xeon
+8573C CPUs and the same memory size; the CPU model differs from the earlier runs,
+so elapsed time alone does not isolate the transport setting's effect.
+
+Investigation `investigation:01bfacec0c625d8e9ebe43e8c83d7e2c` admitted a complete
+`query_context` response after 63,183 ms. Reported usage was 1,348 input tokens
+and 42 output tokens. The host reserved one tool attempt, then failed on a work
+limit at 63,206 ms without publishing a query page. No source read or finding was
+produced. The coordinator retained the failure; graph equality, ordered events
+and connection reopen checks passed. The auditor was skipped.
+
+The saved canonical action hash
+`ade0d2af2844cbb882a148adfe1dcbae42451f1dfbfcc585a888cac630a881e1` matches the
+documented example exactly: all scope, no kind/label filter, 12 facts, 16,384 bytes,
+no cursor. A read-only diagnostic using the real retained graph and the production
+context query returned 12 facts in 12,637 bytes. Adding the actual receipt and
+legacy provenance inventories produces 19,888 bytes. The host sized only the core
+page before adding its envelope and inventories, then rejected the complete page.
+
+The correction makes the complete response determine pagination and retains only
+the returned prefix in the ledger. It preserves every existing limit and fails
+explicitly when one fact plus its inventory cannot fit. This fixes an observed
+host defect; successful source investigation still requires a separate actual
+provider run. The failed task is not replayed.
