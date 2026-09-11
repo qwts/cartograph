@@ -421,6 +421,61 @@ export interface GapStrategyReport {
   required_evidence: string[];
   candidates: number;
   strategies: StrategyCard[];
+  source_basis?: TaskSourceBasisV2;
+}
+
+export interface TaskSelectionReport {
+  metadata_lookahead: number;
+  acquisition_attempts: number;
+  supplied_evidence: number;
+  supplied_candidates: number;
+  captured_validation_bytes: number;
+  limits: {
+    metadata_lookahead: number;
+    acquisition_attempts: number;
+    selected_facts: number;
+    evidence: number;
+    candidates: number;
+    span_bytes: number;
+    total_evidence_bytes: number;
+    captured_validation_bytes: number;
+  };
+  omissions: { request_index: number; fact: FactKey; reason: 'missing_citation' | 'legacy_read_unavailable' }[];
+  metadata_preselected_not_read: number;
+  unread_tail: boolean;
+  stop_reason: 'candidate_limit' | 'neighborhood_exhausted' | 'attempt_limit' |
+    'validation_byte_limit' | 'participating_source_unavailable' | 'invalid_selection' | 'required_membership_missing';
+}
+
+/** Metadata of the exact inputs supplied at preparation, never a live assessment. */
+export interface TaskSourceBasisV2 {
+  schema_version: 2;
+  graph_snapshot_id: string;
+  selected_facts: {
+    fact: FactKey;
+    fact_digest: string;
+    binding: { repo_key: string; receipt_id: string; emitted_fact_digest: string } | null;
+  }[];
+  evidence: {
+    evidence_id: string;
+    fact: FactKey;
+    role: string;
+    index: number;
+    origin: { kind: 'working_tree_unverified' } | {
+      kind: 'captured_primary_source';
+      registered_source_id: string;
+      receipt_id: string;
+      receipt_inventory_index: number;
+      captured: {
+        file: { source_id: string; capture_id: string; path: string; digest: string; byte_len: number };
+        byte_start: number;
+        byte_end: number;
+      };
+      scope: 'primary_source_only';
+      input_closure: 'input_closure_not_established';
+    };
+  }[];
+  selection: TaskSelectionReport;
 }
 
 /** Immutable propose-only content produced by the bounded agent broker. */
@@ -436,11 +491,14 @@ export interface AgentProposal {
 
 /** Host-persisted proposal returned by staging and revision-checked review. */
 export interface StagedProposal extends AgentProposal {
+  /** Absent only for older hosts and fixtures. New host rows declare 1 or 2. */
+  schema_version?: 1 | 2;
   proposal_id: string;
   review_revision: number;
   review_decision: 'accepted' | 'rejected' | null;
   review_note: string | null;
-  evidence_binding: 'working_tree_unverified';
+  evidence_binding: 'working_tree_unverified' | 'per_item';
+  source_basis?: TaskSourceBasisV2;
   context_status: 'awaiting_reconciliation';
   created_at: string;
   reviewed_at: string | null;
@@ -451,10 +509,55 @@ export interface StagedProposalPage {
   next_cursor: string | null;
 }
 
+export type BasisComparison = 'unchanged' | 'changed' | 'legacy_unverified' | 'operational_failure';
+export type BasisEvidenceStatus = 'available' | 'unavailable' | 'invalid' |
+  'operational_failure' | 'validation_byte_limit' | 'working_tree_unverified';
+
+/** A read-only observation, kept apart from the immutable staged proposal. */
+export interface BasisAssessment {
+  schema_version: 1;
+  proposal_id: string;
+  current_graph_snapshot_id: string | null;
+  graph_comparison: BasisComparison;
+  association_comparison: BasisComparison;
+  evidence: { evidence_id: string; status: BasisEvidenceStatus }[];
+  unverified_evidence: number;
+  captured_validation_bytes: number;
+  max_captured_validation_bytes: number;
+}
+
+export interface BasisAssessmentState {
+  proposalId: string;
+  requestGeneration: number;
+  loading: boolean;
+  result: BasisAssessment | null;
+  error: string | null;
+}
+
+function requireBasisAssessment(result: BasisAssessment | null, proposalId: string): BasisAssessment {
+  const comparisons: BasisComparison[] = ['unchanged', 'changed', 'legacy_unverified', 'operational_failure'];
+  const statuses: BasisEvidenceStatus[] = ['available', 'unavailable', 'invalid',
+    'operational_failure', 'validation_byte_limit', 'working_tree_unverified'];
+  if (!result || result.schema_version !== 1 || result.proposal_id !== proposalId ||
+      !comparisons.includes(result.graph_comparison) || !comparisons.includes(result.association_comparison) ||
+      !(result.current_graph_snapshot_id === null || typeof result.current_graph_snapshot_id === 'string') ||
+      !Array.isArray(result.evidence) || result.evidence.length > 12 ||
+      result.evidence.some((item) => !item || typeof item.evidence_id !== 'string' || !statuses.includes(item.status)) ||
+      [result.unverified_evidence, result.captured_validation_bytes, result.max_captured_validation_bytes]
+        .some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new Error('Current basis could not be assessed. No proposal or review was changed.');
+  }
+  return result;
+}
+
 /** A broker body alone is not a successful durable stage or review response. */
 function requireStagedProposal(proposal: StagedProposal | null): StagedProposal {
   if (!proposal?.proposal_id || !Number.isSafeInteger(proposal.review_revision) ||
-      proposal.review_revision < 0) {
+      proposal.review_revision < 0 ||
+      (proposal.schema_version !== undefined && proposal.schema_version !== 1 && proposal.schema_version !== 2) ||
+      (proposal.schema_version === 2
+        ? proposal.evidence_binding !== 'per_item' || proposal.source_basis?.schema_version !== 2
+        : proposal.evidence_binding !== 'working_tree_unverified' || proposal.source_basis !== undefined)) {
     throw new Error('The core did not return a saved proposal. No review was recorded.');
   }
   return proposal;
@@ -486,6 +589,8 @@ export interface EscalationState {
   reviewing: boolean;
   /** Set once the user accepted/rejected the proposal. */
   decided: 'accepted' | 'rejected' | null;
+  /** Transient observation of this selection; never merged into proposal history. */
+  basisAssessment?: BasisAssessmentState;
 }
 
 /** Exact redacted payload preview for the one-action consent dialog. */
@@ -664,6 +769,7 @@ export interface AppStore {
   openResolution: (gapId: string) => Promise<void>;
   closeResolution: () => void;
   openStagedProposal: (proposal: StagedProposal) => void;
+  assessStagedBasis: () => Promise<void>;
   loadStagedProposals: (loadMore?: boolean) => Promise<void>;
   /** Run a strategy. Local runs immediately; cloud first loads the exact
    *  egress preview so the one-action consent dialog can show it. */
@@ -688,6 +794,7 @@ async function loadEndpoints(): Promise<GraphNode[]> {
 }
 
 let evidenceRequestVersion = 0;
+let basisAssessmentGeneration = 0;
 let jobActionVersion = 0;
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -1149,6 +1256,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
       decided: proposal.review_decision,
     },
   }),
+
+  assessStagedBasis: async () => {
+    const proposalId = get().escalation?.proposal?.proposal_id;
+    if (!proposalId) return;
+    const requestGeneration = ++basisAssessmentGeneration;
+    const request: BasisAssessmentState = {
+      proposalId, requestGeneration, loading: true, result: null, error: null,
+    };
+    set((state) => state.escalation?.proposal?.proposal_id === proposalId
+      ? { escalation: { ...state.escalation, basisAssessment: request } } : {});
+    const update = (fields: Partial<BasisAssessmentState>) => set((state) => {
+      const current = state.escalation;
+      if (current?.proposal?.proposal_id !== proposalId ||
+          current.basisAssessment?.requestGeneration !== requestGeneration) return {};
+      return { escalation: { ...current, basisAssessment: { ...request, ...fields } } };
+    });
+    try {
+      const result = requireBasisAssessment(await invokeOr<BasisAssessment | null>(
+        'assess_staged_basis', null, { proposalId },
+      ), proposalId);
+      update({ loading: false, result });
+    } catch {
+      update({ loading: false, error: 'Current basis could not be assessed. No proposal or review was changed.' });
+    }
+  },
 
   loadStagedProposals: async (loadMore = false) => {
     if (get().stagedLoading) return;

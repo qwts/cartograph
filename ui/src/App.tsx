@@ -147,6 +147,7 @@ export default function App() {
     stagedError,
     loadStagedProposals,
     openStagedProposal,
+    assessStagedBasis,
   } = useAppStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -593,6 +594,7 @@ export default function App() {
           onDismissPreview={dismissPreview}
           onDecide={(decision) => void decideProposal(decision)}
           onClose={closeResolution}
+          onAssessBasis={() => void assessStagedBasis()}
         />
       )}
     </div>

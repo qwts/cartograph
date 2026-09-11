@@ -22,13 +22,16 @@ H3/AC-0108, Workbench projection and MCP/ACP execution remain incomplete.
 
 ## Host task preparation
 
-Replace the evidence-only callback with a fact-qualified plan and reader. Private host interfaces in escalation.rs / a small task_evidence.rs module:
+Replace the evidence-only callback with a fact-qualified plan and reader.
+The task_evidence module separates planning from source acquisition:
 
 ```rust
-fn plan_task(nodes: &[Node], edges: &[Edge], gap_id: &str, action_id: &str)
-    -> Result<TaskPlan, TaskPreparationError>;
-fn prepare_task(state: &AppState, plan: TaskPlan, graph: OwnedGraphSnapshot)
-    -> Result<PreparedAgentTask, TaskPreparationError>;
+fn plan(nodes: &[Node], edges: &[Edge], gap_id: &str, action_id: &str)
+    -> Result<TaskPlan, String>;
+fn prepare_from_snapshot(
+    state: &AppState, graph: (Vec<Node>, Vec<Edge>),
+    gap_id: &str, action_id: &str, after_guards: impl FnOnce(),
+) -> Result<PreparedAgentTask, TaskPreparationError>;
 ```
 
 The plan identifies the source, Gap, selected adjacent relation, candidate facts,
@@ -44,7 +47,9 @@ the neighborhood ends, or an explicit attempt budget is exhausted.
 There are at most **64 attempted evidence requests per task**, including the
 source and Gap requests. Metadata lookahead may select the complete 64-request
 window before any source acquisition, and is counted separately from attempted
-reads. The source and Gap are selected facts even when their provenance has no
+reads. These counts describe the completed pure request plan, not successful
+association queries; a later preliminary query failure keeps the planned window
+count with zero acquisition attempts. The source and Gap are selected facts even when their provenance has no
 citation; that request is a reported omission. The source must exist in the graph. Each probe names at
 most one supporting fact/citation. The adjacent slot relationship is one additional
 fixed metadata selection, so the bounded graph API accepts at most 65 unique keys;
@@ -315,7 +320,12 @@ identity domain. Version-aware history preserves review CAS and no-note headroom
 An explicit current-basis assessment never changes receipt retention or historical
 reference counts by inventing source use. Retention previews must count actual
 v2 receipt references in immutable staged bases, including unselected supplied
-candidates; v1 history keeps its previous unverified-reference treatment.
+candidates. The separate staged_references count and exact sorted reference list
+participate in retention-preview v2 identity; previous current/historical receipt
+counts keep their meaning. Scanning stops with an explicit error beyond 4096
+history rows or 4096 matching evidence references, rather than reporting partial
+counts. Model calls already in progress can stage after this observation; retention
+preview is not a cross-store global freeze. v1 history keeps its previous unverified-reference treatment.
 
 UI preview and history distinguish retained parser input, unverified working-tree
 input and selection limits; detailed metadata remains inspectable without adding
