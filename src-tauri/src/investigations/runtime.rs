@@ -84,7 +84,7 @@ impl InvestigationRuntime {
         }
     }
 
-    pub(super) fn wake(&self, id: &str) {
+    pub(crate) fn wake(&self, id: &str) {
         if let Ok(Some(task)) = self.get(id) {
             task.wake();
         }

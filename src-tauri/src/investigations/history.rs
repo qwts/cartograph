@@ -482,7 +482,7 @@ mod tests {
         assert!(observed.text.is_none());
         file.unlock().unwrap();
         let mut captures = CaptureStore::open(
-            fixture.app_data.join("retained-source/captures.sqlite"),
+            &fixture.app_data.join("retained-source/captures.sqlite"),
             StoreLimits::default(),
         )
         .unwrap();

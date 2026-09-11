@@ -733,7 +733,7 @@ fn primary_source_invalid_investigation_reference_blocks_forgetting() {
     assert!(primary_source::preview(&state, &source.source_id).is_err());
     assert!(primary_source::forget(&state, &source.source_id, &preview.fingerprint).is_err());
     let captures = source_capture::CaptureStore::open(
-        app_data.join("retained-source/captures.sqlite"),
+        &app_data.join("retained-source/captures.sqlite"),
         source_capture::StoreLimits::default(),
     )
     .unwrap();

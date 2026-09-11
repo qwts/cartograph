@@ -645,7 +645,6 @@ fn stop<R: tauri::Runtime>(
 mod tests {
     use super::*;
     use adapters_lang_ts::captured;
-    use core_graph::GraphStore;
     use core_prov::{ConfidenceTier, Tier};
     use llm::bounded::{AuthorizedBoundedCompletion, ProviderProfile, ReportedUsage};
     use llm::{Embedding, ProviderCaps, ProviderError};

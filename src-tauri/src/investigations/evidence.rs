@@ -34,7 +34,9 @@ impl EvidenceGuards {
             let Some(binding) = &selected.binding else {
                 continue;
             };
-            if !sources.contains_key(&binding.repo_key) {
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                sources.entry(binding.repo_key.clone())
+            {
                 let source = state
                     .sources
                     .lock()
@@ -42,7 +44,7 @@ impl EvidenceGuards {
                     .get_by_repo(&binding.repo_key)
                     .map_err(|_| HostError::Operational)?
                     .ok_or(HostError::SourceUnavailable)?;
-                sources.insert(binding.repo_key.clone(), source);
+                entry.insert(source);
             }
             let source = sources
                 .get(&binding.repo_key)

@@ -8,7 +8,7 @@ pub(crate) fn emit_changed<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     detail: &InvestigationDetail,
 ) {
-    #[derive(Serialize)]
+    #[derive(Clone, Serialize)]
     struct Invalidation<'a> {
         investigation_id: &'a str,
         revision: u64,
