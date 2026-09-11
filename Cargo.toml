@@ -35,7 +35,7 @@ serde_json = "1"
 thiserror = "2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 blake3 = "1"
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
 usearch = { version = "2.26", default-features = false }
 regex = "1"
 wasmtime = { version = "48", features = ["cranelift"] }

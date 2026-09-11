@@ -559,6 +559,46 @@ need not share one ID. **Fail:** transport-local task copies disagree, required
 metadata is missing, or task identity/results are lost. Retain the request/status
 transcripts, durations, task records, and restart evidence.
 
+## MT-H4-02 — Controlled local specialist investigation (AC-0191, T-0191)
+
+**Increment #404. Procedure: UNEXECUTED. H4/H5 remain PLANNED.**
+
+Prerequisites: a reachable loopback Ollama runtime and pinned model; production
+coordinator/source-reader/bounded-provider integration; a pinned captured
+TypeScript fixture with an independently reviewed expected answer kept outside
+all model inputs. Record runtime/model identity and fixture/capture hashes before
+starting. Do not provision cloud access as a substitute for this local procedure.
+
+1. Start a Domain analyst investigation over that fixture with a scoped question.
+   Record its durable task ID, request-to-ID latency, immutable specialist/prompt,
+   provider/model, graph/scope snapshot and declared limits. Retrieve ordered
+   events while the actual provider chooses query, evidence-read and finish steps.
+2. Independently inspect the supplied input ledger and saved citations against the
+   retained exact source occurrences. Compare each finding to the withheld
+   expected answer; record unsupported claims, omissions and coverage limitations.
+   Check raw source replay is absent and all generated findings remain T3/weak.
+3. Run an Evidence auditor follow-up against the selected parent's saved result.
+   Verify its history retains original scope, status, revision and uncertainty;
+   no current-source lookup silently replaces the parent's historical basis.
+4. Restart the app and reopen both task IDs and their historical citations. Change
+   or remove the checkout, and verify retained source is still the cited source.
+   Use a disposable capture to verify forgetting reports unavailability without
+   changing the saved finding or opening current source.
+5. Record actual calls, tool actions, read attempts, validation bytes, generated
+   token reservations, provider-reported usage (or unknown), elapsed time and any
+   limits/failures. Retain the journal and independent citation review on #404.
+
+**Pass:** the actual local model drives the production query/read/finish loop,
+results are evidence-supported within explicit coverage, and durable identity and
+citations survive restart and source changes. **Fail:** scripted/fabricated output
+substitutes for a model run, an oracle enters model input, source or authority is
+silently rebound, limits are bypassed, or unknown outcomes are replayed.
+
+A production-module harness run may establish coordinator/local-provider evidence
+with separately CI-tested UI behavior; it is not native-app or external-MCP
+end-to-end evidence. MT-H4-01 and all H5 cross-ingress procedures remain unexecuted
+until their actual prerequisites and steps are run.
+
 ## MT-H5-01 — ACP capabilities, environment, and egress (AC-0111, T-0111)
 
 **Gates: H4–H5 PLANNED. Procedure: UNEXECUTED.**

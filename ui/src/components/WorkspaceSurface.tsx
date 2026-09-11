@@ -20,6 +20,7 @@ export interface WorkspaceSurfaceProps {
   onProvenance: () => void;
   /** Open an artifact in the Spec Workbench. */
   onOpenArtifact: () => void;
+  onInvestigate?: () => void;
 }
 
 /** The landing's artifact cards (handoff §Workspace): matched to the spec
@@ -62,6 +63,7 @@ export function WorkspaceSurface({
   onTriageGaps,
   onProvenance,
   onOpenArtifact,
+  onInvestigate,
 }: WorkspaceSurfaceProps) {
   const recovered = findings !== null && findings.graph_facts > 0;
   const repoLabel = createRepositoryLabeler(systemContents);
@@ -119,6 +121,11 @@ export function WorkspaceSurface({
           {recovered ? 'Re-ingest' : 'Connect a target'}
         </button>
       </header>
+
+      {onInvestigate && <div className="workspace-investigation-entry">
+        <div><h3>Investigate this system</h3><p className="muted">Ask the Domain analyst or Evidence auditor a scoped question. Inspect their tools, citations and limitations.</p></div>
+        <button type="button" onClick={onInvestigate}>Open investigations</button>
+      </div>}
 
       {systemContents && systemContents.length > 0 && (
         // #162: host labels identify every repo contributing facts to the system.

@@ -41,6 +41,12 @@ and findings without inventing graph edges or upgrading recovered facts. Tool,
 byte, output, time and consent boundaries are explicit. The new bounded provider
 transport also needs real TLS and body-size/stop-condition validation.
 
+Replay admission distinguishes complete source excerpts from individual graph
+metadata scalars: both use the 48-scalar window, while only source excerpts and
+supplied prior-finding text reject complete short items. Short graph identifiers
+and literals remain usable in ordinary answers; secret scanning is unchanged.
+This is exact-copy protection, not semantic declassification.
+
 The implementation adds a substantive coordinator and app surface. Whole-graph
 copying remains costly, cancellation cannot promise remote inference termination,
 and RAM-only inputs constrain restart to explicit interruption/reconciliation.

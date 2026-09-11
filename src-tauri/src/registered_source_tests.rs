@@ -22,6 +22,7 @@ pub(crate) fn app_state(app_data: &Path) -> AppState {
     AppState {
         graph: Mutex::new(SqliteGraphStore::open(app_data.join("graph.db")).unwrap()),
         jobs: Mutex::new(JobStore::open(&state_path).unwrap()),
+        investigations: crate::investigations::InvestigationRuntime::default(),
         job_execution_locks: crate::job_execution_host_tests::locks(&state_path),
         findings: Mutex::new(findings),
         settings: Mutex::new(settings::SettingsStore::open(&state_path).unwrap()),

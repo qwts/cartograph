@@ -100,7 +100,11 @@ visited invalid selections and changed prior associations stop acquisition expli
 
 A query page is admitted as a whole or fails its bound; do not silently skip a large
 fact in favor of a later fact. Record exact fact digests, present/absent source
-associations, query identity and the returned scope/count/continuation information.
+associations, query identity and the returned scope/count/continuation information. Query payloads also expose
+bounded evidence options with each original role/index and source reference so a
+specialist can discover nested occurrences rather than guess them. The complete
+context plus inventory envelope must fit the query page byte limit. Source receipt
+metadata does not claim that retained bytes are currently available.
 Whole-graph copy/comparison is not constant-cost and is separate from the query
 response budget. A bounded coherent reader enforces the graph row/byte ceilings,
 SQL type and raw-body byte preflight before loading bodies, bounded JSON depth/value
@@ -125,6 +129,9 @@ Charge each attempted read and the full captured file length, including repeated
 reads of one file. Commit each admitted input-ledger revision and its actual copied
 receipt-reference index while acquisition/retention guards remain held; pending
 inputs, including uncited source, must affect a concurrent retention preview.
+Because selected receipt identities enter the model ledger even before a source
+read, the ledger explicitly records registered source/repo/receipt references for
+every selected present binding; the retention index includes these too.
 Source and retention leases end before every model call or consent wait. Retained bytes may subsequently be forgotten. A finished model
 response is admitted against the last owned input ledger, never against a fresh
 source read; completed history survives later reingest/forgetting/cancellation.
@@ -160,8 +167,18 @@ Execution completion and knowledge completeness are independent fields.
 
 Apply source-redaction/replay admission to model-authored prose against every
 supplied source/context string, including uncited items and supplied prior findings.
-Visit individual graph string values and copied source items, not only the outer
-serialized JSON; preserve the existing bounded replay thresholds. Required typed
+Visit individual graph string values/keys and copied source items, not only the
+outer serialized JSON. Raw source excerpts and supplied prior-finding text retain
+the existing 48 non-whitespace scalar window plus complete-short-item rejection.
+For the explicit parent-history envelope, inspect individual saved finding titles,
+statements and limitations inside its JSON; a serialized wrapper must not weaken
+short-item protection. Preserve the parent status and revision as metadata.
+Graph metadata uses the 48-scalar window without complete-short-scalar rejection:
+short identifiers/literals such as a symbol named a may appear in ordinary prose.
+Otherwise one character could prohibit almost every English answer. Secret
+redaction still applies to all output; this permits short graph metadata, not raw
+source-excerpt copying, and is not semantic or encoded-text declassification.
+Required typed
 citation/reference fields instead undergo exact membership/shape validation: those
 fields must reproduce admitted IDs and are not model prose. No prose field becomes
 exempt merely by containing a reference. Validate before durable writes;

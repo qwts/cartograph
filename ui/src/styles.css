@@ -3850,3 +3850,81 @@ button.register-row:hover {
 .source-retention { margin-top: 1.5rem; }
 .source-retention li { margin: .75rem 0; overflow-wrap: anywhere; }
 .source-retention [role="group"] { border: 1px solid var(--border, #d7dce4); padding: 1rem; margin-top: 1rem; }
+
+/* SPEC-10: investigations extend the workspace using the production handoff tokens. */
+.workspace-investigation-entry, .investigation-heading {
+  display: flex; align-items: start; justify-content: space-between; flex-wrap: wrap; gap: .8rem;
+}
+.workspace-investigation-entry {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 1rem;
+}
+.workspace-investigation-entry h3 { margin-bottom: .4rem; }
+.investigations-surface { display: grid; gap: 1.2rem; min-width: 0; }
+.investigations-surface h2 { font-size: 1.4rem; margin-bottom: .35rem; }
+.investigations-surface h3 { font-size: .95rem; }
+.investigations-surface h4 { font-size: .85rem; }
+.investigations-surface p, .investigations-surface li { font-size: .8rem; line-height: 1.55; }
+.investigations-surface code { font-family: var(--font-mono); font-size: .74rem; overflow-wrap: anywhere; }
+.investigation-compose, .investigation-detail, .investigation-history {
+  min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 1rem;
+}
+.investigation-compose { display: grid; gap: .8rem; }
+.investigation-compose fieldset { border: 0; padding: 0; min-width: 0; }
+.investigation-compose legend { margin-bottom: .5rem; font-size: .75rem; color: var(--text-muted); }
+.investigation-specialists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
+.investigation-specialist {
+  display: flex; gap: .7rem; align-items: start; padding: .9rem; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-alt);
+}
+.investigation-specialist.selected { border-color: var(--accent); background: rgb(171 199 255 / 6%); }
+.investigation-specialist > span { display: grid; gap: .35rem; font-size: .78rem; }
+.investigation-specialist input { margin-top: .2rem; accent-color: var(--accent); }
+.investigation-specialist code { color: var(--tier-inferred-weak); }
+.investigation-form-row { display: flex; align-items: end; flex-wrap: wrap; gap: .8rem; }
+.investigation-compose label:not(.investigation-specialist) { display: grid; gap: .4rem; font-size: .76rem; }
+.investigation-compose select, .investigation-compose input:not([type="radio"]), .investigation-compose textarea {
+  padding: .55rem .65rem; font: inherit; color: var(--text); background: var(--surface-alt);
+  border: 1px solid var(--border); border-radius: var(--radius-control); min-width: 0;
+}
+.investigation-compose textarea { width: 100%; resize: vertical; min-height: 5rem; }
+.investigation-compose button[type="submit"] { justify-self: start; }
+.investigation-anchor { flex: 1; min-width: 12rem; }
+.investigation-layout { display: grid; grid-template-columns: minmax(13rem, 27%) minmax(0, 1fr); gap: 1rem; align-items: start; }
+.investigation-history > ul, .investigation-events, .investigation-findings { list-style: none; padding: 0; }
+.investigation-history > ul { display: grid; gap: .6rem; margin: .8rem 0; }
+.investigation-history-item {
+  width: 100%; text-align: left; display: grid; gap: .25rem; white-space: normal; overflow-wrap: anywhere;
+  background: var(--surface-alt); color: var(--text-body); border: 1px solid var(--border-dim); padding: .75rem;
+}
+.investigation-history-item strong { font-size: .8rem; }
+.investigation-history-item span, .investigation-history-item time { font-size: .69rem; color: var(--text-muted); }
+.investigation-history-item.selected { border-color: var(--accent); }
+.investigation-detail { display: grid; gap: .8rem; }
+.investigation-detail > .investigation-heading h3 { margin-bottom: .35rem; }
+.investigation-section { padding-top: .9rem; border-top: 1px solid var(--border-dim); display: grid; gap: .6rem; min-width: 0; }
+details.investigation-section { display: block; }
+.investigation-section summary { cursor: pointer; font-size: .78rem; color: var(--accent); }
+.investigation-section details p, details.investigation-section p { margin-top: .4rem; }
+.investigation-events { display: grid; gap: .85rem; }
+.investigation-events li { display: flex; gap: .75rem; align-items: start; }
+.investigation-events li > div { min-width: 0; }
+.investigation-sequence { font-family: var(--font-mono); color: var(--text-muted); min-width: 1.6rem; padding: .12rem .3rem; border: 1px solid var(--border); border-radius: var(--radius-badge); }
+.investigation-tool { margin-left: .5rem; color: var(--accent); }
+.investigation-actions, .investigation-citations { display: flex; flex-wrap: wrap; gap: .6rem; }
+.investigation-citations button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; font-size: .7rem; }
+.investigation-findings { display: grid; gap: .8rem; }
+.investigation-findings > li { display: grid; gap: .5rem; padding: .85rem; background: var(--surface-alt); border: 1px dashed rgb(242 201 76 / 40%); border-radius: var(--radius-control); }
+.investigation-claim { font-size: .67rem; color: var(--tier-inferred-weak); }
+.investigation-statement { white-space: pre-wrap; overflow-wrap: anywhere; }
+.investigation-limitations { padding-left: 1.2rem; color: var(--text-muted); }
+.investigation-notice { background: rgb(242 201 76 / 6%); padding: .7rem; border-left: 2px solid var(--tier-inferred-weak); }
+.investigation-citation-inspector { display: grid; gap: .5rem; padding: .9rem; background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-control); }
+.investigation-citation-inspector pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: .75rem; }
+.investigation-citation-inspector p { overflow-wrap: anywhere; }
+@media (max-width: 1050px) {
+  .investigation-layout { grid-template-columns: 1fr; }
+  .investigation-history > ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 650px) {
+  .investigation-specialists, .investigation-history > ul { grid-template-columns: 1fr; }
+}
