@@ -76,10 +76,10 @@ describe('durable investigation observations (AC-0190)', () => {
       }
       return response(command, args);
     });
-    await useInvestigationStore.getState().start({ specialist_id: 'domain-analyst@1', question: 'Inspect this scope.',
+    await useInvestigationStore.getState().start({ specialist_id: 'domain-analyst@2', question: 'Inspect this scope.',
       scope: { type: 'all' }, provider_mode: 'local', limit_profile: 'investigation-v1' });
     expect(useInvestigationStore.getState().pendingStart).toEqual(starts[0]);
-    await useInvestigationStore.getState().start({ specialist_id: 'evidence-auditor@1', question: 'Cannot replace pending start.',
+    await useInvestigationStore.getState().start({ specialist_id: 'evidence-auditor@2', question: 'Cannot replace pending start.',
       scope: { type: 'all' }, provider_mode: 'local', limit_profile: 'investigation-v1' });
     expect(starts).toHaveLength(1);
     await useInvestigationStore.getState().retryStart();

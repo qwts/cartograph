@@ -19,7 +19,7 @@ exists, not that its AC or delivery gate has passed.
 
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
-| T-0180 | AC-0180 | rust | agents::investigation_specialists_are_versioned_distinct_and_propose_only, agents::investigation_finish_rejects_invented_citations_and_never_upgrades_claims | Immutable specialist identity and inferred-only admission |
+| T-0180 | AC-0180 | rust | agents::investigation_specialists_are_versioned_distinct_and_propose_only, agents::investigation_discovery_revision_preserves_original_specialist_identity, agents::investigation_finish_rejects_invented_citations_and_never_upgrades_claims | Immutable @1 history, @2 discovery guidance and inferred-only admission |
 | T-0181 | AC-0181 | rust | app::investigation_start_deduplicates_concurrently_before_availability_and_capacity, app::investigation_execution_attachment_rolls_back_job_claim_on_storage_failure | Concurrent deduplication, transactional attachment and lost acknowledgments |
 | T-0182 | AC-0182 | rust | core-graph::bounded_source_selection_is_coherent_across_receipt_and_graph_publication, core-graph::bounded_source_union_rechecks_live_graph_limits_and_preserves_selection_states, app::investigation_worker_queries_reads_captured_definition_and_persists_cited_finish | Bounded coherent snapshot and actual host acquisition; scripted host coverage |
 | T-0183 | AC-0183 | rust | app::investigation_worker_queries_reads_captured_definition_and_persists_cited_finish, app::investigation_tool_and_repeated_file_validation_reservations_cannot_reset | Captured v2 source after checkout deletion and cumulative validation charges; scripted host coverage |

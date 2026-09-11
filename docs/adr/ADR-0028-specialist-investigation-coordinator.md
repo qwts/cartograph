@@ -22,6 +22,14 @@ selection. Ship two honest T3 specialists and keep every finding InferredWeak.
 Use a closed JSON action protocol over a separately bounded provider API; do not
 pretend this is native provider tools or an ACP runtime.
 
+Treat specialist prompt improvements as new immutable definitions. The first
+real-local-provider observation returned an insufficient-evidence finish before
+any discovery. New @2 defaults therefore explain that initial empty input requires
+host-executed query/read actions; @1 definitions and saved task identities remain
+unchanged. Keep the actual failed observation as evidence and evaluate @2 in a
+separate run. The host does not manufacture a tool action or reject an otherwise
+valid insufficient-evidence finish to force a successful benchmark.
+
 Use durable idempotent task identity and ordered events, exact per-step cloud
 consent, private execution fencing and explicit unknown outcomes. Preserve complete
 admitted findings against their original transient input even after cancellation.

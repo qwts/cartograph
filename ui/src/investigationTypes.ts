@@ -6,7 +6,7 @@ import type { EgressPreview } from './components/EgressConsentDialog';
 import type { FactKey } from './primarySourceStore';
 import type { EvidenceRef, TaskSourceBasisV2 } from './store';
 
-export type SpecialistId = 'domain-analyst@1' | 'evidence-auditor@1';
+export type SpecialistId = 'domain-analyst@1' | 'evidence-auditor@1' | 'domain-analyst@2' | 'evidence-auditor@2';
 export type InvestigationProviderMode = 'local' | 'cloud';
 /** The existing context-hub QueryScope wire shape, not a filesystem scope. */
 export type InvestigationScope = { type: 'all' } |

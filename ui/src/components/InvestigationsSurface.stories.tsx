@@ -30,7 +30,7 @@ export const ScopedSpecialistQuestion: Story = {
     await userEvent.selectOptions(canvas.getByLabelText('Hops'), '2');
     await userEvent.type(canvas.getByLabelText('Question'), 'Which evidence supports this rule?');
     await userEvent.click(canvas.getByRole('button', { name: 'Start investigation' }));
-    await expect(args.state.start).toHaveBeenCalledWith({ specialist_id: 'evidence-auditor@1',
+    await expect(args.state.start).toHaveBeenCalledWith({ specialist_id: 'evidence-auditor@2',
       question: 'Which evidence supports this rule?', scope: { type: 'neighborhood', anchor: 'rule:stock', hops: 2 },
       provider_mode: 'local', limit_profile: investigationCatalog.limits.profile });
     await expect(canvas.getByText('Findings cover the inspected scope; knowledge remains partial.')).toBeVisible();

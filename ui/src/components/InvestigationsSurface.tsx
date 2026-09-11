@@ -20,7 +20,7 @@ export interface InvestigationsSurfaceProps {
 
 /** Props/callbacks only: the coordinator and dedicated store own task lifecycle. */
 export function InvestigationsSurface({ state, anchors, canStart }: InvestigationsSurfaceProps) {
-  const [specialistId, setSpecialistId] = useState<SpecialistId>('domain-analyst@1');
+  const [specialistId, setSpecialistId] = useState<SpecialistId>('domain-analyst@2');
   const [providerMode, setProviderMode] = useState<InvestigationProviderMode>('local');
   const [question, setQuestion] = useState('');
   const [scopeType, setScopeType] = useState<'all' | 'neighborhood'>('all');
@@ -81,7 +81,7 @@ export function InvestigationsSurface({ state, anchors, canStart }: Investigatio
       </p>}
       <label className="investigation-question">{parent ? 'Follow-up question' : 'Question'}
         <textarea ref={questionRef} value={question} disabled={locked} maxLength={2048} rows={3}
-          placeholder={specialistId === 'domain-analyst@1' ? 'What business behavior is evidenced in this scope, and what remains unknown?' : 'Which claims have supporting evidence, and where is that evidence incomplete?'}
+          placeholder={specialistId.startsWith('domain-analyst@') ? 'What business behavior is evidenced in this scope, and what remains unknown?' : 'Which claims have supporting evidence, and where is that evidence incomplete?'}
           onChange={(event) => setQuestion(event.target.value)} />
       </label>
       <p className={questionBytes > 2048 ? 'error-text' : 'muted'}>{questionBytes} / 2,048 UTF-8 bytes. Scope uses the recovered graph at preparation time.</p>

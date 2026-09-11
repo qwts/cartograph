@@ -7,10 +7,10 @@ import type {
 export const investigationCatalog: InvestigationCatalog = {
   schema_version: 1,
   specialists: [
-    { id: 'domain-analyst@1', name: 'Domain analyst', version: 1, prompt_fingerprint: 'prompt:domain-v1',
+    { id: 'domain-analyst@2', name: 'Domain analyst', version: 2, prompt_fingerprint: 'prompt:domain-v2',
       purpose: 'Explain business behavior and its unresolved dependencies.',
       operations: ['query_context', 'read_evidence', 'finish'], tier: 'Agentic', confidence_tier: 'InferredWeak' },
-    { id: 'evidence-auditor@1', name: 'Evidence auditor', version: 1, prompt_fingerprint: 'prompt:audit-v1',
+    { id: 'evidence-auditor@2', name: 'Evidence auditor', version: 2, prompt_fingerprint: 'prompt:audit-v2',
       purpose: 'Inspect the support and limits of recovered claims.',
       operations: ['query_context', 'read_evidence', 'finish'], tier: 'Agentic', confidence_tier: 'InferredWeak' },
   ],
@@ -43,7 +43,7 @@ export const investigationCitations: InvestigationCitation[] = [
 
 export function investigationDetail(id = 'inv-fixture', overrides: Partial<InvestigationDetail> = {}): InvestigationDetail {
   return { schema_version: 1, investigation_id: id, conversation_id: `conversation-${id}`, parent_id: null,
-    job_id: 91, specialist_id: 'domain-analyst@1', question: 'What stock behavior is supported, and what remains unknown?',
+    job_id: 91, specialist_id: 'domain-analyst@2', question: 'What stock behavior is supported, and what remains unknown?',
     scope: { type: 'neighborhood', anchor: 'rule:stock', hops: 1 }, provider_mode: 'local',
     status: 'completed', revision: 9, cancel_requested: false, invocation_pending: false,
     actions: { can_cancel: false, can_follow_up: true }, graph_snapshot_id: 'snapshot:original',

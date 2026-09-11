@@ -13,13 +13,24 @@ context and read evidence, and retrieves cited findings and the task history.
 The same host coordinator owns application actions and future transport adapters.
 This is an actual bounded tool loop, not an edge-resolution task disguised as chat.
 
-Ship domain-analyst@1 (Domain analyst) and evidence-auditor@1 (Evidence auditor).
+Ship domain-analyst@2 (Domain analyst) and evidence-auditor@2 (Evidence auditor).
 Both are T3, have an InferredWeak ceiling, and share the same enforced tool set.
 Their immutable definitions include role/prompt version, prompt fingerprint,
 purpose, supported operations and limits. Persist the exact definition and
 configured provider/model identity used by each task, plus separately observed
 response identity when available. A model tag is not a weight-content attestation.
 Do not advertise T0/T1/T2 agent reasoning or implemented architecture metrics.
+
+Version 2 clarifies the host-mediated discovery loop: the first invocation has no
+query pages or copied source because acquisition has not started. The specialist
+should return a query action, inspect its results and request relevant original
+evidence before concluding that support is insufficient. Empty initial input is
+not an empty search result. The host still admits a valid insufficient-evidence
+finish without inventing tool activity or retrying it; such a run does not satisfy
+the controlled query/read/finish acceptance case. The original @1 definitions stay
+byte-for-byte reproducible and supported for saved history and explicit old-version
+requests. The catalog and new app requests select @2; changing a default never
+reinterprets an existing task's definition or prompt fingerprint.
 
 The initial scope is the app's recovered system, optionally restricted to a known
 fact neighborhood. It is not a named multi-project/domain isolation implementation.

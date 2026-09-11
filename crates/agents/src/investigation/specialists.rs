@@ -6,8 +6,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpecialistId {
     #[serde(rename = "domain-analyst@1")]
-    DomainAnalyst,
+    DomainAnalystV1,
     #[serde(rename = "evidence-auditor@1")]
+    EvidenceAuditorV1,
+    #[serde(rename = "domain-analyst@2")]
+    DomainAnalyst,
+    #[serde(rename = "evidence-auditor@2")]
     EvidenceAuditor,
 }
 
@@ -36,39 +40,55 @@ Queries select all or a neighborhood {"type":"neighborhood","anchor":"an exact i
 
 Claim kinds are implemented_behavior, documented_intent, inferred_interpretation and proposed_design. Up to 12 findings, each with 1..8 admitted citation IDs and 1..8 limitations. Title maximum160 UTF-8 bytes; statement2048; each limitation512. If no supported finding is possible, finish with findings:[], knowledge_completeness:"insufficient_evidence" and explicit limitations. Never claim complete project knowledge. You have at most8 model invocations and8 tool actions; consult the host's remaining budgets before choosing a step. A failed tool or provider does not authorize a hidden retry. Finish before exhausting the remaining calls."#;
 
+// Keep COMMON and the original role strings immutable for @1 history. A changed
+// workflow instruction gets its own definition identity, not a rewritten old ID.
+const DISCOVERY_V2: &str = "This is a multi-step host-executed tool protocol. Your returned query_context or read_evidence JSON is an action: the host executes it and invokes you again with its result. Initially context_pages, citations and evidence spans are deliberately empty because you have not requested them. Empty initial input is not an empty search result and is not a reason to finish. Start by returning a scoped query_context action. Then inspect its actual results and use read_evidence with a relevant original role/index to acquire source before making source-based claims. Report insufficient evidence only after relevant discovery cannot support a finding, or your remaining budget prevents more work. Do not invent evidence or issue actions the host does not support.\n\n";
+
 impl SpecialistId {
+    fn version(self) -> u32 {
+        match self {
+            Self::DomainAnalystV1 | Self::EvidenceAuditorV1 => 1,
+            Self::DomainAnalyst | Self::EvidenceAuditor => 2,
+        }
+    }
+
     pub fn prompt(self) -> String {
         let role = match self {
-            Self::DomainAnalyst => {
+            Self::DomainAnalyst | Self::DomainAnalystV1 => {
                 "Investigate the scoped question about business behavior, features and design intent. Distinguish observations from your interpretation. Domain boundaries require evidence; folders or languages alone do not establish a business domain."
             }
-            Self::EvidenceAuditor => {
+            Self::EvidenceAuditor | Self::EvidenceAuditorV1 => {
                 "Audit the support and limits of existing claims within the question's scope. Identify missing links, unsupported interpretations and unresolved design evidence. Do not mistake missing evidence in a searched subset for proof of absence across the project."
             }
         };
-        format!("{role}\n\n{COMMON}")
+        let discovery = if self.version() == 2 {
+            DISCOVERY_V2
+        } else {
+            ""
+        };
+        format!("{role}\n\n{discovery}{COMMON}")
     }
 
     pub fn definition(self) -> Result<InvestigationSpecialist, InvestigationError> {
         let prompt = self.prompt();
         let (name, purpose) = match self {
-            Self::DomainAnalyst => (
+            Self::DomainAnalyst | Self::DomainAnalystV1 => (
                 "Domain analyst",
                 "Investigate scoped business behavior, features and design evidence.",
             ),
-            Self::EvidenceAuditor => (
+            Self::EvidenceAuditor | Self::EvidenceAuditorV1 => (
                 "Evidence auditor",
                 "Audit claim support, coverage limitations and unresolved evidence.",
             ),
         };
         let fingerprint = crate::source_basis::domain_hash(
             b"cartograph:specialist-definition:v1\0",
-            &bounded_bytes(&(self, 1u32, &prompt), 16 * 1024)?,
+            &bounded_bytes(&(self, self.version(), &prompt), 16 * 1024)?,
         );
         Ok(InvestigationSpecialist {
             id: self,
             name: name.into(),
-            version: 1,
+            version: self.version(),
             prompt_fingerprint: fingerprint,
             purpose: purpose.into(),
             operations: vec![

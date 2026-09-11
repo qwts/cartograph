@@ -94,7 +94,52 @@ fn investigation_specialists_are_versioned_distinct_and_propose_only() {
             specialist.operations,
             ["query_context", "read_evidence", "finish"]
         );
-        assert_eq!(specialist.version, 1);
+        assert_eq!(specialist.version, 2);
+    }
+}
+
+#[test]
+fn investigation_discovery_revision_preserves_original_specialist_identity() {
+    // AC-0180: the first real-provider artifact must remain readable after a
+    // prompt improvement; old IDs must not acquire a different fingerprint.
+    let old = SpecialistId::DomainAnalystV1.definition().unwrap();
+    assert_eq!(old.version, 1);
+    assert_eq!(
+        old.prompt_fingerprint,
+        "ab952c9fe055e1fde7aa5ca3f1d7f60851b402021460fdbd9011a765e20967c3"
+    );
+    for (legacy, current, old_id, new_id) in [
+        (
+            SpecialistId::DomainAnalystV1,
+            SpecialistId::DomainAnalyst,
+            "domain-analyst@1",
+            "domain-analyst@2",
+        ),
+        (
+            SpecialistId::EvidenceAuditorV1,
+            SpecialistId::EvidenceAuditor,
+            "evidence-auditor@1",
+            "evidence-auditor@2",
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(legacy).unwrap(), old_id);
+        assert_eq!(serde_json::to_value(current).unwrap(), new_id);
+        let restored: SpecialistId = serde_json::from_value(serde_json::json!(old_id)).unwrap();
+        assert_eq!(restored.definition().unwrap(), legacy.definition().unwrap());
+        assert_ne!(
+            legacy.definition().unwrap().prompt_fingerprint,
+            current.definition().unwrap().prompt_fingerprint
+        );
+        assert!(
+            !legacy
+                .prompt()
+                .contains("Empty initial input is not an empty search result")
+        );
+        assert!(
+            current
+                .prompt()
+                .contains("Empty initial input is not an empty search result")
+        );
     }
 }
 
