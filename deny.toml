@@ -56,7 +56,13 @@ allow = [
 
 # Per-crate exceptions: a crate whose declared expression is not fully covered
 # by `allow`, but whose actual terms are acceptable. Add with justification.
-exceptions = []
+exceptions = [
+  # #404 / ADR-0028: rustls-platform-verifier's wasm32 certificate data.
+  # CDLA-Permissive-2.0 permits sharing with its agreement text; no general
+  # license allowance or advisory exception is introduced. The current macOS
+  # production targets use platform trust and do not distribute this package.
+  { name = "webpki-root-certs", version = "=1.0.9", allow = ["CDLA-Permissive-2.0"] },
+]
 
 [bans]
 multiple-versions = "warn"

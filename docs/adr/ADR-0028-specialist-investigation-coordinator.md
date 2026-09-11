@@ -41,6 +41,16 @@ and findings without inventing graph edges or upgrading recovered facts. Tool,
 byte, output, time and consent boundaries are explicit. The new bounded provider
 transport also needs real TLS and body-size/stop-condition validation.
 
+Verified TLS adds rustls-platform-verifier 0.7.0. Its wasm32 dependency
+webpki-root-certs 1.0.9 contains certificate data under
+[CDLA-Permissive-2.0](https://cdla.dev/permissive-2-0/), whose sharing condition
+requires including the agreement text. Add a cargo-deny exception scoped to that
+exact package/version for #404; keep the general license allow-list and advisory
+gates intact. The pinned macOS distribution targets use platform trust and do not
+include this wasm32 package, so their generated notices omit it. Adding a target
+that distributes these certificates requires carrying the agreement with that
+distribution and updating the target-specific notices before shipping.
+
 Replay admission distinguishes complete source excerpts from individual graph
 metadata scalars: both use the 48-scalar window, while only source excerpts and
 supplied prior-finding text reject complete short items. Short graph identifiers
