@@ -19,6 +19,18 @@ exists, not that its AC or delivery gate has passed.
 
 | T id | AC | Kind | Reference | Note |
 |------|----|------|-----------|------|
+| T-0180 | AC-0180 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0181 | AC-0181 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0182 | AC-0182 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0183 | AC-0183 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0184 | AC-0184 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0185 | AC-0185 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0186 | AC-0186 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0187 | AC-0187 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0188 | AC-0188 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0189 | AC-0189 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0190 | AC-0190 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
+| T-0191 | AC-0191 | reserved | — | H4 investigation increment #404; implementation and acceptance evidence pending |
 | T-0172 | AC-0172 | rust | app::legacy_preparation_scans_past_ten_unreadable_candidates, app::legacy_preparation_stops_at_sixty_four_attempts_and_reports_uninspected_tail, app::unused_captured_tail_guard_failure_does_not_abort_completed_candidate_prefix, app::unreadable_legacy_membership_failure_retains_exact_bounded_report, agents::prepared_selection_reports_omissions_and_unread_metadata_without_fake_facts, agents::prepared_admission_rejects_duplicate_memberships_and_invalid_legacy_spans | Separate metadata/read/output budgets, exact omissions and unread tails |
 | T-0173 | AC-0173 | rust | core-graph::source_selection_is_coherent_across_graph_and_receipt_publication, core-graph::source_selection_distinguishes_missing_absent_present_and_orders_unique_keys, core-graph::source_selection_keeps_malformed_and_orphan_associations_per_key, core-graph::source_selection_rejects_raw_key_budget_and_invalid_keys_before_graph_access, core-graph::source_selection_reader_preflights_sql_types_and_utf8_byte_lengths, core-graph::source_selection_global_failures_release_the_read_transaction, app::preparation_rejects_equal_fact_receipt_change_after_source_guards | One graph/association revision, distinct selection states, pre-read bounds and visited receipt recheck |
 | T-0174 | AC-0174 | rust | app::prepared_task_retains_original_bytes_after_checkout_change_deletion_and_restart, app::pinned_v2_nested_ranges_survive_current_binding_and_fact_removal, app::participating_corrupt_or_forgotten_capture_never_falls_back_to_readable_checkout, app::small_captured_task_spans_charge_the_complete_file_for_each_read, app::captured_task_refuses_ninth_file_validation_before_exceeding_128_mib | Actual captured TS producer, original strict spans, nested v2 occurrences, no fallback and full-file validation charges |
