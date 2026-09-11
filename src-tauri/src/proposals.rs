@@ -1,6 +1,6 @@
 //! Durable host-owned review transport and per-instance staging (SPEC-03).
 
-use agents::{AgentTask, BatchFailure, ProposalDecision, StagedProposal, StagedProposalPage};
+use agents::{BatchFailure, ProposalDecision, StagedProposal, StagedProposalPage};
 use serde::Serialize;
 use tauri::Manager;
 
@@ -59,11 +59,11 @@ pub(crate) struct StagedBatchOutcome {
 /// Run one host-assembled task at a time. The execution callback includes durable
 /// staging: storage errors stay failures and cannot enter the successful results.
 /// Cancellation is observed between instances; already completed results survive.
-pub(crate) fn run_staged_batch(
-    tasks: Vec<(String, Result<AgentTask, String>)>,
+pub(crate) fn run_staged_batch<T>(
+    tasks: Vec<(String, Result<T, String>)>,
     mut cancelled: impl FnMut() -> bool,
     mut progress: impl FnMut(usize, usize),
-    mut execute_and_stage: impl FnMut(&AgentTask) -> Result<StagedProposal, String>,
+    mut execute_and_stage: impl FnMut(&T) -> Result<StagedProposal, String>,
 ) -> StagedBatchOutcome {
     let total = tasks.len();
     let mut outcome = StagedBatchOutcome {
@@ -91,7 +91,7 @@ pub(crate) fn run_staged_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agents::{AgentBroker, AgentCandidate, AgentEvidence, ProposalStore};
+    use agents::{AgentBroker, AgentCandidate, AgentEvidence, AgentTask, ProposalStore};
     use core_graph::GraphStore;
     use core_prov::{ConfidenceTier, EvidenceRef};
     use llm::{

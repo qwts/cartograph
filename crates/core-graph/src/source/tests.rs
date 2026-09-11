@@ -521,3 +521,386 @@ fn association_schema_migrates_without_clearing_schema_four_facts_and_rejects_in
         );
     }
 }
+
+#[test]
+fn source_selection_distinguishes_missing_absent_present_and_orders_unique_keys() {
+    // AC-0173, AC-0177: missing facts differ from present unbound facts, directed
+    // keys remain distinct, and duplicates do not change deterministic ordering.
+    let mut store = SqliteGraphStore::open_in_memory().unwrap();
+    let (a, ae, b, be) = seed(&mut store);
+    let unbound = node("c");
+    store.put_node(&unbound).unwrap();
+    let mut unbound_edges = Vec::new();
+    for (destination, label) in [("c", "A"), ("b", "Z"), ("b", "A")] {
+        let edge = Edge {
+            src: "a".into(),
+            dst: destination.into(),
+            label: label.into(),
+            props: serde_json::json!({"direction": destination, "relation": label}),
+        };
+        store.put_edge(&edge).unwrap();
+        unbound_edges.push(edge);
+    }
+    let missing_node = FactKey::from_node(&node("missing"));
+    let missing_edge = FactKey::Edge {
+        source: "b".into(),
+        label: "A".into(),
+        destination: "a".into(),
+    };
+    let mut expected = BTreeMap::new();
+    for binding in [a, ae, b, be] {
+        expected.insert(
+            binding.fact.clone(),
+            FactSourceState::Present {
+                fact_digest: binding.emitted_fact_digest.clone(),
+                binding,
+            },
+        );
+    }
+    expected.insert(missing_node, FactSourceState::Missing);
+    expected.insert(missing_edge, FactSourceState::Missing);
+    expected.insert(
+        FactKey::from_node(&unbound),
+        FactSourceState::Absent {
+            fact_digest: node_digest(&unbound).unwrap(),
+        },
+    );
+    for edge in unbound_edges {
+        expected.insert(
+            FactKey::from_edge(&edge),
+            FactSourceState::Absent {
+                fact_digest: edge_digest(&edge).unwrap(),
+            },
+        );
+    }
+    let mut keys: Vec<_> = expected.keys().rev().cloned().collect();
+    keys.extend(keys.clone());
+    let selection = store.read_source_selection_snapshot(&keys).unwrap();
+    assert_eq!(selection.graph, store.read_snapshot().unwrap());
+    assert_eq!(
+        selection.selections,
+        expected
+            .into_iter()
+            .map(|(fact, state)| FactSourceSelection { fact, state })
+            .collect::<Vec<_>>()
+    );
+    let empty = store.read_source_selection_snapshot(&[]).unwrap();
+    assert_eq!(empty.graph, selection.graph);
+    assert!(empty.selections.is_empty());
+    assert!(store.conn.is_autocommit());
+}
+
+#[test]
+fn source_selection_rejects_raw_key_budget_and_invalid_keys_before_graph_access() {
+    // AC-0173: the raw request bound precedes deduplication and database access;
+    // malformed keys do not become missing facts, even with a broken schema.
+    let mut store = SqliteGraphStore::open_in_memory().unwrap();
+    let (a, _, _, _) = seed(&mut store);
+    let maximum = vec![a.fact.clone(); MAX_SOURCE_SELECTION_KEYS];
+    assert_eq!(
+        store
+            .read_source_selection_snapshot(&maximum)
+            .unwrap()
+            .selections
+            .len(),
+        1
+    );
+    store
+        .conn
+        .execute_batch("DROP TRIGGER source_binding_node_update")
+        .unwrap();
+    assert!(matches!(
+        store.read_source_selection_snapshot(&vec![a.fact; MAX_SOURCE_SELECTION_KEYS + 1]),
+        Err(GraphError::SourceBinding("too many source selection keys"))
+    ));
+    for invalid in [
+        FactKey::Node { id: String::new() },
+        FactKey::Node {
+            id: "x".repeat(MAX_ID_BYTES + 1),
+        },
+        FactKey::Edge {
+            source: "a".into(),
+            label: "\0".into(),
+            destination: "a".into(),
+        },
+    ] {
+        assert!(matches!(
+            store.read_source_selection_snapshot(&[invalid]),
+            Err(GraphError::SourceBinding("invalid bounded identity"))
+        ));
+    }
+    assert!(matches!(
+        store.read_source_selection_snapshot(&maximum),
+        Err(GraphError::SourceBinding("incompatible association schema"))
+    ));
+    assert!(store.conn.is_autocommit());
+}
+
+#[test]
+fn source_selection_is_coherent_across_graph_and_receipt_publication() {
+    // AC-0173, AC-0177: another WAL connection commits during the real read
+    // transaction, between graph halves or between selected binding rows. Even
+    // equal facts with new receipts must not mix old and new association states.
+    for after_nodes in [false, true] {
+        for change_facts in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("graph.db");
+            let mut store = SqliteGraphStore::open(&path).unwrap();
+            let (a, ae, b, be) = seed(&mut store);
+            let keys = [a.fact, ae.fact, b.fact, be.fact];
+            let before = store.read_source_selection_snapshot(&keys).unwrap();
+            let mut writer = SqliteGraphStore::open(&path).unwrap();
+            let mut changed_node = node("a");
+            let mut changed_edge = edge("a");
+            if change_facts {
+                changed_node.props["name"] = "new fact".into();
+                changed_edge.props["observation"] = "new observation".into();
+            }
+            let replacement_node = node_binding(&changed_node, "repo/a", "new capture");
+            let mut replacement_edge = edge_binding(&changed_edge, "repo/a");
+            replacement_edge.receipt_id = replacement_node.receipt_id.clone();
+            let expected_node = replacement_node.clone();
+            let expected_edge = replacement_edge.clone();
+            let publish = move || {
+                let expected = writer.read_snapshot()?;
+                let patch = if change_facts {
+                    GraphPatch {
+                        upsert_nodes: vec![changed_node],
+                        upsert_edges: vec![changed_edge],
+                        ..GraphPatch::default()
+                    }
+                } else {
+                    GraphPatch::default()
+                };
+                assert!(writer.apply_patch_with_source_bindings_if_snapshot_matches(
+                    &expected,
+                    &patch,
+                    "repo/a",
+                    &[replacement_node, replacement_edge],
+                )?);
+                Ok(())
+            };
+            if after_nodes {
+                store.set_snapshot_after_nodes_hook(publish);
+            } else {
+                store.set_source_binding_after_lookup_hook(publish);
+            }
+            assert_eq!(store.read_source_selection_snapshot(&keys).unwrap(), before);
+            assert!(store.conn.is_autocommit());
+            let after = store.read_source_selection_snapshot(&keys).unwrap();
+            assert_eq!(after.graph == before.graph, !change_facts);
+            assert_ne!(after.selections, before.selections);
+            for binding in [expected_node, expected_edge] {
+                assert!(after.selections.contains(&FactSourceSelection {
+                    fact: binding.fact.clone(),
+                    state: FactSourceState::Present {
+                        fact_digest: binding.emitted_fact_digest.clone(),
+                        binding,
+                    },
+                }));
+            }
+            for selection in before.selections {
+                if matches!(&selection.state, FactSourceState::Present { binding, .. } if binding.repo_key == "repo/b")
+                {
+                    assert!(after.selections.contains(&selection));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn source_selection_keeps_malformed_and_orphan_associations_per_key() {
+    // AC-0173, AC-0177: invalid metadata cannot become valid absence, including
+    // orphan rows left by a connection with foreign-key enforcement disabled.
+    for corruption in ["large", "digest", "nul", "utf8", "orphan"] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph.db");
+        let mut store = SqliteGraphStore::open(&path).unwrap();
+        let (a, ae, b, _) = seed(&mut store);
+        let writer = Connection::open(&path).unwrap();
+        writer.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        writer
+            .pragma_update(None, "ignore_check_constraints", "ON")
+            .unwrap();
+        match corruption {
+            "large" => {
+                let oversized = "SOURCE_CANARY_".repeat(100_000);
+                writer
+                    .execute(
+                        "UPDATE source_node_bindings SET receipt_id = ?1 WHERE node_id = 'a'",
+                        [&oversized],
+                    )
+                    .unwrap();
+                writer
+                    .execute(
+                        "UPDATE source_edge_bindings SET repo_key = ?1 WHERE source = 'a'",
+                        [&oversized],
+                    )
+                    .unwrap();
+            }
+            "digest" => {
+                writer.execute("UPDATE source_node_bindings SET emitted_fact_digest = ?1 WHERE node_id = 'a'", [node_digest(&node("different")).unwrap()]).unwrap();
+                writer.execute("UPDATE source_edge_bindings SET emitted_fact_digest = ?1 WHERE source = 'a'", ["x".repeat(72)]).unwrap();
+            }
+            "nul" => {
+                writer.execute_batch("UPDATE source_node_bindings SET repo_key = char(0) WHERE node_id = 'a'; UPDATE source_edge_bindings SET receipt_id = char(0) WHERE source = 'a'").unwrap();
+            }
+            "utf8" => {
+                writer.execute_batch("UPDATE source_node_bindings SET repo_key = CAST(x'80' AS TEXT) WHERE node_id = 'a'; UPDATE source_edge_bindings SET receipt_id = CAST(x'80' AS TEXT) WHERE source = 'a'").unwrap();
+            }
+            "orphan" => {
+                writer
+                    .execute_batch(
+                        "DELETE FROM edges WHERE src = 'a'; DELETE FROM nodes WHERE id = 'a'",
+                    )
+                    .unwrap();
+                writer.execute("INSERT INTO source_node_bindings(node_id, repo_key, receipt_id, emitted_fact_digest) VALUES ('a', ?1, ?2, ?3)", params![a.repo_key, a.receipt_id, a.emitted_fact_digest]).unwrap();
+                writer.execute("INSERT INTO source_edge_bindings(source, label, destination, repo_key, receipt_id, emitted_fact_digest) VALUES ('a', 'GOVERNS', 'a', ?1, ?2, ?3)", params![ae.repo_key, ae.receipt_id, ae.emitted_fact_digest]).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let selection = store
+            .read_source_selection_snapshot(&[a.fact.clone(), ae.fact.clone(), b.fact.clone()])
+            .unwrap();
+        for binding in [a, ae] {
+            assert!(selection.selections.contains(&FactSourceSelection {
+                fact: binding.fact,
+                state: FactSourceState::Invalid {
+                    fact_digest: (corruption != "orphan").then_some(binding.emitted_fact_digest),
+                },
+            }));
+        }
+        assert!(selection.selections.contains(&FactSourceSelection {
+            fact: b.fact.clone(),
+            state: FactSourceState::Present {
+                fact_digest: b.emitted_fact_digest.clone(),
+                binding: b,
+            },
+        }));
+        assert!(!format!("{:?}", selection.selections).contains("SOURCE_CANARY_"));
+        assert!(store.conn.is_autocommit());
+    }
+}
+
+#[test]
+fn source_selection_reader_preflights_sql_types_and_utf8_byte_lengths() {
+    // AC-0173: exercise the bounded SQL reader against malformed storage types
+    // independently of STRICT-schema admission. Type and byte bounds precede
+    // returned field bodies; Unicode character counts cannot undercount bytes.
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch("CREATE TABLE source_node_bindings (node_id TEXT PRIMARY KEY, repo_key, receipt_id, emitted_fact_digest); CREATE TABLE source_edge_bindings (source TEXT, label TEXT, destination TEXT, repo_key, receipt_id, emitted_fact_digest)").unwrap();
+    let a = node_binding(&node("a"), "repo/a", "a");
+    let ae = edge_binding(&edge("a"), "repo/a");
+    connection
+        .execute(
+            "INSERT INTO source_node_bindings VALUES ('a', ?1, ?2, ?3)",
+            params![a.repo_key, a.receipt_id, a.emitted_fact_digest],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO source_edge_bindings VALUES ('a', 'GOVERNS', 'a', ?1, ?2, ?3)",
+            params![ae.repo_key, ae.receipt_id, ae.emitted_fact_digest],
+        )
+        .unwrap();
+    for table in ["source_node_bindings", "source_edge_bindings"] {
+        let fact = if table == "source_node_bindings" {
+            &a.fact
+        } else {
+            &ae.fact
+        };
+        let original = if table == "source_node_bindings" {
+            &a
+        } else {
+            &ae
+        };
+        assert!(matches!(
+            load_selection_binding(&connection, fact).unwrap(),
+            SelectionBinding::Present(binding) if &binding == original
+        ));
+        for column in ["repo_key", "receipt_id", "emitted_fact_digest"] {
+            for expression in ["zeroblob(1048576)", "42", "NULL", "CAST(x'80' AS TEXT)"] {
+                connection
+                    .execute(&format!("UPDATE {table} SET {column} = {expression}"), [])
+                    .unwrap();
+                assert!(matches!(
+                    load_selection_binding(&connection, fact).unwrap(),
+                    SelectionBinding::Invalid
+                ));
+                let binding = if table == "source_node_bindings" {
+                    &a
+                } else {
+                    &ae
+                };
+                connection.execute(&format!("UPDATE {table} SET repo_key = ?1, receipt_id = ?2, emitted_fact_digest = ?3"), params![binding.repo_key, binding.receipt_id, binding.emitted_fact_digest]).unwrap();
+                assert!(matches!(
+                    load_selection_binding(&connection, fact).unwrap(),
+                    SelectionBinding::Present(binding) if &binding == original
+                ));
+            }
+        }
+        // 200 characters pass a character-count bound of 256, but occupy 400 bytes.
+        connection
+            .execute(
+                &format!("UPDATE {table} SET repo_key = ?1"),
+                ["é".repeat(200)],
+            )
+            .unwrap();
+        assert!(matches!(
+            load_selection_binding(&connection, fact).unwrap(),
+            SelectionBinding::Invalid
+        ));
+    }
+}
+
+#[test]
+fn source_selection_global_failures_release_the_read_transaction() {
+    // AC-0173, AC-0177: operational/schema/graph errors remain fatal and all
+    // failure paths release their read revision; the one-shot hook is consumed.
+    let mut store = SqliteGraphStore::open_in_memory().unwrap();
+    let (a, _, _, _) = seed(&mut store);
+    let keys = [a.fact];
+    let expected = store.read_source_selection_snapshot(&keys).unwrap();
+    for after_nodes in [true, false] {
+        let failure = || Err(GraphError::Storage(rusqlite::Error::InvalidQuery));
+        if after_nodes {
+            store.set_snapshot_after_nodes_hook(failure);
+        } else {
+            store.set_source_binding_after_lookup_hook(failure);
+        }
+        assert!(matches!(
+            store.read_source_selection_snapshot(&keys),
+            Err(GraphError::Storage(rusqlite::Error::InvalidQuery))
+        ));
+        assert!(store.conn.is_autocommit());
+        assert_eq!(
+            store.read_source_selection_snapshot(&keys).unwrap(),
+            expected
+        );
+    }
+    // Malformed graph JSON is global even when the bad fact was not selected.
+    store
+        .conn
+        .execute("UPDATE nodes SET props = '{' WHERE id = 'b'", [])
+        .unwrap();
+    assert!(matches!(
+        store.read_source_selection_snapshot(&keys),
+        Err(GraphError::Props(_))
+    ));
+    assert!(store.conn.is_autocommit());
+    store.put_node(&node("b")).unwrap();
+    assert_eq!(
+        store.read_source_selection_snapshot(&keys).unwrap(),
+        expected
+    );
+    store
+        .conn
+        .execute_batch("DROP TRIGGER source_binding_node_update")
+        .unwrap();
+    assert!(matches!(
+        store.read_source_selection_snapshot(&keys),
+        Err(GraphError::SourceBinding("incompatible association schema"))
+    ));
+    assert!(store.conn.is_autocommit());
+}

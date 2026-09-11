@@ -110,3 +110,12 @@ restart, cancellation after completed instances, changed host span fingerprints,
 and the inability of acceptance or a commit-shaped citation to assert freshness.
 Replay regressions cover all supplied items, normalized excerpts, short-item
 false positives, fixed diagnostics, pre-write rejection/restart and input bounds.
+
+## Versioned captured-task extension
+
+[SPEC-09](SPEC-09_captured-task-basis.md), #401, adds explicit prepared tasks and
+staging v2 without rewriting the v1 contract above. New per-item source metadata
+binds the actual retained receipt selections where available; only valid absent
+associations use the unverified working-tree path. Source coverage and a read-only
+current-basis assessment remain distinct from producing confidence and human
+review. Both versions remain awaiting reconciliation; H3 is not completed here.
