@@ -1,5 +1,5 @@
 # governed:agent-harness-format:start
-# These paths are synchronized by playbook-engineering. Their lint and syntax
+# These paths are synchronized by dev-steward. Their lint and syntax
 # contract runs at the governance source; consumer formatters must not rewrite
 # the managed bytes and start a format-versus-sync loop.
 .codex/config.toml
