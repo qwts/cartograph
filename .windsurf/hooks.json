@@ -1,5 +1,5 @@
 {
-  "description": "Windsurf (Devin desktop) Cascade hooks. The machine memory guard entry was retracted (#331): its decision (ENG-0138) is still Proposed, and only accepted decisions ship.",
+  "description": "Windsurf (Devin desktop) Cascade hooks. The machine memory guard is retired (agent-sop discussion #370); this adapter preserves repository-owned identity entries.",
   "hooks": {
     "pre_run_command": []
   }
