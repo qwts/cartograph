@@ -44,8 +44,8 @@ updates:
       # scripts/workflows.test.mjs) advances only via the governed harness sync
       # with matching reviewed contract tests, and must never ride Dependabot
       # (cf. qwts/overlook#1038).
-      - dependency-name: 'qwts/playbook-engineering/.github/actions/ci-policy'
-      - dependency-name: 'qwts/playbook-engineering/.github/actions/bounded-command'
+      - dependency-name: 'qwts/qwts-agent-ci/.github/actions/ci-policy'
+      - dependency-name: 'qwts/qwts-agent-ci/.github/actions/bounded-command'
       # codeql-action and install-action pins are likewise contract-tested
       # (scripts/workflows.test.mjs) and advance only deliberately (#363, #364).
       - dependency-name: 'github/codeql-action/init'

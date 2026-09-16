@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const PLAYBOOK_RUNTIME_PIN = 'df404e2ce63fc1566eb2a60c92a8fabe009955b0';
+const PLAYBOOK_RUNTIME_PIN = '3a5617b287d922e37f262210a1d8750d8217b56d';
 
 test('version-cut preserves review, evidence, and immutable-tag gates', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/version-cut.yml'), 'utf8');
@@ -44,7 +44,7 @@ test('CI enforces the governed lifecycle without draft jobs', () => {
   assert.match(workflow, /github\.event\.pull_request\.draft == false/u);
   assert.match(
     workflow,
-    new RegExp(`qwts/playbook-engineering/\\.github/actions/ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'),
+    new RegExp(`qwts/qwts-agent-ci/\\.github/actions/ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'),
   );
   assert.match(workflow, /head_sha=\$TARGET_SHA/u);
   assert.match(workflow, /head_sha=\$GITHUB_SHA/u);
