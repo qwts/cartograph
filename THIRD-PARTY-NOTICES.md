@@ -15,7 +15,7 @@ Cartograph bundles the following Rust crates. Each is used under the terms of
 its respective license, reproduced below. This list is generated from the
 dependency lockfile by `cargo about`; do not edit by hand.
 
-- Apache License 2.0 (277 crate(s))
+- Apache License 2.0 (278 crate(s))
 - MIT License (71 crate(s))
 - Unicode License v3 (19 crate(s))
 - BSD 3-Clause "New" or "Revised" License (9 crate(s))
@@ -1783,7 +1783,7 @@ Used by:
 - serde_spanned 1.1.1 — https://github.com/toml-rs/toml
 - streaming-iterator 0.1.9 — https://github.com/sfackler/streaming-iterator
 - toml 0.9.12+spec-1.1.0 — https://github.com/toml-rs/toml
-- toml 1.1.4+spec-1.1.0 — https://github.com/toml-rs/toml
+- toml 1.1.5+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_datetime 0.7.5+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_datetime 1.1.1+spec-1.1.0 — https://github.com/toml-rs/toml
 - toml_parser 1.1.3+spec-1.1.0 — https://github.com/toml-rs/toml
@@ -2844,7 +2844,7 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- reqwest 0.13.4 — https://github.com/seanmonstar/reqwest
+- reqwest 0.13.5 — https://github.com/seanmonstar/reqwest
 
 ```
                               Apache License
@@ -4111,6 +4111,7 @@ Used by:
 - atomic-waker 1.1.2 — https://github.com/smol-rs/atomic-waker
 - base64 0.21.7 — https://github.com/marshallpierce/rust-base64
 - base64 0.22.1 — https://github.com/marshallpierce/rust-base64
+- base64 0.23.1 — https://github.com/marshallpierce/rust-base64
 - bitflags 1.3.2 — https://github.com/bitflags/bitflags
 - bitflags 2.13.0 — https://github.com/bitflags/bitflags
 - bumpalo 3.20.3 — https://github.com/fitzgen/bumpalo
