@@ -233,6 +233,28 @@ export const LegacyOwnershipIsHistory: Story = {
   },
 };
 
+export const InvestigationCoordinatorOwnsActions: Story = {
+  // AC-0187/0190: association is host data; uncertain investigations have no generic replay.
+  args: { jobs: [
+    job({ id: 101, kind: 'opaque-job-kind', status: 'running', investigation_id: 'opaque-investigation-live' }),
+    job({ id: 102, kind: 'another-kind', status: 'interrupted', investigation_id: 'opaque-investigation-unknown' }),
+    job({ id: 103, kind: 'another-kind', status: 'failed', investigation_id: 'opaque-investigation-failed' }),
+  ], onViewInvestigation: fn(), onCancelInvestigation: fn() },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    await expect(canvas.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument();
+    const links = canvas.getAllByRole('button', { name: 'View investigation' });
+    await expect(links).toHaveLength(3);
+    await userEvent.click(links[1]);
+    await expect(args.onViewInvestigation).toHaveBeenCalledWith('opaque-investigation-unknown');
+    await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
+    await expect(args.onCancelInvestigation).toHaveBeenCalledWith('opaque-investigation-live');
+    await expect(args.onCancel).not.toHaveBeenCalled();
+    await expect(args.onRetry).not.toHaveBeenCalled();
+  },
+};
+
 export const RejectedActionRemainsVisible: Story = {
   // AC-0162: an ownership rejection does not invent a new status or remove
   // retry controls; the user can wait for the owner to finish and try again.

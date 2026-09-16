@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within } from 'storybook/test';
 import { ProposalHistory } from './ProposalHistory';
 import type { StagedProposal } from '../store';
+import { mixedTaskBasis } from '../taskBasisFixtures';
 
 const PENDING: StagedProposal = {
   proposal_id: 'proposal:pending',
@@ -65,5 +66,19 @@ export const FailedHistoryReadRetainsLoadedRows: Story = {
     await expect(canvas.queryByText('No saved proposals yet.')).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: 'Load more proposals' }));
     await expect(args.onLoadMore).toHaveBeenCalledOnce();
+  },
+};
+
+export const MixedHistoryPreservesLegacyAndAcceptedOrigins: Story = {
+  // AC-0179: current receipt coverage never relabels an older proposal's source.
+  args: { proposals: [PENDING, { ...PENDING, schema_version: 2, proposal_id: 'proposal:captured',
+    source_basis: mixedTaskBasis, evidence_binding: 'per_item', review_decision: 'accepted', review_revision: 1 }], hasMore: false },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText('Source binding unverified · legacy evidence')).toBeInTheDocument();
+    await expect(canvas.getByText(/1 retained parser span\(s\) · 1 working-tree span\(s\), unverified/)).toBeInTheDocument();
+    await expect(canvas.getByText('Selection limits or omissions apply.')).toBeInTheDocument();
+    await expect(canvas.getByText('Accepted · awaiting context reconciliation')).toBeInTheDocument();
+    await expect(canvas.getAllByText('Inferred (weak)')).toHaveLength(2);
   },
 };

@@ -12,6 +12,8 @@ use rusqlite::{Connection, TransactionBehavior, params};
 
 #[path = "jobs/execution.rs"]
 mod execution;
+#[path = "jobs/investigations.rs"]
+pub(crate) mod investigations;
 pub(crate) use execution::{ClaimMode, ClaimPlan, ExecutionCheck, ExecutionUpdate};
 #[cfg(test)]
 #[path = "jobs/ownership_tests.rs"]
@@ -22,6 +24,9 @@ use std::path::Path;
 /// A durable job row.
 #[derive(Debug, Clone, Serialize)]
 pub struct Job {
+    /// Coordinator-owned investigation navigation identity, absent for legacy jobs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub investigation_id: Option<String>,
     /// Whether this row participates in attempt ownership; not a liveness claim.
     pub execution_tracking: ExecutionTracking,
     /// Row id.
@@ -116,6 +121,7 @@ impl JobStore {
         )?;
         migrate_v1_jobs(&conn)?;
         let namespace = execution::initialize(&mut conn, path.as_ref())?;
+        investigations::initialize(&mut conn, &namespace)?;
         Ok(Self { conn, namespace })
     }
 
@@ -206,6 +212,8 @@ impl JobStore {
             });
         }
         execution::one(tx.execute("UPDATE jobs SET status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?1 AND status IN ('queued', 'running')", [id])?)?;
+        investigations::cancel_for_job(&tx, &self.namespace, id)
+            .map_err(|_| JobTransitionError::InvalidMetadata)?;
         let job = execution::read_job(&tx, id)?;
         tx.commit()?;
         Ok(job)
@@ -419,6 +427,7 @@ fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
             ExecutionTracking::Recorded
         });
     Ok(Job {
+        investigation_id: row.get(13)?,
         execution_tracking,
         id: row.get(0)?,
         kind: row.get(1)?,

@@ -10,6 +10,7 @@ mod evidence;
 mod findings;
 #[cfg(test)]
 mod graph_projection_tests;
+mod investigations;
 mod job_execution;
 #[cfg(test)]
 mod job_execution_host_tests;
@@ -25,6 +26,7 @@ mod registered_source_tests;
 mod settings;
 mod source_access;
 mod sources;
+mod task_evidence;
 
 use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
 use findings::{Finding, FindingStore, NewFinding};
@@ -46,6 +48,7 @@ struct AppState {
     graph: Mutex<SqliteGraphStore>,
     jobs: Mutex<JobStore>,
     job_execution_locks: JobExecutionLocks,
+    investigations: investigations::InvestigationRuntime,
     findings: Mutex<FindingStore>,
     settings: Mutex<settings::SettingsStore>,
     decisions: Mutex<agents::DecisionLog>,
@@ -1779,31 +1782,6 @@ fn extractor_coverage(
     store.latest_coverage().map_err(|e| e.to_string())
 }
 
-/// A closure that loads the exact text of an evidence span, or None.
-type SpanReader = Box<dyn Fn(&core_prov::EvidenceRef) -> Option<String> + Send>;
-
-/// Whole-graph projection plus an evidence reader bound to the ingested
-/// repo roots — the escalation assembly needs both.
-fn graph_and_reader(state: &AppState) -> Result<(Vec<Node>, Vec<Edge>, SpanReader), String> {
-    let (nodes, edges) = {
-        let graph = state.graph.lock().map_err(|e| e.to_string())?;
-        graph.read_snapshot().map_err(|e| e.to_string())?
-    };
-    let registry = Arc::clone(&state.sources);
-    let reader: SpanReader = Box::new(move |reference: &core_prov::EvidenceRef| {
-        source_access::with_registered_read(&registry, &reference.repo, |root| {
-            evidence::read_span_exact(
-                root,
-                &reference.path,
-                &(reference.byte_start..reference.byte_end),
-            )
-            .map_err(|e| e.to_string())
-        })
-        .ok()
-    });
-    Ok((nodes, edges, reader))
-}
-
 /// The provider for one escalation mode. Local is the pinned catalog SLM;
 /// cloud is the Opus reasoning lane and needs an API key — its absence is
 /// an explicit error, never a silent local fallback.
@@ -1831,65 +1809,73 @@ fn escalation_provider(mode: &str) -> Result<Box<dyn LlmProvider>, String> {
 /// evidence, and the local/cloud options with exact egress estimates from
 /// the firewall preview. Derivation only — nothing runs, nothing egresses.
 #[tauri::command]
-fn gap_strategies(
+async fn gap_strategies(
     gap_id: String,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<escalation::GapStrategyReport, String> {
-    let (nodes, edges, reader) = graph_and_reader(&state)?;
-    let task = escalation::assemble_task(&nodes, &edges, &gap_id, "escalate:preview", &reader)?;
-    let gap = nodes
-        .iter()
-        .find(|node| node.id == gap_id)
-        .ok_or_else(|| format!("no gap named '{gap_id}'"))?;
-    let cloud_allowed = {
-        let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
-        settings_store
+    off_ui_thread(move || {
+        let state = app.state::<AppState>();
+        let task = task_evidence::prepare(&state, &gap_id, "escalate:preview")?;
+        // Strategy text is derived from the same graph basis as the prepared
+        // task; a concurrent recovery requires a new preview.
+        let (nodes, edges) = state
+            .graph
+            .lock()
+            .map_err(|e| e.to_string())?
+            .read_snapshot()
+            .map_err(|e| e.to_string())?;
+        let snapshot =
+            context_hub::ContextSnapshot::new(nodes.clone(), edges).map_err(|e| e.to_string())?;
+        if snapshot.id() != task.source_basis().graph_snapshot_id {
+            return Err("Task evidence changed; refresh the strategy preview.".into());
+        }
+        let gap = nodes
+            .iter()
+            .find(|node| node.id == gap_id)
+            .ok_or("Selected gap is unavailable; refresh recovery.")?;
+        let cloud_allowed = state
+            .settings
+            .lock()
+            .map_err(|e| e.to_string())?
             .egress_policy()
             .map_err(|e| e.to_string())?
-            .cloud_allowed(llm::AnalysisTier::Agentic)
-    };
-    // Exact payload size from the broker's own preview against a local
-    // firewall — same redaction, zero egress.
-    let firewall = llm::EgressFirewall::new(llm::EgressPolicy::default());
-    let local = llm::OllamaProvider::local_default().map_err(|e| e.to_string())?;
-    let preview = agents::AgentBroker::bounded_default()
-        .preview(&local, &firewall, &task)
-        .map_err(|e| e.to_string())?;
-    let payload_bytes = serde_json::to_vec(&preview.payload)
-        .map_err(|e| e.to_string())?
-        .len() as u64;
-    Ok(escalation::strategies(
-        &task,
-        gap,
-        cloud_allowed,
-        payload_bytes,
-    ))
+            .cloud_allowed(llm::AnalysisTier::Agentic);
+        let firewall = llm::EgressFirewall::new(llm::EgressPolicy::default());
+        let local = llm::OllamaProvider::local_default().map_err(|e| e.to_string())?;
+        let preview = agents::AgentBroker::bounded_default()
+            .preview_prepared(&local, &firewall, &task)
+            .map_err(|e| e.to_string())?;
+        let payload_bytes = serde_json::to_vec(&preview.payload)
+            .map_err(|e| e.to_string())?
+            .len() as u64;
+        let mut report = escalation::strategies(task.task(), gap, cloud_allowed, payload_bytes);
+        report.source_basis = Some(task.source_basis().clone());
+        Ok(report)
+    })
+    .await
 }
 
-/// The exact redacted payload a cloud escalation would send (#120): the
-/// one-action consent dialog renders this preview, and the grant is bound
-/// to its hash. Zero egress — preview never invokes the provider.
+/// Exact redacted disclosure, including the receipt-bound input identity.
 #[tauri::command]
-fn escalation_preview(
+async fn escalation_preview(
     gap_id: String,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<llm::EgressPreview, String> {
-    let (nodes, edges, reader) = graph_and_reader(&state)?;
-    let task = escalation::assemble_task(
-        &nodes,
-        &edges,
-        &gap_id,
-        &format!("escalate:{gap_id}"),
-        &reader,
-    )?;
-    let policy = {
-        let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
-        settings_store.egress_policy().map_err(|e| e.to_string())?
-    };
-    let provider = escalation_provider("cloud")?;
-    agents::AgentBroker::bounded_default()
-        .preview(provider.as_ref(), &llm::EgressFirewall::new(policy), &task)
-        .map_err(|e| e.to_string())
+    off_ui_thread(move || {
+        let state = app.state::<AppState>();
+        let task = task_evidence::prepare(&state, &gap_id, &format!("escalate:{gap_id}"))?;
+        let policy = state
+            .settings
+            .lock()
+            .map_err(|e| e.to_string())?
+            .egress_policy()
+            .map_err(|e| e.to_string())?;
+        let provider = escalation_provider("cloud")?;
+        agents::AgentBroker::bounded_default()
+            .preview_prepared(provider.as_ref(), &llm::EgressFirewall::new(policy), &task)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Run one escalation as a durable job (#120): local runs immediately;
@@ -1914,22 +1900,12 @@ async fn run_escalation(
 
     report_progress(&app, &state, &execution, "context", 20.0).map_err(&fail)?;
     let context_app = app.clone();
-    let (task, graph_snapshot_id) = off_ui_thread_for_job(execution.clone(), move |execution| {
+    let task = off_ui_thread_for_job(execution.clone(), move |execution| {
         let state = context_app.state::<AppState>();
         if job_cancelled(&state, execution)? {
             return Err("cancelled".into());
         }
-        let (nodes, edges, reader) = graph_and_reader(&state)?;
-        let task = escalation::assemble_task(
-            &nodes,
-            &edges,
-            &gap_id,
-            &format!("escalate:{gap_id}"),
-            &reader,
-        )?;
-        let snapshot =
-            context_hub::ContextSnapshot::new(nodes, edges).map_err(|error| error.to_string())?;
-        Ok((task, snapshot.id().to_string()))
+        task_evidence::prepare(&state, &gap_id, &format!("escalate:{gap_id}"))
     })
     .await
     .map_err(&fail)?;
@@ -1947,7 +1923,7 @@ async fn run_escalation(
     // approved hash matches this exact payload (one-action consent).
     let consent = if mode == "cloud" {
         let preview = broker
-            .preview(provider.as_ref(), &firewall, &task)
+            .preview_prepared(provider.as_ref(), &firewall, &task)
             .map_err(|e| fail(e.to_string()))?;
         let approved = approved_payload_hash
             .ok_or_else(|| fail("cloud escalation requires an approved payload hash".into()))?;
@@ -1964,7 +1940,7 @@ async fn run_escalation(
     };
     let payload_bytes = if consent.is_some() {
         let preview = broker
-            .preview(provider.as_ref(), &firewall, &task)
+            .preview_prepared(provider.as_ref(), &firewall, &task)
             .map_err(|e| fail(e.to_string()))?;
         serde_json::to_vec(&preview.payload)
             .map_err(|e| fail(e.to_string()))?
@@ -1986,11 +1962,11 @@ async fn run_escalation(
             return Err("cancelled".to_string());
         }
         let proposal = broker
-            .propose(provider.as_ref(), &firewall, &task, consent.as_ref())
+            .propose_prepared(provider.as_ref(), &firewall, &task, consent.as_ref())
             .map_err(|error| error.to_string())?;
         // Persist even if cancellation arrived during the model call. The job
         // remains cancelled, but its completed result is available for review.
-        stage_completed_job_proposal(&state, execution, &task, &proposal, &graph_snapshot_id)
+        stage_completed_prepared_job_proposal(&state, execution, &task, &proposal)
     })
     .await
     .map_err(&fail)?;
@@ -2047,34 +2023,12 @@ async fn run_class_escalation(
     };
 
     report_progress(&app, &state, &execution, "context", 5.0).map_err(&fail)?;
-    // Capture one coherent graph on a worker; no graph lock spans a model call.
-    // Per-instance assembly errors join the outcome instead of aborting it.
-    let context_app = app.clone();
-    let (tasks, graph_snapshot_id) = off_ui_thread_for_job(execution.clone(), move |execution| {
-        let state = context_app.state::<AppState>();
-        if job_cancelled(&state, execution)? {
-            return Err("cancelled".into());
-        }
-        let (nodes, edges, reader) = graph_and_reader(&state)?;
-        let tasks: Vec<(String, Result<agents::AgentTask, String>)> = gap_ids
-            .iter()
-            .map(|gap_id| {
-                let task = escalation::assemble_task(
-                    &nodes,
-                    &edges,
-                    gap_id,
-                    &format!("escalate:{gap_id}"),
-                    &reader,
-                );
-                (gap_id.clone(), task)
-            })
-            .collect();
-        let snapshot =
-            context_hub::ContextSnapshot::new(nodes, edges).map_err(|error| error.to_string())?;
-        Ok((tasks, snapshot.id().to_string()))
-    })
-    .await
-    .map_err(&fail)?;
+    // Source text is prepared lazily per instance inside the worker loop.
+    // The class carries gap identities only, not an unbounded union of evidence.
+    let tasks: Vec<(String, Result<String, String>)> = gap_ids
+        .into_iter()
+        .map(|gap_id| (gap_id.clone(), Ok(gap_id)))
+        .collect();
 
     let policy = (|| {
         let settings_store = state.settings.lock().map_err(|e| e.to_string())?;
@@ -2102,11 +2056,15 @@ async fn run_class_escalation(
                     5.0 + (index as f64 / total as f64) * 90.0,
                 )
             },
-            |task| {
+            |gap_id| {
+                let task = task_evidence::prepare(&state, gap_id, &format!("escalate:{gap_id}"))?;
+                if job_cancelled(&state, execution)? {
+                    return Err("cancelled".into());
+                }
                 let proposal = broker
-                    .propose(provider.as_ref(), &firewall, task, None)
+                    .propose_prepared(provider.as_ref(), &firewall, &task, None)
                     .map_err(|error| error.to_string())?;
-                stage_completed_job_proposal(&state, execution, task, &proposal, &graph_snapshot_id)
+                stage_completed_prepared_job_proposal(&state, execution, &task, &proposal)
             },
         )
     })
@@ -2185,13 +2143,7 @@ fn completed_job(job: &Job) -> Result<(), String> {
     }
 }
 
-fn stage_completed_job_proposal(
-    state: &AppState,
-    execution: &JobExecution,
-    task: &agents::AgentTask,
-    proposal: &agents::AgentProposal,
-    graph_snapshot_id: &str,
-) -> Result<agents::StagedProposal, String> {
+fn check_completed_execution(state: &AppState, execution: &JobExecution) -> Result<(), String> {
     // A completed model result remains reviewable even if the cancelled job was
     // cleared during that call. The retained opaque execution supplies its
     // original identity; this exception never authorizes another model call or
@@ -2207,6 +2159,38 @@ fn stage_completed_job_proposal(
         Ok(ExecutionCheck::Terminal) => return Err("Job execution has already finished.".into()),
         Err(error) => return Err(error.to_string()),
     }
+    Ok(())
+}
+
+fn stage_completed_prepared_job_proposal(
+    state: &AppState,
+    execution: &JobExecution,
+    task: &agents::PreparedAgentTask,
+    proposal: &agents::AgentProposal,
+) -> Result<agents::StagedProposal, String> {
+    check_completed_execution(state, execution)?;
+    state
+        .proposals
+        .lock()
+        .map_err(|error| error.to_string())?
+        .stage_prepared(
+            task,
+            proposal,
+            execution.id(),
+            &task.source_basis().graph_snapshot_id,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+fn stage_completed_job_proposal(
+    state: &AppState,
+    execution: &JobExecution,
+    task: &agents::AgentTask,
+    proposal: &agents::AgentProposal,
+    graph_snapshot_id: &str,
+) -> Result<agents::StagedProposal, String> {
+    check_completed_execution(state, execution)?;
     state
         .proposals
         .lock()
@@ -2215,12 +2199,12 @@ fn stage_completed_job_proposal(
         .map_err(|error| error.to_string())
 }
 
-fn run_job_staged_batch(
+fn run_job_staged_batch<T>(
     state: &AppState,
     execution: &JobExecution,
-    tasks: Vec<(String, Result<agents::AgentTask, String>)>,
+    tasks: Vec<(String, Result<T, String>)>,
     mut progress: impl FnMut(usize, usize) -> Result<(), String>,
-    mut execute_and_stage: impl FnMut(&agents::AgentTask) -> Result<agents::StagedProposal, String>,
+    mut execute_and_stage: impl FnMut(&T) -> Result<agents::StagedProposal, String>,
 ) -> Result<proposals::StagedBatchOutcome, String> {
     // The broker's bool cancellation callback must stop on ownership errors,
     // while the host preserves their distinct cause in the returned failure.
@@ -2596,8 +2580,22 @@ fn ingest_path_blocking(path: String, app: tauri::AppHandle) -> Result<IngestSum
 /// boundary (#117).
 #[tauri::command]
 fn cancel_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Job, String> {
-    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let job = jobs.cancel(id).map_err(|e| e.to_string())?;
+    let job = state
+        .jobs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .cancel(id)
+        .map_err(|e| e.to_string())?;
+    if let Some(investigation_id) = &job.investigation_id {
+        state.investigations.wake(investigation_id);
+        let detail = state
+            .jobs
+            .lock()
+            .map_err(|e| e.to_string())?
+            .investigation(investigation_id)
+            .map_err(|e| e.to_string())?;
+        investigations::emit_changed(&app, &detail);
+    }
     emit_job(&app, &job);
     Ok(job)
 }
@@ -3350,6 +3348,7 @@ fn main() {
             // Only unchanged recorded attempts whose OS ownership is available
             // are interrupted. Live and legacy-unknown jobs remain untouched.
             recover_jobs(&jobs, &job_execution_locks).map_err(std::io::Error::other)?;
+            investigations::recover(&jobs, &job_execution_locks).map_err(std::io::Error::other)?;
             let findings = FindingStore::open(&state_path)?;
             let sources =
                 SourceRegistry::open(&state_path, &data_dir).map_err(std::io::Error::other)?;
@@ -3360,6 +3359,7 @@ fn main() {
             app.manage(AppState {
                 graph: Mutex::new(graph),
                 jobs,
+                investigations: crate::investigations::InvestigationRuntime::default(),
                 job_execution_locks,
                 findings: Mutex::new(findings),
                 settings: Mutex::new(tier_settings),
@@ -3374,6 +3374,17 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            investigations::commands::investigation_specialists,
+            investigations::commands::start_investigation,
+            investigations::commands::list_investigations,
+            investigations::commands::get_investigation,
+            investigations::commands::investigation_events,
+            investigations::commands::investigation_result,
+            investigations::commands::investigation_consent,
+            investigations::commands::approve_investigation_step,
+            investigations::commands::decline_investigation_step,
+            investigations::commands::cancel_investigation,
+            investigations::commands::read_investigation_citation,
             ping,
             graph_stats,
             clear_graph,
@@ -3387,6 +3398,7 @@ fn main() {
             list_evals,
             proposals::record_agent_decision,
             proposals::list_staged_proposals,
+            task_evidence::assessment::assess_staged_basis,
             list_agent_decisions,
             reapply_agent_decisions,
             record_assertion_decision,
@@ -6028,6 +6040,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
             job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
@@ -6128,6 +6141,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
             job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
@@ -6222,6 +6236,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
             job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
@@ -6403,6 +6418,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
             job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(

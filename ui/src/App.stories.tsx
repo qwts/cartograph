@@ -2,6 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import App from './App';
+import { useInvestigationStore } from './investigationStore';
+import { investigationCatalog, investigationCitations, investigationConsent, investigationDetail, investigationResult } from './investigationFixtures';
+import type { InvestigationDetail, InvestigationEvent, StartInvestigationRequest } from './investigationTypes';
 import { usePrimarySourceStore, type CapturedDescription, type FactKey } from './primarySourceStore';
 import {
   useAppStore,
@@ -23,6 +26,7 @@ interface MockJob {
   kind: string;
   status: string;
   execution_tracking: 'recorded' | 'legacy_unknown';
+  investigation_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -176,6 +180,7 @@ let historyRequests: { limit: number; cursor: string | null }[] = [];
 let evidenceRequests: Record<string, unknown>[] = [];
 let capturedDescriptionRequests: Record<string, unknown>[] = [];
 let repoRootLookups = 0;
+let investigationRequests: { command: string; args: unknown }[] = [];
 
 function installFakeCore(options: {
   staged?: StagedProposal[];
@@ -190,6 +195,7 @@ function installFakeCore(options: {
   capturedDescriptions?: boolean;
   rejectJobActionOnce?: boolean;
   legacyRunningJob?: boolean;
+  investigationFlow?: boolean;
 } = {}) {
   let staged = [...(options.staged ?? [])];
   let rejectJobAction = options.rejectJobActionOnce ?? false;
@@ -198,6 +204,18 @@ function installFakeCore(options: {
   evidenceRequests = [];
   capturedDescriptionRequests = [];
   repoRootLookups = 0;
+  investigationRequests = [];
+  let investigation: InvestigationDetail | null = null;
+  const investigationJournal: InvestigationEvent[] = [];
+  let investigationStep = 1;
+  const appendInvestigationEvent = (kind: InvestigationEvent['kind'], summary: string,
+    tool: InvestigationEvent['tool'] = null) => {
+    if (!investigation) throw new Error('Fixture task missing');
+    const sequence = investigationJournal.length + 1;
+    investigationJournal.push({ investigation_id: investigation.investigation_id, sequence, revision: sequence,
+      kind, summary, tool, step_id: `step-${investigationStep}`, created_at: '2026-09-10T10:00:00Z' });
+    investigation = { ...investigation, revision: sequence, last_event_sequence: sequence };
+  };
   // The fake core boots with one queued job: the production surface offers
   // no job-creation control (AC-0077), so lifecycle stories act on it.
   let jobs: MockJob[] = [
@@ -233,6 +251,87 @@ function installFakeCore(options: {
   };
   mockIPC((cmd, args) => {
     switch (cmd) {
+      case 'investigation_specialists':
+        return investigationCatalog;
+      case 'list_investigations':
+        return { items: investigation ? [investigation] : [], next_cursor: null };
+      case 'start_investigation': {
+        if (!options.investigationFlow) throw new Error('Investigation fixture disabled');
+        investigationRequests.push({ command: cmd, args });
+        const request = (args as { request: StartInvestigationRequest }).request;
+        if (investigation) return investigation;
+        investigation = investigationDetail('inv-app-script', { question: request.question, scope: request.scope,
+          specialist_id: request.specialist_id, specialist: investigationCatalog.specialists.find((item) => item.id === request.specialist_id)!,
+          provider_mode: request.provider_mode, provider: investigationCatalog.providers.find((item) => item.mode === request.provider_mode)!,
+          status: 'queued', graph_snapshot_id: null, has_result: false, revision: 0, last_event_sequence: 0,
+          actions: { can_cancel: true, can_follow_up: false } });
+        appendInvestigationEvent('created', 'Saved before context preparation.');
+        jobs.push({ id: 91, kind: 'specialist-investigation', status: 'running', execution_tracking: 'recorded',
+          investigation_id: investigation.investigation_id, created_at: investigation.created_at, updated_at: investigation.updated_at });
+        return investigation;
+      }
+      case 'get_investigation': {
+        if (investigation?.status === 'queued') {
+          appendInvestigationEvent('preparation_started', 'Preparing the frozen scoped graph.');
+          appendInvestigationEvent('context_prepared', 'Admitted original graph identities.');
+          appendInvestigationEvent('consent_required', 'The first cloud step requires consent.');
+          investigation = { ...investigation!, status: 'awaiting_consent', graph_snapshot_id: 'snapshot:original' };
+        }
+        return investigation;
+      }
+      case 'investigation_events': {
+        const after = (args as { afterSequence: number }).afterSequence;
+        const items = investigationJournal.filter((event) => event.sequence > after).slice(0, 50);
+        return { investigation_id: investigation?.investigation_id, items,
+          next_sequence: items.at(-1)?.sequence ?? after, has_more: false };
+      }
+      case 'investigation_result':
+        return investigation?.has_result ? investigationResult(investigation.investigation_id) : null;
+      case 'investigation_consent':
+        return investigation?.status === 'awaiting_consent'
+          ? investigationConsent(investigation.investigation_id, investigation.revision, `step-${investigationStep}`) : null;
+      case 'approve_investigation_step': {
+        if (!investigation) throw new Error('Unknown investigation');
+        const approved = args as { investigationId: string; stepId: string; revision: number; payloadHash: string };
+        const pending = investigationConsent(investigation.investigation_id, investigation.revision, `step-${investigationStep}`);
+        if (approved.investigationId !== pending.investigation_id || approved.stepId !== pending.step_id ||
+            approved.revision !== pending.revision || approved.payloadHash !== pending.preview.payload_hash) throw new Error('Stale consent');
+        investigationRequests.push({ command: cmd, args });
+        appendInvestigationEvent('consent_approved', 'Consumed the grant for this invocation only.');
+        appendInvestigationEvent('model_started', 'Started the approved invocation.');
+        appendInvestigationEvent('model_completed', 'Received one bounded response.');
+        if (investigationStep === 1) {
+          appendInvestigationEvent('tool_started', 'Read original admitted citation C1.', 'read_evidence');
+          appendInvestigationEvent('evidence_validation_reserved', 'Reserved the original full-file validation cost.', 'read_evidence');
+          appendInvestigationEvent('tool_completed', 'Admitted the retained source span.', 'read_evidence');
+          investigationStep = 2;
+          appendInvestigationEvent('consent_required', 'New evidence requires approval of the next exact payload.');
+        } else {
+          appendInvestigationEvent('result_persisted', 'Saved findings against the original input ledger.');
+          appendInvestigationEvent('completed', 'Execution completed; knowledge remains partial.');
+          investigation = { ...investigation, status: 'completed', has_result: true,
+            actions: { can_cancel: false, can_follow_up: true } };
+          jobs = jobs.map((job) => job.id === 91 ? { ...job, status: 'done' } : job);
+        }
+        return investigation;
+      }
+      case 'decline_investigation_step':
+      case 'cancel_investigation': {
+        if (!investigation) throw new Error('Unknown investigation');
+        investigationRequests.push({ command: cmd, args });
+        appendInvestigationEvent('cancelled', 'The coordinator stopped this task.');
+        investigation = { ...investigation, status: 'cancelled', cancel_requested: true,
+          actions: { can_cancel: false, can_follow_up: true } };
+        return investigation;
+      }
+      case 'read_investigation_citation': {
+        investigationRequests.push({ command: cmd, args });
+        const { investigationId, citationId } = args as { investigationId: string; citationId: string };
+        const citation = investigationCitations.find((item) => item.citation_id === citationId)!;
+        return { investigation_id: investigationId, citation_id: citationId, citation,
+          status: citationId === 'C1' ? 'available' : citationId === 'C2' ? 'metadata_only' : 'working_tree_unverified',
+          text: citationId === 'C1' ? 'ORIGINAL RETAINED APP FIXTURE SOURCE' : null };
+      }
       case 'ping':
         return { app: 'cartograph', version: '0.0.1' };
       case 'graph_stats':
@@ -675,6 +774,7 @@ const meta = {
     // stories otherwise); cleanup drops the fake __TAURI_INTERNALS__ so other
     // story files see a clean window.
     installFakeCore();
+    useInvestigationStore.setState(useInvestigationStore.getInitialState(), true);
     useAppStore.setState({
       view: 'workspace',
       backend: 'unknown',
@@ -1376,5 +1476,56 @@ export const DelayedReviewReceiptPreservesNewestOpenedRevision: Story = {
     await expect(useAppStore.getState().escalation?.proposal?.review_revision).toBe(2);
     await expect(useAppStore.getState().stagedProposals[0].review_revision).toBe(2);
     await expect(useAppStore.getState().stagedProposals[0].review_decision).toBe('rejected');
+  },
+};
+
+export const InvestigationWorkspaceCloudHistoryAndJobs: Story = {
+  // AC-0186/0189/0190: actual App/store/command wiring with scripted host responses.
+  // This fixture is not a real-provider execution or the independent H4 manual gate.
+  beforeEach: () => { installFakeCore({ investigationFlow: true }); },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await userEvent.click(canvas.getByRole('button', { name: 'Open investigations' }));
+    await waitFor(() => expect(canvas.getByRole('radio', { name: /Domain analyst/ })).toBeVisible());
+    await userEvent.selectOptions(canvas.getByLabelText('Provider'), 'cloud');
+    await userEvent.type(canvas.getByLabelText('Question'), 'Which stock behavior has evidence, and what remains unknown?');
+    await userEvent.click(canvas.getByRole('button', { name: 'Start investigation' }));
+    await waitFor(() => expect(canvas.getByRole('button', { name: 'Review next cloud action' })).toBeEnabled());
+    await expect(investigationRequests.filter((request) => request.command === 'start_investigation')).toHaveLength(1);
+    await userEvent.click(canvas.getByRole('button', { name: 'Review next cloud action' }));
+    let dialog = within(canvas.getByRole('dialog', { name: 'Review exact model payload' }));
+    await expect(dialog.getByText('payload:inv-app-script:step-1')).toBeVisible();
+    await userEvent.click(dialog.getByRole('button', { name: 'Review later' }));
+    await expect(canvas.queryByRole('dialog', { name: 'Review exact model payload' })).not.toBeInTheDocument();
+    await expect(investigationRequests.filter((request) => request.command === 'approve_investigation_step')).toHaveLength(0);
+    await userEvent.click(canvas.getByRole('button', { name: 'Review next cloud action' }));
+    dialog = within(canvas.getByRole('dialog', { name: 'Review exact model payload' }));
+    await userEvent.click(dialog.getByRole('button', { name: 'Allow this action once' }));
+    await waitFor(() => expect(useInvestigationStore.getState().consent?.step_id).toBe('step-2'));
+    await expect(canvas.queryByRole('dialog', { name: 'Review exact model payload' })).not.toBeInTheDocument();
+    await expect(canvas.getByText('Source validation budget reserved')).toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: 'Review next cloud action' }));
+    dialog = within(canvas.getByRole('dialog', { name: 'Review exact model payload' }));
+    await expect(dialog.getByText('payload:inv-app-script:step-2')).toBeVisible();
+    await userEvent.click(dialog.getByRole('button', { name: 'Allow this action once' }));
+    await waitFor(() => expect(canvas.getByText('A local stock guard is present')).toBeVisible());
+    await expect(investigationRequests.filter((request) => request.command === 'approve_investigation_step').map((request) =>
+      (request.args as { stepId: string }).stepId)).toEqual(['step-1', 'step-2']);
+    await userEvent.click(canvas.getByRole('button', { name: 'Inspect citation C1' }));
+    await waitFor(() => expect(canvas.getByText('ORIGINAL RETAINED APP FIXTURE SOURCE')).toBeVisible());
+    await expect(investigationRequests.at(-1)).toEqual({ command: 'read_investigation_citation',
+      args: { investigationId: 'inv-app-script', citationId: 'C1' } });
+    const savedResult = JSON.stringify(useInvestigationStore.getState().result);
+
+    // Refresh Jobs from the host, then follow its opaque association to the same task.
+    await useAppStore.getState().refresh();
+    await userEvent.click(canvas.getByRole('button', { name: 'Jobs' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'View investigation' }));
+    await waitFor(() => expect(canvas.getByText('A local stock guard is present')).toBeVisible());
+    await expect(useInvestigationStore.getState().selectedId).toBe('inv-app-script');
+    await expect(JSON.stringify(useInvestigationStore.getState().result)).toBe(savedResult);
+    await expect(canvas.queryByRole('button', { name: /^(Retry|Resume)$/ })).not.toBeInTheDocument();
+    await expect(canvas.getByRole('button', { name: 'Workspace' })).toHaveAttribute('aria-current', 'page');
   },
 };

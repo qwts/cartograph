@@ -1,5 +1,5 @@
 {
-  "description": "Codex harness hooks. The machine memory guard entry was retracted (#331): its decision (ENG-0138) is still Proposed, and only accepted decisions ship. Requires one-time trust via /hooks.",
+  "description": "Codex harness hooks. The machine memory guard was retired by the owner (agent-sop discussion #370). Requires one-time trust via /hooks.",
   "hooks": {
     "PreToolUse": [
       {

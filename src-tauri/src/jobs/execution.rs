@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 const META_DDL: &str = "CREATE TABLE job_execution_meta (version INTEGER PRIMARY KEY CHECK(version = 1), namespace TEXT NOT NULL) STRICT";
 const ATTEMPTS_DDL: &str = "CREATE TABLE job_attempts (job_id INTEGER PRIMARY KEY, generation INTEGER NOT NULL CHECK(generation >= 0), owner TEXT, CHECK((generation = 0 AND owner IS NULL) OR (generation > 0 AND owner IS NOT NULL))) STRICT";
-pub(super) const JOB_SELECT: &str = "SELECT j.id, j.kind, j.status, j.stage, j.progress, j.error, j.artifacts, j.created_at, j.updated_at, a.generation, CASE WHEN typeof(a.owner) = 'text' AND length(CAST(a.owner AS BLOB)) = 32 THEN a.owner ELSE NULL END, a.job_id, a.owner IS NULL FROM jobs j LEFT JOIN job_attempts a ON a.job_id = j.id";
+pub(super) const JOB_SELECT: &str = "SELECT j.id, j.kind, j.status, j.stage, j.progress, j.error, j.artifacts, j.created_at, j.updated_at, a.generation, CASE WHEN typeof(a.owner) = 'text' AND length(CAST(a.owner AS BLOB)) = 32 THEN a.owner ELSE NULL END, a.job_id, a.owner IS NULL, (SELECT CASE WHEN typeof(i.id)='text' AND length(CAST(i.id AS BLOB))<=128 THEN i.id END FROM investigation_tasks i WHERE i.job_id=j.id) FROM jobs j LEFT JOIN job_attempts a ON a.job_id = j.id";
 
 #[derive(Clone, Copy)]
 pub(crate) enum ClaimMode {
@@ -215,6 +215,14 @@ impl JobStore {
         validate(&tx, &self.namespace)?;
         let (job, attempt) = read_state(&tx, id).map_err(missing)?;
         let attempt = attempt.ok_or(JobTransitionError::LegacyUnknown)?;
+        if matches!(mode, ClaimMode::RetryTerminal)
+            && job.kind.starts_with(super::investigations::KIND_PREFIX)
+        {
+            return Err(JobTransitionError::InvalidFrom {
+                verb: "retry investigation; request an explicit follow-up for",
+                status: "coordinator-owned history".into(),
+            });
+        }
         let allowed = match mode {
             ClaimMode::StartQueued => job.status == "queued" && attempt.generation == 0,
             ClaimMode::RetryTerminal => {
@@ -255,6 +263,15 @@ impl JobStore {
         let owner: String = tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
         one(tx.execute("UPDATE job_attempts SET generation = ?2, owner = ?3 WHERE job_id = ?1 AND generation = ?4 AND owner IS ?5", params![plan.job.id, generation, owner, plan.attempt.generation, plan.attempt.owner])?)?;
         one(tx.execute("UPDATE jobs SET status = 'running', stage = NULL, progress = NULL, error = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?1 AND kind = ?2 AND status = ?3", params![plan.job.id, plan.job.kind, plan.job.status])?)?;
+        super::investigations::attach_execution(
+            &tx,
+            &self.namespace,
+            plan.job.id,
+            &plan.job.kind,
+            generation,
+            &owner,
+        )
+        .map_err(|_| JobTransitionError::InvalidMetadata)?;
         let job = read_job(&tx, plan.job.id)?;
         tx.commit()?;
         Ok((
@@ -291,7 +308,7 @@ impl JobStore {
         validate(&tx, &self.namespace)?;
         let candidates = {
             let mut stmt = tx.prepare(&format!(
-                "{JOB_SELECT} WHERE j.status = 'running' AND a.job_id IS NOT NULL ORDER BY j.id"
+                "{JOB_SELECT} WHERE j.status = 'running' AND a.job_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM investigation_tasks i WHERE i.job_id=j.id) ORDER BY j.id"
             ))?;
             let states = stmt
                 .query_map([], |row| Ok((job_row(row)?, row_attempt(row)?)))?

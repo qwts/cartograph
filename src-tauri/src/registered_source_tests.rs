@@ -22,6 +22,7 @@ pub(crate) fn app_state(app_data: &Path) -> AppState {
     AppState {
         graph: Mutex::new(SqliteGraphStore::open(app_data.join("graph.db")).unwrap()),
         jobs: Mutex::new(JobStore::open(&state_path).unwrap()),
+        investigations: crate::investigations::InvestigationRuntime::default(),
         job_execution_locks: crate::job_execution_host_tests::locks(&state_path),
         findings: Mutex::new(findings),
         settings: Mutex::new(settings::SettingsStore::open(&state_path).unwrap()),
@@ -303,8 +304,21 @@ fn registered_evidence_reads_never_fall_back() {
             props: json!({"root": second_root.to_str().unwrap(), "commit": "historical-unverified"}),
         }).unwrap();
     }
-    let (nodes, _, reader) = graph_and_reader(&state).unwrap();
-    assert_eq!(nodes.len(), 3);
+    assert_eq!(
+        state.graph.lock().unwrap().read_snapshot().unwrap().0.len(),
+        3
+    );
+    let reader = |reference: &EvidenceRef| {
+        source_access::with_registered_read(&state.sources, &reference.repo, |root| {
+            evidence::read_span_exact(
+                root,
+                &reference.path,
+                &(reference.byte_start..reference.byte_end),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .ok()
+    };
     assert_eq!(
         reader(&reference(&first.repo_key, "source.ts", 5)).as_deref(),
         Some("FIRST")

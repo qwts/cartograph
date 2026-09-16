@@ -164,3 +164,10 @@ production ownership, captured inspection, retention, UI and compatibility.
 producer receipts for new local initializer citations while retaining the exact
 v1 receipt contract and immutable history. Its expanded citations do not change
 this specification's primary-source or incomplete-input-closure boundaries.
+
+## Agent task evidence extension
+
+[SPEC-09](SPEC-09_captured-task-basis.md), #401, consumes selected receipt ranges
+through a coherent graph/association basis and records immutable per-item source
+origins in staging v2. It preserves this specification's primary-source-only and
+incomplete-input-closure boundaries; legacy receipts and proposals are unchanged.

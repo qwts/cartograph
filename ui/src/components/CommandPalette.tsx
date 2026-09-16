@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { SURFACES, type SurfaceDef, type SurfaceView } from '../views';
 
-/** Palette rows: the eight surfaces plus Help actions (#154). */
+/** Eight stable surface shortcuts, with a Workspace investigation route and Help. */
 const PALETTE_ROWS: readonly SurfaceDef[] = [
   ...SURFACES,
+  { id: 'investigations', label: 'Investigations', icon: 'manage_search', hint: 'Ask a specialist and inspect cited findings' },
   { id: 'help', label: 'Help', icon: 'help', hint: 'In-app help — also ? or F1' },
 ];
 
@@ -88,7 +89,7 @@ function PaletteContent({ onClose, onNavigate }: Omit<CommandPaletteProps, 'open
               </span>
               <span className="cmdk-label">{surface.label}</span>
               <span className="cmdk-hint">{surface.hint}</span>
-              <kbd>{surface.id === 'help' ? '?' : `${MOD}${index + 1}`}</kbd>
+              {surface.id !== 'investigations' && <kbd>{surface.id === 'help' ? '?' : `${MOD}${index + 1}`}</kbd>}
             </div>
           ))}
         </div>

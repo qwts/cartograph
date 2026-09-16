@@ -3,7 +3,9 @@
 //! A binding identifies an immutable producer receipt stored elsewhere. It does
 //! not establish input closure, receipt availability, source freshness or tier.
 
-use crate::{Edge, GraphError, GraphPatch, Node, SqliteGraphStore};
+use crate::{
+    Edge, GraphError, GraphPatch, Node, SnapshotBoundsError, SnapshotReadLimits, SqliteGraphStore,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,6 +16,9 @@ const MAX_LABEL_BYTES: usize = 256;
 const MAX_REPO_BYTES: usize = 256;
 const MAX_RECEIPT_BYTES: usize = 256;
 const MAX_BINDINGS: usize = 100_000;
+
+/// Maximum raw selection entries, before duplicate identities are removed.
+pub const MAX_SOURCE_SELECTION_KEYS: usize = 65;
 
 /// Unambiguous node or directed-edge identity, matching context FactReference.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -80,6 +85,48 @@ pub struct SourceBinding {
     pub receipt_id: String,
     /// Versioned digest of the entire emitted node or edge.
     pub emitted_fact_digest: String,
+}
+
+/// Owned graph and selected association metadata from the same read revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSelectionSnapshot {
+    /// Complete graph in ordinary snapshot order, not just the selected facts.
+    pub graph: (Vec<Node>, Vec<Edge>),
+    /// Unique selections sorted by typed fact identity.
+    pub selections: Vec<FactSourceSelection>,
+}
+
+/// The observed source association state for one requested typed identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactSourceSelection {
+    /// Requested identity, including when its fact is missing.
+    pub fact: FactKey,
+    /// Association and complete-fact state in the copied graph revision.
+    pub state: FactSourceState,
+}
+
+/// A source association never establishes receipt availability or source truth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactSourceState {
+    /// Neither the selected fact nor an association exists.
+    Missing,
+    /// The fact exists and has no current association.
+    Absent {
+        /// Digest of the complete selected fact.
+        fact_digest: String,
+    },
+    /// Bounded, valid metadata matches the complete selected fact.
+    Present {
+        /// Digest of the complete selected fact.
+        fact_digest: String,
+        /// Exact current association, without a receipt body or source bytes.
+        binding: SourceBinding,
+    },
+    /// An association is malformed, orphaned or does not match the fact.
+    Invalid {
+        /// Digest when the selected fact exists; absent for an orphan binding.
+        fact_digest: Option<String>,
+    },
 }
 
 impl SourceBinding {
@@ -202,10 +249,28 @@ const SCHEMA: &[(&str, &str, &str)] = &[
     ),
 ];
 
+const OWNED_SCHEMA_WHERE: &str = "name GLOB 'source_binding_*' OR name IN ('source_node_bindings', 'source_edge_bindings') OR (tbl_name IN ('source_binding_meta', 'source_node_bindings', 'source_edge_bindings') AND name NOT GLOB 'sqlite_*') OR (type = 'trigger' AND tbl_name IN ('nodes', 'edges'))";
+
+fn preflight_selection_schema(connection: &Connection) -> Result<(), GraphError> {
+    // Only the opt-in bounded path changes admission behavior. Before the
+    // existing exact-schema decoder copies SQL/name bodies, bound their count,
+    // types and UTF-8 byte lengths in the same read transaction.
+    let (count, valid): (i64, bool) = connection.query_row(
+        &format!("SELECT count(*), coalesce(min(typeof(name) = 'text' AND length(CAST(name AS BLOB)) <= 256 AND typeof(type) = 'text' AND length(CAST(type AS BLOB)) <= 16 AND typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 4096), 0) FROM sqlite_schema WHERE {OWNED_SCHEMA_WHERE}"),
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if usize::try_from(count).ok() != Some(SCHEMA.len()) || !valid {
+        return Err(SnapshotBoundsError::InvalidSchema.into());
+    }
+    Ok(())
+}
+
 fn owned_schema(connection: &Connection) -> Result<BTreeMap<String, (String, String)>, GraphError> {
     // Include arbitrarily named triggers/unique indexes affecting these tables,
     // not just objects with our prefix: they can suppress or rewrite publication.
-    let mut statement = connection.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name GLOB 'source_binding_*' OR name IN ('source_node_bindings', 'source_edge_bindings') OR (tbl_name IN ('source_binding_meta', 'source_node_bindings', 'source_edge_bindings') AND name NOT GLOB 'sqlite_*') OR (type = 'trigger' AND tbl_name IN ('nodes', 'edges'))")?;
+    let mut statement = connection.prepare(&format!(
+        "SELECT name, type, sql FROM sqlite_schema WHERE {OWNED_SCHEMA_WHERE}"
+    ))?;
     let rows = statement.query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
@@ -276,6 +341,100 @@ fn load_binding(
     .transpose()
 }
 
+enum SelectionBinding {
+    Absent,
+    Invalid,
+    Present(SourceBinding),
+}
+
+fn load_selection_binding(
+    connection: &Connection,
+    fact: &FactKey,
+) -> Result<SelectionBinding, GraphError> {
+    let table_and_key = match fact {
+        FactKey::Node { .. } => "source_node_bindings WHERE node_id = ?1",
+        FactKey::Edge { .. } => {
+            "source_edge_bindings WHERE source = ?1 AND label = ?2 AND destination = ?3"
+        }
+    };
+    // Guard the serialized byte lengths in SQL before returning any body. BLOB
+    // casts let malformed UTF-8 remain a per-key invalid association rather than
+    // a String conversion error that aborts the complete selection window.
+    let sql = format!(
+        "SELECT
+         CASE WHEN typeof(repo_key) = 'text' AND length(CAST(repo_key AS BLOB)) BETWEEN 1 AND {MAX_REPO_BYTES} THEN CAST(repo_key AS BLOB) END,
+         CASE WHEN typeof(receipt_id) = 'text' AND length(CAST(receipt_id AS BLOB)) BETWEEN 1 AND {MAX_RECEIPT_BYTES} THEN CAST(receipt_id AS BLOB) END,
+         CASE WHEN typeof(emitted_fact_digest) = 'text' AND length(CAST(emitted_fact_digest AS BLOB)) = 72 THEN CAST(emitted_fact_digest AS BLOB) END
+         FROM {table_and_key}"
+    );
+    let read = |row: &rusqlite::Row<'_>| {
+        Ok((
+            row.get::<_, Option<Vec<u8>>>(0)?,
+            row.get::<_, Option<Vec<u8>>>(1)?,
+            row.get::<_, Option<Vec<u8>>>(2)?,
+        ))
+    };
+    let row = match fact {
+        FactKey::Node { id } => connection.query_row(&sql, [id], read).optional()?,
+        FactKey::Edge {
+            source,
+            label,
+            destination,
+        } => connection
+            .query_row(&sql, params![source, label, destination], read)
+            .optional()?,
+    };
+    let Some((repo_key, receipt_id, emitted_fact_digest)) = row else {
+        return Ok(SelectionBinding::Absent);
+    };
+    let (Some(repo_key), Some(receipt_id), Some(emitted_fact_digest)) = (
+        repo_key.and_then(|bytes| String::from_utf8(bytes).ok()),
+        receipt_id.and_then(|bytes| String::from_utf8(bytes).ok()),
+        emitted_fact_digest.and_then(|bytes| String::from_utf8(bytes).ok()),
+    ) else {
+        return Ok(SelectionBinding::Invalid);
+    };
+    let binding = SourceBinding {
+        fact: fact.clone(),
+        repo_key,
+        receipt_id,
+        emitted_fact_digest,
+    };
+    Ok(if binding.validate().is_ok() {
+        SelectionBinding::Present(binding)
+    } else {
+        SelectionBinding::Invalid
+    })
+}
+
+fn snapshot_digest(
+    graph: &(Vec<Node>, Vec<Edge>),
+    fact: &FactKey,
+) -> Result<Option<String>, GraphError> {
+    // Ordinary snapshot rows already have these orders. Avoid reloading JSON or
+    // allocating a second index over the entire graph for at most 65 identities.
+    match fact {
+        FactKey::Node { id } => graph
+            .0
+            .binary_search_by(|node| node.id.cmp(id))
+            .ok()
+            .map(|index| node_digest(&graph.0[index]))
+            .transpose(),
+        FactKey::Edge {
+            source,
+            label,
+            destination,
+        } => graph
+            .1
+            .binary_search_by(|edge| {
+                (&edge.src, &edge.dst, &edge.label).cmp(&(source, destination, label))
+            })
+            .ok()
+            .map(|index| edge_digest(&graph.1[index]))
+            .transpose(),
+    }
+}
+
 fn current_digest(connection: &Connection, fact: &FactKey) -> Result<Option<String>, GraphError> {
     match fact {
         FactKey::Node { id } => {
@@ -322,6 +481,90 @@ fn current_digest(connection: &Connection, fact: &FactKey) -> Result<Option<Stri
 }
 
 impl SqliteGraphStore {
+    /// Copy the complete graph and bounded, sorted unique source selections in
+    /// one read transaction. More than 65 raw keys and invalid identities fail
+    /// before database access. Empty selections still copy the complete graph.
+    ///
+    /// Schema, query and graph-data failures abort the operation; malformed
+    /// selected association metadata instead yields a per-key `Invalid` state.
+    /// The owned result grants no source access and establishes no input closure.
+    pub fn read_source_selection_snapshot(
+        &self,
+        keys: &[FactKey],
+    ) -> Result<SourceSelectionSnapshot, GraphError> {
+        self.read_source_selection_snapshot_inner(keys, None)
+    }
+
+    /// Copy a complete bounded graph and the same source-selection states as
+    /// [`Self::read_source_selection_snapshot`] in one transaction. The graph
+    /// limit applies to every call, including incremental union rechecks after
+    /// a live graph has grown. Limits and the existing raw 65-key cap are checked
+    /// before database access; invalid selected bindings remain per-key states.
+    pub fn read_source_selection_snapshot_bounded(
+        &self,
+        keys: &[FactKey],
+        limits: SnapshotReadLimits,
+    ) -> Result<SourceSelectionSnapshot, GraphError> {
+        limits.validate()?;
+        self.read_source_selection_snapshot_inner(keys, Some(limits))
+    }
+
+    fn read_source_selection_snapshot_inner(
+        &self,
+        keys: &[FactKey],
+        limits: Option<SnapshotReadLimits>,
+    ) -> Result<SourceSelectionSnapshot, GraphError> {
+        if keys.len() > MAX_SOURCE_SELECTION_KEYS {
+            return Err(GraphError::SourceBinding("too many source selection keys"));
+        }
+        for key in keys {
+            key.validate()?;
+        }
+        let unique: BTreeSet<_> = keys.iter().collect();
+        let transaction = self.conn.unchecked_transaction()?;
+        if limits.is_some() {
+            preflight_selection_schema(&self.conn)?;
+        }
+        check_schema(&self.conn)?;
+        let graph = match limits {
+            Some(limits) => self.read_snapshot_rows_bounded(limits)?,
+            None => self.read_snapshot_rows(None, None)?,
+        };
+        let mut selections = Vec::with_capacity(unique.len());
+        for fact in unique {
+            let fact_digest = snapshot_digest(&graph, fact)?;
+            let binding = load_selection_binding(&self.conn, fact)?;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                let after_lookup = self.source_binding_after_lookup.borrow_mut().take();
+                if let Some(after_lookup) = after_lookup {
+                    after_lookup()?;
+                }
+            }
+            let state = match (fact_digest, binding) {
+                (None, SelectionBinding::Absent) => FactSourceState::Missing,
+                (Some(fact_digest), SelectionBinding::Absent) => {
+                    FactSourceState::Absent { fact_digest }
+                }
+                (Some(fact_digest), SelectionBinding::Present(binding))
+                    if binding.emitted_fact_digest == fact_digest =>
+                {
+                    FactSourceState::Present {
+                        fact_digest,
+                        binding,
+                    }
+                }
+                (fact_digest, _) => FactSourceState::Invalid { fact_digest },
+            };
+            selections.push(FactSourceSelection {
+                fact: fact.clone(),
+                state,
+            });
+        }
+        transaction.commit()?;
+        Ok(SourceSelectionSnapshot { graph, selections })
+    }
+
     /// Publish scoped facts and replace only this repo's current source bindings
     /// in one write transaction. Every requested binding must match its final
     /// fact; missing, duplicate, wrong-owner or mismatched bindings roll back.
@@ -487,7 +730,7 @@ impl SqliteGraphStore {
     }
 
     /// One-shot deterministic cross-connection hook after association lookup,
-    /// while the normal current-binding read transaction is still open.
+    /// while the current-binding or selection-snapshot transaction is still open.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn set_source_binding_after_lookup_hook(

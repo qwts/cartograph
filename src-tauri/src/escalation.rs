@@ -3,15 +3,23 @@
 //! assembles *inputs* for the bounded T3 broker — no code path can mutate
 //! the graph (R-INT-1/R-INT-3): proposals are staged for human curation.
 
-use agents::{AgentCandidate, AgentEvidence, AgentTask};
-use core_graph::{Edge, Node};
+use agents::AgentTask;
+#[cfg(test)]
+use agents::{AgentCandidate, AgentEvidence};
+#[cfg(test)]
+use core_graph::Edge;
+use core_graph::Node;
+#[cfg(test)]
 use core_prov::{ConfidenceTier, EvidenceRef};
 use serde::Serialize;
+#[cfg(test)]
 use std::collections::BTreeSet;
 
 /// How many hops of graph context feed the candidate set.
+#[cfg(test)]
 const CONTEXT_HOPS: u32 = 2;
 /// Broker default bound is 20; stay under it with room for evidence spans.
+#[cfg(test)]
 const MAX_CANDIDATES: usize = 8;
 
 /// One runnable escalation option shown as a strategy card (#113 modal).
@@ -56,6 +64,9 @@ pub struct GapStrategyReport {
     /// Candidate targets the model would be allowed to choose from.
     pub candidates: usize,
     pub strategies: Vec<StrategyCard>,
+    /// Copied receipt and selection scope used by the prepared preview.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_basis: Option<agents::TaskSourceBasisV2>,
 }
 
 fn node_name(node: &Node) -> String {
@@ -91,6 +102,7 @@ fn attempted_tiers(node: &Node) -> Vec<String> {
 /// Assemble the bounded T3 task for one gap from the whole-graph projection.
 /// `read_span` loads the exact evidence text (a stub in tests); a span that
 /// cannot be read is skipped rather than invented.
+#[cfg(test)]
 pub fn assemble_task(
     nodes: &[Node],
     edges: &[Edge],
@@ -233,7 +245,7 @@ pub fn strategies(
 ) -> GapStrategyReport {
     let export_impact = "Review decisions are saved with the staged proposal. Accepted proposals \
                          await shared-context reconciliation; they do not yet change exports. \
-                         Working-tree evidence is unverified against its cited revision. \
+                         Evidence origins are recorded per supplied item; retained parser input still has incomplete input coverage. \
                          Proposals retain T3/InferredWeak and never modify T0/T1 facts."
         .to_string();
     let disclosure = llm::anthropic::disclosure(llm::anthropic::ClaudeLane::Opus);
@@ -293,6 +305,7 @@ pub fn strategies(
             .collect(),
         candidates: task.candidates.len(),
         strategies,
+        source_basis: None,
     }
 }
 

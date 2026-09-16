@@ -3,6 +3,8 @@ import type { EscalationState } from '../store';
 import type { EgressPreview } from './EgressConsentDialog';
 import { EgressConsentDialog } from './EgressConsentDialog';
 import { TierBadge } from './TierBadge';
+import { ProposalBasisAssessment } from './ProposalBasisAssessment';
+import { TaskEvidence } from './TaskEvidence';
 
 export interface ResolutionStrategyModalProps {
   state: EscalationState;
@@ -11,6 +13,7 @@ export interface ResolutionStrategyModalProps {
   onDismissPreview: () => void;
   onDecide: (decision: 'accepted' | 'rejected') => void;
   onClose: () => void;
+  onAssessBasis?: () => void;
 }
 
 /** Resolution Strategy modal (handoff §Resolution Strategy, screenshot 11):
@@ -24,6 +27,7 @@ export function ResolutionStrategyModal({
   onDismissPreview,
   onDecide,
   onClose,
+  onAssessBasis,
 }: ResolutionStrategyModalProps) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -96,6 +100,8 @@ export function ResolutionStrategyModal({
               </p>
             </div>
 
+            <TaskEvidence basis={report.source_basis} />
+
             <div className="strategy-cards">
               {report.strategies.map((strategy) => (
                 <div
@@ -154,10 +160,7 @@ export function ResolutionStrategyModal({
               Review preserves T3 / InferredWeak. Accepted proposals await context reconciliation;
               review does not yet change context or exports, and never overwrites T0/T1.
             </p>
-            <p className="muted">
-              Source binding unverified: captured working-tree spans have not been verified
-              against the cited revisions. Acceptance does not certify evidence freshness.
-            </p>
+            <TaskEvidence basis={proposal.source_basis} />
             <details>
               <summary>Cited evidence ({proposal.provenance.evidence.length})</summary>
               <ul className="consent-notes">
@@ -171,11 +174,15 @@ export function ResolutionStrategyModal({
               </ul>
             </details>
             {proposal.review_note && <p className="muted">Review note: {proposal.review_note}</p>}
+            <ProposalBasisAssessment
+              state={state.basisAssessment?.proposalId === proposal.proposal_id ? state.basisAssessment : undefined}
+              onAssess={onAssessBasis}
+            />
             {state.decided ? (
               <p className="consent-status" data-testid="decision-recorded">
                 Decision recorded: {state.decided}.
                 {state.decided === 'accepted' && ' Awaiting context reconciliation.'}
-                {' Source binding remains unverified.'}
+                {proposal.source_basis ? ' Saved evidence origins remain unchanged.' : ' Source binding remains unverified.'}
               </p>
             ) : (
               <footer className="egress-actions">

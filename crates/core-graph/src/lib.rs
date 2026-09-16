@@ -6,8 +6,11 @@
 //! embedded-graph-engine adapter implements the same trait if the OQ-3
 //! benchmark ever demands it.
 
+mod bounded;
 pub mod rules;
 pub mod source;
+
+pub use bounded::{SnapshotBoundsError, SnapshotReadLimits};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -65,6 +68,9 @@ pub enum GraphError {
     /// Invalid or incompatible current-source association metadata.
     #[error("source binding: {0}")]
     SourceBinding(&'static str),
+    /// An opt-in bounded snapshot rejected its input or admission limits.
+    #[error("bounded snapshot: {0}")]
+    SnapshotBounds(#[from] SnapshotBoundsError),
 }
 
 /// Storage abstraction for the unified graph (ADR-0008).
