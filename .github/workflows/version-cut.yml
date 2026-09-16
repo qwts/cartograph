@@ -110,7 +110,14 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          git -c 'credential.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f' push --force origin "$BRANCH"
+          # The runner-authored commit is only a local staging point: the ruleset
+          # requires signed commits, so the branch is written through the git
+          # data API as chores-dumb, which GitHub signs and reports as verified.
+          node scripts/version-commit.mjs publish \
+            --repo "$GITHUB_REPOSITORY" \
+            --branch "$BRANCH" \
+            --base "$GITHUB_SHA" \
+            --message 'Version packages'
           {
             echo "Merging this PR cuts v$version."
             echo

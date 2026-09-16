@@ -7,6 +7,10 @@ the release rules in `AGENTS.md`. macOS bundle trust is governed by ADR-0016.
 
 1. Merge behavior changes with their required Changesets. The **Version cut**
    workflow keeps the `changeset-release/main` **Version packages** PR current.
+   That commit is written through the GitHub git data API as `chores-dumb`
+   (`scripts/version-commit.mjs`), so it is GitHub-signed and satisfies the
+   default-branch `required_signatures` rule; nothing on the branch is pushed
+   from the runner's own git identity.
 2. Review that ready PR, require its exact head and merge-queue candidate to
    pass the normal complete suite, and merge it. Version-cut does not dispatch
    a second equivalent suite. This merge is the release decision: automation
