@@ -110,7 +110,9 @@ enabled, the exact-commit `main` fallback protects merge/squash SHA rewrites.
 - Version application is automation-owned. Do not run `changeset version`,
   edit version mirrors, or create release tags by hand. The version-cut
   workflow keeps a **Version packages** PR current while Changesets are
-  pending. Merging that reviewed PR is the release decision: it creates the
+  pending; its commit is API-written as `chores-dumb` so it is
+  signature-verified under the default-branch ruleset. Merging that reviewed
+  PR is the release decision: it creates the
   exact annotated `vX.Y.Z` tag and dispatches the release handoff. A failed
   handoff is recovered by manually dispatching the version-cut workflow; tags
   are immutable and are never moved.

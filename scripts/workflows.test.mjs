@@ -23,6 +23,11 @@ test('version-cut preserves review, evidence, and immutable-tag gates', () => {
   assert.match(workflow, /secrets\.CHORES_DUMB_CLIENT_ID/u);
   assert.match(workflow, /secrets\.CHORES_DUMB_PRIVATE_KEY/u);
   assert.doesNotMatch(workflow, /RELEASE_TOKEN|secrets\.GITHUB_TOKEN/u);
+  // The version branch must be written through the git data API so the commit
+  // is GitHub-signed; a runner-authored push cannot satisfy required_signatures.
+  assert.match(workflow, /node scripts\/version-commit\.mjs publish/u);
+  assert.match(workflow, /--base "\$GITHUB_SHA"/u);
+  assert.doesNotMatch(workflow, /git push --force origin "\$BRANCH"/u);
 });
 
 test('CI enforces the governed lifecycle without draft jobs', () => {
