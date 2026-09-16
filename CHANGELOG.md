@@ -1,5 +1,12 @@
 # cartograph
 
+## 0.14.0
+
+### Minor Changes
+
+- d1e9c20: Add bounded Domain analyst and Evidence auditor investigations over recovered context, with scoped questions, original evidence citations, per-step cloud consent and durable findings and activity. Generated findings remain inferred; interrupted or uncertain model calls are never automatically replayed.
+- 36e2cdf: Bind new agent tasks and staged proposals to their retained parser evidence where available, distinguish unverified working-tree inputs, and expose a read-only assessment of changes since preparation. Existing proposal history remains unchanged and all accepted results still await context reconciliation. Bounded selection and captured-file validation limits are explicit.
+
 ## 0.13.0
 
 ### Minor Changes
