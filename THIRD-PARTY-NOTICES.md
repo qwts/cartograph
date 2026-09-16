@@ -4181,7 +4181,7 @@ Used by:
 - regex 1.13.1 — https://github.com/rust-lang/regex
 - rustc-demangle 0.1.28 — https://github.com/rust-lang/rustc-demangle
 - rustix 1.1.4 — https://github.com/bytecodealliance/rustix
-- rustls 0.23.44 — https://github.com/rustls/rustls
+- rustls 0.23.45 — https://github.com/rustls/rustls
 - scopeguard 1.2.0 — https://github.com/bluss/scopeguard
 - security-framework-sys 2.17.0 — https://github.com/kornelski/rust-security-framework
 - security-framework 3.7.0 — https://github.com/kornelski/rust-security-framework
