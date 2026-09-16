@@ -789,6 +789,9 @@ pub(crate) struct RetentionPreview {
     pub historical_references: usize,
     /// Actual v2 evidence references in immutable staged proposals.
     pub staged_references: usize,
+    /// Actual investigation/receipt uses, including selected present bindings
+    /// whose original source text has not been requested.
+    pub investigation_references: usize,
     pub fingerprint: String,
 }
 
@@ -842,15 +845,26 @@ fn preview_locked(state: &AppState, source: &RegisteredSource) -> Result<Retenti
         .map_err(storage_error)?
         .captured_receipt_references(&source.source_id)
         .map_err(storage_error)?;
+    // The caller already holds this source's retention guard. Acquisition
+    // publishes its ledger/index under the same shared guard, so an exclusive
+    // forget cannot race a newly admitted reference. Hold no other store mutex
+    // across this short validated JobStore read.
+    let investigation_references = state
+        .jobs
+        .lock()
+        .map_err(storage_error)?
+        .investigation_receipt_references(&source.source_id)
+        .map_err(storage_error)?;
     let fingerprint = core_prov::content_hash(
         &serde_json::to_vec(&(
-            "retained-source-preview-v2",
+            "retained-source-preview-v3",
             &source.source_id,
             &source.repo_key,
             &capture_ids,
             &receipt_ids,
             &current_bindings,
             &staged_references,
+            &investigation_references,
         ))
         .map_err(storage_error)?,
     );
@@ -865,6 +879,7 @@ fn preview_locked(state: &AppState, source: &RegisteredSource) -> Result<Retenti
         current_references: current_count,
         historical_references: receipt_ids.len().saturating_sub(current_count),
         staged_references: staged_references.len(),
+        investigation_references: investigation_references.len(),
         capture_ids,
         fingerprint,
     })

@@ -7,6 +7,7 @@
 //! constructed outside this crate, so callers cannot bypass the gate.
 
 pub mod anthropic;
+pub mod bounded;
 pub mod catalog;
 
 use reqwest::Url;
@@ -267,6 +268,22 @@ pub trait LlmProvider: Send + Sync {
     fn complete(&self, _request: &ProviderCompletionRequest) -> Result<Completion, ProviderError> {
         Err(ProviderError::Unsupported("chat completion"))
     }
+
+    /// Pure identity of the separately bounded completion protocol. Legacy
+    /// providers must opt in explicitly; no unbounded fallback is permitted.
+    fn bounded_profile(&self) -> Result<bounded::ProviderProfile, bounded::BoundedCallError> {
+        Err(bounded::BoundedCallError::unsupported())
+    }
+
+    /// Execute one already-authorized bounded invocation. The host owns durable
+    /// consent consumption, invocation reservation and execution fencing.
+    fn complete_bounded(
+        &self,
+        _request: &bounded::AuthorizedBoundedCompletion,
+        _control: &bounded::CompletionControl<'_>,
+    ) -> Result<bounded::BoundedCompletion, bounded::BoundedCallError> {
+        Err(bounded::BoundedCallError::unsupported())
+    }
 }
 
 /// Default-deny completion firewall shared by semantic and agentic callers.
@@ -350,6 +367,7 @@ pub struct OllamaProvider {
     completion_model: String,
     provider_id: String,
     client: Client,
+    bounded_client: Client,
 }
 
 impl OllamaProvider {
@@ -395,6 +413,7 @@ impl OllamaProvider {
             base_url.set_path(&format!("{}/", base_url.path()));
         }
         let client = build_direct_loopback_client(Client::builder(), timeout)?;
+        let bounded_client = bounded::build_client(Client::builder(), true)?;
         let embedding_model = embedding_model.into();
         let completion_model = completion_model.into();
         let provider_id = if embedding_model == completion_model {
@@ -408,6 +427,7 @@ impl OllamaProvider {
             completion_model,
             provider_id,
             client,
+            bounded_client,
         })
     }
 
@@ -500,6 +520,23 @@ struct ChatResponseMessage {
 }
 
 impl LlmProvider for OllamaProvider {
+    fn bounded_profile(&self) -> Result<bounded::ProviderProfile, bounded::BoundedCallError> {
+        bounded::ollama_profile(self.id(), &self.base_url, &self.completion_model)
+    }
+
+    fn complete_bounded(
+        &self,
+        request: &bounded::AuthorizedBoundedCompletion,
+        control: &bounded::CompletionControl<'_>,
+    ) -> Result<bounded::BoundedCompletion, bounded::BoundedCallError> {
+        bounded::complete_ollama(
+            &self.bounded_client,
+            &self.bounded_profile()?,
+            request,
+            control,
+        )
+    }
+
     fn id(&self) -> &str {
         &self.provider_id
     }
@@ -773,6 +810,7 @@ mod tests {
             completion_model: "test-model".into(),
             provider_id: "ollama:test-model".into(),
             client,
+            bounded_client: bounded::build_client(Client::builder(), true).unwrap(),
         };
         assert_eq!(provider.embed(&["orders".into()]).unwrap(), [[1.0, 0.0]]);
         server.join().unwrap();

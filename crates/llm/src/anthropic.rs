@@ -107,6 +107,7 @@ pub struct AnthropicProvider {
     api_key: String,
     endpoint: String,
     client: Client,
+    bounded_client: Client,
 }
 
 impl AnthropicProvider {
@@ -132,7 +133,14 @@ impl AnthropicProvider {
             client: Client::builder()
                 .timeout(Duration::from_secs(600))
                 .build()?,
+            bounded_client: crate::bounded::build_client(Client::builder(), false)?,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_bounded_client(mut self, client: Client) -> Self {
+        self.bounded_client = client;
+        self
     }
 
     fn request_body(&self, request: &ProviderCompletionRequest) -> serde_json::Value {
@@ -183,6 +191,37 @@ struct StopDetails {
 }
 
 impl LlmProvider for AnthropicProvider {
+    fn bounded_profile(
+        &self,
+    ) -> Result<crate::bounded::ProviderProfile, crate::bounded::BoundedCallError> {
+        // The investigation protocol has no server-side fallback or alternate
+        // thinking-model lane. Legacy Fable completion remains unchanged.
+        if self.lane == ClaudeLane::Fable {
+            return Err(crate::bounded::BoundedCallError::unsupported());
+        }
+        Ok(crate::bounded::ProviderProfile {
+            protocol_version: crate::bounded::PROTOCOL_VERSION.into(),
+            provider_id: self.provider_id.clone(),
+            locality: Locality::Cloud,
+            endpoint_id: self.endpoint.clone(),
+            requested_model: self.lane.model_id().into(),
+        })
+    }
+
+    fn complete_bounded(
+        &self,
+        request: &crate::bounded::AuthorizedBoundedCompletion,
+        control: &crate::bounded::CompletionControl<'_>,
+    ) -> Result<crate::bounded::BoundedCompletion, crate::bounded::BoundedCallError> {
+        crate::bounded::complete_anthropic(
+            &self.bounded_client,
+            &self.api_key,
+            &self.bounded_profile()?,
+            request,
+            control,
+        )
+    }
+
     fn id(&self) -> &str {
         &self.provider_id
     }

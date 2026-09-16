@@ -13,6 +13,8 @@ export interface JobsSurfaceProps {
   onRetry: (id: number) => void;
   /** Pin this recorded recovery job in the Recover surface. */
   onViewLive?: (id: number) => void;
+  onViewInvestigation?: (id: string) => void;
+  onCancelInvestigation?: (id: string) => void;
 }
 
 /** Terminal statuses removed by Clear finished; resumable work never is. */
@@ -55,6 +57,8 @@ export function JobsSurface({
   onCancel,
   onRetry,
   onViewLive,
+  onViewInvestigation,
+  onCancelInvestigation,
 }: JobsSurfaceProps) {
   const [confirming, setConfirming] = useState(false);
   const finished = jobs.filter((job) => FINISHED.has(job.status)).length;
@@ -112,6 +116,7 @@ export function JobsSurface({
           {jobs.map((job) => {
             const action = actionFor(job.status);
             const unknown = !hasRecordedExecution(job);
+            const investigation = job.investigation_id;
             const legacyRetry = (unknown || job.kind.startsWith('ingest:')) && action?.kind === 'retry';
             return (
               <li key={job.id} className={`job-row job-${job.status}`}>
@@ -173,7 +178,10 @@ export function JobsSurface({
                   <p className="job-times muted">
                     created {job.created_at} · updated {job.updated_at}
                   </p>
+                  {investigation && <p className="muted">Specialist history is kept separately. Open the investigation for its findings, consent and execution outcome; uncertain calls are never replayed automatically.</p>}
                 </div>
+                {investigation && onViewInvestigation && <button type="button" className="job-action secondary-button"
+                  onClick={() => onViewInvestigation(investigation)}>View investigation</button>}
                 {onViewLive &&
                   !unknown &&
                   (job.status === 'running' || job.status === 'queued') &&
@@ -186,14 +194,15 @@ export function JobsSurface({
                       View live
                     </button>
                   )}
-                {action && (
+                {action && (!investigation || action.kind === 'cancel') && (
                   <button
                     type="button"
                     className="job-action"
-                    disabled={legacyRetry}
+                    disabled={legacyRetry || Boolean(investigation && !onCancelInvestigation)}
                     title={legacyRetry ? 'Start a fresh operation from the source; this historical execution cannot be resumed.' : undefined}
                     onClick={() =>
-                      action.kind === 'cancel' ? onCancel(job.id) : onRetry(job.id)
+                      investigation ? onCancelInvestigation?.(investigation) :
+                        action.kind === 'cancel' ? onCancel(job.id) : onRetry(job.id)
                     }
                   >
                     {action.label}

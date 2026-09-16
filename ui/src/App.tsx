@@ -28,6 +28,9 @@ import { SourceRetention } from './components/SourceRetention';
 import { sameFactKey, usePrimarySourceStore } from './primarySourceStore';
 import { hasRecordedExecution, selectRecoveryJob } from './jobPresentation';
 import { TopologyCard } from './components/TopologyCard';
+import { InvestigationsSurface } from './components/InvestigationsSurface';
+import { investigationIsActive, useInvestigationStore } from './investigationStore';
+import type { InvestigationChanged } from './investigationTypes';
 import type { Job, SpecArtifact, SpecBundle } from './store';
 
 const AtlasCanvas = lazy(() =>
@@ -67,6 +70,7 @@ function copySpecArtifact(artifact: SpecArtifact) {
 
 export default function App() {
   const primarySource = usePrimarySourceStore();
+  const investigations = useInvestigationStore();
   const {
     view,
     recoverJobId,
@@ -158,6 +162,52 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (view === 'investigations') {
+      void useInvestigationStore.getState().loadCatalog();
+      void useInvestigationStore.getState().loadHistory();
+    }
+  }, [view]);
+
+  // Pushes are invalidations only. Reconnect/polling reads the durable journal;
+  // no client timer fabricates a step or completion percentage.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const stop = await listen<InvestigationChanged>('investigation://changed', (event) =>
+          useInvestigationStore.getState().invalidate(event.payload));
+        if (disposed) stop(); else unlisten = stop;
+      } catch { /* Browser previews have no event bridge. */ }
+    })();
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    if (view !== 'investigations') return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      let state = useInvestigationStore.getState();
+      if (!state.historyLoading && state.history.some(investigationIsActive)) await state.loadHistory();
+      if (disposed) return;
+      state = useInvestigationStore.getState();
+      const summary = state.detail ?? state.history.find((item) => item.investigation_id === state.selectedId);
+      if (state.selectedId && !state.loading && (!summary || investigationIsActive(summary) || state.error)) await state.refreshSelected();
+      if (!disposed) timer = setTimeout(() => void poll(), 2500);
+    };
+    const reconnect = () => {
+      const state = useInvestigationStore.getState();
+      if (!state.historyLoading) void state.loadHistory();
+      if (!state.loading) void state.refreshSelected();
+    };
+    timer = setTimeout(() => void poll(), 2500);
+    window.addEventListener('focus', reconnect);
+    return () => { disposed = true; clearTimeout(timer); window.removeEventListener('focus', reconnect); };
+  }, [view, investigations.selectedId]);
 
   // Live job transitions (#117): the core pushes every change, so progress
   // and the global bar stay current without polling. Outside Tauri (browser
@@ -279,11 +329,14 @@ export default function App() {
   }, [navigate, view]);
 
   const busy =
-    ingestBusy || specBusy || clearBusy || jobs.some((job) => hasRecordedExecution(job) && job.status === 'running');
+    ingestBusy || specBusy || clearBusy || investigations.history.some((item) => item.invocation_pending) ||
+    jobs.some((job) => hasRecordedExecution(job) && job.status === 'running');
   const scope: Scope = selected
     ? { kind: 'trail', label: 'Single evidence trail' }
     : view === 'atlas' && atlasLayer !== 'All layers'
       ? { kind: 'layer', label: `Atlas · ${atlasLayer}` }
+      : view === 'investigations' && investigations.detail?.scope.type === 'neighborhood'
+        ? { kind: 'trail', label: `Investigation · ${investigations.detail.scope.hops} hop(s)` }
       : { kind: 'system', label: 'Whole system' };
   const systemName = ingestSummary ? 'Ingested system' : null;
   const status = ingestBusy
@@ -311,6 +364,7 @@ export default function App() {
               onTriageGaps={() => navigate('gaps')}
               onProvenance={() => navigate('prov')}
               onOpenArtifact={() => navigate('spec')}
+              onInvestigate={() => navigate('investigations')}
             />
             <div className="card-grid utility">
               <GraphStatsCard
@@ -328,6 +382,8 @@ export default function App() {
             </div>
           </>
         );
+      case 'investigations':
+        return <InvestigationsSurface state={investigations} anchors={atlas.nodes} canStart={backend === 'up'} />;
       case 'atlas':
         return (
           <Suspense fallback={<section className="atlas-card">Loading Atlas graph…</section>}>
@@ -453,11 +509,13 @@ export default function App() {
         return (
           <JobsSurface
             jobs={jobs}
-            actionError={jobActionError}
+            actionError={jobActionError ?? investigations.actionError}
             canClear={backend === 'up'}
             onClearFinished={() => void clearFinishedJobs()}
             onCancel={(id) => void cancelJob(id)}
             onRetry={(id) => void retryJob(id)}
+            onViewInvestigation={(id) => { navigate('investigations'); void investigations.open(id); }}
+            onCancelInvestigation={(id) => void investigations.cancel(id)}
             onViewLive={(id) => viewRecoveryJob(id)}
           />
         );

@@ -10,6 +10,7 @@ mod evidence;
 mod findings;
 #[cfg(test)]
 mod graph_projection_tests;
+mod investigations;
 mod job_execution;
 #[cfg(test)]
 mod job_execution_host_tests;
@@ -47,6 +48,7 @@ struct AppState {
     graph: Mutex<SqliteGraphStore>,
     jobs: Mutex<JobStore>,
     job_execution_locks: JobExecutionLocks,
+    investigations: investigations::InvestigationRuntime,
     findings: Mutex<FindingStore>,
     settings: Mutex<settings::SettingsStore>,
     decisions: Mutex<agents::DecisionLog>,
@@ -2578,8 +2580,22 @@ fn ingest_path_blocking(path: String, app: tauri::AppHandle) -> Result<IngestSum
 /// boundary (#117).
 #[tauri::command]
 fn cancel_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Job, String> {
-    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let job = jobs.cancel(id).map_err(|e| e.to_string())?;
+    let job = state
+        .jobs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .cancel(id)
+        .map_err(|e| e.to_string())?;
+    if let Some(investigation_id) = &job.investigation_id {
+        state.investigations.wake(investigation_id);
+        let detail = state
+            .jobs
+            .lock()
+            .map_err(|e| e.to_string())?
+            .investigation(investigation_id)
+            .map_err(|e| e.to_string())?;
+        investigations::emit_changed(&app, &detail);
+    }
     emit_job(&app, &job);
     Ok(job)
 }
@@ -3332,6 +3348,7 @@ fn main() {
             // Only unchanged recorded attempts whose OS ownership is available
             // are interrupted. Live and legacy-unknown jobs remain untouched.
             recover_jobs(&jobs, &job_execution_locks).map_err(std::io::Error::other)?;
+            investigations::recover(&jobs, &job_execution_locks).map_err(std::io::Error::other)?;
             let findings = FindingStore::open(&state_path)?;
             let sources =
                 SourceRegistry::open(&state_path, &data_dir).map_err(std::io::Error::other)?;
@@ -3342,6 +3359,7 @@ fn main() {
             app.manage(AppState {
                 graph: Mutex::new(graph),
                 jobs,
+                investigations: crate::investigations::InvestigationRuntime::default(),
                 job_execution_locks,
                 findings: Mutex::new(findings),
                 settings: Mutex::new(tier_settings),
@@ -3356,6 +3374,17 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            investigations::commands::investigation_specialists,
+            investigations::commands::start_investigation,
+            investigations::commands::list_investigations,
+            investigations::commands::get_investigation,
+            investigations::commands::investigation_events,
+            investigations::commands::investigation_result,
+            investigations::commands::investigation_consent,
+            investigations::commands::approve_investigation_step,
+            investigations::commands::decline_investigation_step,
+            investigations::commands::cancel_investigation,
+            investigations::commands::read_investigation_citation,
             ping,
             graph_stats,
             clear_graph,
@@ -6011,6 +6040,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
             job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
@@ -6111,6 +6141,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
             job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
@@ -6205,6 +6236,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
             job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(
@@ -6386,6 +6418,7 @@ export function App() {
                 SqliteGraphStore::open(dir.path().join("graph.db")).unwrap(),
             ),
             jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
             job_execution_locks: super::job_execution_host_tests::locks(&state_path),
             findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
             settings: std::sync::Mutex::new(

@@ -13,6 +13,8 @@ export interface GraphStats {
  *  optional so the UI degrades gracefully against a pre-v2 core. */
 export interface Job {
   id: number;
+  /** Host-resolved durable association; never inferred from the kind string. */
+  investigation_id?: string | null;
   kind: string;
   /** queued | running | done | failed | cancelled | interrupted. */
   status: string;

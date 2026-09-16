@@ -15,6 +15,7 @@ export type SurfaceView =
   | 'connect'
   | 'preflight'
   | 'recover'
+  | 'investigations'
   // In-app Help (#154): reachable from menu, palette, header, and '?'.
   | 'help';
 
@@ -62,6 +63,7 @@ const INGEST_LABELS: Partial<Record<SurfaceView, string>> = {
 
 export function surfaceLabel(view: SurfaceView): string {
   if (view === 'help') return 'Help';
+  if (view === 'investigations') return 'Investigations';
   return (
     INGEST_LABELS[view] ?? SURFACES.find((surface) => surface.id === view)?.label ?? view
   );
@@ -69,5 +71,5 @@ export function surfaceLabel(view: SurfaceView): string {
 
 /** The rail surface to highlight for a view (ingest flow lights Workspace). */
 export function railSurface(view: SurfaceView): SurfaceView {
-  return view in INGEST_LABELS ? 'workspace' : view;
+  return view in INGEST_LABELS || view === 'investigations' ? 'workspace' : view;
 }

@@ -559,6 +559,96 @@ need not share one ID. **Fail:** transport-local task copies disagree, required
 metadata is missing, or task identity/results are lost. Retain the request/status
 transcripts, durations, task records, and restart evidence.
 
+## MT-H4-02 — Controlled local specialist investigation (AC-0191, T-0191)
+
+**Increment #404. Procedure: UNEXECUTED. H4/H5 remain PLANNED.**
+
+Prerequisites: a reachable loopback Ollama runtime and pinned model; production
+coordinator/source-reader/bounded-provider integration; a pinned captured
+TypeScript fixture with an independently reviewed expected answer kept outside
+all model inputs. Record runtime/model identity and fixture/capture hashes before
+starting. Do not provision cloud access as a substitute for this local procedure.
+
+1. Start a Domain analyst investigation over that fixture with a scoped question.
+   Record its durable task ID, request-to-ID latency, immutable specialist/prompt,
+   provider/model, graph/scope snapshot and declared limits. Retrieve ordered
+   events while the actual provider chooses query, evidence-read and finish steps.
+2. Independently inspect the supplied input ledger and saved citations against the
+   retained exact source occurrences. Compare each finding to the withheld
+   expected answer; record unsupported claims, omissions and coverage limitations.
+   Check raw source replay is absent and all generated findings remain T3/weak.
+3. Run an Evidence auditor follow-up against the selected parent's saved result.
+   Verify its history retains original scope, status, revision and uncertainty;
+   no current-source lookup silently replaces the parent's historical basis.
+4. Restart the app and reopen both task IDs and their historical citations. Change
+   or remove the checkout, and verify retained source is still the cited source.
+   Use a disposable capture to verify forgetting reports unavailability without
+   changing the saved finding or opening current source.
+5. Record actual calls, tool actions, read attempts, validation bytes, generated
+   token reservations, provider-reported usage (or unknown), elapsed time and any
+   limits/failures. Retain the journal and independent citation review on #404.
+
+**Pass:** the actual local model drives the production query/read/finish loop,
+results are evidence-supported within explicit coverage, and durable identity and
+citations survive restart and source changes. **Fail:** scripted/fabricated output
+substitutes for a model run, an oracle enters model input, source or authority is
+silently rebound, limits are bypassed, or unknown outcomes are replayed.
+
+A production-module harness run may establish coordinator/local-provider evidence
+with separately CI-tested UI behavior; it is not native-app or external-MCP
+end-to-end evidence. MT-H4-01 and all H5 cross-ingress procedures remain unexecuted
+until their actual prerequisites and steps are run.
+
+The ignored native test `investigation_local_provider_acceptance` runs the actual
+Ollama provider through the production worker and captured-source reader. It uses
+a disposable fixture and private coordinator, never the developer's app data.
+Run it from an owner-operated terminal with an already installed local model;
+agents follow the governed remote-heavy-suite policy. No model download, cloud
+fallback, hidden repair or replay is performed. Normal CI compiles this test and
+leaves it ignored.
+
+```sh
+CARTOGRAPH_ACCEPTANCE_URL=http://127.0.0.1:11434/ \
+CARTOGRAPH_ACCEPTANCE_MODEL='<installed model name>' \
+CARTOGRAPH_ACCEPTANCE_MODEL_DIGEST='<digest from the local model inventory>' \
+CARTOGRAPH_ACCEPTANCE_RUNTIME='<runtime version and hardware>' \
+CARTOGRAPH_ACCEPTANCE_OUTPUT='/absolute/path/to/a/new-run-directory' \
+cargo test -p app investigation_local_provider_acceptance -- --ignored --nocapture
+```
+
+Use a clean checkout and an output directory outside it that does not exist. The
+manifest records the exact source commit. It records runtime/model identity
+as operator-supplied evidence, not a weight-content attestation; independently
+check it against the runtime inventory. The harness retains the fixture, private
+state/capture directory and `run.json` even when model acceptance fails. It checks
+real query/read/finish activity, captured citation readability with the checkout
+removed, unchanged graph authority, a separately requested auditor follow-up,
+and coordinator reopen equality. Read the journal and observed model identity;
+unknown usage remains unknown. Connection reopen is not a native app restart.
+
+Review the results against [the withheld fixture oracle](acceptance/specialist-guard-oracle.md).
+That file is never supplied to either model. The report always leaves independent
+citation review, native restart and destructive forgetting checks pending. A
+passing harness assertion alone does not execute all of MT-H4-02 or pass AC-0191.
+
+For a governed remote run, dispatch the existing CI workflow on the exact branch
+with purpose `exact-sha-preflight` and `local_provider_acceptance=true`. This
+explicit opt-in runs the same ignored test after the full Rust suite, on the same
+GitHub-hosted Linux runner. PR, queue, main-push and ordinary manual CI events do
+not install or invoke a model. The opt-in test is part of the Rust job, so a failed
+model run fails that CI run and still uploads its diagnostic evidence.
+
+The runner script pins [Ollama v0.34.0](https://github.com/ollama/ollama/releases/tag/v0.34.0)
+by release-archive SHA-256 and [Qwen3 8B](https://ollama.com/library/qwen3:8b) by the
+full model-manifest digest. It verifies the installed runtime version and model
+inventory before invoking the production provider. Inference is loopback-only;
+Ollama cloud features are disabled. Downloading the runtime/model is runner setup,
+not application behavior or a download performed by Cartograph. The context length,
+CPU/memory, pins and observed identities are recorded. Limits and model actions
+are unchanged; slow or invalid model output is a failed observation, not a reason
+to synthesize a response or replay an unknown task. The artifact contains the
+synthetic fixture and coordinator evidence, not model weights or raw responses.
+
 ## MT-H5-01 — ACP capabilities, environment, and egress (AC-0111, T-0111)
 
 **Gates: H4–H5 PLANNED. Procedure: UNEXECUTED.**

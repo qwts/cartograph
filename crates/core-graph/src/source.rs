@@ -3,7 +3,9 @@
 //! A binding identifies an immutable producer receipt stored elsewhere. It does
 //! not establish input closure, receipt availability, source freshness or tier.
 
-use crate::{Edge, GraphError, GraphPatch, Node, SqliteGraphStore};
+use crate::{
+    Edge, GraphError, GraphPatch, Node, SnapshotBoundsError, SnapshotReadLimits, SqliteGraphStore,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -247,10 +249,28 @@ const SCHEMA: &[(&str, &str, &str)] = &[
     ),
 ];
 
+const OWNED_SCHEMA_WHERE: &str = "name GLOB 'source_binding_*' OR name IN ('source_node_bindings', 'source_edge_bindings') OR (tbl_name IN ('source_binding_meta', 'source_node_bindings', 'source_edge_bindings') AND name NOT GLOB 'sqlite_*') OR (type = 'trigger' AND tbl_name IN ('nodes', 'edges'))";
+
+fn preflight_selection_schema(connection: &Connection) -> Result<(), GraphError> {
+    // Only the opt-in bounded path changes admission behavior. Before the
+    // existing exact-schema decoder copies SQL/name bodies, bound their count,
+    // types and UTF-8 byte lengths in the same read transaction.
+    let (count, valid): (i64, bool) = connection.query_row(
+        &format!("SELECT count(*), coalesce(min(typeof(name) = 'text' AND length(CAST(name AS BLOB)) <= 256 AND typeof(type) = 'text' AND length(CAST(type AS BLOB)) <= 16 AND typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 4096), 0) FROM sqlite_schema WHERE {OWNED_SCHEMA_WHERE}"),
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if usize::try_from(count).ok() != Some(SCHEMA.len()) || !valid {
+        return Err(SnapshotBoundsError::InvalidSchema.into());
+    }
+    Ok(())
+}
+
 fn owned_schema(connection: &Connection) -> Result<BTreeMap<String, (String, String)>, GraphError> {
     // Include arbitrarily named triggers/unique indexes affecting these tables,
     // not just objects with our prefix: they can suppress or rewrite publication.
-    let mut statement = connection.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name GLOB 'source_binding_*' OR name IN ('source_node_bindings', 'source_edge_bindings') OR (tbl_name IN ('source_binding_meta', 'source_node_bindings', 'source_edge_bindings') AND name NOT GLOB 'sqlite_*') OR (type = 'trigger' AND tbl_name IN ('nodes', 'edges'))")?;
+    let mut statement = connection.prepare(&format!(
+        "SELECT name, type, sql FROM sqlite_schema WHERE {OWNED_SCHEMA_WHERE}"
+    ))?;
     let rows = statement.query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
@@ -472,6 +492,28 @@ impl SqliteGraphStore {
         &self,
         keys: &[FactKey],
     ) -> Result<SourceSelectionSnapshot, GraphError> {
+        self.read_source_selection_snapshot_inner(keys, None)
+    }
+
+    /// Copy a complete bounded graph and the same source-selection states as
+    /// [`Self::read_source_selection_snapshot`] in one transaction. The graph
+    /// limit applies to every call, including incremental union rechecks after
+    /// a live graph has grown. Limits and the existing raw 65-key cap are checked
+    /// before database access; invalid selected bindings remain per-key states.
+    pub fn read_source_selection_snapshot_bounded(
+        &self,
+        keys: &[FactKey],
+        limits: SnapshotReadLimits,
+    ) -> Result<SourceSelectionSnapshot, GraphError> {
+        limits.validate()?;
+        self.read_source_selection_snapshot_inner(keys, Some(limits))
+    }
+
+    fn read_source_selection_snapshot_inner(
+        &self,
+        keys: &[FactKey],
+        limits: Option<SnapshotReadLimits>,
+    ) -> Result<SourceSelectionSnapshot, GraphError> {
         if keys.len() > MAX_SOURCE_SELECTION_KEYS {
             return Err(GraphError::SourceBinding("too many source selection keys"));
         }
@@ -480,8 +522,14 @@ impl SqliteGraphStore {
         }
         let unique: BTreeSet<_> = keys.iter().collect();
         let transaction = self.conn.unchecked_transaction()?;
+        if limits.is_some() {
+            preflight_selection_schema(&self.conn)?;
+        }
         check_schema(&self.conn)?;
-        let graph = self.read_snapshot_rows(None, None)?;
+        let graph = match limits {
+            Some(limits) => self.read_snapshot_rows_bounded(limits)?,
+            None => self.read_snapshot_rows(None, None)?,
+        };
         let mut selections = Vec::with_capacity(unique.len());
         for fact in unique {
             let fact_digest = snapshot_digest(&graph, fact)?;
