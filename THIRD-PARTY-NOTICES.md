@@ -9470,7 +9470,7 @@ License: Apache-2.0 OR MIT
    END OF TERMS AND CONDITIONS
 ```
 
-## @types/react 19.2.18
+## @types/react 19.3.0
 
 License: MIT
 
@@ -9524,7 +9524,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## cytoscape 3.34.2
+## cytoscape 3.34.3
 
 License: MIT
 
@@ -9550,7 +9550,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## material-symbols 0.47.0
+## material-symbols 0.47.2
 
 License: Apache-2.0
 
@@ -9759,7 +9759,7 @@ License: Apache-2.0
    limitations under the License.
 ```
 
-## react 19.2.8
+## react 19.3.0
 
 License: MIT
 
@@ -9787,7 +9787,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## react-dom 19.2.8
+## react-dom 19.3.0
 
 License: MIT
 
@@ -9815,7 +9815,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## scheduler 0.27.0
+## scheduler 0.28.0
 
 License: MIT
 
