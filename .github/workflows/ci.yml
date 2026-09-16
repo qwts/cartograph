@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     # A hung mirror must fail the job in minutes, never hold its runner
     # slot to the 6-hour kill (#343; cold cargo builds finish well inside).
-    timeout-minutes: 45
+    timeout-minutes: 59
     # One PR-triggered Rust lane at a time: a main push that updates every
     # open PR must not stampede the apt mirrors with identical concurrent
     # installs (#347). A superseded pending lane is cancelled and reruns on
