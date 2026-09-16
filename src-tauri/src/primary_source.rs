@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod pinned;
+pub(crate) use pinned::PinnedReadError;
+
 use crate::AppState;
 use crate::sources::RegisteredSource;
 
@@ -236,6 +239,8 @@ impl PrivateStorage {
 /// A fresh OS handle, never unlinked/replaced as part of retention cleanup.
 pub(crate) struct RetentionGuard {
     _file: File,
+    source_id: String,
+    app_path: PathBuf,
 }
 
 impl Drop for RetentionGuard {
@@ -328,22 +333,7 @@ fn receipt_storage(conn: &Connection) -> Result<(u64, u64), String> {
 
 // The caller retains a transaction after receipt_storage validated all lengths.
 fn stored_receipt(conn: &Connection, id: &str) -> Result<Receipt, String> {
-    let (source, repo, json): (String, String, String) = conn
-        .query_row(
-            "SELECT source_id,repo_key,payload FROM receipts WHERE id=?1",
-            [id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|_| unavailable())?;
-    let receipt = Receipt::from_json(&json).map_err(|_| unavailable())?;
-    if receipt.id() != id
-        || receipt.source_id().as_str() != source
-        || receipt.repo_key() != repo
-        || receipt.to_json().map_err(|_| unavailable())? != json
-    {
-        return Err(unavailable());
-    }
-    Ok(receipt)
+    pinned::stored_receipt(conn, id).map_err(|error| error.to_string())
 }
 
 impl ReceiptStore {
@@ -547,7 +537,11 @@ impl PrimarySourceStore {
             file.try_lock_shared()
         };
         result.map_err(|_| "Retained source is busy or locking is unavailable; retry after the active operation finishes.".to_string())?;
-        let guard = RetentionGuard { _file: file };
+        let guard = RetentionGuard {
+            _file: file,
+            source_id: source.to_owned(),
+            app_path: self.storage.app_path.clone(),
+        };
         self.storage.verify()?;
         Ok(guard)
     }
@@ -793,6 +787,8 @@ pub(crate) struct RetentionPreview {
     pub receipts: usize,
     pub current_references: usize,
     pub historical_references: usize,
+    /// Actual v2 evidence references in immutable staged proposals.
+    pub staged_references: usize,
     pub fingerprint: String,
 }
 
@@ -840,14 +836,21 @@ fn preview_locked(state: &AppState, source: &RegisteredSource) -> Result<Retenti
         .iter()
         .map(|capture| capture.capture_id.clone())
         .collect();
+    let staged_references = state
+        .proposals
+        .lock()
+        .map_err(storage_error)?
+        .captured_receipt_references(&source.source_id)
+        .map_err(storage_error)?;
     let fingerprint = core_prov::content_hash(
         &serde_json::to_vec(&(
-            "retained-source-preview-v1",
+            "retained-source-preview-v2",
             &source.source_id,
             &source.repo_key,
             &capture_ids,
             &receipt_ids,
             &current_bindings,
+            &staged_references,
         ))
         .map_err(storage_error)?,
     );
@@ -861,6 +864,7 @@ fn preview_locked(state: &AppState, source: &RegisteredSource) -> Result<Retenti
         receipts: receipt_ids.len(),
         current_references: current_count,
         historical_references: receipt_ids.len().saturating_sub(current_count),
+        staged_references: staged_references.len(),
         capture_ids,
         fingerprint,
     })

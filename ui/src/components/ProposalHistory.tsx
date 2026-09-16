@@ -1,5 +1,6 @@
 import type { StagedProposal } from '../store';
 import { TierBadge } from './TierBadge';
+import { TaskEvidence } from './TaskEvidence';
 
 export interface ProposalHistoryProps {
   proposals: StagedProposal[];
@@ -28,7 +29,7 @@ export function ProposalHistory({
       </header>
       <p className="muted">
         Accepted proposals await context reconciliation. Review preserves T3 / InferredWeak;
-        it does not yet change context or exports. Source binding is unverified.
+        it does not yet change context or exports. Evidence origins describe the saved input, not its current availability.
       </p>
       {error && <p className="error-text" role="alert">{error}</p>}
       {loading && <p className="muted" role="status">Loading saved proposals…</p>}
@@ -51,7 +52,8 @@ export function ProposalHistory({
                 </div>
                 <p><code>{proposal.source_id}</code> —{proposal.edge_label}→ <code>{proposal.target_id}</code></p>
                 <p className="proposal-annotation">{proposal.annotation}</p>
-                <p className="muted">Source binding unverified · review revision {proposal.review_revision}</p>
+                <TaskEvidence basis={proposal.source_basis} compact />
+                <p className="muted">Review revision {proposal.review_revision}</p>
                 <button type="button" onClick={() => onOpen(proposal)}>
                   {proposal.review_decision ? 'View reviewed proposal' : 'Review proposal'}
                 </button>

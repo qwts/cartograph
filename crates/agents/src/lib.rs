@@ -15,10 +15,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+pub mod prepared;
+pub mod source_basis;
 pub mod staging;
+pub use prepared::PreparedAgentTask;
+pub use source_basis::*;
 pub use staging::{
     CandidateBasis, ContextStatus, EvidenceBasis, EvidenceBinding, ProposalStore, StagedProposal,
-    StagedProposalPage, StagingError, TaskBasisManifest,
+    StagedProposalPage, StagedReceiptReference, StagingError, TaskBasisManifest,
 };
 
 /// Stable extractor identifier carried by every T3 proposal.
@@ -219,6 +223,44 @@ impl AgentBroker {
         self.validate_response(task, raw)
     }
 
+    /// Preview the original prepared task, including descriptive origins and a
+    /// safe-hex source fingerprint inside the exact firewall consent payload.
+    pub fn preview_prepared(
+        &self,
+        provider: &dyn LlmProvider,
+        firewall: &EgressFirewall,
+        task: &PreparedAgentTask,
+    ) -> Result<EgressPreview, AgentError> {
+        Ok(firewall.preview(provider, &self.prepare_prepared(task)?)?)
+    }
+
+    /// Propose against copied, immutable input. No graph or source lookup occurs.
+    pub fn propose_prepared(
+        &self,
+        provider: &dyn LlmProvider,
+        firewall: &EgressFirewall,
+        task: &PreparedAgentTask,
+        consent: Option<&ConsentGrant>,
+    ) -> Result<AgentProposal, AgentError> {
+        let action = self.prepare_prepared(task)?;
+        let completion = firewall.complete(provider, &action, consent)?;
+        let raw: RawProposal = serde_json::from_str(&completion.text)
+            .map_err(|_| AgentError::InvalidResponse("invalid proposal response".into()))?;
+        self.validate_response_with_basis(task.task(), raw, task.basis_hash()?)
+    }
+
+    fn prepare_prepared(&self, task: &PreparedAgentTask) -> Result<CompletionAction, AgentError> {
+        // Constructor invariants are retained by private fields and immutable access.
+        let mut action = self.prepare(task.task())?;
+        let prompt: serde_json::Value = serde_json::from_str(&action.payload.prompt)?;
+        action.payload.prompt = serde_json::to_string_pretty(&serde_json::json!({
+            "task": prompt,
+            "source_basis": task.source_basis(),
+            "source_basis_fingerprint": task.source_basis().fingerprint()?,
+        }))?;
+        Ok(action)
+    }
+
     /// Run one class of gap instances in order (#167): each instance gets
     /// its own proposal through the same bounded path as `propose`; one bad
     /// instance records a failure and never aborts the class. `cancelled`
@@ -392,6 +434,15 @@ impl AgentBroker {
         task: &AgentTask,
         raw: RawProposal,
     ) -> Result<AgentProposal, AgentError> {
+        self.validate_response_with_basis(task, raw, task.basis_hash()?)
+    }
+
+    fn validate_response_with_basis(
+        &self,
+        task: &AgentTask,
+        raw: RawProposal,
+        basis_hash: String,
+    ) -> Result<AgentProposal, AgentError> {
         let candidates: BTreeMap<&str, &AgentCandidate> = task
             .candidates
             .iter()
@@ -430,7 +481,6 @@ impl AgentBroker {
                 "proposal must cite both the source/Gap and selected target".into(),
             ));
         }
-        let basis_hash = task.basis_hash()?;
         let canonical_fact = serde_json::to_vec(&(
             &task.gap_id,
             &task.source_id,

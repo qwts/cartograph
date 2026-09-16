@@ -1,7 +1,9 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, fn, userEvent, within } from 'storybook/test';
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { ResolutionStrategyModal } from './ResolutionStrategyModal';
-import type { StagedProposal, EscalationState, GapStrategyReport } from '../store';
+import { useAppStore, type BasisAssessment, type StagedProposal, type EscalationState, type GapStrategyReport } from '../store';
+import { mixedTaskBasis } from '../taskBasisFixtures';
 
 const REPORT: GapStrategyReport = {
   gap_id: 'gap:sync',
@@ -100,6 +102,7 @@ const meta = {
     onDismissPreview: fn(),
     onDecide: fn(),
     onClose: fn(),
+    onAssessBasis: fn(),
   },
 } satisfies Meta<typeof ResolutionStrategyModal>;
 
@@ -260,5 +263,81 @@ export const ReviewInFlightCannotSubmitTwice: Story = {
     await expect(canvas.getByRole('button', { name: 'Saving review…' })).toBeDisabled();
     await expect(canvas.getByRole('button', { name: 'Reject' })).toBeDisabled();
     await expect(canvas.queryByTestId('decision-recorded')).not.toBeInTheDocument();
+  },
+};
+
+export const PreparedStrategyShowsMixedOriginsBeforeConsent: Story = {
+  // AC-0179: evidence origin and selection limits are visible before running a strategy.
+  args: { state: state({ report: { ...REPORT, source_basis: mixedTaskBasis } }) },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/1 retained parser span\(s\) · 1 working-tree span\(s\), unverified/)).toBeInTheDocument();
+    await expect(canvas.getByText(/Evidence request limit reached/)).toBeInTheDocument();
+    await expect(canvas.getByText(/Complete analysis inputs and business meaning remain unestablished/)).toBeInTheDocument();
+    await expect(args.onRun).not.toHaveBeenCalled();
+  },
+};
+
+export const AcceptedCapturedProposalKeepsReviewAndAssessmentSeparate: Story = {
+  // AC-0179: an unchanged graph and unavailable retained source do not activate accepted content.
+  args: { state: state({
+    proposal: { ...PROPOSAL, schema_version: 2, source_basis: mixedTaskBasis, evidence_binding: 'per_item',
+      review_revision: 1, review_decision: 'accepted', reviewed_at: '2026-09-10T13:00:00Z' },
+    decided: 'accepted',
+    basisAssessment: { proposalId: PROPOSAL.proposal_id, requestGeneration: 1, loading: false, error: null,
+      result: { schema_version: 1, proposal_id: PROPOSAL.proposal_id, current_graph_snapshot_id: 'snapshot:observed',
+        graph_comparison: 'unchanged', association_comparison: 'changed',
+        evidence: [{ evidence_id: 'E1', status: 'unavailable' }, { evidence_id: 'E2', status: 'working_tree_unverified' }],
+        unverified_evidence: 1, captured_validation_bytes: 0, max_captured_validation_bytes: 134217728 } },
+  }) },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText('Unchanged at this check')).toBeInTheDocument();
+    await expect(canvas.getByText('Changed since preparation')).toBeInTheDocument();
+    await expect(canvas.getByText(/Retained bytes unavailable/)).toBeInTheDocument();
+    await expect(canvas.getByTestId('decision-recorded')).toHaveTextContent('Awaiting context reconciliation');
+    await expect(canvas.getByTestId('decision-recorded')).toHaveTextContent('Saved evidence origins remain unchanged');
+    await expect(canvas.getByText('Inferred (weak)')).toBeInTheDocument();
+    await userEvent.click(canvas.getByRole('button', { name: 'Check again' }));
+    await expect(args.onAssessBasis).toHaveBeenCalledOnce();
+    await expect(args.onDecide).not.toHaveBeenCalled();
+  },
+};
+
+export const LateAssessmentPreservesSelectedProposal: Story = {
+  // AC-0179: the real store ignores an earlier selection's delayed host observation.
+  args: { state: state({ proposal: PROPOSAL }) },
+  render: function ConnectedAssessment(args) {
+    const selected = useAppStore((store) => store.escalation);
+    return <ResolutionStrategyModal {...args} state={selected ?? args.state}
+      onAssessBasis={() => void useAppStore.getState().assessStagedBasis()} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    let reply: (value: BasisAssessment) => void = () => {};
+    const earlierResponse = new Promise<BasisAssessment>((resolve) => { reply = resolve; });
+    const later = { ...PROPOSAL, proposal_id: 'proposal:later', annotation: 'A separately saved proposal of this same gap.' };
+    const observed: BasisAssessment = { schema_version: 1, proposal_id: later.proposal_id,
+      current_graph_snapshot_id: 'snapshot:later', graph_comparison: 'changed', association_comparison: 'changed',
+      evidence: [], unverified_evidence: 1, captured_validation_bytes: 0, max_captured_validation_bytes: 134217728 };
+    mockIPC((_command, args) => (args as { proposalId: string }).proposalId === PROPOSAL.proposal_id
+      ? earlierResponse : observed);
+    try {
+      useAppStore.getState().openStagedProposal(PROPOSAL);
+      const pending = useAppStore.getState().assessStagedBasis();
+      await waitFor(() => expect(canvas.getByRole('status')).toHaveTextContent('Checking the saved basis'));
+      useAppStore.getState().openStagedProposal(later);
+      await waitFor(() => expect(canvas.getByText(later.annotation)).toBeInTheDocument());
+      await userEvent.click(canvas.getByRole('button', { name: 'Check current basis' }));
+      await waitFor(() => expect(canvas.getAllByText('Changed since preparation')).toHaveLength(2));
+      reply({ ...observed, proposal_id: PROPOSAL.proposal_id, graph_comparison: 'unchanged', association_comparison: 'unchanged' });
+      await pending;
+      await waitFor(() => expect(useAppStore.getState().escalation?.basisAssessment?.result).toEqual(observed));
+      await expect(canvas.getByText(later.annotation)).toBeInTheDocument();
+      await expect(canvas.queryByText('Unchanged at this check')).not.toBeInTheDocument();
+    } finally {
+      clearMocks();
+      useAppStore.getState().closeResolution();
+    }
   },
 };

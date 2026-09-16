@@ -44,3 +44,15 @@ export const ChangedPreviewRequiresRefresh: Story = {
     await expect(canvas.queryByRole('button', { name: 'Forget retained source' })).not.toBeInTheDocument();
   },
 };
+
+// AC-0177/AC-0179: preview counts actual staged evidence without upgrading it.
+export const StagedEvidenceReferencesSurviveForgetting: Story = {
+  args: { preview: { ...sources[0], captures: 1, files: 1, bytes: 120,
+    receipts: 2, current_references: 1, historical_references: 1,
+    staged_references: 3, fingerprint: 'staged-preview' } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/3 staged evidence references/)).toBeInTheDocument();
+    await expect(canvas.getByText(/proposal history remains/)).toBeInTheDocument();
+  },
+};

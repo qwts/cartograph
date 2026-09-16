@@ -30,6 +30,7 @@ export function SourceRetention({ sources, preview, busy, error, message, onPrev
       <p><code>{preview.repo_key}</code></p>
       <p>{preview.captures} captures · {preview.files} file entries · {preview.bytes.toLocaleString()} captured bytes</p>
       <p>{preview.current_references} current and {preview.historical_references} historical receipt references; {preview.receipts} receipt records will be preserved.</p>
+      {preview.staged_references !== undefined && <p>{preview.staged_references} staged evidence references use retained receipts. Their proposal history remains, but forgotten source bytes become unavailable.</p>}
       <p>This removes only this source’s retained content. Other sources and their shared bytes remain available.</p>
       <button type="button" disabled={busy} onClick={onDismiss}>Keep source</button>{' '}
       <button type="button" disabled={busy || preview.captures === 0} onClick={onForget}>Forget retained source</button>

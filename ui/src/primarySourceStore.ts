@@ -44,6 +44,7 @@ export interface RetentionPreview extends RetainedSource {
   receipts: number;
   current_references: number;
   historical_references: number;
+  staged_references?: number;
   fingerprint: string;
 }
 
