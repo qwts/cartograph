@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "description": "Copilot repository hooks (loaded from .github/hooks/ in the working directory). The machine memory guard entry was retracted (#331): its decision (ENG-0138) is still Proposed, and only accepted decisions ship.",
-  "hooks": {
-    "preToolUse": []
-  }
-}
