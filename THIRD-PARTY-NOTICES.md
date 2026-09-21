@@ -9550,7 +9550,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## material-symbols 0.47.2
+## material-symbols 0.47.3
 
 License: Apache-2.0
 
