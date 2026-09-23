@@ -1,5 +1,11 @@
 # cartograph
 
+## 0.14.3
+
+### Patch Changes
+
+- 4670421: Preflight no longer freezes the window on large repositories. The scan runs in the background, shows which file it is reading and how far through the repository it is, and can be cancelled. A cancelled scan records no findings.
+
 ## 0.14.2
 
 ### Patch Changes
