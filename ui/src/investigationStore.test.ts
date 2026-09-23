@@ -246,6 +246,31 @@ describe('investigation consent and historical reads (AC-0186/0189/0190)', () =>
     expect(useInvestigationStore.getState().consentOpen).toBe(false);
   });
 
+  it('does not merge an approved completed summary ahead of its result', async () => {
+    // AC-0204: the approval acknowledgment may report completion before the result read sees it.
+    let completed = false;
+    mockIPC((command, args) => {
+      if (command === 'get_investigation') return completed ? investigationDetail('same', { revision: 10 })
+        : investigationDetail('same', { status: 'awaiting_consent', provider_mode: 'cloud', revision: 4,
+          has_result: false, actions: { can_cancel: true, can_follow_up: false } });
+      if (command === 'investigation_consent') return completed ? null : investigationConsent('same', 4, 'step-1');
+      if (command === 'investigation_result') return null;
+      if (command === 'approve_investigation_step') {
+        completed = true;
+        return investigationDetail('same', { revision: 10 });
+      }
+      return response(command, args);
+    });
+    await useInvestigationStore.getState().open('same');
+    useInvestigationStore.getState().showConsent();
+    await useInvestigationStore.getState().approve();
+    expect(useInvestigationStore.getState().error).toContain('could not be refreshed consistently');
+    expect(useInvestigationStore.getState().result).toBeNull();
+    expect(useInvestigationStore.getState().detail?.status).toBe('awaiting_consent');
+    expect(useInvestigationStore.getState().detail?.has_result).toBe(false);
+    expect(useInvestigationStore.getState().history[0].status).toBe('completed');
+  });
+
   it('clears stale consent observations without inventing local fallback or a grant', async () => {
     const commands: string[] = [];
     mockIPC((command, args) => {

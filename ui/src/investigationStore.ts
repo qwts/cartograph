@@ -100,7 +100,10 @@ export const useInvestigationStore = create<InvestigationState>((set, get) => {
   const updateSummary = (summary: InvestigationSummary) => set((state) => ({
     history: state.history.some((item) => item.investigation_id === summary.investigation_id)
       ? mergeHistory(state.history, [summary]) : [summary, ...state.history],
-    detail: state.detail?.investigation_id === summary.investigation_id && summary.revision >= state.detail.revision
+    // A summary that reports a result is merged into the detail only once that
+    // result is held; otherwise the next consistent refresh supplies both.
+    detail: state.detail?.investigation_id === summary.investigation_id && summary.revision >= state.detail.revision &&
+      (!summary.has_result || state.result !== null)
       ? { ...state.detail, ...summary } : state.detail,
   }));
 

@@ -1560,6 +1560,9 @@ export const InvestigationResultCommitStraddleIsRejected: Story = {
     }
     await waitFor(() => expect(canvas.getByText(/could not be refreshed consistently/)).toBeVisible());
     await expect(useInvestigationStore.getState().result).toBeNull();
+    // The approval's completed summary is not merged ahead of a consistent read.
+    await expect(useInvestigationStore.getState().detail?.status).not.toBe('completed');
+    await expect(useInvestigationStore.getState().detail?.has_result).toBe(false);
     await expect(canvas.queryByText('A local stock guard is present')).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: 'Refresh selected investigation' }));
     await waitFor(() => expect(canvas.getByText('A local stock guard is present')).toBeVisible());
