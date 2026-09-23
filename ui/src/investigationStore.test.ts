@@ -174,6 +174,23 @@ describe('durable investigation observations (AC-0190)', () => {
     expect(useInvestigationStore.getState().error).toBeNull();
   });
 
+  it('keeps saved findings and activity when a later refresh straddles the result commit', async () => {
+    // AC-0201: an inconsistent later observation leaves the previously saved state in place.
+    let straddle = false;
+    mockIPC((command, args) => command === 'get_investigation' && straddle
+      ? investigationDetail('same', { status: 'running', has_result: false, revision: 10,
+        actions: { can_cancel: true, can_follow_up: false } }) : response(command, args));
+    await useInvestigationStore.getState().open('same');
+    const { detail, result, events } = useInvestigationStore.getState();
+    expect(result).toEqual(investigationResult('same'));
+    straddle = true;
+    await useInvestigationStore.getState().refreshSelected();
+    expect(useInvestigationStore.getState().detail).toEqual(detail);
+    expect(useInvestigationStore.getState().result).toEqual(result);
+    expect(useInvestigationStore.getState().events).toEqual(events);
+    expect(useInvestigationStore.getState().error).toContain('could not be refreshed consistently');
+  });
+
   it('rejects a result that is newer than the detail it was read with', async () => {
     // AC-0201: a result paired with a pre-commit detail is an inconsistent observation, not a running task with findings.
     mockIPC((command, args) => command === 'get_investigation'
