@@ -1692,18 +1692,22 @@ fn list_findings(state: State<'_, AppState>) -> Result<Vec<Finding>, String> {
 #[tauri::command]
 async fn preflight(
     path: String,
+    run: u64,
     app: tauri::AppHandle,
 ) -> Result<ingest::preflight::PreflightReport, String> {
-    start_preflight(path, app).await
+    start_preflight(path, run, app).await
 }
 
 /// The `preflight` command body, generic over the runtime so tests can prove
 /// where it runs. The run is registered (superseding any earlier one) when
 /// this is called — before the worker is queued — so a Cancel or a newer
 /// preflight that arrives while the blocking pool is busy still reaches it,
-/// and supersession follows invocation order (#434 review).
+/// and supersession follows invocation order (#434 review). `run` is the
+/// UI's id for this scan, echoed on every progress ping so a superseded
+/// scan's last ping can't overwrite the current one's display.
 fn start_preflight<R: tauri::Runtime>(
     path: String,
+    run: u64,
     app: tauri::AppHandle<R>,
 ) -> impl std::future::Future<Output = Result<ingest::preflight::PreflightReport, String>> {
     let token = app.state::<PreflightRuns>().begin();
@@ -1712,7 +1716,7 @@ fn start_preflight<R: tauri::Runtime>(
         off_ui_thread(move || {
             let state = app.state::<AppState>();
             let runs = app.state::<PreflightRuns>();
-            let mut progress = preflight_progress_throttle(&app);
+            let mut progress = preflight_progress_throttle(&app, run);
             preflight_blocking(&path, &app, &state, &runs, &token, &mut progress)
         })
         .await
@@ -1733,9 +1737,14 @@ const PREFLIGHT_CANCELLED: &str = "cancelled";
 /// only output is the findings it persists on success), so cancellation is an
 /// in-memory flag, not a job row. Starting a preflight cancels the previous
 /// one, so an abandoned scan never keeps a core busy for its full duration.
+///
+/// Two locks: `current` is held only for a flag swap, so `begin` and the
+/// synchronous `cancel_preflight` command never wait on the database
+/// (#434 review); `writes` serializes register writes.
 #[derive(Default)]
 struct PreflightRuns {
     current: Mutex<Option<Arc<AtomicBool>>>,
+    writes: Mutex<()>,
 }
 
 /// One registered preflight: cancelled when the user cancels or a newer
@@ -1744,7 +1753,7 @@ struct PreflightToken(Arc<AtomicBool>);
 
 impl PreflightToken {
     fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.0.load(Ordering::SeqCst)
     }
 }
 
@@ -1757,29 +1766,31 @@ impl PreflightRuns {
             .map_err(|e| e.to_string())?
             .replace(flag.clone());
         if let Some(previous) = previous {
-            previous.store(true, Ordering::Relaxed);
+            previous.store(true, Ordering::SeqCst);
         }
         Ok(PreflightToken(flag))
     }
 
     fn cancel(&self) -> Result<(), String> {
         if let Some(current) = self.current.lock().map_err(|e| e.to_string())?.as_ref() {
-            current.store(true, Ordering::Relaxed);
+            current.store(true, Ordering::SeqCst);
         }
         Ok(())
     }
 
-    /// Run `persist` only if `token` is still live, holding the lock that
-    /// `cancel` and `begin` take for the whole write. A cancel or newer
-    /// preflight therefore lands either before the check (nothing is
-    /// written) or after the write completes — never in between (#434
-    /// review).
+    /// Run `persist` only if `token` is still live, holding the write lock
+    /// across the check and the write, so register writes never interleave.
+    /// A superseding preflight's write therefore always lands after an older
+    /// one it raced (#434 review). A cancel never waits here: one that lands
+    /// before the check writes nothing and returns `cancelled`; one that
+    /// lands during the write loses the race, and the scan reports what it
+    /// recorded instead of claiming it was cancelled.
     fn persist_if_current<T>(
         &self,
         token: &PreflightToken,
         persist: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
-        let _current = self.current.lock().map_err(|e| e.to_string())?;
+        let _writes = self.writes.lock().map_err(|e| e.to_string())?;
         if token.is_cancelled() {
             return Err(PREFLIGHT_CANCELLED.into());
         }
@@ -1803,6 +1814,8 @@ fn preflight_uncancelled<R: tauri::Runtime>(
 /// far through the walk the scan is.
 #[derive(Clone, Serialize)]
 struct PreflightProgress<'a> {
+    /// The UI-issued id of the scan this ping belongs to.
+    run: u64,
     path: &'a str,
     done: usize,
     total: usize,
@@ -1813,6 +1826,7 @@ struct PreflightProgress<'a> {
 /// bridge. The first step always fires.
 fn preflight_progress_throttle<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    run: u64,
 ) -> impl FnMut(adapters_lang_ts::EvalScanStep<'_>) + '_ {
     let mut last: Option<std::time::Instant> = None;
     move |step| {
@@ -1821,6 +1835,7 @@ fn preflight_progress_throttle<R: tauri::Runtime>(
             let _ = app.emit(
                 "preflight://progress",
                 PreflightProgress {
+                    run,
                     path: step.path,
                     done: step.done,
                     total: step.total,
@@ -6851,6 +6866,7 @@ export function App() {
         let caller = std::thread::current().id();
         let report = tauri::async_runtime::block_on(super::start_preflight(
             project.to_string_lossy().into_owned(),
+            7,
             app.handle().clone(),
         ))
         .unwrap();
@@ -6864,7 +6880,10 @@ export function App() {
             emitters.iter().all(|(worker, _)| *worker != caller),
             "extraction ran on the calling thread"
         );
-        assert_eq!(emitters[0].1, r#"{"path":"app.ts","done":0,"total":1}"#);
+        assert_eq!(
+            emitters[0].1,
+            r#"{"run":7,"path":"app.ts","done":0,"total":1}"#
+        );
     }
 
     #[test]
@@ -6960,8 +6979,11 @@ export function App() {
         let app = preflight_test_app(dir.path());
         let state = app.state::<super::AppState>();
 
-        let run =
-            super::start_preflight(project.to_string_lossy().into_owned(), app.handle().clone());
+        let run = super::start_preflight(
+            project.to_string_lossy().into_owned(),
+            1,
+            app.handle().clone(),
+        );
         app.state::<super::PreflightRuns>().cancel().unwrap();
         let result = tauri::async_runtime::block_on(run);
 
@@ -6979,8 +7001,8 @@ export function App() {
         let app = preflight_test_app(dir.path());
         let path_arg = project.to_string_lossy().into_owned();
 
-        let older = super::start_preflight(path_arg.clone(), app.handle().clone());
-        let newer = super::start_preflight(path_arg, app.handle().clone());
+        let older = super::start_preflight(path_arg.clone(), 1, app.handle().clone());
+        let newer = super::start_preflight(path_arg, 2, app.handle().clone());
 
         assert_eq!(
             tauri::async_runtime::block_on(older).unwrap_err(),
@@ -6993,34 +7015,25 @@ export function App() {
     }
 
     #[test]
-    fn preflight_persistence_is_serialized_with_cancel() {
-        // AC-0198 (#434 review): the validity check and the register write
-        // share one lock with cancel/begin — a cancel that arrives during
-        // the write waits for it, and one that lands first prevents it.
+    fn cancel_never_waits_on_persistence() {
+        // AC-0198 (#434 review): `cancel_preflight` is synchronous, so it
+        // must not block on a register write in progress; a cancel that
+        // lands first still prevents the write.
+        use std::sync::mpsc;
         let runs = std::sync::Arc::new(super::PreflightRuns::default());
         let token = runs.begin().unwrap();
-        let (inside_tx, inside_rx) = std::sync::mpsc::channel();
-        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let canceller = {
-            let runs = runs.clone();
-            let cancelled = cancelled.clone();
-            std::thread::spawn(move || {
-                inside_rx.recv().unwrap();
-                runs.cancel().unwrap();
-                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-            })
-        };
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
         runs.persist_if_current(&token, || {
-            inside_tx.send(()).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            assert!(
-                !cancelled.load(std::sync::atomic::Ordering::SeqCst),
-                "cancel completed while the write was in progress"
-            );
-            Ok(())
+            let runs = runs.clone();
+            std::thread::spawn(move || {
+                runs.cancel().unwrap();
+                cancelled_tx.send(()).unwrap();
+            });
+            cancelled_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .map_err(|_| "cancel waited for the write".to_string())
         })
         .unwrap();
-        canceller.join().unwrap();
 
         let mut wrote = false;
         let late = runs.persist_if_current(&token, || {
@@ -7029,6 +7042,38 @@ export function App() {
         });
         assert_eq!(late.unwrap_err(), super::PREFLIGHT_CANCELLED);
         assert!(!wrote, "a cancelled run writes nothing");
+    }
+
+    #[test]
+    fn preflight_register_writes_never_interleave() {
+        // AC-0198 (#434 review): a superseding run's write waits for the
+        // older run's write in progress, so the newer result lands last.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let runs = std::sync::Arc::new(super::PreflightRuns::default());
+        let older = runs.begin().unwrap();
+        let writing = std::sync::Arc::new(AtomicBool::new(false));
+        let (inside_tx, inside_rx) = std::sync::mpsc::channel();
+        let newer = {
+            let runs = runs.clone();
+            let writing = writing.clone();
+            std::thread::spawn(move || {
+                inside_rx.recv().unwrap();
+                let newer = runs.begin().unwrap();
+                runs.persist_if_current(&newer, || {
+                    assert!(!writing.load(Ordering::SeqCst), "writes interleaved");
+                    Ok(())
+                })
+            })
+        };
+        runs.persist_if_current(&older, || {
+            writing.store(true, Ordering::SeqCst);
+            inside_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            writing.store(false, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        newer.join().unwrap().unwrap();
     }
 
     #[test]

@@ -173,7 +173,7 @@ export const ScanningWithProgress: Story = {
   args: {
     report: null,
     busy: true,
-    progress: { path: 'src/vs/base/common/strings.ts', done: 411, total: 12043 },
+    progress: { run: 1, path: 'src/vs/base/common/strings.ts', done: 411, total: 12043 },
   },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);

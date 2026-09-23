@@ -153,6 +153,8 @@ export interface PreflightReport {
 /** One live `preflight://progress` ping (#235): the file the scan is reading
  *  and how far through the walk it is. */
 export interface PreflightProgress {
+  /** The scan this ping belongs to — the id `runPreflight` sent. */
+  run: number;
   path: string;
   done: number;
   total: number;
@@ -1183,6 +1185,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const preflight = await invokeOr<PreflightReport | null>('preflight', null, {
         path: target,
+        run,
       });
       if (run === preflightRun) set({ preflight });
     } catch (e) {
@@ -1198,7 +1201,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   applyPreflightProgress: (progress) => {
-    if (get().preflightBusy) set({ preflightProgress: progress });
+    // A superseded scan's last ping must not overwrite the current one's.
+    if (get().preflightBusy && progress.run === preflightRun) set({ preflightProgress: progress });
   },
 
   cancelPreflight: async () => {
