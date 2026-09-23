@@ -355,14 +355,19 @@ PR — per-PR verification is CI's job.
 
 1. `npm run tauri dev`; **Connect** → a local clone of a large real repo
    (thousands of source files — e.g. a production Next.js monorepo).
-2. Preflight → **Run full recovery**. While the Recover stage line is
+2. **Preflight**. While it scans, the window stays responsive and the
+   status line names the file being read as "Checking file N of M"
+   (AC-0197). **Cancel** it: the scan stops within one file and reports
+   "Preflight cancelled" with no findings recorded (AC-0198). Run
+   **Preflight** again and let it finish.
+3. **Run full recovery**. While the Recover stage line is
    visible, immediately: switch surfaces via `⌘1`…`⌘8`, open the command
    palette, and click **Run in background** → the Jobs surface.
-3. Throughout the run: the pointer never becomes the macOS beachball, the
+4. Throughout the run: the pointer never becomes the macOS beachball, the
    stage label and progress advance, and every surface stays clickable.
-4. From Jobs, **Cancel** the run; it stops at the next stage boundary.
-5. **Pass:** no "application not responding" episode at any point during a
-   multi-minute recovery (AC-0078, #158).
+5. From Jobs, **Cancel** the run; it stops at the next stage boundary.
+6. **Pass:** no "application not responding" episode at any point during a
+   multi-minute preflight or recovery (AC-0078, AC-0197, #158, #235).
 
 ## MT-HELP-01 — Native Help menu (AC-0090, T-0090)
 

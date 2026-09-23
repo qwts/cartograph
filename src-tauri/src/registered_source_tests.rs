@@ -130,7 +130,14 @@ fn registered_sources_isolate_intake_findings_and_recovery() {
         .unwrap();
     let state = app_state(&app_data);
     for root in [&first_root, &second_root] {
-        let report = preflight_blocking(root.to_str().unwrap(), app.handle(), &state).unwrap();
+        let report = preflight_blocking(
+            root.to_str().unwrap(),
+            app.handle(),
+            &state,
+            &Default::default(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(
             report
                 .unsupported
@@ -222,7 +229,14 @@ fn registered_sources_isolate_intake_findings_and_recovery() {
     assert_eq!(owned_facts(&state, &second.repo_key), second_facts);
     std::fs::remove_file(first_root.join("app.ts")).unwrap();
     assert_eq!(recover(&state, &first).0.deleted_files, 1);
-    preflight_blocking(first_root.to_str().unwrap(), app.handle(), &state).unwrap();
+    preflight_blocking(
+        first_root.to_str().unwrap(),
+        app.handle(),
+        &state,
+        &Default::default(),
+        &mut |_| {},
+    )
+    .unwrap();
     assert!(
         state
             .findings

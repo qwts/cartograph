@@ -800,6 +800,7 @@ const meta = {
       preflight: null,
       preflightBusy: false,
       preflightError: null,
+      preflightProgress: null,
       clearBusy: false,
       clearError: null,
       findings: null,
