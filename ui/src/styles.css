@@ -2584,6 +2584,18 @@ button.status-live-link:hover {
   gap: 0.8rem;
 }
 
+.preflight-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.preflight-progress code {
+  overflow-wrap: anywhere;
+}
+
 .preflight-card {
   padding: 0.9rem 1.1rem;
   background: var(--surface);

@@ -64,6 +64,7 @@ const meta = {
     error: null,
     canRecover: true,
     onBack: fn(),
+    onCancel: fn(),
     onRunRecovery: fn(),
   },
 } satisfies Meta<typeof PreflightSurface>;
@@ -163,5 +164,35 @@ export const Detecting: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole('status')).toHaveTextContent('Detecting…');
     await expect(canvas.getByRole('button', { name: /run full recovery/i })).toBeDisabled();
+  },
+};
+
+/** AC-0197/AC-0198 (#235): a long scan shows which file it is reading and
+ *  how far through the walk it is, and can be cancelled. */
+export const ScanningWithProgress: Story = {
+  args: {
+    report: null,
+    busy: true,
+    progress: { run: 1, path: 'src/vs/base/common/strings.ts', done: 411, total: 12043 },
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('status')).toHaveTextContent(
+      'Checking file 412 of 12043 src/vs/base/common/strings.ts',
+    );
+    await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
+    await expect(args.onCancel).toHaveBeenCalledOnce();
+    await expect(canvas.getByRole('button', { name: /run full recovery/i })).toBeDisabled();
+  },
+};
+
+export const Cancelled: Story = {
+  args: { report: null, busy: false, error: 'Preflight cancelled. No findings were recorded.' },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByText('Preflight cancelled. No findings were recorded.'),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
   },
 };

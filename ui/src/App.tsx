@@ -31,7 +31,7 @@ import { TopologyCard } from './components/TopologyCard';
 import { InvestigationsSurface } from './components/InvestigationsSurface';
 import { investigationIsActive, useInvestigationStore } from './investigationStore';
 import type { InvestigationChanged } from './investigationTypes';
-import type { Job, SpecArtifact, SpecBundle } from './store';
+import type { Job, PreflightProgress, SpecArtifact, SpecBundle } from './store';
 
 const AtlasCanvas = lazy(() =>
   import('./components/AtlasCanvas').then(({ AtlasCanvas: Component }) => ({
@@ -103,6 +103,7 @@ export default function App() {
     preflight,
     preflightBusy,
     preflightError,
+    preflightProgress,
     clearBusy,
     clearError,
     findings,
@@ -131,6 +132,8 @@ export default function App() {
     setIngestSource,
     setIngestTarget,
     runPreflight,
+    applyPreflightProgress,
+    cancelPreflight,
     startRecovery,
     setTierEnabled,
     setTierProvider,
@@ -254,6 +257,29 @@ export default function App() {
       unlisten?.();
     };
   }, [applyJobDetail]);
+
+  // Live preflight progress (#235): best-effort like job://detail — a missed
+  // ping only leaves the progress line a moment stale.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const stop = await listen<PreflightProgress>('preflight://progress', (event) =>
+          applyPreflightProgress(event.payload),
+        );
+        if (disposed) stop();
+        else unlisten = stop;
+      } catch {
+        // No event bridge available.
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [applyPreflightProgress]);
 
   const selectedNode = selected?.node;
   const selectedFact = selected?.fact;
@@ -538,9 +564,11 @@ export default function App() {
             target={ingestTarget}
             report={preflight}
             busy={preflightBusy}
+            progress={preflightProgress}
             error={preflightError}
             canRecover={backend === 'up'}
             onBack={() => navigate('connect')}
+            onCancel={() => void cancelPreflight()}
             onRunRecovery={() => void startRecovery()}
           />
         );

@@ -267,6 +267,17 @@ pub enum EvalProof {
     Dynamic,
 }
 
+/// One file about to be read by [`preflight_scan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanStep<'a> {
+    /// Repo-relative path of the file about to be read.
+    pub path: &'a str,
+    /// Files already read before this one.
+    pub done: usize,
+    /// Files in the whole walk.
+    pub total: usize,
+}
+
 /// Run the preflight scan over `root`. Purely local; deterministic for a
 /// given tree (files walked in sorted order).
 pub fn preflight(root: &Path) -> std::io::Result<PreflightReport> {
@@ -296,11 +307,28 @@ pub fn preflight_with_coverage(
     plugins: &[PluginCoverage],
     eval_sites: &[EvalSiteCoverage],
 ) -> std::io::Result<PreflightReport> {
+    Ok(preflight_scan(root, plugins, eval_sites, &mut |_| {
+        std::ops::ControlFlow::Continue(())
+    })?
+    .expect("a callback that never breaks runs to completion"))
+}
+
+/// [`preflight_with_coverage`] with a per-file hook that runs before each
+/// file is read, so a host can stop the walk within one file (#235). Returns
+/// `Ok(None)` when the hook breaks — never a partial report, because a
+/// missing finding would read as a clean tree.
+pub fn preflight_scan(
+    root: &Path,
+    plugins: &[PluginCoverage],
+    eval_sites: &[EvalSiteCoverage],
+    on_file: &mut dyn FnMut(ScanStep<'_>) -> std::ops::ControlFlow<()>,
+) -> std::io::Result<Option<PreflightReport>> {
     let mut languages: BTreeMap<String, LanguageDetection> = BTreeMap::new();
     let mut frameworks: Vec<String> = Vec::new();
     let mut unsupported = Vec::new();
     let mut potential_gaps = Vec::new();
 
+    let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let mut entries: Vec<_> = std::fs::read_dir(&dir)?
@@ -325,117 +353,133 @@ pub fn preflight_with_coverage(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            // Framework chips and config-behind-code findings quote the
-            // toolchain registry (#215) — the same detection that produces
-            // the graph's Tool facts, so the two surfaces cannot disagree.
-            let detection = crate::toolchain::detect_in_file(&name, &rel, &path);
-            frameworks.extend(detection.framework_labels);
-            for tool in &detection.tools {
-                if tool.settings_behind_code {
-                    unsupported.push(PatternFinding {
-                        kind: "config-behind-code".into(),
-                        path: rel.clone(),
-                        line: 1,
-                        message: format!(
-                            "{} is authored in code — detected by presence; its \
+            files.push((path, name, rel));
+        }
+    }
+
+    // Collected first (in the same order as a single pass) so the hook can
+    // name the walk's total.
+    let total = files.len();
+    for (done, (path, name, rel)) in files.into_iter().enumerate() {
+        if on_file(ScanStep {
+            path: &rel,
+            done,
+            total,
+        })
+        .is_break()
+        {
+            return Ok(None);
+        }
+        // Framework chips and config-behind-code findings quote the
+        // toolchain registry (#215) — the same detection that produces
+        // the graph's Tool facts, so the two surfaces cannot disagree.
+        let detection = crate::toolchain::detect_in_file(&name, &rel, &path);
+        frameworks.extend(detection.framework_labels);
+        for tool in &detection.tools {
+            if tool.settings_behind_code {
+                unsupported.push(PatternFinding {
+                    kind: "config-behind-code".into(),
+                    path: rel.clone(),
+                    line: 1,
+                    message: format!(
+                        "{} is authored in code — detected by presence; its \
                              settings are not evaluated and stay uncited",
-                            tool.display
-                        ),
-                        detector: DETECTOR_ID.into(),
-                        request_adapter: None,
-                    });
-                }
+                        tool.display
+                    ),
+                    detector: DETECTOR_ID.into(),
+                    request_adapter: None,
+                });
             }
-            let Some(extension) = path.extension().map(|e| e.to_string_lossy().into_owned()) else {
-                continue;
-            };
-            // Risky-construct scanning is per-syntax, not per-coverage: a
-            // .ts file gets the same eval/WASM findings as .js (#192
-            // review) — both extensions are covered by the same adapter.
-            if matches!(
-                extension.as_str(),
-                "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
-            ) {
-                scan_source(
-                    &path,
-                    &rel,
-                    eval_sites,
-                    &mut unsupported,
-                    &mut potential_gaps,
-                )?;
-            }
-            let plugin_claim = plugins
-                .iter()
-                .find(|plugin| plugin.extensions.contains(&extension));
-            if let Some((language, adapter)) = adapter_for(&extension) {
-                let entry = languages
-                    .entry(language.to_string())
-                    .or_insert(LanguageDetection {
-                        language: language.to_string(),
-                        files: 0,
-                        adapter: Some(adapter.to_string()),
-                    });
-                entry.files += 1;
-            } else if let Some(plugin) = plugin_claim {
-                // A gated plugin covers this extension (#201): report it as
-                // covered under the plugin id — no unsupported finding.
-                let language = uncovered_language(&extension)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!(".{extension}"));
-                let entry = languages
-                    .entry(language.clone())
-                    .or_insert(LanguageDetection {
-                        language,
-                        files: 0,
-                        adapter: Some(plugin.plugin_id.clone()),
-                    });
-                entry.files += 1;
-            } else if let Some(language) = uncovered_language(&extension) {
-                let entry = languages
-                    .entry(language.to_string())
-                    .or_insert(LanguageDetection {
-                        language: language.to_string(),
-                        files: 0,
-                        adapter: None,
-                    });
-                entry.files += 1;
-                if entry.files == 1 {
-                    // A planned adapter type is a recommendation, not a dead
-                    // end (#163): name the missing adapter and where to ask.
-                    let message = if planned_adapter_for(language) {
-                        format!(
-                            "{language} sources present but no adapter covers them — \
+        }
+        let Some(extension) = path.extension().map(|e| e.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        // Risky-construct scanning is per-syntax, not per-coverage: a
+        // .ts file gets the same eval/WASM findings as .js (#192
+        // review) — both extensions are covered by the same adapter.
+        if matches!(
+            extension.as_str(),
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+        ) {
+            scan_source(
+                &path,
+                &rel,
+                eval_sites,
+                &mut unsupported,
+                &mut potential_gaps,
+            )?;
+        }
+        let plugin_claim = plugins
+            .iter()
+            .find(|plugin| plugin.extensions.contains(&extension));
+        if let Some((language, adapter)) = adapter_for(&extension) {
+            let entry = languages
+                .entry(language.to_string())
+                .or_insert(LanguageDetection {
+                    language: language.to_string(),
+                    files: 0,
+                    adapter: Some(adapter.to_string()),
+                });
+            entry.files += 1;
+        } else if let Some(plugin) = plugin_claim {
+            // A gated plugin covers this extension (#201): report it as
+            // covered under the plugin id — no unsupported finding.
+            let language = uncovered_language(&extension)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!(".{extension}"));
+            let entry = languages
+                .entry(language.clone())
+                .or_insert(LanguageDetection {
+                    language,
+                    files: 0,
+                    adapter: Some(plugin.plugin_id.clone()),
+                });
+            entry.files += 1;
+        } else if let Some(language) = uncovered_language(&extension) {
+            let entry = languages
+                .entry(language.to_string())
+                .or_insert(LanguageDetection {
+                    language: language.to_string(),
+                    files: 0,
+                    adapter: None,
+                });
+            entry.files += 1;
+            if entry.files == 1 {
+                // A planned adapter type is a recommendation, not a dead
+                // end (#163): name the missing adapter and where to ask.
+                let message = if planned_adapter_for(language) {
+                    format!(
+                        "{language} sources present but no adapter covers them — \
                              a tool limitation, not a System Gap. A {language} adapter \
                              is a known adapter type: request it from Settings → Adapters"
-                        )
-                    } else {
-                        format!(
-                            "{language} sources present but no adapter covers them — \
+                    )
+                } else {
+                    format!(
+                        "{language} sources present but no adapter covers them — \
                              a tool limitation, not a System Gap"
-                        )
-                    };
-                    unsupported.push(PatternFinding {
-                        kind: "uncovered-language".into(),
-                        path: rel,
-                        line: 1,
-                        message,
-                        detector: DETECTOR_ID.into(),
-                        request_adapter: Some(language.to_string()),
-                    });
-                }
+                    )
+                };
+                unsupported.push(PatternFinding {
+                    kind: "uncovered-language".into(),
+                    path: rel,
+                    line: 1,
+                    message,
+                    detector: DETECTOR_ID.into(),
+                    request_adapter: Some(language.to_string()),
+                });
             }
         }
     }
 
     frameworks.sort();
     frameworks.dedup();
-    Ok(PreflightReport {
+    Ok(Some(PreflightReport {
         languages: languages.into_values().collect(),
         frameworks,
         unsupported,
         potential_gaps,
         detector: DETECTOR_ID.into(),
-    })
+    }))
 }
 
 /// Line-level construct detectors for covered JS/TS sources. Each detector
@@ -873,5 +917,35 @@ mod tests {
             .find(|l| l.language == "TypeScript")
             .expect("TypeScript detected");
         assert_eq!(ts.adapter.as_deref(), Some("t0.adapter-ts"));
+    }
+
+    #[test]
+    fn scan_hook_reports_each_file_and_stops_without_a_partial_report() {
+        // AC-0198 (#235 review): the report walk announces each file before
+        // reading it, so a cancel stops it within one file, and a break
+        // returns no report.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "a.ts", "export const a = 1;\n");
+        write(root, "b.ts", "export const b = 1;\n");
+        let mut seen = Vec::new();
+        preflight_scan(root, &[], &[], &mut |step| {
+            seen.push((step.path.to_string(), step.done, step.total));
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap()
+        .expect("completes");
+        assert_eq!(
+            seen,
+            vec![("a.ts".to_string(), 0, 2), ("b.ts".to_string(), 1, 2)]
+        );
+        let mut announced = 0;
+        let stopped = preflight_scan(root, &[], &[], &mut |_| {
+            announced += 1;
+            std::ops::ControlFlow::Break(())
+        })
+        .unwrap();
+        assert!(stopped.is_none());
+        assert_eq!(announced, 1);
     }
 }

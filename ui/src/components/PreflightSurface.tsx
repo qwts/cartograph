@@ -1,4 +1,4 @@
-import type { IngestSource, PatternFinding, PreflightReport } from '../store';
+import type { IngestSource, PatternFinding, PreflightProgress, PreflightReport } from '../store';
 
 export interface PreflightSurfaceProps {
   source: IngestSource;
@@ -6,10 +6,14 @@ export interface PreflightSurfaceProps {
   /** Local detection output; null while busy or for remote targets. */
   report: PreflightReport | null;
   busy: boolean;
+  /** Live progress of the running scan (#235); null before the first ping. */
+  progress?: PreflightProgress | null;
   error: string | null;
   /** Disabled when there is no live backend to recover with. */
   canRecover: boolean;
   onBack: () => void;
+  /** Stop the running scan; offered only while busy. */
+  onCancel: () => void;
   onRunRecovery: () => void;
 }
 
@@ -57,9 +61,11 @@ export function PreflightSurface({
   target,
   report,
   busy,
+  progress = null,
   error,
   canRecover,
   onBack,
+  onCancel,
   onRunRecovery,
 }: PreflightSurfaceProps) {
   return (
@@ -76,12 +82,24 @@ export function PreflightSurface({
       </header>
 
       {busy && (
-        <p className="muted" role="status">
-          <span className="material-symbols-outlined spinning" aria-hidden="true">
-            progress_activity
-          </span>{' '}
-          Detecting…
-        </p>
+        <div className="preflight-progress">
+          <p className="muted" role="status">
+            <span className="material-symbols-outlined spinning" aria-hidden="true">
+              progress_activity
+            </span>{' '}
+            {progress ? (
+              <>
+                Checking file {progress.done + 1} of {progress.total}{' '}
+                <code>{progress.path}</code>
+              </>
+            ) : (
+              'Detecting…'
+            )}
+          </p>
+          <button type="button" className="secondary-button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
       )}
       {error && <p className="error-text">{error}</p>}
 

@@ -38,6 +38,7 @@ use llm::LlmProvider;
 use serde::Serialize;
 use source_access::SourceOperation;
 use sources::{RegisteredSource, SourceRegistry};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
@@ -1683,13 +1684,166 @@ fn list_findings(state: State<'_, AppState>) -> Result<Vec<Finding>, String> {
 /// recovery runs. Zero egress; never invokes an LLM (T0 discipline).
 /// Unsupported findings persist to the register so post-recovery surfaces
 /// reconcile with what preflight predicted.
+///
+/// The scan parses every TS/JS file for eval-site claims, which takes tens of
+/// minutes on a large repo, so it runs on a blocking worker like recovery
+/// (AC-0078, AC-0197): the window stays interactive, `preflight://progress`
+/// reports the file being read, and `cancel_preflight` stops it (#235).
 #[tauri::command]
-fn preflight(
+async fn preflight(
     path: String,
+    run: u64,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<ingest::preflight::PreflightReport, String> {
-    preflight_blocking(&path, &app, &state)
+    start_preflight(path, run, app).await
+}
+
+/// The `preflight` command body, generic over the runtime so tests can prove
+/// where it runs. The run is registered (superseding any earlier one) when
+/// this is called — before the worker is queued — so a Cancel or a newer
+/// preflight that arrives while the blocking pool is busy still reaches it,
+/// and supersession follows invocation order (#434 review). `run` is the
+/// UI's id for this scan, echoed on every progress ping so a superseded
+/// scan's last ping can't overwrite the current one's display.
+fn start_preflight<R: tauri::Runtime>(
+    path: String,
+    run: u64,
+    app: tauri::AppHandle<R>,
+) -> impl std::future::Future<Output = Result<ingest::preflight::PreflightReport, String>> {
+    let token = app.state::<PreflightRuns>().begin();
+    async move {
+        let token = token?;
+        off_ui_thread(move || {
+            let state = app.state::<AppState>();
+            let runs = app.state::<PreflightRuns>();
+            let mut progress = preflight_progress_throttle(&app, run);
+            preflight_blocking(&path, &app, &state, &runs, &token, &mut progress)
+        })
+        .await
+    }
+}
+
+/// Stop the preflight in flight, if any (AC-0198). It stops before the next
+/// file is parsed and persists no findings.
+#[tauri::command]
+fn cancel_preflight(runs: State<'_, PreflightRuns>) -> Result<(), String> {
+    runs.cancel()
+}
+
+/// The error a stopped preflight returns — the same word a cancelled job uses.
+const PREFLIGHT_CANCELLED: &str = "cancelled";
+
+/// The preflight in flight, if any (#235). Preflight is not a durable job (its
+/// only output is the findings it persists on success), so cancellation is an
+/// in-memory flag, not a job row. Starting a preflight cancels the previous
+/// one, so an abandoned scan never keeps a core busy for its full duration.
+///
+/// Two locks: `current` is held only for a flag swap, so `begin` and the
+/// synchronous `cancel_preflight` command never wait on the database
+/// (#434 review); `writes` serializes register writes.
+#[derive(Default)]
+struct PreflightRuns {
+    current: Mutex<Option<Arc<AtomicBool>>>,
+    writes: Mutex<()>,
+}
+
+/// One registered preflight: cancelled when the user cancels or a newer
+/// preflight supersedes it.
+struct PreflightToken(Arc<AtomicBool>);
+
+impl PreflightToken {
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+impl PreflightRuns {
+    fn begin(&self) -> Result<PreflightToken, String> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let previous = self
+            .current
+            .lock()
+            .map_err(|e| e.to_string())?
+            .replace(flag.clone());
+        if let Some(previous) = previous {
+            previous.store(true, Ordering::SeqCst);
+        }
+        Ok(PreflightToken(flag))
+    }
+
+    fn cancel(&self) -> Result<(), String> {
+        if let Some(current) = self.current.lock().map_err(|e| e.to_string())?.as_ref() {
+            current.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    /// Run `persist` only if `token` is still live, holding the write lock
+    /// across the check and the write, so register writes never interleave.
+    /// A superseding preflight's write therefore always lands after an older
+    /// one it raced (#434 review). A cancel never waits here: one that lands
+    /// before the check writes nothing and returns `cancelled`; one that
+    /// lands during the write loses the race, and the scan reports what it
+    /// recorded instead of claiming it was cancelled.
+    fn persist_if_current<T>(
+        &self,
+        token: &PreflightToken,
+        persist: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _writes = self.writes.lock().map_err(|e| e.to_string())?;
+        if token.is_cancelled() {
+            return Err(PREFLIGHT_CANCELLED.into());
+        }
+        persist()
+    }
+}
+
+/// A preflight nothing can cancel — for tests that only need its result.
+#[cfg(test)]
+fn preflight_uncancelled<R: tauri::Runtime>(
+    path: &str,
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+) -> Result<ingest::preflight::PreflightReport, String> {
+    let runs = PreflightRuns::default();
+    let token = runs.begin()?;
+    preflight_blocking(path, app, state, &runs, &token, &mut |_| {})
+}
+
+/// One live `preflight://progress` ping: the file about to be parsed and how
+/// far through the walk the scan is.
+#[derive(Clone, Serialize)]
+struct PreflightProgress<'a> {
+    /// The UI-issued id of the scan this ping belongs to.
+    run: u64,
+    path: &'a str,
+    done: usize,
+    total: usize,
+}
+
+/// Emits at most one `preflight://progress` event every ~120ms (the same
+/// budget as `job://detail`, #209) so thousands of files can't flood the IPC
+/// bridge. The first step always fires.
+fn preflight_progress_throttle<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    run: u64,
+) -> impl FnMut(adapters_lang_ts::EvalScanStep<'_>) + '_ {
+    let mut last: Option<std::time::Instant> = None;
+    move |step| {
+        let now = std::time::Instant::now();
+        if last.is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(120)) {
+            let _ = app.emit(
+                "preflight://progress",
+                PreflightProgress {
+                    run,
+                    path: step.path,
+                    done: step.done,
+                    total: step.total,
+                },
+            );
+            last = Some(now);
+        }
+    }
 }
 
 /// The preflight pipeline behind the command, generic over the runtime so
@@ -1702,7 +1856,11 @@ fn preflight_blocking<R: tauri::Runtime>(
     path: &str,
     app: &tauri::AppHandle<R>,
     state: &AppState,
+    runs: &PreflightRuns,
+    token: &PreflightToken,
+    on_progress: &mut dyn FnMut(adapters_lang_ts::EvalScanStep<'_>),
 ) -> Result<ingest::preflight::PreflightReport, String> {
+    let stopped = || token.is_cancelled();
     let source = register_local_source(state, std::path::Path::new(path))?;
     let operation = SourceOperation::acquire(&state.sources, [(source.clone(), false)])?;
     let root = operation.root(&source.repo_key)?;
@@ -1720,29 +1878,51 @@ fn preflight_blocking<R: tauri::Runtime>(
     // scan can close covered sites, downgrade const-unproven ones to
     // potential Gaps, and keep dynamic ones — without ever disagreeing
     // with what extraction will actually recover.
-    let eval_sites: Vec<ingest::preflight::EvalSiteCoverage> = adapters_lang_ts::eval_coverage(
-        root,
-        &adapters_lang_ts::SourceId {
-            repo: &repo,
-            commit: "workdir",
-        },
-    )
-    .map_err(|e| e.to_string())?
-    .into_iter()
-    .map(|site| ingest::preflight::EvalSiteCoverage {
-        path: site.path,
-        line: site.line,
-        proof: match site.proof {
-            adapters_lang_ts::EvalProof::Covered => ingest::preflight::EvalProof::Covered,
-            adapters_lang_ts::EvalProof::ConstUnproven => {
-                ingest::preflight::EvalProof::ConstUnproven
-            }
-            adapters_lang_ts::EvalProof::Dynamic => ingest::preflight::EvalProof::Dynamic,
-        },
+    let eval_sites: Vec<ingest::preflight::EvalSiteCoverage> =
+        adapters_lang_ts::eval_coverage_with_progress(
+            root,
+            &adapters_lang_ts::SourceId {
+                repo: &repo,
+                commit: "workdir",
+            },
+            &mut |step| {
+                if stopped() {
+                    return std::ops::ControlFlow::Break(());
+                }
+                on_progress(step);
+                std::ops::ControlFlow::Continue(())
+            },
+        )
+        .map_err(|e| e.to_string())?
+        .ok_or(PREFLIGHT_CANCELLED)?
+        .into_iter()
+        .map(|site| ingest::preflight::EvalSiteCoverage {
+            path: site.path,
+            line: site.line,
+            proof: match site.proof {
+                adapters_lang_ts::EvalProof::Covered => ingest::preflight::EvalProof::Covered,
+                adapters_lang_ts::EvalProof::ConstUnproven => {
+                    ingest::preflight::EvalProof::ConstUnproven
+                }
+                adapters_lang_ts::EvalProof::Dynamic => ingest::preflight::EvalProof::Dynamic,
+            },
+        })
+        .collect();
+    // The report walk reads every file again, so it reports progress too
+    // (#434 review); its count restarts at this walk's own total.
+    let report = ingest::preflight::preflight_scan(root, &claims, &eval_sites, &mut |step| {
+        if stopped() {
+            return std::ops::ControlFlow::Break(());
+        }
+        on_progress(adapters_lang_ts::EvalScanStep {
+            path: step.path,
+            done: step.done,
+            total: step.total,
+        });
+        std::ops::ControlFlow::Continue(())
     })
-    .collect();
-    let report = ingest::preflight::preflight_with_coverage(root, &claims, &eval_sites)
-        .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .ok_or(PREFLIGHT_CANCELLED)?;
     let batch: Vec<NewFinding<'_>> = report
         .unsupported
         .iter()
@@ -1754,10 +1934,14 @@ fn preflight_blocking<R: tauri::Runtime>(
             message: &finding.message,
         })
         .collect();
-    let mut findings = state.findings.lock().map_err(|e| e.to_string())?;
-    findings
-        .replace_for(&repo, ingest::preflight::DETECTOR_ID, &batch)
-        .map_err(|e| e.to_string())?;
+    // A stopped scan must not replace the register with a result the user
+    // abandoned.
+    runs.persist_if_current(token, || {
+        let mut findings = state.findings.lock().map_err(|e| e.to_string())?;
+        findings
+            .replace_for(&repo, ingest::preflight::DETECTOR_ID, &batch)
+            .map_err(|e| e.to_string())
+    })?;
     Ok(report)
 }
 
@@ -3515,6 +3699,7 @@ fn main() {
             let decisions = agents::DecisionLog::open(&state_path)?;
             let staged_proposals = agents::ProposalStore::open(data_dir.join("proposals.sqlite"))?;
             let recovery_metrics = metrics::MetricsStore::open(&state_path)?;
+            app.manage(PreflightRuns::default());
             app.manage(AppState {
                 graph: Mutex::new(graph),
                 jobs,
@@ -3566,6 +3751,7 @@ fn main() {
             cancel_job,
             retry_job,
             preflight,
+            cancel_preflight,
             findings_summary,
             list_findings,
             get_settings,
@@ -6605,7 +6791,7 @@ export function App() {
         let state = app.state::<super::AppState>();
         let path_arg = project.to_string_lossy().into_owned();
 
-        let report = super::preflight_blocking(&path_arg, &handle, &state).unwrap();
+        let report = super::preflight_uncancelled(&path_arg, &handle, &state).unwrap();
         let unsupported: Vec<u64> = report
             .unsupported
             .iter()
@@ -6625,6 +6811,296 @@ export function App() {
             .map(|f| f.line)
             .collect();
         assert_eq!(gaps, vec![4], "const-shaped-but-unproven downgrades");
+    }
+
+    /// A mock app managing the stores a preflight touches, rooted in `dir`.
+    fn preflight_test_app(dir: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
+        use tauri::Manager;
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let state_path = dir.join("state.db");
+        app.manage(super::PreflightRuns::default());
+        app.manage(super::AppState {
+            graph: std::sync::Mutex::new(SqliteGraphStore::open(dir.join("graph.db")).unwrap()),
+            jobs: std::sync::Mutex::new(super::JobStore::open(&state_path).unwrap()),
+            investigations: crate::investigations::InvestigationRuntime::default(),
+            job_execution_locks: super::job_execution_host_tests::locks(&state_path),
+            findings: std::sync::Mutex::new(super::FindingStore::open(&state_path).unwrap()),
+            settings: std::sync::Mutex::new(
+                super::settings::SettingsStore::open(&state_path).unwrap(),
+            ),
+            decisions: std::sync::Mutex::new(agents::DecisionLog::open(&state_path).unwrap()),
+            proposals: std::sync::Mutex::new(
+                agents::ProposalStore::open(state_path.with_file_name("proposals.sqlite")).unwrap(),
+            ),
+            extraction_caches: std::sync::Mutex::new(super::ExtractionCaches::default()),
+            primary_sources: super::primary_source::PrimarySourceStore::open(dir).unwrap(),
+            sources: test_source_registry(&state_path, &std::collections::BTreeSet::new()),
+            metrics: std::sync::Mutex::new(
+                super::metrics::MetricsStore::open(&state_path).unwrap(),
+            ),
+        });
+        app
+    }
+
+    #[test]
+    fn preflight_command_scans_on_a_worker_and_reports_progress() {
+        // AC-0197 (#235): the preflight command never parses on the invoking
+        // (webview/main) thread — the eval-claims walk runs on a blocking
+        // worker and streams `preflight://progress` while it reads.
+        use tauri::Listener;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("app.ts"), "eval(getCode());\n").unwrap();
+        let app = preflight_test_app(dir.path());
+        let emitters = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = emitters.clone();
+        app.listen_any("preflight://progress", move |event| {
+            seen.lock()
+                .unwrap()
+                .push((std::thread::current().id(), event.payload().to_string()));
+        });
+
+        let caller = std::thread::current().id();
+        let report = tauri::async_runtime::block_on(super::start_preflight(
+            project.to_string_lossy().into_owned(),
+            7,
+            app.handle().clone(),
+        ))
+        .unwrap();
+
+        assert!(report.unsupported.iter().any(|f| f.kind == "inline-eval"));
+        let emitters = emitters.lock().unwrap();
+        // One file, read by both walks; the throttle may fold the second
+        // walk's ping into the first.
+        assert!((1..=2).contains(&emitters.len()), "{emitters:?}");
+        assert!(
+            emitters.iter().all(|(worker, _)| *worker != caller),
+            "extraction ran on the calling thread"
+        );
+        assert_eq!(
+            emitters[0].1,
+            r#"{"run":7,"path":"app.ts","done":0,"total":1}"#
+        );
+    }
+
+    #[test]
+    fn the_report_walk_reports_progress_too() {
+        // AC-0197 (#434 review): the report walk reads every file, not just
+        // the TS sources the eval pass parses, so it must keep the progress
+        // line moving. A Go-only project gives the eval pass nothing to do.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("main.go"), "package main\n").unwrap();
+        let app = preflight_test_app(dir.path());
+        let state = app.state::<super::AppState>();
+        let runs = app.state::<super::PreflightRuns>();
+        let token = runs.begin().unwrap();
+
+        let mut steps = Vec::new();
+        super::preflight_blocking(
+            &project.to_string_lossy(),
+            app.handle(),
+            &state,
+            &runs,
+            &token,
+            &mut |step| steps.push((step.path.to_string(), step.done, step.total)),
+        )
+        .unwrap();
+        assert_eq!(steps, vec![("main.go".to_string(), 0, 1)]);
+    }
+
+    #[test]
+    fn cancelled_preflight_stops_before_the_next_file_and_persists_nothing() {
+        // AC-0198 (#235): a cancel stops the walk before the next parse and
+        // leaves the finding register untouched; a new preflight supersedes
+        // (cancels) the one in flight.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = preflight_eval_project(dir.path());
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let runs = app.state::<super::PreflightRuns>();
+        let path_arg = project.to_string_lossy().into_owned();
+
+        // Cancelled while reading the first file: nothing after it is parsed.
+        let token = runs.begin().unwrap();
+        let mut announced = Vec::new();
+        let result =
+            super::preflight_blocking(&path_arg, &handle, &state, &runs, &token, &mut |step| {
+                announced.push(step.path.to_string());
+                runs.cancel().unwrap();
+            });
+        assert_eq!(result.unwrap_err(), super::PREFLIGHT_CANCELLED);
+        assert_eq!(announced, vec!["a.ts".to_string()]);
+        assert!(
+            state.findings.lock().unwrap().list().unwrap().is_empty(),
+            "a cancelled preflight persists no findings"
+        );
+
+        // A new preflight supersedes the one in flight.
+        let first = runs.begin().unwrap();
+        let second = runs.begin().unwrap();
+        assert!(first.is_cancelled());
+        assert!(!second.is_cancelled());
+
+        // The uncancelled run completes and persists its findings.
+        let report =
+            super::preflight_blocking(&path_arg, &handle, &state, &runs, &second, &mut |_| {})
+                .unwrap();
+        assert_eq!(report.unsupported.len(), 3);
+        assert_eq!(state.findings.lock().unwrap().list().unwrap().len(), 3);
+    }
+
+    /// Three TS files, each with one dynamic eval — three findings when a
+    /// preflight completes.
+    fn preflight_eval_project(dir: &std::path::Path) -> std::path::PathBuf {
+        let project = dir.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        for name in ["a.ts", "b.ts", "c.ts"] {
+            std::fs::write(project.join(name), "eval(getCode());\n").unwrap();
+        }
+        project
+    }
+
+    #[test]
+    fn preflight_cancelled_before_its_worker_starts_never_runs() {
+        // AC-0198 (#434 review): the run is registered when the command
+        // starts, not when the blocking worker picks it up, so a Cancel that
+        // arrives while the worker is still queued stops it.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = preflight_eval_project(dir.path());
+        let app = preflight_test_app(dir.path());
+        let state = app.state::<super::AppState>();
+
+        let run = super::start_preflight(
+            project.to_string_lossy().into_owned(),
+            1,
+            app.handle().clone(),
+        );
+        app.state::<super::PreflightRuns>().cancel().unwrap();
+        let result = tauri::async_runtime::block_on(run);
+
+        assert_eq!(result.unwrap_err(), super::PREFLIGHT_CANCELLED);
+        assert!(state.findings.lock().unwrap().list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn preflight_supersession_follows_invocation_order() {
+        // AC-0198 (#434 review): a newer preflight supersedes an older one
+        // by invocation order, even when the older one's worker runs first.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = preflight_eval_project(dir.path());
+        let app = preflight_test_app(dir.path());
+        let path_arg = project.to_string_lossy().into_owned();
+
+        let older = super::start_preflight(path_arg.clone(), 1, app.handle().clone());
+        let newer = super::start_preflight(path_arg, 2, app.handle().clone());
+
+        assert_eq!(
+            tauri::async_runtime::block_on(older).unwrap_err(),
+            super::PREFLIGHT_CANCELLED
+        );
+        let report = tauri::async_runtime::block_on(newer).unwrap();
+        assert_eq!(report.unsupported.len(), 3);
+        let state = app.state::<super::AppState>();
+        assert_eq!(state.findings.lock().unwrap().list().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn cancel_never_waits_on_persistence() {
+        // AC-0198 (#434 review): `cancel_preflight` is synchronous, so it
+        // must not block on a register write in progress; a cancel that
+        // lands first still prevents the write.
+        use std::sync::mpsc;
+        let runs = std::sync::Arc::new(super::PreflightRuns::default());
+        let token = runs.begin().unwrap();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        runs.persist_if_current(&token, || {
+            let runs = runs.clone();
+            std::thread::spawn(move || {
+                runs.cancel().unwrap();
+                cancelled_tx.send(()).unwrap();
+            });
+            cancelled_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .map_err(|_| "cancel waited for the write".to_string())
+        })
+        .unwrap();
+
+        let mut wrote = false;
+        let late = runs.persist_if_current(&token, || {
+            wrote = true;
+            Ok(())
+        });
+        assert_eq!(late.unwrap_err(), super::PREFLIGHT_CANCELLED);
+        assert!(!wrote, "a cancelled run writes nothing");
+    }
+
+    #[test]
+    fn preflight_register_writes_never_interleave() {
+        // AC-0198 (#434 review): a superseding run's write waits for the
+        // older run's write in progress, so the newer result lands last.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let runs = std::sync::Arc::new(super::PreflightRuns::default());
+        let older = runs.begin().unwrap();
+        let writing = std::sync::Arc::new(AtomicBool::new(false));
+        let (inside_tx, inside_rx) = std::sync::mpsc::channel();
+        let newer = {
+            let runs = runs.clone();
+            let writing = writing.clone();
+            std::thread::spawn(move || {
+                inside_rx.recv().unwrap();
+                let newer = runs.begin().unwrap();
+                runs.persist_if_current(&newer, || {
+                    assert!(!writing.load(Ordering::SeqCst), "writes interleaved");
+                    Ok(())
+                })
+            })
+        };
+        runs.persist_if_current(&older, || {
+            writing.store(true, Ordering::SeqCst);
+            inside_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            writing.store(false, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        newer.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn cancel_after_the_eval_pass_persists_nothing() {
+        // AC-0198 (#434 review): a cancel that lands after the eval pass is
+        // observed by the report walk's per-file hook (proven to stop within
+        // one file by ingest::scan_hook_reports_each_file_and_stops_without_
+        // a_partial_report), so nothing reaches the register.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = preflight_eval_project(dir.path());
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let runs = app.state::<super::PreflightRuns>();
+        let token = runs.begin().unwrap();
+        let path_arg = project.to_string_lossy().into_owned();
+
+        // The eval pass announces its last file, then the cancel lands.
+        let result =
+            super::preflight_blocking(&path_arg, &handle, &state, &runs, &token, &mut |step| {
+                if step.done + 1 == step.total {
+                    runs.cancel().unwrap();
+                }
+            });
+        assert_eq!(result.unwrap_err(), super::PREFLIGHT_CANCELLED);
+        assert!(state.findings.lock().unwrap().list().unwrap().is_empty());
     }
 
     #[test]
@@ -6704,7 +7180,7 @@ export function App() {
 
         // Before: Ruby is uncovered, with the request-adapter action, and
         // the finding persists to the register.
-        let before = super::preflight_blocking(&path_arg, &handle, &state).unwrap();
+        let before = super::preflight_uncancelled(&path_arg, &handle, &state).unwrap();
         let finding = before
             .unsupported
             .iter()
@@ -6749,7 +7225,7 @@ export function App() {
             .unwrap();
 
         // Re-scan: the plugin counts as coverage and the finding closes.
-        let after = super::preflight_blocking(&path_arg, &handle, &state).unwrap();
+        let after = super::preflight_uncancelled(&path_arg, &handle, &state).unwrap();
         let ruby = after
             .languages
             .iter()

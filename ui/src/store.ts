@@ -150,6 +150,16 @@ export interface PreflightReport {
   detector: string;
 }
 
+/** One live `preflight://progress` ping (#235): the file the scan is reading
+ *  and how far through the walk it is. */
+export interface PreflightProgress {
+  /** The scan this ping belongs to — the id `runPreflight` sent. */
+  run: number;
+  path: string;
+  done: number;
+  total: number;
+}
+
 /** One provenance-bearing resolved hop returned by `flowtracer::Flow`. */
 export interface FlowHop {
   label: string;
@@ -690,6 +700,8 @@ export interface AppStore {
   preflight: PreflightReport | null;
   preflightBusy: boolean;
   preflightError: string | null;
+  /** Latest progress of the running preflight; null when none is running. */
+  preflightProgress: PreflightProgress | null;
   clearBusy: boolean;
   clearError: string | null;
   /** Register headline counts; null with no backend. */
@@ -761,6 +773,10 @@ export interface AppStore {
   /** Navigate to Preflight and run local detection (#116). Local targets get
    *  a real report; remote/manifest targets are detected during recovery. */
   runPreflight: () => Promise<void>;
+  /** Apply one `preflight://progress` ping while a preflight is running. */
+  applyPreflightProgress: (progress: PreflightProgress) => void;
+  /** Stop the running preflight (#235); it records no findings. */
+  cancelPreflight: () => Promise<void>;
   /** Navigate to Recover and run the staged pipeline. Returns to Workspace
    *  on success unless the user has already navigated away (Run in
    *  background); a failure stays on Recover so the error is never hidden. */
@@ -806,6 +822,9 @@ async function loadEndpoints(): Promise<GraphNode[]> {
 let evidenceRequestVersion = 0;
 let basisAssessmentGeneration = 0;
 let jobActionVersion = 0;
+/** Only the latest preflight may publish its result: a superseded or
+ *  cancelled scan settles late and must not overwrite the current one. */
+let preflightRun = 0;
 
 export const useAppStore = create<AppStore>((set, get) => ({
   view: 'workspace',
@@ -837,6 +856,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   preflight: null,
   preflightBusy: false,
   preflightError: null,
+  preflightProgress: null,
   clearBusy: false,
   clearError: null,
   findings: null,
@@ -1137,13 +1157,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
       jobs: state.jobs.map((existing) => (existing.id === id ? { ...existing, detail } : existing)),
     })),
 
-  setIngestSource: (ingestSource) => set({ ingestSource }),
+  setIngestSource: (ingestSource) => {
+    // A local scan still running on the backend would otherwise finish and
+    // persist findings for a target the user has left (#434 review).
+    if (ingestSource !== 'local' && get().preflightBusy) void get().cancelPreflight();
+    set({ ingestSource });
+  },
 
   setIngestTarget: (ingestTarget) => set({ ingestTarget }),
 
   runPreflight: async () => {
     const target = get().ingestTarget.trim();
-    set({ view: 'preflight', selected: null, preflight: null, preflightError: null });
+    const run = ++preflightRun;
+    set({
+      view: 'preflight',
+      selected: null,
+      preflight: null,
+      preflightError: null,
+      preflightBusy: false,
+      preflightProgress: null,
+    });
     // Only a local tree can be detected before recovery; GitHub and manifest
     // targets are preflighted against the clone during recovery. Showing
     // nothing beats inventing a report (three-way honesty starts here).
@@ -1152,12 +1185,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const preflight = await invokeOr<PreflightReport | null>('preflight', null, {
         path: target,
+        run,
       });
-      set({ preflight });
+      if (run === preflightRun) set({ preflight });
     } catch (e) {
-      set({ preflightError: String(e) });
+      if (run !== preflightRun) return;
+      const error = String(e);
+      set({
+        preflightError:
+          error === 'cancelled' ? 'Preflight cancelled. No findings were recorded.' : error,
+      });
     } finally {
-      set({ preflightBusy: false });
+      if (run === preflightRun) set({ preflightBusy: false, preflightProgress: null });
+    }
+  },
+
+  applyPreflightProgress: (progress) => {
+    // A superseded scan's last ping must not overwrite the current one's.
+    if (get().preflightBusy && progress.run === preflightRun) set({ preflightProgress: progress });
+  },
+
+  cancelPreflight: async () => {
+    try {
+      await invokeOr<null>('cancel_preflight', null);
+    } catch (e) {
+      set({ preflightError: `Cancel was not confirmed: ${String(e)}` });
     }
   },
 
