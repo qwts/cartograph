@@ -388,6 +388,41 @@ public class VetController {
             "HANDLES",
         );
     }
+    // A composed route cites the class base and the method mapping, on both
+    // the Endpoint and its HANDLES edge.
+    let endpoint = out
+        .nodes
+        .iter()
+        .find(|node| node.id == "ep:local/demo@GET:/clinic/vets")
+        .unwrap();
+    let handles = out
+        .edges
+        .iter()
+        .find(|e| e.src == endpoint.id && e.label == "HANDLES")
+        .unwrap();
+    for prov in [&endpoint.props["prov"], &handles.props["prov"]] {
+        assert_eq!(
+            cited(source, prov),
+            [
+                "@RequestMapping({ \"/clinic\" })",
+                "@GetMapping({ \"/vets\" })"
+            ]
+        );
+    }
+}
+
+/// Source text of every evidence span in `prov`.
+fn cited<'a>(source: &'a [u8], prov: &serde_json::Value) -> Vec<&'a str> {
+    prov["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|span| {
+            let start = span["byte_start"].as_u64().unwrap() as usize;
+            let end = span["byte_end"].as_u64().unwrap() as usize;
+            std::str::from_utf8(&source[start..end]).unwrap()
+        })
+        .collect()
 }
 
 /// AC-0192 (#234): a mapping whose path is present but not a provable
@@ -472,18 +507,8 @@ public class BasedController {
     assert_eq!(gaps.len(), 1);
     // The evidence must point at the expression that made the route
     // unprovable (the class base), not only at the literal method mapping.
-    let cited: Vec<&str> = gaps[0].props["prov"]["evidence"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|span| {
-            let start = span["byte_start"].as_u64().unwrap() as usize;
-            let end = span["byte_end"].as_u64().unwrap() as usize;
-            std::str::from_utf8(&source[start..end]).unwrap()
-        })
-        .collect();
     assert_eq!(
-        cited,
+        cited(source, &gaps[0].props["prov"]),
         ["@RequestMapping(Api.BASE)", "@GetMapping(\"/items\")"]
     );
 }

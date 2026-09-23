@@ -725,6 +725,12 @@ pub fn extract_source(
                 .iter()
                 .flat_map(|base| tails.iter().map(move |tail| join_route(base, tail)))
                 .collect();
+            // A composed route depends on the class base as much as on the
+            // method mapping, so both are cited (R-INT-1 traceability).
+            let evidence: Vec<TsNode<'_>> = base_mapping
+                .into_iter()
+                .chain(std::iter::once(annotation))
+                .collect();
             for route in routes {
                 let endpoint = format!("ep:{}@{http_method}:{route}", id.repo);
                 out.nodes.push(Node {
@@ -736,7 +742,11 @@ pub fn extract_source(
                         "handler_sym": handler,
                         "framework": "spring",
                         "language": "java",
-                        "prov": cx.prov(&annotation, &format!("Endpoint {endpoint}")),
+                        "prov": cx.prov_spanning(
+                            &evidence,
+                            ConfidenceTier::Confirmed,
+                            &format!("Endpoint {endpoint}"),
+                        ),
                     }),
                 });
                 out.edges.push(Edge {
@@ -744,7 +754,11 @@ pub fn extract_source(
                     dst: handler.clone(),
                     label: "HANDLES".into(),
                     props: serde_json::json!({
-                        "prov": cx.prov(&annotation, &format!("HANDLES {endpoint} -> {handler}")),
+                        "prov": cx.prov_spanning(
+                            &evidence,
+                            ConfidenceTier::Confirmed,
+                            &format!("HANDLES {endpoint} -> {handler}"),
+                        ),
                     }),
                 });
             }
