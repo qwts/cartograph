@@ -450,8 +450,21 @@ fn registry_rejects_invalid_inputs_without_creating_registrations() {
         let non_utf8 = dir
             .path()
             .join(std::ffi::OsString::from_vec(vec![b'r', 0xff]));
-        std::fs::create_dir(&non_utf8).unwrap();
-        assert!(registry.register_local(&non_utf8).is_err());
+        // UTF-8-only filesystems such as APFS refuse this name with EILSEQ.
+        // The registry checks the caller's representation before any
+        // filesystem lookup, so the rejection is asserted either way.
+        #[cfg(target_vendor = "apple")]
+        const EILSEQ: i32 = 92;
+        #[cfg(not(target_vendor = "apple"))]
+        const EILSEQ: i32 = 84;
+        match std::fs::create_dir(&non_utf8) {
+            Ok(()) => assert!(non_utf8.is_dir()),
+            Err(error) => assert_eq!(error.raw_os_error(), Some(EILSEQ)),
+        }
+        assert_eq!(
+            registry.register_local(&non_utf8).unwrap_err(),
+            "Source registration requires a UTF-8 path"
+        );
     }
     assert!(registry.list().unwrap().is_empty());
 }
