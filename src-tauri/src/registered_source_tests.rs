@@ -1488,3 +1488,101 @@ fn registered_git_worktrees_keep_distinct_identity_across_dirty_state() {
     assert_eq!(tree_bytes(&checkout), before_checkout);
     assert_eq!(tree_bytes(&worktree), before_worktree);
 }
+
+#[test]
+fn extraction_facts_are_independent_of_checkout_location() {
+    // AC-0144 (#342): the same tree extracted from two checkout locations under
+    // one registration yields identical facts and hashes across every
+    // compiled-in adapter, including Terraform module resolution. The loader
+    // test above varies only the root handed to `load_into_graph`; this varies
+    // the root the adapters actually walk.
+    fn write_tree(root: &Path) {
+        let files = [
+            (
+                "src/app.ts",
+                "import { helper } from './util';\nexport function handle() { return helper(); }\n",
+            ),
+            ("src/util.ts", "export function helper() { return 1; }\n"),
+            (
+                "svc/main.py",
+                "from flask import Flask\napp = Flask(__name__)\n@app.get('/x')\ndef x():\n    return 1\n",
+            ),
+            (
+                "go/main.go",
+                "package main\nimport \"net/http\"\nfunc h(w http.ResponseWriter, r *http.Request) {}\nfunc main() { http.HandleFunc(\"/g\", h) }\n",
+            ),
+            (
+                "java/A.java",
+                "package a;\nimport org.springframework.web.bind.annotation.*;\n@RestController\nclass A { @GetMapping(\"/j\") String j() { return \"\"; } }\n",
+            ),
+            (
+                "infra/main.tf",
+                "resource \"aws_sqs_queue\" \"q\" { name = \"orders\" }\nmodule \"m\" { source = \"./mod\" }\n",
+            ),
+            (
+                "infra/mod/main.tf",
+                "resource \"aws_sns_topic\" \"t\" { name = \"t\" }\n",
+            ),
+        ];
+        for (path, text) in files {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shallow = directory(dir.path(), "checkout");
+    let deep = directory(&directory(dir.path(), "a/much/deeper/path"), "checkout");
+    write_tree(&shallow);
+    write_tree(&deep);
+    let repo = "local/src_11111111111111111111111111111111";
+    let load = |root: &Path| {
+        let extraction = extract_tree(
+            root,
+            repo,
+            "revision-one",
+            &[],
+            &BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        let mut graph = SqliteGraphStore::open_in_memory().unwrap();
+        load_into_graph(&mut graph, &extraction, repo, root, "revision-one").unwrap();
+        graph
+    };
+    let (first, second) = (load(&shallow), load(&deep));
+    let first_facts = first.read_snapshot().unwrap();
+    let second_facts = second.read_snapshot().unwrap();
+    assert!(
+        first_facts.0.iter().any(|node| node.label == "Endpoint"),
+        "fixture must exercise framework adapters, not only files"
+    );
+    for (facts, root) in [(&first_facts, &shallow), (&second_facts, &deep)] {
+        let fact_bytes = serialized(facts);
+        assert!(!fact_bytes.contains(root.to_str().unwrap()));
+        assert!(!fact_bytes.contains(dir.path().to_str().unwrap()));
+    }
+    assert_eq!(first_facts, second_facts);
+    assert_eq!(
+        deterministic_graph_hashes(&first).unwrap(),
+        deterministic_graph_hashes(&second).unwrap()
+    );
+    assert_eq!(
+        metrics::compute(
+            &first_facts.0,
+            &first_facts.1,
+            &BTreeMap::new(),
+            &BTreeSet::new()
+        )
+        .content_hash,
+        metrics::compute(
+            &second_facts.0,
+            &second_facts.1,
+            &BTreeMap::new(),
+            &BTreeSet::new()
+        )
+        .content_hash
+    );
+}
