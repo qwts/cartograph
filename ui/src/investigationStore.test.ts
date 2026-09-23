@@ -159,6 +159,32 @@ describe('durable investigation observations (AC-0190)', () => {
     expect(useInvestigationStore.getState().result).toEqual(investigationResult('same'));
   });
 
+  it('rejects a result read that straddles the result commit and recovers on the next refresh', async () => {
+    // AC-0201: `has_result: true` with no result must not be recorded as a completed task without findings.
+    let committed = false;
+    mockIPC((command, args) => command === 'investigation_result' && !committed ? null : response(command, args));
+    await useInvestigationStore.getState().open('same');
+    expect(useInvestigationStore.getState().detail).toBeNull();
+    expect(useInvestigationStore.getState().result).toBeNull();
+    expect(useInvestigationStore.getState().error).toContain('could not be refreshed consistently');
+    committed = true;
+    await useInvestigationStore.getState().refreshSelected();
+    expect(useInvestigationStore.getState().detail?.status).toBe('completed');
+    expect(useInvestigationStore.getState().result).toEqual(investigationResult('same'));
+    expect(useInvestigationStore.getState().error).toBeNull();
+  });
+
+  it('rejects a result that is newer than the detail it was read with', async () => {
+    // AC-0201: a result paired with a pre-commit detail is an inconsistent observation, not a running task with findings.
+    mockIPC((command, args) => command === 'get_investigation'
+      ? investigationDetail('same', { status: 'running', has_result: false, revision: 8,
+        actions: { can_cancel: true, can_follow_up: false } }) : response(command, args));
+    await useInvestigationStore.getState().open('same');
+    expect(useInvestigationStore.getState().detail).toBeNull();
+    expect(useInvestigationStore.getState().result).toBeNull();
+    expect(useInvestigationStore.getState().error).toContain('could not be refreshed consistently');
+  });
+
   it('fetches multiple journal pages sequentially without inventing or dropping activity', async () => {
     const events: InvestigationEvent[] = Array.from({ length: 70 }, (_, index) => ({
       ...investigationEvents('paged')[0], sequence: index + 1, revision: index + 1,

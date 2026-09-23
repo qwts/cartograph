@@ -225,6 +225,9 @@ export const useInvestigationStore = create<InvestigationState>((set, get) => {
         ]);
         if (!current()) return;
         if (!validSummary(detail, id)) throw new Error('Wrong detail.');
+        // Independent reads can straddle the result commit; refresh instead of
+        // recording a task whose detail and findings disagree.
+        if ((result !== null) !== detail.has_result) throw new Error('Result observation changed.');
         if (result && (result.schema_version !== 1 || result.investigation_id !== id ||
             result.graph_snapshot_id !== detail.graph_snapshot_id)) throw new Error('Wrong result.');
         if (consent && (consent.investigation_id !== id || consent.revision !== detail.revision ||
