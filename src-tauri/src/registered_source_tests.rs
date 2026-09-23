@@ -1523,6 +1523,10 @@ fn extraction_facts_are_independent_of_checkout_location() {
                 "infra/mod/main.tf",
                 "resource \"aws_sns_topic\" \"t\" { name = \"t\" }\n",
             ),
+            (
+                "kt/Svc.kt",
+                "package kt\nfun helper(): Int = 1\nfun handle(): Int = helper()\n",
+            ),
         ];
         for (path, text) in files {
             let path = root.join(path);
@@ -1555,14 +1559,57 @@ fn extraction_facts_are_independent_of_checkout_location() {
     let (first, second) = (load(&shallow), load(&deep));
     let first_facts = first.read_snapshot().unwrap();
     let second_facts = second.read_snapshot().unwrap();
+    // Equality alone would pass if both runs skipped an adapter, so first pin
+    // that every compiled-in adapter and Terraform module expansion ran.
+    let extractors = first_facts
+        .0
+        .iter()
+        .map(|node| &node.props)
+        .chain(first_facts.1.iter().map(|edge| &edge.props))
+        .filter_map(|props| props["prov"]["extractor_id"].as_str())
+        .collect::<BTreeSet<_>>();
+    for extractor in [
+        "t0.adapter-ts",
+        "t0.adapter-python",
+        "t0.adapter-go",
+        "t0.adapter-java",
+        "t0.adapter-kotlin",
+        "t0.iac-terraform",
+    ] {
+        assert!(
+            extractors.contains(extractor),
+            "{extractor} produced no facts"
+        );
+    }
+    let module = format!("res:{repo}@module.m");
+    let child = format!("res:{repo}@module.m.aws_sns_topic.t");
+    assert!(first_facts.0.iter().any(|node| node.id == child));
     assert!(
-        first_facts.0.iter().any(|node| node.label == "Endpoint"),
-        "fixture must exercise framework adapters, not only files"
+        first_facts
+            .1
+            .iter()
+            .any(|edge| { edge.label == "REFERENCES" && edge.src == module && edge.dst == child })
     );
+    // Inspect decoded string values rather than serialized JSON, whose
+    // escaping (e.g. Windows backslashes) could hide a leaked root.
+    fn strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::String(text) => out.push(text),
+            serde_json::Value::Array(items) => items.iter().for_each(|item| strings(item, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|item| strings(item, out)),
+            _ => {}
+        }
+    }
     for (facts, root) in [(&first_facts, &shallow), (&second_facts, &deep)] {
-        let fact_bytes = serialized(facts);
-        assert!(!fact_bytes.contains(root.to_str().unwrap()));
-        assert!(!fact_bytes.contains(dir.path().to_str().unwrap()));
+        let value = serde_json::to_value(facts).unwrap();
+        let mut values = Vec::new();
+        strings(&value, &mut values);
+        for forbidden in [root.to_str().unwrap(), dir.path().to_str().unwrap()] {
+            assert!(
+                values.iter().all(|text| !text.contains(forbidden)),
+                "a fact string contains the checkout location {forbidden}"
+            );
+        }
     }
     assert_eq!(first_facts, second_facts);
     assert_eq!(
