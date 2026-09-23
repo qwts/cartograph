@@ -403,13 +403,15 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Runs on every full or post-merge lane, even when exact-SHA evidence lets the
+  # other heavy jobs skip: the ruleset requires these contexts on the PR's own
+  # check rollup, which never includes the preflight run's contexts (#440).
   codeql:
     name: Advanced CodeQL
     needs: [policy, merge-evidence, preflight-evidence]
     if: >-
       always() && needs.policy.result == 'success' &&
-      (needs.policy.outputs.run_post_merge == 'true' ||
-      (needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true'))
+      (needs.policy.outputs.run_post_merge == 'true' || needs.policy.outputs.run_full == 'true')
     permissions:
       actions: read
       contents: read
@@ -514,6 +516,7 @@ jobs:
           test "$POLICY" = success
           case "$MODE" in
             full)
+              test "$CODEQL" = success
               if [ "$PREFLIGHT_VALIDATED" = true ]; then
                 test "$PREFLIGHT" = success
               else
