@@ -20,6 +20,13 @@ export interface JobsSurfaceProps {
 /** Terminal statuses removed by Clear finished; resumable work never is. */
 const FINISHED = new Set(['done', 'failed', 'cancelled']);
 
+/** Mirrors the host's clear: an interrupted investigation row is never
+ *  resumed from Jobs, and its outcome — including an unknown one — stays in
+ *  investigation history, so it clears without being relabelled. */
+function clearable(job: Job): boolean {
+  return FINISHED.has(job.status) || (job.status === 'interrupted' && Boolean(job.investigation_id));
+}
+
 const STATUS_ICON: Record<string, string> = {
   queued: 'schedule',
   running: 'progress_activity',
@@ -61,7 +68,7 @@ export function JobsSurface({
   onCancelInvestigation,
 }: JobsSurfaceProps) {
   const [confirming, setConfirming] = useState(false);
-  const finished = jobs.filter((job) => FINISHED.has(job.status)).length;
+  const finished = jobs.filter(clearable).length;
   return (
     <section className="jobs-surface">
       <header className="jobs-surface-header">

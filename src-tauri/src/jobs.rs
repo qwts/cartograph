@@ -260,18 +260,25 @@ impl JobStore {
     }
 
     /// Delete terminal jobs (`done` / `failed` / `cancelled`) from the
-    /// spine. Queued, running, and interrupted (resumable) work is never
-    /// discarded. Returns the number of rows removed.
+    /// spine, plus `interrupted` rows whose investigation task has ended: the
+    /// coordinator never resumes those, and the task keeps its own
+    /// interrupted/outcome-unknown status in investigation history — the row
+    /// is removed, never relabelled as a success or failure. Queued, running,
+    /// and interrupted (resumable) work is never discarded. Returns the
+    /// number of rows removed.
     pub fn clear_finished(&mut self) -> rusqlite::Result<usize> {
+        const FINISHED: &str = "status IN ('done', 'failed', 'cancelled') OR (status = 'interrupted' AND EXISTS (SELECT 1 FROM investigation_tasks i WHERE i.job_id = jobs.id AND i.live = 0))";
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         execution::validate(&tx, &self.namespace)?;
-        tx.execute("DELETE FROM job_attempts WHERE job_id IN (SELECT id FROM jobs WHERE status IN ('done', 'failed', 'cancelled'))", [])?;
-        let removed = tx.execute(
-            "DELETE FROM jobs WHERE status IN ('done', 'failed', 'cancelled')",
+        tx.execute(
+            &format!(
+                "DELETE FROM job_attempts WHERE job_id IN (SELECT id FROM jobs WHERE {FINISHED})"
+            ),
             [],
         )?;
+        let removed = tx.execute(&format!("DELETE FROM jobs WHERE {FINISHED}"), [])?;
         tx.commit()?;
         Ok(removed)
     }

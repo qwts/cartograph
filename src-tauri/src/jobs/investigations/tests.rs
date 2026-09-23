@@ -698,6 +698,55 @@ fn investigation_recovery_uses_retained_owner_after_cancel_and_job_cleanup() {
 }
 
 #[test]
+fn investigation_ended_by_owner_death_is_clearable_without_relabelling_its_outcome() {
+    // AC-0202: an investigation ended by owner death leaves an `interrupted`
+    // Job the coordinator never resumes. Clearing removes that row only; the
+    // task keeps its interrupted/outcome-unknown status and journal, and an
+    // ordinary resumable interrupted Job is still kept.
+    for pending in [false, true] {
+        let mut fixture = Fixture::new();
+        let resumable = fixture.store.enqueue("ingest:/resumable").unwrap().id;
+        fixture.store.set_status(resumable, "interrupted").unwrap();
+        let (id, execution) = fixture.start("owner-death", InvestigationProviderMode::Local);
+        let job_id = execution.id();
+        if pending {
+            let ledger = fixture.prepare(&id, &execution, false);
+            begin(&mut fixture, &id, &execution, step(&ledger, 1));
+        }
+        drop(execution);
+        let candidate = fixture
+            .store
+            .investigation_recovery_candidates()
+            .unwrap()
+            .remove(0);
+        let reservation = fixture.locks.try_reserve(candidate.lock_target()).unwrap();
+        let recovered = fixture
+            .store
+            .recover_investigation(&candidate, reservation)
+            .unwrap()
+            .unwrap();
+        let outcome = if pending {
+            InvestigationStatus::OutcomeUnknown
+        } else {
+            InvestigationStatus::Interrupted
+        };
+        assert_eq!(recovered.summary.status, outcome);
+        assert_eq!(fixture.store.get(job_id).unwrap().status, "interrupted");
+        let events = fixture.store.investigation_events(&id, 0).unwrap();
+
+        assert_eq!(fixture.store.clear_finished().unwrap(), 1);
+        assert!(fixture.store.get(job_id).is_err());
+        assert_eq!(fixture.store.get(resumable).unwrap().status, "interrupted");
+        let kept = fixture.store.investigation(&id).unwrap();
+        assert_eq!(kept.summary.status, outcome);
+        assert_eq!(kept.summary.revision, recovered.summary.revision);
+        assert!(!kept.summary.has_result && !kept.summary.cancel_requested);
+        assert_eq!(fixture.store.investigation_events(&id, 0).unwrap(), events);
+        assert_eq!(fixture.store.clear_finished().unwrap(), 0);
+    }
+}
+
+#[test]
 fn investigation_unclaimed_queue_is_not_abandoned_and_missing_claimed_lock_fails_closed() {
     // AC-0181/0187: the start→claim gap is not proof of death. An actually
     // claimed missing lock is an operational failure, never automatically recreated.
