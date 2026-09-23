@@ -32,9 +32,10 @@ interoperability. Delivery gates distinguish planned capabilities from shipped o
   per-tier opt-in with explicit consent (fail closed).
 - **Determinism:** re-ingesting the same commit under the same source
   registration yields an identical graph (content-hash equality) — a CI
-  invariant from M10 on. It is scoped per registration: local sources carry
-  random registry keys (ADR-0023), so no cross-installation equality is
-  claimed (SPEC-00 §13).
+  invariant from M10 on. It is scoped per registration: direct-local and
+  `file://` managed sources carry random `local/` registry keys (ADR-0023),
+  so no cross-installation equality is claimed for them; only GitHub-backed
+  managed sources have stable `owner/name` keys (SPEC-00 §13).
 
 ## SDLC workflow (strict, from the first PR)
 
