@@ -578,3 +578,21 @@ fn progress_hook_reports_each_file_in_sorted_order() {
     extract_dir_incremental_with_progress(dir.path(), &id(), &mut cache, &mut on_file).unwrap();
     assert_eq!(seen, seen_again);
 }
+
+#[test]
+fn gitignored_trees_are_not_collected() {
+    // AC-0205 (#248): the shared walk honors the tree's own `.gitignore`.
+    let dir = tempfile::tempdir().unwrap();
+    for (path, body) in [
+        (".gitignore", "gen/\n"),
+        ("src/App.kt", ""),
+        ("gen/Api.kt", ""),
+    ] {
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, body).unwrap();
+    }
+    let mut files = Vec::new();
+    collect_kotlin_files(dir.path(), &mut files).unwrap();
+    assert_eq!(files, ["src/App.kt"]);
+}

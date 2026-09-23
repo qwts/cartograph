@@ -540,3 +540,21 @@ public class EscapedController {
         2
     );
 }
+
+#[test]
+fn gitignored_trees_are_not_collected() {
+    // AC-0205 (#248): the shared walk honors the tree's own `.gitignore`.
+    let dir = tempfile::tempdir().unwrap();
+    for (path, body) in [
+        (".gitignore", "gen/\n"),
+        ("src/App.java", ""),
+        ("gen/Api.java", ""),
+    ] {
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, body).unwrap();
+    }
+    let mut files = Vec::new();
+    collect_java_files(dir.path(), &mut files).unwrap();
+    assert_eq!(files, ["src/App.java"]);
+}

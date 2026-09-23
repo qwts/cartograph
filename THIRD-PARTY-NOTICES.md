@@ -15,8 +15,8 @@ Cartograph bundles the following Rust crates. Each is used under the terms of
 its respective license, reproduced below. This list is generated from the
 dependency lockfile by `cargo about`; do not edit by hand.
 
-- Apache License 2.0 (279 crate(s))
-- MIT License (71 crate(s))
+- Apache License 2.0 (280 crate(s))
+- MIT License (73 crate(s))
 - Unicode License v3 (19 crate(s))
 - BSD 3-Clause "New" or "Revised" License (9 crate(s))
 - Mozilla Public License 2.0 (5 crate(s))
@@ -4114,6 +4114,7 @@ Used by:
 - base64 0.23.1 — https://github.com/marshallpierce/rust-base64
 - bitflags 1.3.2 — https://github.com/bitflags/bitflags
 - bitflags 2.13.0 — https://github.com/bitflags/bitflags
+- bstr 1.13.1 — https://github.com/BurntSushi/bstr
 - bumpalo 3.20.3 — https://github.com/fitzgen/bumpalo
 - camino 1.2.4 — https://github.com/camino-rs/camino
 - cap-fs-ext 4.0.3 — https://github.com/bytecodealliance/cap-std
@@ -7492,6 +7493,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Used by:
 - aho-corasick 1.1.4 — https://github.com/BurntSushi/aho-corasick
 - byteorder 1.5.0 — https://github.com/BurntSushi/byteorder
+- globset 0.4.19 — https://github.com/BurntSushi/ripgrep/tree/master/crates/globset
+- ignore 0.4.32 — https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore
 - memchr 2.8.2 — https://github.com/BurntSushi/memchr
 - termcolor 1.4.1 — https://github.com/BurntSushi/termcolor
 - walkdir 2.5.0 — https://github.com/BurntSushi/walkdir

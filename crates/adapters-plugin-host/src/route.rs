@@ -58,36 +58,18 @@ impl From<std::io::Error> for RouteError {
 /// Repo-relative paths under `root` whose extension is claimed, in sorted
 /// order so routing (and therefore the graph) is deterministic.
 pub fn claimed_files(root: &Path, extensions: &[String]) -> std::io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let mut entries: Vec<_> = std::fs::read_dir(&dir)?
-            .collect::<Result<Vec<_>, _>>()?
+    let skip = |name: &str| SKIP_DIRS.contains(&name);
+    Ok(
+        source_walk::files(root, &skip, source_walk::Gitignores::Honor)?
             .into_iter()
-            .map(|entry| entry.path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            if path.is_dir() {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                if !SKIP_DIRS.contains(&name.as_str()) {
-                    stack.push(path);
-                }
-                continue;
-            }
-            let Some(extension) = path.extension().map(|e| e.to_string_lossy().into_owned()) else {
-                continue;
-            };
-            if extensions.contains(&extension) {
-                files.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
+            .filter(|file| {
+                file.path.extension().is_some_and(|extension| {
+                    extensions.contains(&extension.to_string_lossy().into_owned())
+                })
+            })
+            .map(|file| PathBuf::from(file.rel))
+            .collect(),
+    )
 }
 
 /// Run one gated plugin over every file it claims under `root`, merging

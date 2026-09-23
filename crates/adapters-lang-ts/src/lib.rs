@@ -2713,7 +2713,7 @@ pub fn extract_dir_incremental_with_progress(
     on_file: &mut dyn FnMut(&str),
 ) -> Result<(Extraction, IncrementalStats), ExtractError> {
     let mut files = Vec::new();
-    collect_ts_files(root, root, &mut files)?;
+    collect_ts_files(root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let mut out = Extraction::default();
     let mut stats = IncrementalStats::default();
@@ -2952,7 +2952,7 @@ fn next_pages_screens(out: &mut Extraction, id: &SourceId) {
 /// extraction cannot disagree by construction.
 pub fn eval_coverage(root: &Path, id: &SourceId) -> Result<Vec<EvalSite>, ExtractError> {
     let mut files = Vec::new();
-    collect_ts_files(root, root, &mut files)?;
+    collect_ts_files(root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let mut out = Vec::new();
     for rel in &files {
@@ -2962,25 +2962,20 @@ pub fn eval_coverage(root: &Path, id: &SourceId) -> Result<Vec<EvalSite>, Extrac
     Ok(out)
 }
 
-fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
-            if name == "node_modules" || name == "dist" || name.starts_with('.') {
-                continue;
-            }
-            collect_ts_files(root, &path, out)?;
-        } else if SOURCE_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
-            && !name.ends_with(".d.ts")
+/// Directories no TS/JS walk enters, on top of the tree's `.gitignore`
+/// (#248) — shared by every walk here and the captured lane's enumeration.
+pub(crate) fn skipped_directory(name: &str) -> bool {
+    name == "node_modules" || name == "dist" || name.starts_with('.')
+}
+
+/// Every TS/JS source under `root`, sorted, through the shared
+/// `.gitignore`-aware walk (#248).
+fn collect_ts_files(root: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+    for file in source_walk::files(root, &skipped_directory, source_walk::Gitignores::Honor)? {
+        if SOURCE_EXTENSIONS.iter().any(|ext| file.name.ends_with(ext))
+            && !file.name.ends_with(".d.ts")
         {
-            let rel = path
-                .strip_prefix(root)
-                .expect("entry under root")
-                .to_string_lossy()
-                .replace('\\', "/");
-            out.push(rel);
+            out.push(file.rel);
         }
     }
     Ok(())

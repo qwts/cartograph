@@ -781,56 +781,39 @@ pub fn extract_dir(
     let mut tools: BTreeMap<String, (DetectedTool, Vec<Proof>)> = BTreeMap::new();
     let mut config_files: BTreeMap<String, u64> = BTreeMap::new();
 
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let mut entries: Vec<_> = std::fs::read_dir(&dir)?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|entry| entry.path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if path.is_dir() {
-                if !crate::preflight::skip_dir(&name) {
-                    stack.push(path);
+    // The same walk as Preflight (#248), so the two never disagree about
+    // what is part of the system.
+    let walked = source_walk::files(
+        root,
+        &crate::preflight::skip_dir,
+        source_walk::Gitignores::Honor,
+    )?;
+    for source_walk::WalkedFile { rel, path, name } in walked {
+        let detection = detect_in_file(&name, &rel, &path);
+        if detection.tools.is_empty() {
+            continue;
+        }
+        on_file(&rel);
+        let file_len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        config_files.entry(rel.clone()).or_insert(file_len);
+        for detected in detection.tools {
+            let proof = (
+                detected.path.clone(),
+                detected.byte_start,
+                detected.byte_end,
+            );
+            match tools.entry(detected.name.clone()) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert((detected, vec![proof]));
                 }
-                continue;
-            }
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            let detection = detect_in_file(&name, &rel, &path);
-            if detection.tools.is_empty() {
-                continue;
-            }
-            on_file(&rel);
-            let file_len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            config_files.entry(rel.clone()).or_insert(file_len);
-            for detected in detection.tools {
-                let proof = (
-                    detected.path.clone(),
-                    detected.byte_start,
-                    detected.byte_end,
-                );
-                match tools.entry(detected.name.clone()) {
-                    std::collections::btree_map::Entry::Vacant(slot) => {
-                        slot.insert((detected, vec![proof]));
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    let (merged, proofs) = slot.get_mut();
+                    for (key, value) in detected.settings {
+                        merged.settings.entry(key).or_insert(value);
                     }
-                    std::collections::btree_map::Entry::Occupied(mut slot) => {
-                        let (merged, proofs) = slot.get_mut();
-                        for (key, value) in detected.settings {
-                            merged.settings.entry(key).or_insert(value);
-                        }
-                        merged.settings_behind_code =
-                            merged.settings_behind_code || detected.settings_behind_code;
-                        proofs.push(proof);
-                    }
+                    merged.settings_behind_code =
+                        merged.settings_behind_code || detected.settings_behind_code;
+                    proofs.push(proof);
                 }
             }
         }

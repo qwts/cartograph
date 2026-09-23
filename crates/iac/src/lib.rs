@@ -813,7 +813,7 @@ pub fn extract_dir_incremental_with_progress(
 ) -> Result<(Extraction, IncrementalStats), ExtractError> {
     let root = std::fs::canonicalize(root)?;
     let mut files = Vec::new();
-    collect_tf_files(&root, &root, &mut files)?;
+    collect_tf_files(&root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let old_keys = cache.files.keys().cloned().collect::<BTreeSet<_>>();
     let mut run = CacheRun {
@@ -846,7 +846,7 @@ pub fn extract_dir_incremental_with_progress(
 pub fn terraform_file_count(root: &Path) -> Result<u64, ExtractError> {
     let root = std::fs::canonicalize(root)?;
     let mut files = Vec::new();
-    collect_tf_files(&root, &root, &mut files)?;
+    collect_tf_files(&root, &mut files)?;
     Ok(files.len() as u64)
 }
 
@@ -1006,27 +1006,11 @@ fn collect_direct_tf_files(root: &Path, dir: &Path) -> std::io::Result<Vec<Strin
     Ok(files)
 }
 
-fn collect_tf_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            if name.starts_with('.') || name == "node_modules" {
-                continue;
-            }
-            collect_tf_files(root, &path, out)?;
-        } else if file_type.is_file() && name.ends_with(".tf") {
-            let rel = path
-                .strip_prefix(root)
-                .expect("entry under root")
-                .to_string_lossy()
-                .replace('\\', "/");
-            out.push(rel);
+fn collect_tf_files(root: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+    let skip = |name: &str| name.starts_with('.') || name == "node_modules";
+    for file in source_walk::files(root, &skip, source_walk::Gitignores::Honor)? {
+        if file.name.ends_with(".tf") {
+            out.push(file.rel);
         }
     }
     Ok(())

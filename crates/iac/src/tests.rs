@@ -878,3 +878,21 @@ fn syntax_errors_name_the_file() {
     let err = extract_source("resource \"broken\" {", "bad.tf", &id()).unwrap_err();
     assert!(err.to_string().contains("bad.tf"));
 }
+
+#[test]
+fn gitignored_trees_are_not_collected() {
+    // AC-0205 (#248): the shared walk honors the tree's own `.gitignore`.
+    let dir = tempfile::tempdir().unwrap();
+    for (path, body) in [
+        (".gitignore", "gen/\n"),
+        ("infra/main.tf", ""),
+        ("gen/generated.tf", ""),
+    ] {
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, body).unwrap();
+    }
+    let mut files = Vec::new();
+    collect_tf_files(dir.path(), &mut files).unwrap();
+    assert_eq!(files, ["infra/main.tf"]);
+}

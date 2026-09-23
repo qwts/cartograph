@@ -20,38 +20,25 @@ pub struct AdrFacts {
     pub edges: Vec<Edge>,
 }
 
-fn collect_adr_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
+fn collect_adr_files(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let skip = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        name.starts_with('.') || matches!(name.as_str(), "node_modules" | "target" | "dist")
+    };
+    for file in source_walk::files(root, &skip, source_walk::Gitignores::Honor)? {
+        let name = file.name.to_ascii_lowercase();
+        if !name.ends_with(".md") {
             continue;
         }
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        if file_type.is_dir() {
-            if name.starts_with('.') || matches!(name.as_str(), "node_modules" | "target" | "dist")
-            {
-                continue;
-            }
-            collect_adr_files(root, &path, out)?;
-        } else if file_type.is_file() && name.ends_with(".md") {
-            let relative = path.strip_prefix(root).expect("walk remains under root");
-            let in_decision_dir = relative.components().any(|component| {
-                matches!(
-                    component
-                        .as_os_str()
-                        .to_string_lossy()
-                        .to_ascii_lowercase()
-                        .as_str(),
-                    "adr" | "adrs" | "decision" | "decisions" | "rfc" | "rfcs"
-                )
-            });
-            let named_decision = name.starts_with("adr-") || name.starts_with("rfc-");
-            if in_decision_dir || named_decision {
-                out.push(path);
-            }
+        let in_decision_dir = file.rel.split('/').any(|component| {
+            matches!(
+                component.to_ascii_lowercase().as_str(),
+                "adr" | "adrs" | "decision" | "decisions" | "rfc" | "rfcs"
+            )
+        });
+        let named_decision = name.starts_with("adr-") || name.starts_with("rfc-");
+        if in_decision_dir || named_decision {
+            out.push(file.path);
         }
     }
     Ok(())
@@ -156,7 +143,7 @@ pub fn extract_found_adrs(
     candidates: &[Node],
 ) -> std::io::Result<AdrFacts> {
     let mut files = Vec::new();
-    collect_adr_files(root, root, &mut files)?;
+    collect_adr_files(root, &mut files)?;
     files.sort();
     let candidates: BTreeMap<&str, &Node> = candidates
         .iter()

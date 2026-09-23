@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 core-graph = { workspace = true }
 core-prov = { workspace = true }
+source-walk = { workspace = true }
 core-redact = { workspace = true }
 source-capture = { workspace = true }
 adapters-fw = { workspace = true }

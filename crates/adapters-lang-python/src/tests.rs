@@ -186,3 +186,21 @@ fn incremental_reingest_is_deterministic() {
     let (_, deleted_stats) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
     assert_eq!(deleted_stats.deleted_files, 1);
 }
+
+#[test]
+fn gitignored_trees_are_not_collected() {
+    // AC-0205 (#248): the shared walk honors the tree's own `.gitignore`.
+    let dir = tempfile::tempdir().unwrap();
+    for (path, body) in [
+        (".gitignore", "gen/\n"),
+        ("app/main.py", ""),
+        ("gen/api.py", ""),
+    ] {
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, body).unwrap();
+    }
+    let mut files = Vec::new();
+    collect_python_files(dir.path(), &mut files).unwrap();
+    assert_eq!(files, ["app/main.py"]);
+}

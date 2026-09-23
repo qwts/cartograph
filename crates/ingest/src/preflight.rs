@@ -385,36 +385,13 @@ pub fn preflight_scan(
     let mut unsupported = Vec::new();
     let mut potential_gaps = Vec::new();
 
-    // Collect first (same order as the previous single pass) so progress can
-    // name the walk's total.
-    let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let mut entries: Vec<_> = std::fs::read_dir(&dir)?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|entry| entry.path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if path.is_dir() {
-                if !skip_dir(&name) {
-                    stack.push(path);
-                }
-                continue;
-            }
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            files.push((path, name, rel));
-        }
-    }
+    // Collect first so progress can name the walk's total. The walk is the
+    // one every extractor uses (#248): `.gitignore`-aware and sorted, so
+    // Preflight never reports files recovery would not read.
+    let files: Vec<_> = source_walk::files(root, &skip_dir, source_walk::Gitignores::Honor)?
+        .into_iter()
+        .map(|file| (file.path, file.name, file.rel))
+        .collect();
 
     let total = files.len();
     let mut walked = std::collections::BTreeSet::new();
@@ -1167,6 +1144,24 @@ mod tests {
                 .iter()
                 .all(|f| f.kind != "inline-eval")
         );
+    }
+
+    #[test]
+    fn gitignored_trees_are_neither_scanned_nor_counted() {
+        // AC-0205 (#248): Preflight walks exactly what recovery reads — a
+        // `.gitignore`d `out/` bundle is not a detected source and its eval
+        // lines are not findings; the non-ignored file still is.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, ".gitignore", "out/\n");
+        write(root, "src/app.ts", "eval(code);\n");
+        write(root, "out/bundle.js", "eval(code);\n");
+        let report = preflight(root).unwrap();
+        let files: u64 = report.languages.iter().map(|l| l.files).sum();
+        assert_eq!(files, 1);
+        let paths: Vec<_> = report.unsupported.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"src/app.ts"));
+        assert!(!paths.iter().any(|path| path.starts_with("out/")));
     }
 
     #[test]
