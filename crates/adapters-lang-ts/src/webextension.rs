@@ -79,24 +79,16 @@ fn strings(value: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Walk for `manifest.json` files outside dependency/build/hidden trees.
-fn collect_manifests(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
-            if name == "node_modules" || name == "dist" || name.starts_with('.') {
-                continue;
-            }
-            collect_manifests(root, &path, out)?;
-        } else if name == "manifest.json" {
-            let rel = path
-                .strip_prefix(root)
-                .expect("entry under root")
-                .to_string_lossy()
-                .replace('\\', "/");
-            out.push(rel);
+/// Walk for `manifest.json` files outside dependency/build/hidden trees and
+/// anything the tree's `.gitignore` excludes (#248).
+fn collect_manifests(root: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+    for file in source_walk::files(
+        root,
+        &crate::skipped_directory,
+        source_walk::Gitignores::Honor,
+    )? {
+        if file.name == "manifest.json" {
+            out.push(file.rel);
         }
     }
     Ok(())
@@ -315,7 +307,7 @@ pub fn extract_manifests(
     known_files: &BTreeSet<String>,
 ) -> Result<(Extraction, u64), ExtractError> {
     let mut manifests = Vec::new();
-    collect_manifests(root, root, &mut manifests)?;
+    collect_manifests(root, &mut manifests)?;
     manifests.sort(); // deterministic order (US-0014)
     let mut out = Extraction::default();
     let mut recognized = 0u64;

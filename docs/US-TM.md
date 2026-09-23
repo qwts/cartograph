@@ -17,7 +17,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0011 | AC-0029..0031, AC-0065..0066, AC-0084 | app, flowtracer, ui | M9 | F-* | ADR-0002 | T-0029..0031, T-0065..0066, T-0084 |
 | US-0012 | AC-0032..0035,AC-0057..0058,AC-0067 | core-prov, spec, agents, app, flowtracer, ui | M9–M10 | — | ADR-0002, ADR-0011 | T-0032..0035,T-0057..0058,T-0067 |
 | US-0013 | AC-0036..0038,AC-0059,AC-0082,AC-0088 | spec, app, ui | M9 | F-* | ADR-0002, ADR-0012 | T-0036..0038,T-0059,T-0082,T-0088 |
-| US-0014 | AC-0039..0040,AC-0060 | adapters-lang-ts, iac, core-graph, core-prov, app | M10 | — | ADR-0006, ADR-0014 | T-0039..0040,T-0060 |
+| US-0014 | AC-0039..0040,AC-0060,AC-0205 | source-walk, adapters-lang-*, iac, ingest, core-graph, core-prov, app | M10 | — | ADR-0006, ADR-0014, ADR-0030 | T-0039..0040,T-0060,T-0205 |
 | US-0015 | AC-0041..0042 | iac, spec, ui | M9 | — | ADR-0003, ADR-0013 | T-0041..0042 |
 | US-0016 | AC-0071..0075 | adapters-lang-ts, adapters-fw, events, spec, app, ui | post-M10 | WebExtension flows | ADR-0003, ADR-0013 | T-0071..0075 |
 | US-0017 | AC-0068..0070, AC-0093 | adapters-*, ingest, app, ui | post-M10 | — | ADR-0003, ADR-0017 | T-0068..0070, T-0093 |
@@ -83,3 +83,5 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0027 | Coherent captured agent task basis and immutable staging v2 |
 
 | ADR-0028 | Separate durable investigations from edge-resolution proposals |
+
+| ADR-0030 | One shared, `.gitignore`-aware source walk |

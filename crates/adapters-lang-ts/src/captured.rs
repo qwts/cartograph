@@ -6,10 +6,11 @@
 //! Directory enrichment still reads live configuration and is outside closure.
 
 use super::{ExtractError, Extraction, IncrementalStats, SourceId};
-use cap_fs_ext::DirExt;
-use cap_std::fs::Dir;
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
+use cap_std::fs::{Dir, OpenOptions};
 use core_graph::{Edge, Node};
 use source_capture::{Capture, CapturedFile};
+use source_walk::IgnoreRules;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -63,7 +64,32 @@ fn supported(path: &str) -> bool {
 }
 
 fn excluded_directory(name: &str) -> bool {
-    name == "node_modules" || name == "dist" || name.starts_with('.')
+    super::skipped_directory(name)
+}
+
+/// This directory's own `.gitignore`, read through the confined handle
+/// without following a symlink. Anything but a regular file is not a rule
+/// source, exactly as for the ordinary walk (`source_walk::files`).
+fn own_gitignore(directory: &Dir) -> Result<Option<Vec<u8>>, CapturedError> {
+    match directory.symlink_metadata(source_walk::GITIGNORE) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No).nonblock(true);
+    let file = directory.open_with(source_walk::GITIGNORE, &options)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(CapturedError::Invalid("ignore file is not a regular file"));
+    }
+    match source_walk::read_gitignore(file) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            Err(CapturedError::Limit("ignore file bytes"))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn valid_path(path: &str) -> bool {
@@ -76,6 +102,8 @@ fn valid_path(path: &str) -> bool {
 }
 
 /// Enumerate the ordinary TS/JS selection without following directory symlinks.
+/// The selection honors the tree's own `.gitignore` files through the same
+/// matcher as the ordinary walk (#248), so both lanes select identical files.
 /// Each descent uses a rooted no-follow handle, including after a concurrent
 /// entry replacement. The subsequent capture independently confines acquisition.
 /// Unsupported encodings, nonexcluded symlinks and selected special files fail;
@@ -108,8 +136,10 @@ fn enumerate_with_limits(
             &mut self,
             directory: &Dir,
             prefix: &str,
+            parent: &IgnoreRules,
             depth: usize,
         ) -> Result<(), CapturedError> {
+            let rules = parent.descend(prefix, own_gitignore(directory)?.as_deref());
             for entry in directory.entries()? {
                 let entry = entry?;
                 self.visited += 1;
@@ -127,17 +157,22 @@ fn enumerate_with_limits(
                 {
                     continue;
                 }
+                let path = if prefix.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                // Ignored entries are excluded like skipped directories, so
+                // an ignored symlink is not part of the selection either.
+                if rules.is_ignored(&path, kind.is_dir()) {
+                    continue;
+                }
                 if kind.is_symlink() {
                     return Err(CapturedError::Invalid("symlink in selected tree"));
                 }
                 if kind.is_dir() && excluded_directory(name) {
                     continue;
                 }
-                let path = if prefix.is_empty() {
-                    name.to_string()
-                } else {
-                    format!("{prefix}/{name}")
-                };
                 if kind.is_dir() {
                     if depth == self.max_depth {
                         return Err(CapturedError::Limit("directory depth"));
@@ -146,7 +181,7 @@ fn enumerate_with_limits(
                         return Err(CapturedError::Invalid("directory path"));
                     }
                     let child = directory.open_dir_nofollow(name)?;
-                    self.visit(&child, &path, depth + 1)?;
+                    self.visit(&child, &path, &rules, depth + 1)?;
                 } else if supported(name) {
                     if !kind.is_file() || !valid_path(&path) {
                         return Err(CapturedError::Invalid("selected source path or type"));
@@ -167,7 +202,7 @@ fn enumerate_with_limits(
         max_depth,
         max_files,
     };
-    walk.visit(directory, "", 0)?;
+    walk.visit(directory, "", &IgnoreRules::default(), 0)?;
     walk.files.sort();
     Ok(walk.files)
 }

@@ -285,7 +285,7 @@ fn first_named<'t>(args: &TsNode<'t>) -> Option<TsNode<'t>> {
 /// Extract the IndexedDB data model for the whole tree.
 pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Extraction, ExtractError> {
     let mut files = Vec::new();
-    crate::collect_ts_files(root, root, &mut files)?;
+    crate::collect_ts_files(root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let mut index = RepoIndex::default();
     for rel in &files {

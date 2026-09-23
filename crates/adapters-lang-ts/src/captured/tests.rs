@@ -442,6 +442,51 @@ fn captured_enumeration_preserves_selection_and_enforces_budgets() {
     ));
 }
 
+#[test]
+fn captured_and_ordinary_walks_select_the_same_gitignore_filtered_files() {
+    // AC-0205: a `.gitignore`d build tree is excluded from both lanes, a
+    // non-ignored file stays, and the two selections are identical.
+    let directory = tempfile::tempdir().unwrap();
+    for (path, body) in [
+        (".gitignore", "build/\nout/\n*.gen.ts\n"),
+        ("src/app.ts", "export function app() { return 1; }"),
+        ("src/api.gen.ts", "export function generated() {}"),
+        ("build/app.js", "export function bundled() {}"),
+        ("out/app.js", "export function emitted() {}"),
+        ("packages/web/.gitignore", "vendor/\n!keep.gen.ts\n"),
+        ("packages/web/vendor/lib.ts", "export function lib() {}"),
+        ("packages/web/keep.gen.ts", "export function kept() {}"),
+    ] {
+        let file = directory.path().join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, body).unwrap();
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        directory.path().join("src"),
+        directory.path().join("out/linked"),
+    )
+    .unwrap();
+    let captured = enumerate_paths(directory.path()).unwrap();
+    assert_eq!(captured, ["packages/web/keep.gen.ts", "src/app.ts"]);
+    let mut ordinary = Vec::new();
+    crate::collect_ts_files(directory.path(), &mut ordinary).unwrap();
+    assert_eq!(ordinary, captured);
+    let files = crate::extract_dir(directory.path(), &parser_id())
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|node| node.label == "File")
+        .map(|node| node.id)
+        .collect::<Vec<_>>();
+    assert!(
+        files
+            .iter()
+            .all(|id| !id.contains("build/") && !id.contains("vendor/"))
+    );
+    assert!(files.iter().any(|id| id.ends_with("src/app.ts")));
+}
+
 #[cfg(unix)]
 #[test]
 fn captured_enumeration_rejects_symlinks_and_non_utf8_paths() {

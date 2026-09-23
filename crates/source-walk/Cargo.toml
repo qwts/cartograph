@@ -1,0 +1,19 @@
+[package]
+name = "source-walk"
+description = "The one source-tree walk every extractor and Preflight share: .gitignore-aware, sorted, deterministic (#248)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Only the `.gitignore` matcher is used (ignore::gitignore) — not its walker,
+# so traversal, ordering and symlink policy stay ours and the captured lane's
+# confined walk can share the exact same matching (ADR-0030).
+ignore = "0.4.23"
+
+[dev-dependencies]
+tempfile = "3"

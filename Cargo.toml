@@ -47,6 +47,7 @@ core-prov = { path = "crates/core-prov" }
 core-redact = { path = "crates/core-redact" }
 context-hub = { path = "crates/context-hub" }
 source-capture = { path = "crates/source-capture" }
+source-walk = { path = "crates/source-walk" }
 adapters-fw = { path = "crates/adapters-fw" }
 adapters-plugin-host = { path = "crates/adapters-plugin-host" }
 adapters-lang-ts = { path = "crates/adapters-lang-ts" }

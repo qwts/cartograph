@@ -120,99 +120,80 @@ fn entry_candidates(json: &serde_json::Value) -> Vec<String> {
 }
 
 impl ResolutionIndex {
-    /// Walk `root` (same skip set as source collection) and load every
-    /// tsconfig/jsconfig scope and named workspace package. Deterministic:
-    /// entries sorted, config order stable.
+    /// Walk `root` (the same `.gitignore`-aware walk as source collection)
+    /// and load every tsconfig/jsconfig scope and named workspace package.
+    /// Deterministic: entries sorted, config order stable.
     pub(crate) fn load(root: &Path) -> std::io::Result<Self> {
         let mut index = Self::default();
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let mut entries: Vec<_> = std::fs::read_dir(&dir)?
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .map(|entry| entry.path())
-                .collect();
-            entries.sort();
-            for path in entries {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                if path.is_dir() {
-                    if !(name == "node_modules" || name == "dist" || name.starts_with('.')) {
-                        stack.push(path);
-                    }
+        let walked = source_walk::files(
+            root,
+            &crate::skipped_directory,
+            source_walk::Gitignores::Honor,
+        )?;
+        for source_walk::WalkedFile { rel, path, name } in walked {
+            let dir_rel = Path::new(&rel)
+                .parent()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let is_tsconfig = name == "tsconfig.json"
+                || name == "jsconfig.json"
+                || (name.starts_with("tsconfig.") && name.ends_with(".json"));
+            if is_tsconfig {
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let facts = adapters_fw::tsconfig::parse(&text);
+                // A config with no baseUrl/paths still SHADOWS its
+                // parents (#220 review): the nearest tsconfig governs
+                // its files, so a root alias must not reach into a
+                // nested package that didn't declare it.
+                let mut paths = facts.paths;
+                // TypeScript matches the pattern with the longest
+                // prefix before `*`; exact patterns are most specific
+                // of all (#220 review).
+                paths.sort_by(|(a, _), (b, _)| {
+                    let specificity = |pattern: &str| match pattern.split_once('*') {
+                        None => usize::MAX,
+                        Some((prefix, _)) => prefix.len(),
+                    };
+                    specificity(b).cmp(&specificity(a)).then(a.cmp(b))
+                });
+                index.tsconfigs.push(TsconfigScope {
+                    dir: dir_rel,
+                    config_path: rel,
+                    base_url: facts.base_url,
+                    paths,
+                    paths_span: facts.paths_span,
+                    span: facts.span,
+                });
+            } else if name == "package.json" {
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    continue;
+                };
+                let Some(pkg_name) = json["name"].as_str() else {
+                    continue;
+                };
+                let entries = entry_candidates(&json);
+                if entries.is_empty() {
                     continue;
                 }
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let dir_rel = Path::new(&rel)
-                    .parent()
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or_default();
-                let is_tsconfig = name == "tsconfig.json"
-                    || name == "jsconfig.json"
-                    || (name.starts_with("tsconfig.") && name.ends_with(".json"));
-                if is_tsconfig {
-                    let Ok(text) = std::fs::read_to_string(&path) else {
-                        continue;
-                    };
-                    let facts = adapters_fw::tsconfig::parse(&text);
-                    // A config with no baseUrl/paths still SHADOWS its
-                    // parents (#220 review): the nearest tsconfig governs
-                    // its files, so a root alias must not reach into a
-                    // nested package that didn't declare it.
-                    let mut paths = facts.paths;
-                    // TypeScript matches the pattern with the longest
-                    // prefix before `*`; exact patterns are most specific
-                    // of all (#220 review).
-                    paths.sort_by(|(a, _), (b, _)| {
-                        let specificity = |pattern: &str| match pattern.split_once('*') {
-                            None => usize::MAX,
-                            Some((prefix, _)) => prefix.len(),
-                        };
-                        specificity(b).cmp(&specificity(a)).then(a.cmp(b))
-                    });
-                    index.tsconfigs.push(TsconfigScope {
-                        dir: dir_rel,
-                        config_path: rel,
-                        base_url: facts.base_url,
-                        paths,
-                        paths_span: facts.paths_span,
-                        span: facts.span,
-                    });
-                } else if name == "package.json" {
-                    let Ok(text) = std::fs::read_to_string(&path) else {
-                        continue;
-                    };
-                    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-                        continue;
-                    };
-                    let Some(pkg_name) = json["name"].as_str() else {
-                        continue;
-                    };
-                    let entries = entry_candidates(&json);
-                    if entries.is_empty() {
-                        continue;
-                    }
-                    let span_key = if json.get("exports").is_some() {
-                        "\"exports\""
-                    } else if json.get("module").is_some() {
-                        "\"module\""
-                    } else {
-                        "\"main\""
-                    };
-                    index.packages.push(WorkspacePackage {
-                        name: pkg_name.to_string(),
-                        dir: dir_rel,
-                        entries,
-                        config_path: rel,
-                        span: span_of(&text, span_key),
-                    });
-                }
+                let span_key = if json.get("exports").is_some() {
+                    "\"exports\""
+                } else if json.get("module").is_some() {
+                    "\"module\""
+                } else {
+                    "\"main\""
+                };
+                index.packages.push(WorkspacePackage {
+                    name: pkg_name.to_string(),
+                    dir: dir_rel,
+                    entries,
+                    config_path: rel,
+                    span: span_of(&text, span_key),
+                });
             }
         }
         // Longest (most specific) tsconfig scope first per importer lookup;

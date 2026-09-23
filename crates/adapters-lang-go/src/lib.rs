@@ -653,30 +653,22 @@ pub fn extract_source(
     extract_source_with_module(source, path, id, None)
 }
 
-fn collect_go_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), ExtractError> {
-    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path.is_dir() {
-            if name.starts_with('.')
-                || matches!(
-                    name.as_ref(),
-                    "vendor" | "node_modules" | "dist" | "build" | "bin"
-                )
-            {
-                continue;
-            }
-            collect_go_files(root, &path, out)?;
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("go")
-            && !name.ends_with("_test.go")
-            && !has_platform_suffix(&name)
-            && !has_explicit_build_constraint(&std::fs::read(&path)?)
+fn collect_go_files(root: &Path, out: &mut Vec<String>) -> Result<(), ExtractError> {
+    let skip = |name: &str| {
+        name.starts_with('.')
+            || matches!(name, "vendor" | "node_modules" | "dist" | "build" | "bin")
+    };
+    for file in source_walk::files(root, &skip, source_walk::Gitignores::Honor)? {
+        if file
+            .path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            == Some("go")
+            && !file.name.ends_with("_test.go")
+            && !has_platform_suffix(&file.name)
+            && !has_explicit_build_constraint(&std::fs::read(&file.path)?)
         {
-            let relative = path.strip_prefix(root).expect("walk stays beneath root");
-            out.push(relative.to_string_lossy().replace('\\', "/"));
+            out.push(file.rel);
         }
     }
     Ok(())
@@ -759,7 +751,7 @@ pub fn extract_dir_incremental_with_progress(
 ) -> Result<(Extraction, IncrementalStats), ExtractError> {
     let module_path = module_path(root)?;
     let mut files = Vec::new();
-    collect_go_files(root, root, &mut files)?;
+    collect_go_files(root, &mut files)?;
     files.sort();
     let active = files.iter().cloned().collect::<BTreeSet<_>>();
     let mut stats = IncrementalStats {

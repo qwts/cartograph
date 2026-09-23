@@ -413,7 +413,7 @@ fn site(pending: PendingSite, identity: IdentityExpr) -> EventSite {
 /// become Confirmed channels, computed ones explicit Gaps.
 pub fn extract_dir(root: &Path, id: &SourceId) -> Result<Vec<EventSite>, ExtractError> {
     let mut files = Vec::new();
-    crate::collect_ts_files(root, root, &mut files)?;
+    crate::collect_ts_files(root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let mut index = RepoIndex::default();
     for rel in &files {

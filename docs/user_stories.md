@@ -208,9 +208,10 @@
 - **AC-0039** Given the same commit and inputs, when re-ingested, then the ordered T0 node/edge identity plus content-hash snapshot is identical and unchanged graph facts are not rewritten; every ingest or evidence path is canonicalized through one shared helper that never stores a platform-specific verbatim prefix (the Windows `\\?\` extended-length form), so the stored path form for the same tree does not vary by platform.
 - **AC-0040** Given a changed or deleted TS/TSX/Terraform file, when re-ingested in the same process, then only new or byte-changed per-file extraction contexts are reparsed, unchanged contexts are reused by source hash, deterministic repository-wide joins are refreshed, and stale facts are removed.
 - **AC-0060** Given any completed ingest, when it finishes, then a history record persists its tier tallies (counted with the register's own provenance definition), unsupported/no-evidence counts, per-extractor coverage (files in scope, distinct files with facts — a covering adapter with zero facts is a 0% row, never a missing row), and an order-independent whole-graph content hash, so re-ingesting the same commit shows identical hashes in queryable history — determinism observable as data, not only asserted in tests.
+- **AC-0205** Given a tree whose own `.gitignore` files exclude paths (for example `build/`, `out/`, `vendor/`), when it is preflighted or recovered through any lane (ordinary, captured, or managed checkout), then every extractor, plugin routing, toolchain detection, and Preflight skip the ignored paths and read the same sorted file set as each other. Git's precedence applies: the innermost `.gitignore` decides and `!` re-includes. Non-ignored files are still read, and the fixed skip lists remain the fallback. Only `.gitignore` files inside the tree count, never ancestor, `.git/info/exclude`, or global excludes. Symlinks are never followed. Env-file indexing alone disregards `.gitignore` (ADR-0030).
 - **Security:** —
 - **Performance:** Delta re-ingest scales with change size, not repo size.
-- **Trace:** M10 · `adapters-lang-ts`, `iac`, `core-graph`, `core-prov`, `app` · — · T-0039..0040,T-0060
+- **Trace:** M10 · `source-walk`, `adapters-lang-*`, `iac`, `ingest`, `core-graph`, `core-prov`, `app` · — · T-0039..0040,T-0060,T-0205
 
 ### US-0015 — Security view of the spec
 - **Actor:** Engineer
