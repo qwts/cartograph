@@ -285,8 +285,12 @@ pub enum EvalProofSource<'a> {
     /// from those bytes instead of the live tree, so an edit made after
     /// capture can never inherit a stale claim at the same path and line.
     /// A file the lookup lacks was never extracted, has no claims, and is
-    /// read live — its eval lines stay Unsupported.
+    /// read live — its eval lines stay Unsupported. A member deleted or
+    /// renamed since capture is still scanned from its bytes, so its claims
+    /// are never silently dropped (#439 review).
     Captured {
+        /// The capture's members, in manifest order.
+        paths: &'a [&'a str],
         /// The adapter's claims from extracting `bytes`.
         sites: &'a [EvalSiteCoverage],
         /// Retained source bytes by repo-relative path.
@@ -299,8 +303,9 @@ impl std::fmt::Debug for EvalProofSource<'_> {
         match self {
             Self::PendingRecovery => f.write_str("PendingRecovery"),
             Self::Claims(sites) => f.debug_tuple("Claims").field(sites).finish(),
-            Self::Captured { sites, .. } => f
+            Self::Captured { paths, sites, .. } => f
                 .debug_struct("Captured")
+                .field("paths", paths)
                 .field("sites", sites)
                 .finish_non_exhaustive(),
         }
@@ -412,6 +417,7 @@ pub fn preflight_scan(
     }
 
     let total = files.len();
+    let mut walked = std::collections::BTreeSet::new();
     for (done, (path, name, rel)) in files.into_iter().enumerate() {
         if on_file(ScanStep {
             path: &rel,
@@ -449,11 +455,9 @@ pub fn preflight_scan(
         // Risky-construct scanning is per-syntax, not per-coverage: a
         // .ts file gets the same eval/WASM findings as .js (#192
         // review) — both extensions are covered by the same adapter.
-        if matches!(
-            extension.as_str(),
-            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
-        ) {
+        if is_script(&extension) {
             scan_source(&path, &rel, eval, &mut unsupported, &mut potential_gaps)?;
+            walked.insert(rel.clone());
         }
         let plugin_claim = plugins
             .iter()
@@ -517,6 +521,32 @@ pub fn preflight_scan(
         }
     }
 
+    // Captured members the live walk no longer reaches still carry the
+    // extraction's claims; scan their captured bytes. No hook: the host's
+    // reconciliation runs these to completion.
+    if let EvalProofSource::Captured { paths, .. } = eval {
+        for rel in paths.iter().copied().filter(|rel| !walked.contains(*rel)) {
+            let rel_path = Path::new(rel);
+            let skipped = rel_path
+                .parent()
+                .into_iter()
+                .flat_map(Path::components)
+                .any(|part| skip_dir(&part.as_os_str().to_string_lossy()));
+            let script = rel_path
+                .extension()
+                .is_some_and(|ext| is_script(&ext.to_string_lossy()));
+            if script && !skipped {
+                scan_source(
+                    &root.join(rel),
+                    rel,
+                    eval,
+                    &mut unsupported,
+                    &mut potential_gaps,
+                )?;
+            }
+        }
+    }
+
     frameworks.sort();
     frameworks.dedup();
     Ok(Some(PreflightReport {
@@ -526,6 +556,10 @@ pub fn preflight_scan(
         potential_gaps,
         detector: DETECTOR_ID.into(),
     }))
+}
+
+fn is_script(extension: &str) -> bool {
+    matches!(extension, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
 }
 
 /// Line-level construct detectors for covered JS/TS sources. Each detector
@@ -812,17 +846,21 @@ mod tests {
         assert_eq!(lines(&live.potential_gaps), vec![("src/app.ts".into(), 2)]);
 
         let bytes = |rel: &str| (rel == "src/app.ts").then_some(captured);
-        let report = preflight_scan(
-            root,
-            &[],
-            EvalProofSource::Captured {
-                sites: &claims,
-                bytes: &bytes,
-            },
-            &mut |_| std::ops::ControlFlow::Continue(()),
-        )
-        .unwrap()
-        .unwrap();
+        let captured_scan = || {
+            preflight_scan(
+                root,
+                &[],
+                EvalProofSource::Captured {
+                    paths: &["src/app.ts"],
+                    sites: &claims,
+                    bytes: &bytes,
+                },
+                &mut |_| std::ops::ControlFlow::Continue(()),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let report = captured_scan();
         // The captured snapshot: line 1 dynamic, line 2 a const-shaped Gap.
         // A file outside the capture has no claims and stays Unsupported.
         assert_eq!(
@@ -831,6 +869,19 @@ mod tests {
         );
         assert_eq!(
             lines(&report.potential_gaps),
+            vec![("src/app.ts".into(), 2)]
+        );
+
+        // Deleted after capture: the live walk never reaches it, but the
+        // recovered graph still holds its facts, so its claims still apply.
+        std::fs::remove_file(root.join("src/app.ts")).unwrap();
+        let deleted = captured_scan();
+        assert_eq!(
+            lines(&deleted.unsupported),
+            vec![("src/new.ts".into(), 1), ("src/app.ts".into(), 1)]
+        );
+        assert_eq!(
+            lines(&deleted.potential_gaps),
             vec![("src/app.ts".into(), 2)]
         );
     }

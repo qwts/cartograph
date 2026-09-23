@@ -2007,6 +2007,16 @@ fn reconcile_preflight_findings(
             },
         })
         .collect();
+    let members: Vec<&str> = capture
+        .map(|capture| {
+            capture
+                .manifest()
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
     let captured = |rel: &str| {
         capture
             .and_then(|capture| capture.file(rel).ok())
@@ -2014,6 +2024,7 @@ fn reconcile_preflight_findings(
     };
     let eval = match capture {
         Some(_) => ingest::preflight::EvalProofSource::Captured {
+            paths: &members,
             sites: &claims,
             bytes: &captured,
         },

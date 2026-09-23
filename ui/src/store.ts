@@ -1183,9 +1183,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       preflightBusy: false,
       preflightProgress: null,
     });
-    // Only a local tree can be detected before recovery; GitHub and manifest
-    // targets are preflighted against the clone during recovery. Showing
-    // nothing beats inventing a report (three-way honesty starts here).
+    // Only a local tree can be detected before recovery. GitHub and manifest
+    // targets get no preflight report yet: their recoveries don't run the
+    // scan (#446). Showing nothing beats inventing a report (three-way
+    // honesty starts here).
     if (get().ingestSource !== 'local') return;
     set({ preflightBusy: true });
     try {
