@@ -41,6 +41,17 @@ export function IngestCard({ busy, summary, error, canIngest, onConnect }: Inges
             Job #{summary.job_id}: {summary.files} files → {summary.nodes} nodes,{' '}
             {summary.edges} edges.
           </p>
+          {summary.merged &&
+            (summary.merged.nodes > 0 ||
+              summary.merged.edges > 0 ||
+              summary.merged.node_collisions > 0) && (
+              // AC-0196: collapsing repeated occurrences is stated, never silent.
+              <p className="muted" data-testid="merged-summary">
+                Merged: {summary.merged.edges} repeated relation sites ·{' '}
+                {summary.merged.nodes} repeated node ids · {summary.merged.node_collisions}{' '}
+                identity collisions (distinct declarations sharing one id)
+              </p>
+            )}
           <dl className="layer-summary" aria-label="Ingest breakdown by source layer">
             <div>
               <dt>TypeScript</dt>

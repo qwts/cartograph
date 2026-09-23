@@ -78,8 +78,16 @@ export interface AtlasSnapshot {
 export interface IngestSummary {
   job_id: number;
   files: number;
+  /** Distinct facts the load published — the same source as `graph_stats` (AC-0195). */
   nodes: number;
   edges: number;
+  /** Occurrences collapsed into one stored fact per id/relation (AC-0195, #242). */
+  merged?: {
+    nodes: number;
+    edges: number;
+    /** Ids emitted with differing facts: distinct declarations sharing one id. */
+    node_collisions: number;
+  };
   layers: {
     ts: LayerSummary;
     python: LayerSummary;
