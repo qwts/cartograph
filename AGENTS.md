@@ -72,8 +72,9 @@ the agreed suite runs; it does not reduce the gate list below.
   an agent may dispatch **CI** with purpose `exact-sha-preflight` and must wait
   for that exact SHA to succeed before relying on it.
 - A ready PR verifies exact-head manual evidence and otherwise runs the complete
-  suite. Ready updates cancel obsolete PR runs. Dependabot follows the same
-  lifecycle and review bar.
+  suite. Advanced CodeQL runs on every ready PR run regardless, because the
+  ruleset requires its contexts on the PR itself. Ready updates cancel obsolete
+  PR runs. Dependabot follows the same lifecycle and review bar.
 - The merge queue runs the complete suite on its exact `merge_group` candidate.
   A `main` push with successful evidence for that exact SHA runs only Advanced
   CodeQL plus the short repository-integrity smoke; missing evidence runs the

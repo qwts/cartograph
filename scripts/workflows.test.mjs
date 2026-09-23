@@ -52,6 +52,22 @@ test('CI enforces the governed lifecycle without draft jobs', () => {
   assert.match(workflow, /name: CI/u);
 });
 
+test('required Advanced CodeQL contexts report on every non-draft PR run, even on the evidence path (#440)', () => {
+  // The main ruleset requires the three `Advanced CodeQL / Analyze (…)` contexts
+  // and evaluates them on the PR's own check rollup. Contexts from the
+  // workflow_dispatch preflight are not part of that rollup, so skipping CodeQL
+  // when preflight evidence exists leaves an approved, green PR BLOCKED.
+  const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+  const codeql = workflow.match(/^ {2}codeql:\n(?: {4}.*\n| *\n)+/mu)?.[0] ?? '';
+  assert.match(codeql, /name: Advanced CodeQL/u);
+  assert.match(codeql, /needs\.policy\.outputs\.run_full == 'true'/u);
+  assert.doesNotMatch(codeql, /preflight-evidence\.outputs\.validated/u);
+
+  const gate = workflow.match(/^ {2}gate:\n(?: {4}.*\n| *\n)+/mu)?.[0] ?? '';
+  const full = gate.match(/ full\)\n([\s\S]*?);;/u)?.[1] ?? '';
+  assert.match(full, /test "\$CODEQL" = success/u);
+});
+
 test('a main-push fan-out cannot run identical heavy lanes concurrently (#347)', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
   for (const lane of ['rust', 'frontend']) {
