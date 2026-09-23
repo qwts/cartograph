@@ -144,7 +144,7 @@ Purpose: the required dedicated provenance/eval surface. All headings use `role=
 - **Tier distribution** — stacked bar + legend. Header: "Tier distribution · 134 graph facts · 2 unsupported patterns." Counts: Confirmed 98, Inferred Strong 22, Inferred Weak 11, Gap 3, Unsupported 2 (these must reconcile with every other surface — single source of truth).
 - **Extractor coverage** — per-extractor bar (id@version, coverage %, fact count).
 - **Paired-eval quality gate (T2/T3)** — precision/recall vs floor, GATE PASS / BELOW FLOOR.
-- **Evidence health over re-ingests** — grouped stacked bars; aria: "Confirmed facts rise from 62 to 98 while Gaps fall from 8 to 3…". Footer states the determinism invariant (re-ingest ⇒ identical graph by content-hash).
+- **Evidence health over re-ingests** — grouped stacked bars; aria: "Confirmed facts rise from 62 to 98 while Gaps fall from 8 to 3…". Footer states the determinism invariant (re-ingest under the same source registration ⇒ identical graph by content-hash).
 
 ### 10. Settings (`settings`)
 Purpose: tiers, providers, egress. Green "Local core · on-device by default" banner with live egress summary.

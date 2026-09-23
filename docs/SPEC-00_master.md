@@ -357,7 +357,8 @@ Stack: **React + TypeScript + Vite**. UI state: **Zustand**. Big graph canvas: *
 - **Coverage metrics:** % nodes/edges Confirmed; % flows Verified vs Partial; Gap count per layer.
 - **Paired evals (your methodology):** for the semantic/agent tiers, hold out a labeled set of known links; measure precision/recall of T2/T3 against T0 ground truth on repos where T0 is complete. Quality gate: T2/T3 must clear a precision floor before their outputs are shown un-flagged in `best-effort` exports.
 - **Eval-gated write path:** T2/T3 proposals enter a staging area; only proposals above threshold (or human-accepted) join the exported spec.
-- **Determinism check:** re-ingesting the same commit must yield an identical graph (content-hash equality) — a CI invariant.
+- **Determinism check:** re-ingesting the same commit under the same source registration must yield an identical graph (content-hash equality) — a CI invariant. Determinism is scoped per registration (#430). Only managed sources with a supported GitHub origin use a stable `owner/name` repository key, so their facts do not depend on where the clone lives. Every other source (direct local sources and `file://` managed sources) gets a random per-registration key (`local/src_<hex>`, ADR-0023, SPEC-05) that appears in fact ids and evidence. Such a source therefore hashes differently when the same tree or `file://` origin is registered twice, when it is registered on another installation, or when it is relocated to a new local checkout or origin path under a new registration. No cross-installation or relocated-checkout equality is claimed for sources with `local/` keys.
+- **Revisit trigger:** a portable hash becomes necessary once shared curated context lands for cross-user sharing (Phase 5), because users then need to compare recoveries of the same commit. That hash would sit next to the existing one and be computed with each local repository key replaced by a location-independent token; fact identity would stay unchanged. It needs an ADR amending ADR-0023 and a metrics-history column (#430, option 2).
 
 ---
 
@@ -377,7 +378,7 @@ Each milestone names explicit tech and an exit gate. Preference order honored th
 | **M7** | Semantic tier | Ollama embeddings, `usearch` (verify), paired-eval harness | T2 fills unresolved channel/call hops above precision floor |
 | **M8** | Agentic tier (bounded) | `agents` broker, `LlmProvider` (Ollama default), egress firewall | T3 proposes links with cited evidence; propose-only enforced; no T0 overwrite |
 | **M9** | Spec compiler + Workbench | `spec` crate, Mermaid, React Flow, accept/reject curation | Full artifact set incl. US-TM, Gap + Drift registers; curation persists |
-| **M10** | Quality gates + export modes | eval gates, determinism CI invariant, `verified-only`/`best-effort` export | Re-ingest determinism passes; export honors R-INT-5; Python+Go adapters added |
+| **M10** | Quality gates + export modes | eval gates, determinism CI invariant, `verified-only`/`best-effort` export | Re-ingest determinism passes (per source registration, §13); export honors R-INT-5; Python+Go adapters added |
 
 (Python and Go adapters are folded in across M1/M10; TS is the M1 proving ground.)
 
