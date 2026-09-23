@@ -331,3 +331,212 @@ public class AdminController {
         format!("sym:{}@{path}#AdminController.purge", "local/demo")
     );
 }
+
+/// AC-0192 (#234): the petclinic shape. Array-initializer paths are Spring's
+/// documented multi-path form; each literal is a real route, and a single
+/// element must not collapse to `/`.
+#[test]
+fn array_initializer_mapping_paths_are_literal_routes_not_the_root() {
+    let source = br#"package com.demo.web;
+
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@Controller
+@RequestMapping({ "/clinic" })
+public class VetController {
+    @GetMapping({ "/vets" })
+    public String showResourcesVetList() { return "v"; }
+
+    @GetMapping(value = { "/vets.html", "/vets/all" })
+    public String showVetList() { return "l"; }
+
+    @GetMapping({})
+    public String home() { return "h"; }
+}
+"#;
+    let out = extract_source(source, "src/VetController.java", &id()).unwrap();
+    let mut routes: Vec<&str> = out
+        .nodes
+        .iter()
+        .filter(|node| node.label == "Endpoint")
+        .map(|node| node.props["path"].as_str().unwrap())
+        .collect();
+    routes.sort_unstable();
+    // `{}` is an empty path list — Spring's default, the class base itself.
+    assert_eq!(
+        routes,
+        [
+            "/clinic",
+            "/clinic/vets",
+            "/clinic/vets.html",
+            "/clinic/vets/all"
+        ]
+    );
+    edge(
+        &out.edges,
+        "ep:local/demo@GET:/clinic/vets",
+        "sym:local/demo@src/VetController.java#VetController.showResourcesVetList",
+        "HANDLES",
+    );
+    for route in ["/clinic/vets.html", "/clinic/vets/all"] {
+        edge(
+            &out.edges,
+            &format!("ep:local/demo@GET:{route}"),
+            "sym:local/demo@src/VetController.java#VetController.showVetList",
+            "HANDLES",
+        );
+    }
+    // A composed route cites the class base and the method mapping, on both
+    // the Endpoint and its HANDLES edge.
+    let endpoint = out
+        .nodes
+        .iter()
+        .find(|node| node.id == "ep:local/demo@GET:/clinic/vets")
+        .unwrap();
+    let handles = out
+        .edges
+        .iter()
+        .find(|e| e.src == endpoint.id && e.label == "HANDLES")
+        .unwrap();
+    for prov in [&endpoint.props["prov"], &handles.props["prov"]] {
+        assert_eq!(
+            cited(source, prov),
+            [
+                "@RequestMapping({ \"/clinic\" })",
+                "@GetMapping({ \"/vets\" })"
+            ]
+        );
+    }
+}
+
+/// Source text of every evidence span in `prov`.
+fn cited<'a>(source: &'a [u8], prov: &serde_json::Value) -> Vec<&'a str> {
+    prov["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|span| {
+            let start = span["byte_start"].as_u64().unwrap() as usize;
+            let end = span["byte_end"].as_u64().unwrap() as usize;
+            std::str::from_utf8(&source[start..end]).unwrap()
+        })
+        .collect()
+}
+
+/// AC-0192 (#234): a mapping whose path is present but not a provable
+/// literal is a runtime identity. It becomes an explicit Gap bound to its
+/// handler — never a Confirmed endpoint at the `/` default.
+#[test]
+fn non_literal_mapping_paths_fail_closed_to_route_gaps() {
+    let source = br#"package com.demo.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class DynamicController {
+    @GetMapping(Paths.VETS)
+    public String constant() { return "c"; }
+
+    @GetMapping("/api" + "/owners")
+    public String concatenated() { return "o"; }
+
+    @PostMapping(path = { "/ok", Paths.OTHER })
+    public String mixed() { return "m"; }
+
+    @GetMapping
+    public String root() { return "r"; }
+}
+"#;
+    let out = extract_source(source, "src/DynamicController.java", &id()).unwrap();
+    let endpoints: Vec<&str> = out
+        .nodes
+        .iter()
+        .filter(|node| node.label == "Endpoint")
+        .map(|node| node.id.as_str())
+        .collect();
+    // Only the path-less mapping is provable (Spring's documented default).
+    assert_eq!(endpoints, ["ep:local/demo@GET:/"]);
+
+    let gaps: Vec<&Node> = out
+        .nodes
+        .iter()
+        .filter(|node| node.id.starts_with("gap:route:"))
+        .collect();
+    assert_eq!(gaps.len(), 3);
+    for gap in &gaps {
+        assert_eq!(gap.label, "Gap");
+        assert_eq!(gap.props["reason"], "dynamic Spring mapping path");
+        assert_eq!(gap.props["prov"]["confidence_tier"], "Gap");
+    }
+    for handler in ["constant", "concatenated", "mixed"] {
+        let handler =
+            format!("sym:local/demo@src/DynamicController.java#DynamicController.{handler}");
+        assert!(
+            out.edges.iter().any(|edge| edge.label == "HANDLES"
+                && edge.dst == handler
+                && edge.src.starts_with("gap:route:")),
+            "{handler} must be handled by a route Gap"
+        );
+    }
+}
+
+/// AC-0192 (#234): a non-literal class-level base poisons every mapping
+/// under it — composing a literal tail onto an unknown base is still a guess.
+#[test]
+fn non_literal_class_base_fails_every_mapping_closed() {
+    let source = br#"package com.demo.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(Api.BASE)
+public class BasedController {
+    @GetMapping("/items")
+    public String items() { return "i"; }
+}
+"#;
+    let out = extract_source(source, "src/BasedController.java", &id()).unwrap();
+    assert!(out.nodes.iter().all(|node| node.label != "Endpoint"));
+    let gaps: Vec<&Node> = out
+        .nodes
+        .iter()
+        .filter(|node| node.id.starts_with("gap:route:"))
+        .collect();
+    assert_eq!(gaps.len(), 1);
+    // The evidence must point at the expression that made the route
+    // unprovable (the class base), not only at the literal method mapping.
+    assert_eq!(
+        cited(source, &gaps[0].props["prov"]),
+        ["@RequestMapping(Api.BASE)", "@GetMapping(\"/items\")"]
+    );
+}
+
+/// AC-0192 (#432 review): an escaped literal's source spelling is not its
+/// runtime value, so it must not become a Confirmed route.
+#[test]
+fn escaped_literal_mapping_paths_fail_closed() {
+    let source = br#"package com.demo.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class EscapedController {
+    @GetMapping({ "/foo\u002Dbar" })
+    public String unicode() { return "u"; }
+
+    @GetMapping("/tab\there")
+    public String tab() { return "t"; }
+}
+"#;
+    let out = extract_source(source, "src/EscapedController.java", &id()).unwrap();
+    assert!(out.nodes.iter().all(|node| node.label != "Endpoint"));
+    assert_eq!(
+        out.nodes
+            .iter()
+            .filter(|node| node.id.starts_with("gap:route:"))
+            .count(),
+        2
+    );
+}

@@ -115,16 +115,31 @@ impl FileCx<'_> {
         confidence: ConfidenceTier,
         fact: &str,
     ) -> serde_json::Value {
-        let provenance = Provenance::new(
-            Tier::Deterministic,
-            confidence,
-            vec![EvidenceRef {
+        self.prov_spanning(&[*node], confidence, fact)
+    }
+
+    /// Provenance citing every node that establishes the fact — e.g. a route
+    /// Gap cites both the unprovable class base and the method mapping.
+    fn prov_spanning(
+        &self,
+        nodes: &[TsNode<'_>],
+        confidence: ConfidenceTier,
+        fact: &str,
+    ) -> serde_json::Value {
+        let evidence = nodes
+            .iter()
+            .map(|node| EvidenceRef {
                 repo: self.id.repo.into(),
                 path: self.path.into(),
                 byte_start: node.start_byte() as u64,
                 byte_end: node.end_byte() as u64,
                 commit_sha: self.id.commit.into(),
-            }],
+            })
+            .collect();
+        let provenance = Provenance::new(
+            Tier::Deterministic,
+            confidence,
+            evidence,
             EXTRACTOR_ID,
             fact.as_bytes(),
         )
@@ -275,29 +290,108 @@ fn declaration_annotations<'t>(
     found
 }
 
-/// The literal path argument of a mapping annotation: a bare string, or a
-/// `value =` / `path =` pair. Anything non-literal is not asserted.
-fn annotation_literal_path(cx: &FileCx<'_>, annotation: TsNode<'_>) -> Option<String> {
-    let arguments = annotation.child_by_field_name("arguments")?;
-    let mut walk = arguments.walk();
-    for argument in arguments.named_children(&mut walk) {
-        match argument.kind() {
-            "string_literal" => return Some(cx.text(&argument).trim_matches('"').to_string()),
-            "element_value_pair" => {
-                let (Some(key), Some(value)) = (
-                    argument.child_by_field_name("key"),
-                    argument.child_by_field_name("value"),
-                ) else {
-                    continue;
-                };
-                if matches!(cx.text(&key), "value" | "path") && value.kind() == "string_literal" {
-                    return Some(cx.text(&value).trim_matches('"').to_string());
-                }
-            }
-            _ => {}
+/// A mapping annotation's path argument, three-way — the Kotlin adapter's
+/// model (#234). "No argument" and "argument present but unprovable" are
+/// different facts: an absent path is Spring's documented default (`""`),
+/// while a present-but-dynamic one (a constant, a concatenation, any
+/// non-literal expression) is a runtime identity T0 cannot confirm — it must
+/// fail closed, never collapse to the default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathArg {
+    /// No path-designating argument: Spring defaults the path to `""`.
+    Absent,
+    /// One or more provable string literals; Spring maps each of them.
+    Literal(Vec<String>),
+    /// A path argument exists but is not a provable literal.
+    Dynamic,
+}
+
+impl PathArg {
+    /// The path segments this argument designates, or `None` when unprovable.
+    fn segments(self) -> Option<Vec<String>> {
+        match self {
+            PathArg::Absent => Some(vec![String::new()]),
+            PathArg::Literal(paths) => Some(paths),
+            PathArg::Dynamic => None,
         }
     }
-    None
+}
+
+/// A single-line string literal whose source spelling is its runtime value.
+/// Escapes (`-`, `\t`, …) are not decoded: the source bytes would not
+/// be the route, so such literals fail closed rather than confirm a spelling
+/// Spring never maps. Text blocks are rejected for the same reason — the
+/// compiler re-indents their content.
+fn string_literal(cx: &FileCx<'_>, node: TsNode<'_>) -> Option<String> {
+    if node.kind() != "string_literal" {
+        return None;
+    }
+    let mut walk = node.walk();
+    if node
+        .named_children(&mut walk)
+        .any(|child| child.kind() != "string_fragment")
+    {
+        return None;
+    }
+    let text = cx.text(&node).trim_matches('"');
+    // Unicode escapes are resolved before lexing, so the grammar may not
+    // surface them as `escape_sequence` nodes; a backslash in the source
+    // spelling is never a literal route character.
+    (!text.contains('\\')).then(|| text.to_string())
+}
+
+fn is_comment(node: TsNode<'_>) -> bool {
+    matches!(node.kind(), "line_comment" | "block_comment")
+}
+
+/// A path element value: one literal, or an array initializer whose every
+/// element is a literal (`{ "/a", "/b" }`; an empty `{}` is the default path).
+fn path_value(cx: &FileCx<'_>, value: TsNode<'_>) -> PathArg {
+    if value.kind() != "element_value_array_initializer" {
+        return match string_literal(cx, value) {
+            Some(path) => PathArg::Literal(vec![path]),
+            None => PathArg::Dynamic,
+        };
+    }
+    let mut walk = value.walk();
+    let paths: Option<Vec<String>> = value
+        .named_children(&mut walk)
+        .filter(|element| !is_comment(*element))
+        .map(|element| string_literal(cx, element))
+        .collect();
+    match paths {
+        Some(paths) if paths.is_empty() => PathArg::Absent,
+        Some(paths) => PathArg::Literal(paths),
+        None => PathArg::Dynamic,
+    }
+}
+
+/// The path argument of a mapping annotation: a bare (positional) value,
+/// which Java binds to `value`, or a `value =` / `path =` pair. Other named
+/// elements (`produces = …`) do not designate a path.
+fn annotation_path(cx: &FileCx<'_>, annotation: TsNode<'_>) -> PathArg {
+    let Some(arguments) = annotation.child_by_field_name("arguments") else {
+        return PathArg::Absent;
+    };
+    let mut walk = arguments.walk();
+    for argument in arguments.named_children(&mut walk) {
+        if is_comment(argument) {
+            continue;
+        }
+        if argument.kind() != "element_value_pair" {
+            return path_value(cx, argument);
+        }
+        let (Some(key), Some(value)) = (
+            argument.child_by_field_name("key"),
+            argument.child_by_field_name("value"),
+        ) else {
+            continue;
+        };
+        if matches!(cx.text(&key), "value" | "path") {
+            return path_value(cx, value);
+        }
+    }
+    PathArg::Absent
 }
 
 /// The exact Spring package each recognized annotation lives in. Proof is
@@ -559,11 +653,17 @@ pub fn extract_source(
         if !is_controller {
             continue;
         }
-        let base = class_annotations
+        // "No @RequestMapping" and "@RequestMapping with no path argument"
+        // both mean Spring's default base (""); a present-but-dynamic base
+        // poisons every mapping under it (None), failing them closed.
+        let base_mapping = class_annotations
             .iter()
             .find(|(name, _)| name == "RequestMapping" && spring_proven(name, &imports))
-            .and_then(|(_, node)| annotation_literal_path(&cx, *node))
-            .unwrap_or_default();
+            .map(|(_, node)| *node);
+        let bases = match base_mapping {
+            None => Some(vec![String::new()]),
+            Some(node) => annotation_path(&cx, node).segments(),
+        };
         for (name, annotation) in declaration_annotations(&cx, *method) {
             let Some(http_method) = mapping_method(&name) else {
                 continue;
@@ -571,29 +671,97 @@ pub fn extract_source(
             if !spring_proven(&name, &imports) {
                 continue;
             }
-            let tail = annotation_literal_path(&cx, annotation).unwrap_or_default();
-            let route = join_route(&base, &tail);
-            let endpoint = format!("ep:{}@{http_method}:{route}", id.repo);
-            out.nodes.push(Node {
-                id: endpoint.clone(),
-                label: "Endpoint".into(),
-                props: serde_json::json!({
-                    "method": http_method,
-                    "path": route,
-                    "handler_sym": handler,
-                    "framework": "spring",
-                    "language": "java",
-                    "prov": cx.prov(&annotation, &format!("Endpoint {endpoint}")),
-                }),
-            });
-            out.edges.push(Edge {
-                src: endpoint.clone(),
-                dst: handler.clone(),
-                label: "HANDLES".into(),
-                props: serde_json::json!({
-                    "prov": cx.prov(&annotation, &format!("HANDLES {endpoint} -> {handler}")),
-                }),
-            });
+            let tails = annotation_path(&cx, annotation).segments();
+            let (Some(bases), Some(tails)) = (bases.as_ref(), tails) else {
+                // The mapping is proven but its route is a runtime identity
+                // (constant/expression path, on the method or the class
+                // base). T0 cannot confirm the route, so the endpoint is an
+                // explicit Gap, never a default path presented as Confirmed
+                // (R-INT-4).
+                let gap_id = format!("gap:route:{}@{}@{}", id.repo, path, annotation.start_byte());
+                // Cite what made the route unprovable: the class base when it
+                // is dynamic, and always the method mapping that binds the
+                // handler, so the evidence shows the actual expression.
+                let evidence: Vec<TsNode<'_>> = match (bases.is_none(), base_mapping) {
+                    (true, Some(base)) => vec![base, annotation],
+                    _ => vec![annotation],
+                };
+                out.nodes.push(Node {
+                    id: gap_id.clone(),
+                    label: "Gap".into(),
+                    props: serde_json::json!({
+                        "method": http_method,
+                        "handler_sym": handler,
+                        "framework": "spring",
+                        "language": "java",
+                        "reason": "dynamic Spring mapping path",
+                        "attempted_tiers": ["T0"],
+                        "prov": cx.prov_spanning(
+                            &evidence,
+                            ConfidenceTier::Gap,
+                            &format!("Gap {gap_id}"),
+                        ),
+                    }),
+                });
+                out.edges.push(Edge {
+                    src: gap_id.clone(),
+                    dst: handler.clone(),
+                    label: "HANDLES".into(),
+                    props: serde_json::json!({
+                        "reason": "dynamic Spring mapping path",
+                        "attempted_resolution": "literal-path",
+                        "prov": cx.prov_spanning(
+                            &evidence,
+                            ConfidenceTier::Gap,
+                            &format!("HANDLES {gap_id} -> {handler}"),
+                        ),
+                    }),
+                });
+                continue;
+            };
+            // Sorted and de-duplicated: `{ "/a", "/a/" }` is one route, and
+            // emission order must not depend on source order (determinism).
+            let routes: BTreeSet<String> = bases
+                .iter()
+                .flat_map(|base| tails.iter().map(move |tail| join_route(base, tail)))
+                .collect();
+            // A composed route depends on the class base as much as on the
+            // method mapping, so both are cited (R-INT-1 traceability).
+            let evidence: Vec<TsNode<'_>> = base_mapping
+                .into_iter()
+                .chain(std::iter::once(annotation))
+                .collect();
+            for route in routes {
+                let endpoint = format!("ep:{}@{http_method}:{route}", id.repo);
+                out.nodes.push(Node {
+                    id: endpoint.clone(),
+                    label: "Endpoint".into(),
+                    props: serde_json::json!({
+                        "method": http_method,
+                        "path": route,
+                        "handler_sym": handler,
+                        "framework": "spring",
+                        "language": "java",
+                        "prov": cx.prov_spanning(
+                            &evidence,
+                            ConfidenceTier::Confirmed,
+                            &format!("Endpoint {endpoint}"),
+                        ),
+                    }),
+                });
+                out.edges.push(Edge {
+                    src: endpoint.clone(),
+                    dst: handler.clone(),
+                    label: "HANDLES".into(),
+                    props: serde_json::json!({
+                        "prov": cx.prov_spanning(
+                            &evidence,
+                            ConfidenceTier::Confirmed,
+                            &format!("HANDLES {endpoint} -> {handler}"),
+                        ),
+                    }),
+                });
+            }
         }
         let _ = chain;
     }
