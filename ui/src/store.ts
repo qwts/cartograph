@@ -1006,6 +1006,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       source === 'manifest' ||
       (source === undefined && trimmed.endsWith('cartograph.system.toml'));
     const command = isManifest ? 'add_system' : isRepoUrl ? 'add_repo' : 'ingest_path';
+    // Every preflight bumps the generation, whatever its target, so a
+    // recovery that settles after a newer scan began must leave that
+    // scan's report alone (#439 review).
+    const preflightSince = preflightRun;
     try {
       const summary = await invokeOr<IngestSummary | null>(
         command,
@@ -1013,7 +1017,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         isRepoUrl ? { url: trimmed } : { path: trimmed },
       );
       set({ ingestSummary: summary });
-      if (summary?.preflight) set({ preflight: summary.preflight, preflightError: null });
+      if (summary?.preflight && preflightSince === preflightRun) {
+        set({ preflight: summary.preflight, preflightError: null });
+      }
     } catch (e) {
       set({ ingestError: String(e) });
     } finally {

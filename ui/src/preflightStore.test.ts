@@ -164,4 +164,23 @@ describe('preflight progress and cancellation (AC-0197/AC-0198, #235)', () => {
     expect(state.preflight).toEqual(reconciled);
     expect(state.preflightError).toBeNull();
   });
+
+  it("keeps a newer preflight's report when an older recovery settles late (#439 review)", async () => {
+    let settleRecovery: (summary: unknown) => void = () => {};
+    mockIPC((command) =>
+      command === 'ingest_path'
+        ? new Promise((resolve) => { settleRecovery = resolve; })
+        : command === 'preflight'
+          ? report('repo-b')
+          : null,
+    );
+    const recovery = useAppStore.getState().ingest('/repos/a', 'local');
+    useAppStore.setState({ ingestSource: 'local', ingestTarget: '/repos/b' });
+    await useAppStore.getState().runPreflight();
+    expect(useAppStore.getState().preflight?.detector).toBe('repo-b');
+
+    settleRecovery({ job_id: 1, files: 1, nodes: 0, edges: 0, layers: {}, preflight: report('repo-a') });
+    await recovery;
+    expect(useAppStore.getState().preflight?.detector).toBe('repo-b');
+  });
 });

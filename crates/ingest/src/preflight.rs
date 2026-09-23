@@ -459,66 +459,7 @@ pub fn preflight_scan(
             scan_source(&path, &rel, eval, &mut unsupported, &mut potential_gaps)?;
             walked.insert(rel.clone());
         }
-        let plugin_claim = plugins
-            .iter()
-            .find(|plugin| plugin.extensions.contains(&extension));
-        if let Some((language, adapter)) = adapter_for(&extension) {
-            let entry = languages
-                .entry(language.to_string())
-                .or_insert(LanguageDetection {
-                    language: language.to_string(),
-                    files: 0,
-                    adapter: Some(adapter.to_string()),
-                });
-            entry.files += 1;
-        } else if let Some(plugin) = plugin_claim {
-            // A gated plugin covers this extension (#201): report it as
-            // covered under the plugin id — no unsupported finding.
-            let language = uncovered_language(&extension)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!(".{extension}"));
-            let entry = languages
-                .entry(language.clone())
-                .or_insert(LanguageDetection {
-                    language,
-                    files: 0,
-                    adapter: Some(plugin.plugin_id.clone()),
-                });
-            entry.files += 1;
-        } else if let Some(language) = uncovered_language(&extension) {
-            let entry = languages
-                .entry(language.to_string())
-                .or_insert(LanguageDetection {
-                    language: language.to_string(),
-                    files: 0,
-                    adapter: None,
-                });
-            entry.files += 1;
-            if entry.files == 1 {
-                // A planned adapter type is a recommendation, not a dead
-                // end (#163): name the missing adapter and where to ask.
-                let message = if planned_adapter_for(language) {
-                    format!(
-                        "{language} sources present but no adapter covers them — \
-                             a tool limitation, not a System Gap. A {language} adapter \
-                             is a known adapter type: request it from Settings → Adapters"
-                    )
-                } else {
-                    format!(
-                        "{language} sources present but no adapter covers them — \
-                             a tool limitation, not a System Gap"
-                    )
-                };
-                unsupported.push(PatternFinding {
-                    kind: "uncovered-language".into(),
-                    path: rel,
-                    line: 1,
-                    message,
-                    detector: DETECTOR_ID.into(),
-                    request_adapter: Some(language.to_string()),
-                });
-            }
-        }
+        detect_language(&extension, rel, plugins, &mut languages, &mut unsupported);
     }
 
     // Captured members the live walk no longer reaches still carry the
@@ -543,6 +484,16 @@ pub fn preflight_scan(
                     &mut unsupported,
                     &mut potential_gaps,
                 )?;
+                // Recovery published this file's facts, so it counts as a
+                // detected source exactly as a walked one would.
+                let extension = rel_path.extension().unwrap_or_default().to_string_lossy();
+                detect_language(
+                    &extension,
+                    rel.to_string(),
+                    plugins,
+                    &mut languages,
+                    &mut unsupported,
+                );
             }
         }
     }
@@ -556,6 +507,78 @@ pub fn preflight_scan(
         potential_gaps,
         detector: DETECTOR_ID.into(),
     }))
+}
+
+/// Counts one source file toward its language — covered by a built-in
+/// adapter, by a gated plugin, or named-only with an `uncovered-language`
+/// finding on its first file.
+fn detect_language(
+    extension: &str,
+    rel: String,
+    plugins: &[PluginCoverage],
+    languages: &mut BTreeMap<String, LanguageDetection>,
+    unsupported: &mut Vec<PatternFinding>,
+) {
+    let plugin_claim = plugins
+        .iter()
+        .find(|plugin| plugin.extensions.iter().any(|e| e == extension));
+    if let Some((language, adapter)) = adapter_for(extension) {
+        let entry = languages
+            .entry(language.to_string())
+            .or_insert(LanguageDetection {
+                language: language.to_string(),
+                files: 0,
+                adapter: Some(adapter.to_string()),
+            });
+        entry.files += 1;
+    } else if let Some(plugin) = plugin_claim {
+        // A gated plugin covers this extension (#201): report it as
+        // covered under the plugin id — no unsupported finding.
+        let language = uncovered_language(extension)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!(".{extension}"));
+        let entry = languages
+            .entry(language.clone())
+            .or_insert(LanguageDetection {
+                language,
+                files: 0,
+                adapter: Some(plugin.plugin_id.clone()),
+            });
+        entry.files += 1;
+    } else if let Some(language) = uncovered_language(extension) {
+        let entry = languages
+            .entry(language.to_string())
+            .or_insert(LanguageDetection {
+                language: language.to_string(),
+                files: 0,
+                adapter: None,
+            });
+        entry.files += 1;
+        if entry.files == 1 {
+            // A planned adapter type is a recommendation, not a dead
+            // end (#163): name the missing adapter and where to ask.
+            let message = if planned_adapter_for(language) {
+                format!(
+                    "{language} sources present but no adapter covers them — \
+                         a tool limitation, not a System Gap. A {language} adapter \
+                         is a known adapter type: request it from Settings → Adapters"
+                )
+            } else {
+                format!(
+                    "{language} sources present but no adapter covers them — \
+                         a tool limitation, not a System Gap"
+                )
+            };
+            unsupported.push(PatternFinding {
+                kind: "uncovered-language".into(),
+                path: rel,
+                line: 1,
+                message,
+                detector: DETECTOR_ID.into(),
+                request_adapter: Some(language.to_string()),
+            });
+        }
+    }
 }
 
 fn is_script(extension: &str) -> bool {
@@ -884,6 +907,16 @@ mod tests {
             lines(&deleted.potential_gaps),
             vec![("src/app.ts".into(), 2)]
         );
+        // …and it still counts as a detected source (#439 review): with
+        // src/new.ts gone too, the report must not read "no sources".
+        std::fs::remove_file(root.join("src/new.ts")).unwrap();
+        let only_captured = captured_scan();
+        let counts: Vec<_> = only_captured
+            .languages
+            .iter()
+            .map(|l| (l.language.as_str(), l.files))
+            .collect();
+        assert_eq!(counts, vec![("TypeScript", 1)]);
     }
 
     #[test]
