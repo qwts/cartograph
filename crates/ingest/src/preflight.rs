@@ -267,6 +267,60 @@ pub enum EvalProof {
     Dynamic,
 }
 
+/// Where a scan's `inline-eval` classification comes from (#214, #243).
+#[derive(Clone, Copy)]
+pub enum EvalProofSource<'a> {
+    /// Before recovery: nothing has parsed the sources yet, so every textual
+    /// `eval(`/`new Function(` hit is reported as Unsupported *pending* the
+    /// adapter's AST proof — never closed and never silently dropped. The
+    /// AST proof is a full TS parse, too slow to run twice on first contact
+    /// (#243), so recovery supplies it instead.
+    PendingRecovery,
+    /// The adapter's claims from an actual extraction: proven sites close,
+    /// const-shaped-but-unproven ones downgrade to potential Gaps, and the
+    /// rest stay Unsupported (AC-0099).
+    Claims(&'a [EvalSiteCoverage]),
+    /// [`Self::Claims`] read against the exact bytes the extraction proved
+    /// them on (#439 review): a JS/TS file the lookup returns is scanned
+    /// from those bytes instead of the live tree, so an edit made after
+    /// capture can never inherit a stale claim at the same path and line.
+    /// A file the lookup lacks was never extracted, has no claims, and is
+    /// read live — its eval lines stay Unsupported. A member deleted or
+    /// renamed since capture is still scanned from its bytes, so its claims
+    /// are never silently dropped (#439 review).
+    Captured {
+        /// The capture's members, in manifest order.
+        paths: &'a [&'a str],
+        /// The adapter's claims from extracting `bytes`.
+        sites: &'a [EvalSiteCoverage],
+        /// Retained source bytes by repo-relative path.
+        bytes: &'a dyn Fn(&str) -> Option<&'a [u8]>,
+    },
+}
+
+impl std::fmt::Debug for EvalProofSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PendingRecovery => f.write_str("PendingRecovery"),
+            Self::Claims(sites) => f.debug_tuple("Claims").field(sites).finish(),
+            Self::Captured { paths, sites, .. } => f
+                .debug_struct("Captured")
+                .field("paths", paths)
+                .field("sites", sites)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+impl<'a> EvalProofSource<'a> {
+    fn claims(self) -> Option<&'a [EvalSiteCoverage]> {
+        match self {
+            Self::PendingRecovery => None,
+            Self::Claims(sites) | Self::Captured { sites, .. } => Some(sites),
+        }
+    }
+}
+
 /// One file about to be read by [`preflight_scan`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanStep<'a> {
@@ -307,20 +361,23 @@ pub fn preflight_with_coverage(
     plugins: &[PluginCoverage],
     eval_sites: &[EvalSiteCoverage],
 ) -> std::io::Result<PreflightReport> {
-    Ok(preflight_scan(root, plugins, eval_sites, &mut |_| {
-        std::ops::ControlFlow::Continue(())
-    })?
+    Ok(preflight_scan(
+        root,
+        plugins,
+        EvalProofSource::Claims(eval_sites),
+        &mut |_| std::ops::ControlFlow::Continue(()),
+    )?
     .expect("a callback that never breaks runs to completion"))
 }
 
-/// [`preflight_with_coverage`] with a per-file hook that runs before each
-/// file is read, so a host can stop the walk within one file (#235). Returns
-/// `Ok(None)` when the hook breaks — never a partial report, because a
-/// missing finding would read as a clean tree.
+/// The preflight scan with an explicit eval-proof source and a per-file hook
+/// that runs before each file is read, so a host can report live progress
+/// and stop early (#235). Returns `Ok(None)` when the hook breaks — never a
+/// partial report, because a missing finding would read as a clean tree.
 pub fn preflight_scan(
     root: &Path,
     plugins: &[PluginCoverage],
-    eval_sites: &[EvalSiteCoverage],
+    eval: EvalProofSource<'_>,
     on_file: &mut dyn FnMut(ScanStep<'_>) -> std::ops::ControlFlow<()>,
 ) -> std::io::Result<Option<PreflightReport>> {
     let mut languages: BTreeMap<String, LanguageDetection> = BTreeMap::new();
@@ -328,6 +385,8 @@ pub fn preflight_scan(
     let mut unsupported = Vec::new();
     let mut potential_gaps = Vec::new();
 
+    // Collect first (same order as the previous single pass) so progress can
+    // name the walk's total.
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -357,9 +416,8 @@ pub fn preflight_scan(
         }
     }
 
-    // Collected first (in the same order as a single pass) so the hook can
-    // name the walk's total.
     let total = files.len();
+    let mut walked = std::collections::BTreeSet::new();
     for (done, (path, name, rel)) in files.into_iter().enumerate() {
         if on_file(ScanStep {
             path: &rel,
@@ -397,76 +455,45 @@ pub fn preflight_scan(
         // Risky-construct scanning is per-syntax, not per-coverage: a
         // .ts file gets the same eval/WASM findings as .js (#192
         // review) — both extensions are covered by the same adapter.
-        if matches!(
-            extension.as_str(),
-            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
-        ) {
-            scan_source(
-                &path,
-                &rel,
-                eval_sites,
-                &mut unsupported,
-                &mut potential_gaps,
-            )?;
+        if is_script(&extension) {
+            scan_source(&path, &rel, eval, &mut unsupported, &mut potential_gaps)?;
+            walked.insert(rel.clone());
         }
-        let plugin_claim = plugins
-            .iter()
-            .find(|plugin| plugin.extensions.contains(&extension));
-        if let Some((language, adapter)) = adapter_for(&extension) {
-            let entry = languages
-                .entry(language.to_string())
-                .or_insert(LanguageDetection {
-                    language: language.to_string(),
-                    files: 0,
-                    adapter: Some(adapter.to_string()),
-                });
-            entry.files += 1;
-        } else if let Some(plugin) = plugin_claim {
-            // A gated plugin covers this extension (#201): report it as
-            // covered under the plugin id — no unsupported finding.
-            let language = uncovered_language(&extension)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!(".{extension}"));
-            let entry = languages
-                .entry(language.clone())
-                .or_insert(LanguageDetection {
-                    language,
-                    files: 0,
-                    adapter: Some(plugin.plugin_id.clone()),
-                });
-            entry.files += 1;
-        } else if let Some(language) = uncovered_language(&extension) {
-            let entry = languages
-                .entry(language.to_string())
-                .or_insert(LanguageDetection {
-                    language: language.to_string(),
-                    files: 0,
-                    adapter: None,
-                });
-            entry.files += 1;
-            if entry.files == 1 {
-                // A planned adapter type is a recommendation, not a dead
-                // end (#163): name the missing adapter and where to ask.
-                let message = if planned_adapter_for(language) {
-                    format!(
-                        "{language} sources present but no adapter covers them — \
-                             a tool limitation, not a System Gap. A {language} adapter \
-                             is a known adapter type: request it from Settings → Adapters"
-                    )
-                } else {
-                    format!(
-                        "{language} sources present but no adapter covers them — \
-                             a tool limitation, not a System Gap"
-                    )
-                };
-                unsupported.push(PatternFinding {
-                    kind: "uncovered-language".into(),
-                    path: rel,
-                    line: 1,
-                    message,
-                    detector: DETECTOR_ID.into(),
-                    request_adapter: Some(language.to_string()),
-                });
+        detect_language(&extension, rel, plugins, &mut languages, &mut unsupported);
+    }
+
+    // Captured members the live walk no longer reaches still carry the
+    // extraction's claims; scan their captured bytes. No hook: the host's
+    // reconciliation runs these to completion.
+    if let EvalProofSource::Captured { paths, .. } = eval {
+        for rel in paths.iter().copied().filter(|rel| !walked.contains(*rel)) {
+            let rel_path = Path::new(rel);
+            let skipped = rel_path
+                .parent()
+                .into_iter()
+                .flat_map(Path::components)
+                .any(|part| skip_dir(&part.as_os_str().to_string_lossy()));
+            let script = rel_path
+                .extension()
+                .is_some_and(|ext| is_script(&ext.to_string_lossy()));
+            if script && !skipped {
+                scan_source(
+                    &root.join(rel),
+                    rel,
+                    eval,
+                    &mut unsupported,
+                    &mut potential_gaps,
+                )?;
+                // Recovery published this file's facts, so it counts as a
+                // detected source exactly as a walked one would.
+                let extension = rel_path.extension().unwrap_or_default().to_string_lossy();
+                detect_language(
+                    &extension,
+                    rel.to_string(),
+                    plugins,
+                    &mut languages,
+                    &mut unsupported,
+                );
             }
         }
     }
@@ -482,24 +509,123 @@ pub fn preflight_scan(
     }))
 }
 
+/// Counts one source file toward its language — covered by a built-in
+/// adapter, by a gated plugin, or named-only with an `uncovered-language`
+/// finding on its first file.
+fn detect_language(
+    extension: &str,
+    rel: String,
+    plugins: &[PluginCoverage],
+    languages: &mut BTreeMap<String, LanguageDetection>,
+    unsupported: &mut Vec<PatternFinding>,
+) {
+    let plugin_claim = plugins
+        .iter()
+        .find(|plugin| plugin.extensions.iter().any(|e| e == extension));
+    if let Some((language, adapter)) = adapter_for(extension) {
+        let entry = languages
+            .entry(language.to_string())
+            .or_insert(LanguageDetection {
+                language: language.to_string(),
+                files: 0,
+                adapter: Some(adapter.to_string()),
+            });
+        entry.files += 1;
+    } else if let Some(plugin) = plugin_claim {
+        // A gated plugin covers this extension (#201): report it as
+        // covered under the plugin id — no unsupported finding.
+        let language = uncovered_language(extension)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!(".{extension}"));
+        let entry = languages
+            .entry(language.clone())
+            .or_insert(LanguageDetection {
+                language,
+                files: 0,
+                adapter: Some(plugin.plugin_id.clone()),
+            });
+        entry.files += 1;
+    } else if let Some(language) = uncovered_language(extension) {
+        let entry = languages
+            .entry(language.to_string())
+            .or_insert(LanguageDetection {
+                language: language.to_string(),
+                files: 0,
+                adapter: None,
+            });
+        entry.files += 1;
+        if entry.files == 1 {
+            // A planned adapter type is a recommendation, not a dead
+            // end (#163): name the missing adapter and where to ask.
+            let message = if planned_adapter_for(language) {
+                format!(
+                    "{language} sources present but no adapter covers them — \
+                         a tool limitation, not a System Gap. A {language} adapter \
+                         is a known adapter type: request it from Settings → Adapters"
+                )
+            } else {
+                format!(
+                    "{language} sources present but no adapter covers them — \
+                         a tool limitation, not a System Gap"
+                )
+            };
+            unsupported.push(PatternFinding {
+                kind: "uncovered-language".into(),
+                path: rel,
+                line: 1,
+                message,
+                detector: DETECTOR_ID.into(),
+                request_adapter: Some(language.to_string()),
+            });
+        }
+    }
+}
+
+fn is_script(extension: &str) -> bool {
+    matches!(extension, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
+}
+
 /// Line-level construct detectors for covered JS/TS sources. Each detector
 /// states which lane it feeds: unsupported (tool limitation) or potential
 /// gap (statically unresolvable evidence).
 fn scan_source(
     path: &Path,
     rel: &str,
-    eval_sites: &[EvalSiteCoverage],
+    eval: EvalProofSource<'_>,
     unsupported: &mut Vec<PatternFinding>,
     potential_gaps: &mut Vec<PatternFinding>,
 ) -> std::io::Result<()> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let captured = match eval {
+        EvalProofSource::Captured { bytes, .. } => bytes(rel),
+        _ => None,
+    };
+    let text = match captured {
+        Some(bytes) => std::str::from_utf8(bytes)
+            .ok()
+            .map(std::borrow::Cow::Borrowed),
+        None => std::fs::read_to_string(path)
+            .ok()
+            .map(std::borrow::Cow::Owned),
+    };
+    let Some(text) = text else {
         return Ok(()); // non-UTF-8 source: nothing to scan
     };
     for (index, line) in text.lines().enumerate() {
         let line_no = (index + 1) as u64;
         let has_eval = line.contains("eval(");
         let has_new_function = line.contains("new Function(");
-        if has_eval || has_new_function {
+        if (has_eval || has_new_function) && matches!(eval, EvalProofSource::PendingRecovery) {
+            let message = if has_eval {
+                "inline eval() — pending AST proof at recovery: closes if its \
+                 argument proves to a literal, becomes a potential Gap if \
+                 const-shaped but unproven, otherwise stays Unsupported"
+            } else {
+                "new Function() — pending AST proof at recovery: closes if its \
+                 body proves to a literal, becomes a potential Gap if \
+                 const-shaped but unproven, otherwise stays Unsupported"
+            };
+            unsupported.push(finding("inline-eval", rel, line_no, message));
+        } else if let (true, Some(eval_sites)) = (has_eval || has_new_function, eval.claims()) {
             // The adapter's AST claims refine the textual hit (#214); both
             // dynamic-code constructs share one claim pool per line,
             // worst-wins: one unproven site keeps the line flagged even
@@ -705,6 +831,92 @@ mod tests {
                 .iter()
                 .all(|f| f.detector == DETECTOR_ID)
         );
+    }
+
+    #[test]
+    fn captured_claims_reconcile_against_the_proven_bytes_not_the_live_tree() {
+        // AC-0200 (#439 review): the claims were proven on the captured
+        // bytes, and the register must describe that same snapshot. After
+        // capture the live file loses its dynamic eval and gains a literal
+        // one on a line the claims never saw.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "src/app.ts", "const a = 1;\neval('x()');\n");
+        write(root, "src/new.ts", "eval(later());\n");
+        let captured: &[u8] = b"eval(getCode());\neval(CODE);\n";
+        let claim = |line: u64, proof: EvalProof| EvalSiteCoverage {
+            path: "src/app.ts".into(),
+            line,
+            proof,
+        };
+        let claims = [
+            claim(1, EvalProof::Dynamic),
+            claim(2, EvalProof::ConstUnproven),
+        ];
+        let lines = |findings: &[PatternFinding]| -> Vec<(String, u64)> {
+            findings
+                .iter()
+                .filter(|f| f.kind == "inline-eval")
+                .map(|f| (f.path.clone(), f.line))
+                .collect()
+        };
+
+        // Scanning the live tree applies the claims to bytes they were not
+        // proven on: the recovered dynamic eval (line 1) vanishes from the
+        // register, and the new literal inherits line 2's const claim.
+        let live = preflight_with_coverage(root, &[], &claims).unwrap();
+        assert_eq!(lines(&live.unsupported), vec![("src/new.ts".into(), 1)]);
+        assert_eq!(lines(&live.potential_gaps), vec![("src/app.ts".into(), 2)]);
+
+        let bytes = |rel: &str| (rel == "src/app.ts").then_some(captured);
+        let captured_scan = || {
+            preflight_scan(
+                root,
+                &[],
+                EvalProofSource::Captured {
+                    paths: &["src/app.ts"],
+                    sites: &claims,
+                    bytes: &bytes,
+                },
+                &mut |_| std::ops::ControlFlow::Continue(()),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let report = captured_scan();
+        // The captured snapshot: line 1 dynamic, line 2 a const-shaped Gap.
+        // A file outside the capture has no claims and stays Unsupported.
+        assert_eq!(
+            lines(&report.unsupported),
+            vec![("src/app.ts".into(), 1), ("src/new.ts".into(), 1)]
+        );
+        assert_eq!(
+            lines(&report.potential_gaps),
+            vec![("src/app.ts".into(), 2)]
+        );
+
+        // Deleted after capture: the live walk never reaches it, but the
+        // recovered graph still holds its facts, so its claims still apply.
+        std::fs::remove_file(root.join("src/app.ts")).unwrap();
+        let deleted = captured_scan();
+        assert_eq!(
+            lines(&deleted.unsupported),
+            vec![("src/new.ts".into(), 1), ("src/app.ts".into(), 1)]
+        );
+        assert_eq!(
+            lines(&deleted.potential_gaps),
+            vec![("src/app.ts".into(), 2)]
+        );
+        // …and it still counts as a detected source (#439 review): with
+        // src/new.ts gone too, the report must not read "no sources".
+        std::fs::remove_file(root.join("src/new.ts")).unwrap();
+        let only_captured = captured_scan();
+        let counts: Vec<_> = only_captured
+            .languages
+            .iter()
+            .map(|l| (l.language.as_str(), l.files))
+            .collect();
+        assert_eq!(counts, vec![("TypeScript", 1)]);
     }
 
     #[test]
@@ -920,16 +1132,54 @@ mod tests {
     }
 
     #[test]
+    fn eval_sites_stay_pending_until_recovery_supplies_the_proof() {
+        // AC-0199 (#243): before recovery no AST proof exists, so every
+        // textual eval()/new Function() line is reported Unsupported and
+        // marked pending — a proven literal is not claimed closed, and no
+        // line is dropped.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            "src/app.ts",
+            concat!(
+                "eval('function f() {}');\n",
+                "eval(CODE);\n",
+                "new Function('return 1');\n",
+            ),
+        );
+        let report = preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |_| {
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap()
+        .expect("an uninterrupted scan completes");
+        let pending: Vec<u64> = report
+            .unsupported
+            .iter()
+            .filter(|f| f.kind == "inline-eval")
+            .inspect(|f| assert!(f.message.contains("pending AST proof at recovery")))
+            .map(|f| f.line)
+            .collect();
+        assert_eq!(pending, vec![1, 2, 3]);
+        assert!(
+            report
+                .potential_gaps
+                .iter()
+                .all(|f| f.kind != "inline-eval")
+        );
+    }
+
+    #[test]
     fn scan_hook_reports_each_file_and_stops_without_a_partial_report() {
-        // AC-0198 (#235 review): the report walk announces each file before
-        // reading it, so a cancel stops it within one file, and a break
-        // returns no report.
+        // AC-0197/AC-0198 (#235): the walk announces each file with its
+        // position before reading it, so a cancel stops it within one file,
+        // and a break returns no report.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, "a.ts", "export const a = 1;\n");
         write(root, "b.ts", "export const b = 1;\n");
         let mut seen = Vec::new();
-        preflight_scan(root, &[], &[], &mut |step| {
+        preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |step| {
             seen.push((step.path.to_string(), step.done, step.total));
             std::ops::ControlFlow::Continue(())
         })
@@ -940,7 +1190,7 @@ mod tests {
             vec![("a.ts".to_string(), 0, 2), ("b.ts".to_string(), 1, 2)]
         );
         let mut announced = 0;
-        let stopped = preflight_scan(root, &[], &[], &mut |_| {
+        let stopped = preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |_| {
             announced += 1;
             std::ops::ControlFlow::Break(())
         })

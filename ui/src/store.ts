@@ -99,6 +99,11 @@ export interface IngestSummary {
     /** Config-file evidence: Tool nodes + DEFINED_IN proofs (#215). */
     tools: LayerSummary;
   };
+  /**
+   * A local recovery's preflight report, reconciled with its AST proof of
+   * eval sites (AC-0200, #243): it replaces the pending pre-recovery view.
+   */
+  preflight?: PreflightReport;
   delta?: {
     recomputed_files: number;
     reused_files: number;
@@ -1001,6 +1006,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       source === 'manifest' ||
       (source === undefined && trimmed.endsWith('cartograph.system.toml'));
     const command = isManifest ? 'add_system' : isRepoUrl ? 'add_repo' : 'ingest_path';
+    // Every preflight bumps the generation, whatever its target, so a
+    // recovery that settles after a newer scan began must leave that
+    // scan's report alone (#439 review).
+    const preflightSince = preflightRun;
     try {
       const summary = await invokeOr<IngestSummary | null>(
         command,
@@ -1008,6 +1017,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         isRepoUrl ? { url: trimmed } : { path: trimmed },
       );
       set({ ingestSummary: summary });
+      if (summary?.preflight && preflightSince === preflightRun) {
+        set({ preflight: summary.preflight, preflightError: null });
+      }
     } catch (e) {
       set({ ingestError: String(e) });
     } finally {
@@ -1177,9 +1189,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       preflightBusy: false,
       preflightProgress: null,
     });
-    // Only a local tree can be detected before recovery; GitHub and manifest
-    // targets are preflighted against the clone during recovery. Showing
-    // nothing beats inventing a report (three-way honesty starts here).
+    // Only a local tree can be detected before recovery. GitHub and manifest
+    // targets get no preflight report yet: their recoveries don't run the
+    // scan (#446). Showing nothing beats inventing a report (three-way
+    // honesty starts here).
     if (get().ingestSource !== 'local') return;
     set({ preflightBusy: true });
     try {
