@@ -1155,14 +1155,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       jobs: state.jobs.map((existing) => (existing.id === id ? { ...existing, detail } : existing)),
     })),
 
-  setIngestSource: (ingestSource) => set({ ingestSource }),
+  setIngestSource: (ingestSource) => {
+    // A local scan still running on the backend would otherwise finish and
+    // persist findings for a target the user has left (#434 review).
+    if (ingestSource !== 'local' && get().preflightBusy) void get().cancelPreflight();
+    set({ ingestSource });
+  },
 
   setIngestTarget: (ingestTarget) => set({ ingestTarget }),
 
   runPreflight: async () => {
     const target = get().ingestTarget.trim();
     const run = ++preflightRun;
-    const superseding = get().preflightBusy;
     set({
       view: 'preflight',
       selected: null,
@@ -1174,12 +1178,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // Only a local tree can be detected before recovery; GitHub and manifest
     // targets are preflighted against the clone during recovery. Showing
     // nothing beats inventing a report (three-way honesty starts here).
-    if (get().ingestSource !== 'local') {
-      // A local scan still running on the backend would otherwise finish and
-      // persist findings for a target the user has left.
-      if (superseding) await get().cancelPreflight();
-      return;
-    }
+    if (get().ingestSource !== 'local') return;
     set({ preflightBusy: true });
     try {
       const preflight = await invokeOr<PreflightReport | null>('preflight', null, {

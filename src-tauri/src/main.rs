@@ -1893,12 +1893,18 @@ fn preflight_blocking<R: tauri::Runtime>(
             },
         })
         .collect();
-    let report = ingest::preflight::preflight_scan(root, &claims, &eval_sites, &mut |_| {
+    // The report walk reads every file again, so it reports progress too
+    // (#434 review); its count restarts at this walk's own total.
+    let report = ingest::preflight::preflight_scan(root, &claims, &eval_sites, &mut |step| {
         if stopped() {
-            std::ops::ControlFlow::Break(())
-        } else {
-            std::ops::ControlFlow::Continue(())
+            return std::ops::ControlFlow::Break(());
         }
+        on_progress(adapters_lang_ts::EvalScanStep {
+            path: step.path,
+            done: step.done,
+            total: step.total,
+        });
+        std::ops::ControlFlow::Continue(())
     })
     .map_err(|e| e.to_string())?
     .ok_or(PREFLIGHT_CANCELLED)?;
@@ -6851,10 +6857,42 @@ export function App() {
 
         assert!(report.unsupported.iter().any(|f| f.kind == "inline-eval"));
         let emitters = emitters.lock().unwrap();
-        assert_eq!(emitters.len(), 1, "one file, one progress ping");
-        let (worker, payload) = &emitters[0];
-        assert_ne!(*worker, caller, "extraction ran on the calling thread");
-        assert_eq!(payload, r#"{"path":"app.ts","done":0,"total":1}"#);
+        // One file, read by both walks; the throttle may fold the second
+        // walk's ping into the first.
+        assert!((1..=2).contains(&emitters.len()), "{emitters:?}");
+        assert!(
+            emitters.iter().all(|(worker, _)| *worker != caller),
+            "extraction ran on the calling thread"
+        );
+        assert_eq!(emitters[0].1, r#"{"path":"app.ts","done":0,"total":1}"#);
+    }
+
+    #[test]
+    fn the_report_walk_reports_progress_too() {
+        // AC-0197 (#434 review): the report walk reads every file, not just
+        // the TS sources the eval pass parses, so it must keep the progress
+        // line moving. A Go-only project gives the eval pass nothing to do.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("main.go"), "package main\n").unwrap();
+        let app = preflight_test_app(dir.path());
+        let state = app.state::<super::AppState>();
+        let runs = app.state::<super::PreflightRuns>();
+        let token = runs.begin().unwrap();
+
+        let mut steps = Vec::new();
+        super::preflight_blocking(
+            &project.to_string_lossy(),
+            app.handle(),
+            &state,
+            &runs,
+            &token,
+            &mut |step| steps.push((step.path.to_string(), step.done, step.total)),
+        )
+        .unwrap();
+        assert_eq!(steps, vec![("main.go".to_string(), 0, 1)]);
     }
 
     #[test]

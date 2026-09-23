@@ -100,14 +100,18 @@ describe('preflight progress and cancellation (AC-0197/AC-0198, #235)', () => {
       return new Promise((_resolve, fail) => { reject = fail; });
     });
     const local = useAppStore.getState().runPreflight();
-    useAppStore.setState({ ingestSource: 'github' });
-    await useAppStore.getState().runPreflight();
+    // The Connect screen's source picker — no second Preflight click.
+    useAppStore.getState().setIngestSource('github');
     await local;
 
     expect(commands).toEqual(['preflight', 'cancel_preflight']);
     const state = useAppStore.getState();
+    expect(state.ingestSource).toBe('github');
     expect(state.preflightBusy).toBe(false);
-    expect(state.preflightError).toBeNull();
     expect(state.preflight).toBeNull();
+
+    // Switching while idle sends nothing.
+    useAppStore.getState().setIngestSource('manifest');
+    expect(commands).toEqual(['preflight', 'cancel_preflight']);
   });
 });
