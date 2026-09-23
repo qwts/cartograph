@@ -464,11 +464,54 @@ public class BasedController {
 "#;
     let out = extract_source(source, "src/BasedController.java", &id()).unwrap();
     assert!(out.nodes.iter().all(|node| node.label != "Endpoint"));
+    let gaps: Vec<&Node> = out
+        .nodes
+        .iter()
+        .filter(|node| node.id.starts_with("gap:route:"))
+        .collect();
+    assert_eq!(gaps.len(), 1);
+    // The evidence must point at the expression that made the route
+    // unprovable (the class base), not only at the literal method mapping.
+    let cited: Vec<&str> = gaps[0].props["prov"]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|span| {
+            let start = span["byte_start"].as_u64().unwrap() as usize;
+            let end = span["byte_end"].as_u64().unwrap() as usize;
+            std::str::from_utf8(&source[start..end]).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        cited,
+        ["@RequestMapping(Api.BASE)", "@GetMapping(\"/items\")"]
+    );
+}
+
+/// AC-0192 (#432 review): an escaped literal's source spelling is not its
+/// runtime value, so it must not become a Confirmed route.
+#[test]
+fn escaped_literal_mapping_paths_fail_closed() {
+    let source = br#"package com.demo.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class EscapedController {
+    @GetMapping({ "/foo\u002Dbar" })
+    public String unicode() { return "u"; }
+
+    @GetMapping("/tab\there")
+    public String tab() { return "t"; }
+}
+"#;
+    let out = extract_source(source, "src/EscapedController.java", &id()).unwrap();
+    assert!(out.nodes.iter().all(|node| node.label != "Endpoint"));
     assert_eq!(
         out.nodes
             .iter()
             .filter(|node| node.id.starts_with("gap:route:"))
             .count(),
-        1
+        2
     );
 }

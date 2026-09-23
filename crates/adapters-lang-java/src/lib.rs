@@ -115,16 +115,31 @@ impl FileCx<'_> {
         confidence: ConfidenceTier,
         fact: &str,
     ) -> serde_json::Value {
-        let provenance = Provenance::new(
-            Tier::Deterministic,
-            confidence,
-            vec![EvidenceRef {
+        self.prov_spanning(&[*node], confidence, fact)
+    }
+
+    /// Provenance citing every node that establishes the fact — e.g. a route
+    /// Gap cites both the unprovable class base and the method mapping.
+    fn prov_spanning(
+        &self,
+        nodes: &[TsNode<'_>],
+        confidence: ConfidenceTier,
+        fact: &str,
+    ) -> serde_json::Value {
+        let evidence = nodes
+            .iter()
+            .map(|node| EvidenceRef {
                 repo: self.id.repo.into(),
                 path: self.path.into(),
                 byte_start: node.start_byte() as u64,
                 byte_end: node.end_byte() as u64,
                 commit_sha: self.id.commit.into(),
-            }],
+            })
+            .collect();
+        let provenance = Provenance::new(
+            Tier::Deterministic,
+            confidence,
+            evidence,
             EXTRACTOR_ID,
             fact.as_bytes(),
         )
@@ -302,8 +317,11 @@ impl PathArg {
     }
 }
 
-/// A single-line string literal's text. Text blocks are not accepted: their
-/// content is re-indented by the compiler, so the source bytes are not the path.
+/// A single-line string literal whose source spelling is its runtime value.
+/// Escapes (`-`, `\t`, …) are not decoded: the source bytes would not
+/// be the route, so such literals fail closed rather than confirm a spelling
+/// Spring never maps. Text blocks are rejected for the same reason — the
+/// compiler re-indents their content.
 fn string_literal(cx: &FileCx<'_>, node: TsNode<'_>) -> Option<String> {
     if node.kind() != "string_literal" {
         return None;
@@ -311,11 +329,15 @@ fn string_literal(cx: &FileCx<'_>, node: TsNode<'_>) -> Option<String> {
     let mut walk = node.walk();
     if node
         .named_children(&mut walk)
-        .any(|child| !matches!(child.kind(), "string_fragment" | "escape_sequence"))
+        .any(|child| child.kind() != "string_fragment")
     {
         return None;
     }
-    Some(cx.text(&node).trim_matches('"').to_string())
+    let text = cx.text(&node).trim_matches('"');
+    // Unicode escapes are resolved before lexing, so the grammar may not
+    // surface them as `escape_sequence` nodes; a backslash in the source
+    // spelling is never a literal route character.
+    (!text.contains('\\')).then(|| text.to_string())
 }
 
 fn is_comment(node: TsNode<'_>) -> bool {
@@ -634,12 +656,13 @@ pub fn extract_source(
         // "No @RequestMapping" and "@RequestMapping with no path argument"
         // both mean Spring's default base (""); a present-but-dynamic base
         // poisons every mapping under it (None), failing them closed.
-        let bases = match class_annotations
+        let base_mapping = class_annotations
             .iter()
             .find(|(name, _)| name == "RequestMapping" && spring_proven(name, &imports))
-        {
+            .map(|(_, node)| *node);
+        let bases = match base_mapping {
             None => Some(vec![String::new()]),
-            Some((_, node)) => annotation_path(&cx, *node).segments(),
+            Some(node) => annotation_path(&cx, node).segments(),
         };
         for (name, annotation) in declaration_annotations(&cx, *method) {
             let Some(http_method) = mapping_method(&name) else {
@@ -656,6 +679,13 @@ pub fn extract_source(
                 // explicit Gap, never a default path presented as Confirmed
                 // (R-INT-4).
                 let gap_id = format!("gap:route:{}@{}@{}", id.repo, path, annotation.start_byte());
+                // Cite what made the route unprovable: the class base when it
+                // is dynamic, and always the method mapping that binds the
+                // handler, so the evidence shows the actual expression.
+                let evidence: Vec<TsNode<'_>> = match (bases.is_none(), base_mapping) {
+                    (true, Some(base)) => vec![base, annotation],
+                    _ => vec![annotation],
+                };
                 out.nodes.push(Node {
                     id: gap_id.clone(),
                     label: "Gap".into(),
@@ -666,8 +696,8 @@ pub fn extract_source(
                         "language": "java",
                         "reason": "dynamic Spring mapping path",
                         "attempted_tiers": ["T0"],
-                        "prov": cx.prov_with_confidence(
-                            &annotation,
+                        "prov": cx.prov_spanning(
+                            &evidence,
                             ConfidenceTier::Gap,
                             &format!("Gap {gap_id}"),
                         ),
@@ -680,8 +710,8 @@ pub fn extract_source(
                     props: serde_json::json!({
                         "reason": "dynamic Spring mapping path",
                         "attempted_resolution": "literal-path",
-                        "prov": cx.prov_with_confidence(
-                            &annotation,
+                        "prov": cx.prov_spanning(
+                            &evidence,
                             ConfidenceTier::Gap,
                             &format!("HANDLES {gap_id} -> {handler}"),
                         ),
