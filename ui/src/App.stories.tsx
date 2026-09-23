@@ -1539,7 +1539,7 @@ export const InvestigationWorkspaceCloudHistoryAndJobs: Story = {
 };
 
 export const InvestigationResultCommitStraddleIsRejected: Story = {
-  // AC-0201: a refresh whose result read misses the commit its detail already
+  // AC-0204: a refresh whose result read misses the commit its detail already
   // reports is rejected, not shown as a completed task without findings; the
   // next refresh reads the consistent pair.
   beforeEach: () => { installFakeCore({ investigationFlow: true, straddleResultCommit: true }); },

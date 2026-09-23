@@ -160,7 +160,7 @@ describe('durable investigation observations (AC-0190)', () => {
   });
 
   it('rejects a result read that straddles the result commit and recovers on the next refresh', async () => {
-    // AC-0201: `has_result: true` with no result must not be recorded as a completed task without findings.
+    // AC-0204: `has_result: true` with no result must not be recorded as a completed task without findings.
     let committed = false;
     mockIPC((command, args) => command === 'investigation_result' && !committed ? null : response(command, args));
     await useInvestigationStore.getState().open('same');
@@ -175,7 +175,7 @@ describe('durable investigation observations (AC-0190)', () => {
   });
 
   it('keeps saved findings and activity when a later refresh straddles the result commit', async () => {
-    // AC-0201: an inconsistent later observation leaves the previously saved state in place.
+    // AC-0204: an inconsistent later observation leaves the previously saved state in place.
     let straddle = false;
     mockIPC((command, args) => command === 'get_investigation' && straddle
       ? investigationDetail('same', { status: 'running', has_result: false, revision: 10,
@@ -192,7 +192,7 @@ describe('durable investigation observations (AC-0190)', () => {
   });
 
   it('rejects a result that is newer than the detail it was read with', async () => {
-    // AC-0201: a result paired with a pre-commit detail is an inconsistent observation, not a running task with findings.
+    // AC-0204: a result paired with a pre-commit detail is an inconsistent observation, not a running task with findings.
     mockIPC((command, args) => command === 'get_investigation'
       ? investigationDetail('same', { status: 'running', has_result: false, revision: 8,
         actions: { can_cancel: true, can_follow_up: false } }) : response(command, args));
