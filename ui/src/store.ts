@@ -99,6 +99,11 @@ export interface IngestSummary {
     /** Config-file evidence: Tool nodes + DEFINED_IN proofs (#215). */
     tools: LayerSummary;
   };
+  /**
+   * A local recovery's preflight report, reconciled with its AST proof of
+   * eval sites (AC-0200, #243): it replaces the pending pre-recovery view.
+   */
+  preflight?: PreflightReport;
   delta?: {
     recomputed_files: number;
     reused_files: number;
@@ -1008,6 +1013,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         isRepoUrl ? { url: trimmed } : { path: trimmed },
       );
       set({ ingestSummary: summary });
+      if (summary?.preflight) set({ preflight: summary.preflight, preflightError: null });
     } catch (e) {
       set({ ingestError: String(e) });
     } finally {

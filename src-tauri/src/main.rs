@@ -774,6 +774,9 @@ struct IngestSummary {
     merged: MergedFacts,
     layers: LayerBreakdown,
     delta: DeltaSummary,
+    /// The preflight report reconciled with this recovery's AST proof
+    /// (AC-0200), so the Preflight surface can replace its pending view.
+    preflight: ingest::preflight::PreflightReport,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -1989,7 +1992,7 @@ fn reconcile_preflight_findings(
     repo: &str,
     plugins: &[ingest::preflight::PluginCoverage],
     eval_sites: &[adapters_lang_ts::EvalSite],
-) -> Result<(), String> {
+) -> Result<ingest::preflight::PreflightReport, String> {
     let claims: Vec<ingest::preflight::EvalSiteCoverage> = eval_sites
         .iter()
         .map(|site| ingest::preflight::EvalSiteCoverage {
@@ -2022,7 +2025,8 @@ fn reconcile_preflight_findings(
     })
     .map_err(|e| e.to_string())?
     .ok_or("the reconciliation scan never stops early")?;
-    runs.reconcile(repo, || persist_preflight_findings(state, repo, &report))
+    runs.reconcile(repo, || persist_preflight_findings(state, repo, &report))?;
+    Ok(report)
 }
 
 /// All configurable tier settings (T0 is always on and absent by design).
@@ -2883,16 +2887,6 @@ fn run_ingest<R: tauri::Runtime>(
     };
 
     cancelled()?;
-    reconcile_preflight_findings(
-        state,
-        &app.state::<PreflightRuns>(),
-        root,
-        primary.capture.as_ref(),
-        &repo,
-        &plugin_coverage(&active_plugins),
-        &extraction.eval_sites,
-    )
-    .map_err(&fail)?;
     state
         .primary_sources
         .persist(&primary, source, &receipts)
@@ -2933,6 +2927,19 @@ fn run_ingest<R: tauri::Runtime>(
         &std::collections::BTreeSet::from([repo.clone()]),
     )
     .map_err(&fail)?;
+    // Only once the graph holds the recovered facts (#439 review): a
+    // recovery that fails earlier leaves preflight's pending findings in
+    // place instead of closing sites whose facts were never published.
+    let preflight = reconcile_preflight_findings(
+        state,
+        &app.state::<PreflightRuns>(),
+        root,
+        primary.capture.as_ref(),
+        &repo,
+        &plugin_coverage(&active_plugins),
+        &extraction.eval_sites,
+    )
+    .map_err(&fail)?;
 
     // A cancel can land at any point after the last check; `finish` is
     // guarded to only transition a running job, so whichever outcome hit
@@ -2952,6 +2959,7 @@ fn run_ingest<R: tauri::Runtime>(
         merged: published.merged,
         layers,
         delta,
+        preflight,
     })
 }
 
@@ -6889,9 +6897,21 @@ export function App() {
         let source = super::register_local_source(&state, &project).unwrap();
         let operation = super::source_operation(&state, vec![(source.clone(), false)]).unwrap();
         let (_, execution) = super::start_job(&state, &source.ingest_job_kind()).unwrap();
-        super::run_ingest(&source, &operation, &execution, &handle, &state).unwrap();
+        let summary = super::run_ingest(&source, &operation, &execution, &handle, &state).unwrap();
         drop(operation);
         assert_eq!(register_eval_lines(), vec![5, 7]);
+        // The summary carries the reconciled report for the Preflight
+        // surface, including the potential-Gap lane the register never
+        // holds (#439 review).
+        let lines = |findings: &[ingest::preflight::PatternFinding]| -> Vec<u64> {
+            findings
+                .iter()
+                .filter(|f| f.kind == "inline-eval")
+                .map(|f| f.line)
+                .collect()
+        };
+        assert_eq!(lines(&summary.preflight.unsupported), vec![5, 7]);
+        assert_eq!(lines(&summary.preflight.potential_gaps), vec![4]);
 
         // It finishes after recovery: its pending findings must not replace
         // the proven classification.
@@ -6912,6 +6932,56 @@ export function App() {
                 .iter()
                 .all(|f| !f.message.contains("pending AST proof")),
             "no pending wording survives recovery"
+        );
+    }
+
+    #[test]
+    fn a_recovery_that_fails_before_publishing_leaves_preflight_pending() {
+        // AC-0200 (#439 review): reconciliation runs only after the graph
+        // holds the recovered facts. A recovery that fails first (here: the
+        // graph store is unusable) must not close the literal eval whose
+        // facts never reached the graph.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("app.ts"), "eval('function f() {}');\n").unwrap();
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let pending = || -> Vec<(i64, bool)> {
+            state
+                .findings
+                .lock()
+                .unwrap()
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(|f| f.detector == ingest::preflight::DETECTOR_ID)
+                .map(|f| (f.line, f.message.contains("pending AST proof")))
+                .collect()
+        };
+        super::preflight_uncancelled(&project.to_string_lossy(), &handle, &state).unwrap();
+        assert_eq!(pending(), vec![(1, true)]);
+
+        let source = super::register_local_source(&state, &project).unwrap();
+        let operation = super::source_operation(&state, vec![(source.clone(), false)]).unwrap();
+        let (_, execution) = super::start_job(&state, &source.ingest_job_kind()).unwrap();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _graph = state.graph.lock().unwrap();
+                    panic!("poison the graph store");
+                })
+                .join()
+                .unwrap_err();
+        });
+        assert!(super::run_ingest(&source, &operation, &execution, &handle, &state).is_err());
+
+        assert_eq!(
+            pending(),
+            vec![(1, true)],
+            "the unpublished proof closed nothing"
         );
     }
 

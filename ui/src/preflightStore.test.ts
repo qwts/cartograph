@@ -139,4 +139,29 @@ describe('preflight progress and cancellation (AC-0197/AC-0198, #235)', () => {
     pending[1](report('new'));
     await Promise.all([first, second]);
   });
+
+  it('shows the reconciled report once a local recovery completes (AC-0200, #243)', async () => {
+    const reconciled = report('preflight@1');
+    reconciled.potential_gaps = [
+      {
+        kind: 'inline-eval',
+        path: 'app.ts',
+        line: 4,
+        message: 'const-shaped',
+        detector: 'preflight@1',
+        request_adapter: null,
+      },
+    ];
+    mockIPC((command) =>
+      command === 'ingest_path'
+        ? { job_id: 1, files: 1, nodes: 0, edges: 0, layers: {}, preflight: reconciled }
+        : null,
+    );
+    useAppStore.setState({ preflight: report('pending'), preflightError: 'cancelled earlier' });
+    await useAppStore.getState().ingest('/repos/app', 'local');
+
+    const state = useAppStore.getState();
+    expect(state.preflight).toEqual(reconciled);
+    expect(state.preflightError).toBeNull();
+  });
 });
