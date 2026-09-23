@@ -96,6 +96,111 @@ impl LayerSummary {
     }
 }
 
+/// The store keeps one fact per node id and per `(src, dst, label)` relation
+/// (SPEC-00 §4.4), so counts quote distinct keys, never raw occurrences —
+/// otherwise the ingest summary and the Workspace graph counts disagree
+/// (AC-0195, #242).
+fn distinct_node_count(nodes: &[Node]) -> u64 {
+    nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as u64
+}
+
+fn distinct_edge_count(edges: &[Edge]) -> u64 {
+    edges
+        .iter()
+        .map(|edge| (edge.src.as_str(), edge.dst.as_str(), edge.label.as_str()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as u64
+}
+
+/// Occurrences an extraction emitted beyond the one fact the store keeps per
+/// key. Stated in the summary so collapsing is never silent (AC-0195).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+struct MergedFacts {
+    /// Repeated node ids beyond the first occurrence.
+    nodes: u64,
+    /// Repeated relations beyond the first — typically one call or import
+    /// relation cited from several sites.
+    edges: u64,
+    /// Node ids emitted with differing facts: distinct declarations sharing
+    /// one identity, of which only the last occurrence is stored.
+    node_collisions: u64,
+}
+
+impl MergedFacts {
+    fn add(&mut self, other: Self) {
+        self.nodes += other.nodes;
+        self.edges += other.edges;
+        self.node_collisions += other.node_collisions;
+    }
+}
+
+type EdgeKey = (String, String, String);
+
+/// The distinct fact keys one load wrote (its Repo node included) and what
+/// it collapsed to get there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PublishedFacts {
+    nodes: std::collections::BTreeSet<String>,
+    edges: std::collections::BTreeSet<EdgeKey>,
+    merged: MergedFacts,
+}
+
+/// Every fact key one recovery operation published, across each repo it
+/// loaded and each whole-graph stage it ran afterwards (BACKS stitching,
+/// found-ADR relinking). It is the single source every ingest summary quotes
+/// (AC-0195): a key published by two repos is one stored fact, so the
+/// cross-repo repeat is reported as merged rather than counted twice.
+#[derive(Debug, Default)]
+struct OperationFacts {
+    nodes: std::collections::BTreeSet<String>,
+    edges: std::collections::BTreeSet<EdgeKey>,
+    merged: MergedFacts,
+}
+
+impl OperationFacts {
+    fn record_load(&mut self, loaded: PublishedFacts) {
+        self.merged.add(loaded.merged);
+        for id in loaded.nodes {
+            if !self.nodes.insert(id) {
+                self.merged.nodes += 1;
+            }
+        }
+        for key in loaded.edges {
+            if !self.edges.insert(key) {
+                self.merged.edges += 1;
+            }
+        }
+    }
+
+    /// A later whole-graph stage re-publishing or retracting facts, in the
+    /// store's own patch order: edge deletes, node deletes (with their
+    /// incident edges), then upserts. Re-publishing a key is not a merge.
+    fn record_patch(&mut self, patch: &core_graph::GraphPatch) {
+        for key in &patch.delete_edges {
+            self.edges.remove(key);
+        }
+        for id in &patch.delete_node_ids {
+            self.nodes.remove(id);
+            self.edges.retain(|(src, dst, _)| src != id && dst != id);
+        }
+        self.nodes
+            .extend(patch.upsert_nodes.iter().map(|node| node.id.clone()));
+        self.edges.extend(patch.upsert_edges.iter().map(edge_key));
+    }
+
+    fn nodes(&self) -> u64 {
+        self.nodes.len() as u64
+    }
+
+    fn edges(&self) -> u64 {
+        self.edges.len() as u64
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 struct LayerBreakdown {
     ts: LayerSummary,
@@ -665,6 +770,7 @@ struct IngestSummary {
     files: u64,
     nodes: u64,
     edges: u64,
+    merged: MergedFacts,
     layers: LayerBreakdown,
     delta: DeltaSummary,
 }
@@ -822,8 +928,8 @@ fn extract_tree_with_primary(
             .iter()
             .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
             .count() as u64,
-        nodes: extraction.nodes.len() as u64,
-        edges: extraction.edges.len() as u64,
+        nodes: distinct_node_count(&extraction.nodes),
+        edges: distinct_edge_count(&extraction.edges),
     };
     if wants_application {
         // WebExtension manifests (US-0016): topology + permission facts.
@@ -839,8 +945,8 @@ fn extract_tree_with_primary(
                 .map_err(|e| e.to_string())?;
         layers.webext = LayerSummary {
             files: manifests,
-            nodes: webext.nodes.len() as u64,
-            edges: webext.edges.len() as u64,
+            nodes: distinct_node_count(&webext.nodes),
+            edges: distinct_edge_count(&webext.edges),
         };
         extraction.nodes.extend(webext.nodes);
         extraction.edges.extend(webext.edges);
@@ -854,8 +960,8 @@ fn extract_tree_with_primary(
         // become the cited data model (DataEntity + READS/WRITES).
         let idb =
             adapters_lang_ts::indexeddb::extract_dir(root, &ts_id).map_err(|e| e.to_string())?;
-        layers.webext.nodes += idb.nodes.len() as u64;
-        layers.webext.edges += idb.edges.len() as u64;
+        layers.webext.nodes += distinct_node_count(&idb.nodes);
+        layers.webext.edges += distinct_edge_count(&idb.edges);
         extraction.nodes.extend(idb.nodes);
         extraction.edges.extend(idb.edges);
     }
@@ -880,8 +986,8 @@ fn extract_tree_with_primary(
                 .iter()
                 .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
                 .count() as u64,
-            nodes: python.nodes.len() as u64,
-            edges: python.edges.len() as u64,
+            nodes: distinct_node_count(&python.nodes),
+            edges: distinct_edge_count(&python.edges),
         };
         extraction.nodes.extend(python.nodes);
         extraction.edges.extend(python.edges);
@@ -906,8 +1012,8 @@ fn extract_tree_with_primary(
                 .iter()
                 .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
                 .count() as u64,
-            nodes: go.nodes.len() as u64,
-            edges: go.edges.len() as u64,
+            nodes: distinct_node_count(&go.nodes),
+            edges: distinct_edge_count(&go.edges),
         };
         extraction.nodes.extend(go.nodes);
         extraction.edges.extend(go.edges);
@@ -932,8 +1038,8 @@ fn extract_tree_with_primary(
                 .iter()
                 .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
                 .count() as u64,
-            nodes: java.nodes.len() as u64,
-            edges: java.edges.len() as u64,
+            nodes: distinct_node_count(&java.nodes),
+            edges: distinct_edge_count(&java.edges),
         };
         extraction.nodes.extend(java.nodes);
         extraction.edges.extend(java.edges);
@@ -958,8 +1064,8 @@ fn extract_tree_with_primary(
                 .iter()
                 .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
                 .count() as u64,
-            nodes: kotlin.nodes.len() as u64,
-            edges: kotlin.edges.len() as u64,
+            nodes: distinct_node_count(&kotlin.nodes),
+            edges: distinct_edge_count(&kotlin.edges),
         };
         extraction.nodes.extend(kotlin.nodes);
         extraction.edges.extend(kotlin.edges);
@@ -982,8 +1088,8 @@ fn extract_tree_with_primary(
         );
         layers.tf = LayerSummary {
             files: iac::terraform_file_count(root).map_err(|e| e.to_string())?,
-            nodes: tf.nodes.len() as u64,
-            edges: tf.edges.len() as u64,
+            nodes: distinct_node_count(&tf.nodes),
+            edges: distinct_edge_count(&tf.edges),
         };
         extraction.nodes.extend(tf.nodes);
         extraction.edges.extend(tf.edges);
@@ -1015,8 +1121,8 @@ fn extract_tree_with_primary(
     cfg.apply_manifest(manifest_env, ingest::manifest::MANIFEST_NAME);
     let ev_id = events::SourceId { repo, commit };
     let stitched = events::stitch(&extraction.event_sites, &cfg, &ev_id);
-    layers.ts.nodes += stitched.nodes.len() as u64;
-    layers.ts.edges += stitched.edges.len() as u64;
+    layers.ts.nodes += distinct_node_count(&stitched.nodes);
+    layers.ts.edges += distinct_edge_count(&stitched.edges);
     extraction.nodes.extend(stitched.nodes);
     extraction.edges.extend(stitched.edges);
     let endpoint_ids: Vec<String> = extraction
@@ -1026,8 +1132,8 @@ fn extract_tree_with_primary(
         .map(|n| n.id.clone())
         .collect();
     let fetched = events::stitch_fetches(&extraction.fetch_sites, &endpoint_ids, &cfg, &ev_id);
-    layers.ts.nodes += fetched.nodes.len() as u64;
-    layers.ts.edges += fetched.edges.len() as u64;
+    layers.ts.nodes += distinct_node_count(&fetched.nodes);
+    layers.ts.edges += distinct_edge_count(&fetched.edges);
     extraction.nodes.extend(fetched.nodes);
     extraction.edges.extend(fetched.edges);
     // T1: observed messaging identities fill only explicit channel Gaps;
@@ -1059,8 +1165,8 @@ fn extract_tree_with_primary(
             .map_err(|e| e.to_string())?;
         layers.tools = LayerSummary {
             files: tool_facts.files,
-            nodes: tool_facts.nodes.len() as u64,
-            edges: tool_facts.edges.len() as u64,
+            nodes: distinct_node_count(&tool_facts.nodes),
+            edges: distinct_edge_count(&tool_facts.edges),
         };
         // Config files an adapter already owns (a `.ts`-authored vite
         // config, a webext manifest) keep the adapter's richer File node;
@@ -1147,11 +1253,12 @@ fn extract_tree(
 
 /// Load an extraction plus its `Repo` node (`repo:{identity}`, carrying the
 /// tree root and commit so evidence reads resolve per repo).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ReconcileStats {
     inserted_or_updated: u64,
     unchanged: u64,
     deleted: u64,
+    published: PublishedFacts,
 }
 
 fn fact_owned_by_repo(props: &serde_json::Value, repo: &str) -> bool {
@@ -1219,12 +1326,21 @@ fn load_into_graph_with_bindings(
             "prov": serde_json::to_value(repo_prov).expect("serializes"),
         }),
     };
-    let mut current_nodes = extraction
-        .nodes
-        .iter()
-        .cloned()
-        .map(|node| (node.id.clone(), node))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    // Last occurrence wins, in deterministic extraction order (SPEC-00 §4.4).
+    let mut current_nodes = std::collections::BTreeMap::new();
+    let mut colliding_ids = std::collections::BTreeSet::new();
+    for node in &extraction.nodes {
+        if let Some(previous) = current_nodes.insert(node.id.clone(), node.clone())
+            && previous != *node
+        {
+            colliding_ids.insert(node.id.clone());
+        }
+    }
+    let merged = MergedFacts {
+        nodes: (extraction.nodes.len() - current_nodes.len()) as u64,
+        edges: extraction.edges.len() as u64 - distinct_edge_count(&extraction.edges),
+        node_collisions: colliding_ids.len() as u64,
+    };
     current_nodes.insert(repo_node.id.clone(), repo_node);
     let current_edges = extraction
         .edges
@@ -1246,7 +1362,14 @@ fn load_into_graph_with_bindings(
         .map(|edge| (edge_key(&edge), edge))
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut patch = core_graph::GraphPatch::default();
-    let mut stats = ReconcileStats::default();
+    let mut stats = ReconcileStats {
+        published: PublishedFacts {
+            nodes: current_nodes.keys().cloned().collect(),
+            edges: current_edges.keys().cloned().collect(),
+            merged,
+        },
+        ..ReconcileStats::default()
+    };
     let mut remaining_edge_keys = std::collections::BTreeSet::new();
     for (key, edge) in &existing_edges {
         if fact_owned_by_repo(&edge.props, repo) && !current_edges.contains_key(key) {
@@ -1327,7 +1450,10 @@ fn deterministic_graph_hashes(graph: &impl GraphStore) -> Result<Vec<String>, St
 /// whole graph after every load. Existing state-derived edges are reconciled
 /// against the current candidates before `put_edge` upserts, so removed or
 /// changed observations cannot leave stale cross-layer topology behind.
-fn stitch_backings(graph: &mut SqliteGraphStore) -> Result<u64, String> {
+fn stitch_backings(
+    graph: &mut SqliteGraphStore,
+    facts: &mut OperationFacts,
+) -> Result<u64, String> {
     let resources = graph
         .nodes_with_label("Resource")
         .map_err(|e| e.to_string())?;
@@ -1354,10 +1480,12 @@ fn stitch_backings(graph: &mut SqliteGraphStore) -> Result<u64, String> {
             graph
                 .delete_edge(&edge.src, &edge.dst, &edge.label)
                 .map_err(|error| error.to_string())?;
+            facts.edges.remove(&edge_key(&edge));
         }
     }
-    for edge in candidates.values() {
+    for (key, edge) in &candidates {
         graph.put_edge(edge).map_err(|error| error.to_string())?;
+        facts.edges.insert(key.clone());
     }
     Ok(candidates.len() as u64)
 }
@@ -1372,6 +1500,7 @@ fn relink_found_adrs(
     state: &AppState,
     operation: &SourceOperation,
     execution: &JobExecution,
+    facts: &mut OperationFacts,
 ) -> Result<u64, String> {
     ensure_running_job(state, execution)?;
     let snapshot = state
@@ -1395,6 +1524,7 @@ fn relink_found_adrs(
     {
         return Err("graph context changed during ADR recovery; retry recovery".into());
     }
+    facts.record_patch(&patch);
     Ok(linked)
 }
 
@@ -2495,18 +2625,29 @@ fn run_ingest(
         .map_err(&fail)?;
     let bindings = primary_source::matching_bindings(&extraction, &receipts);
     report_progress(app, state, execution, "load", 70.0)?;
+    let mut published = OperationFacts::default();
     {
         let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
         ensure_running_job(state, execution)?;
-        load_into_graph_with_bindings(&mut graph, &extraction, &repo, root, "workdir", &bindings)
-            .map_err(&fail)?;
+        published.record_load(
+            load_into_graph_with_bindings(
+                &mut graph,
+                &extraction,
+                &repo,
+                root,
+                "workdir",
+                &bindings,
+            )
+            .map_err(&fail)?
+            .published,
+        );
         report_progress(app, state, execution, "stitch", 90.0)?;
 
         ensure_running_job(state, execution)?;
-        stitch_backings(&mut graph).map_err(&fail)?;
+        stitch_backings(&mut graph, &mut published).map_err(&fail)?;
     }
 
-    relink_found_adrs(state, operation, execution).map_err(&fail)?;
+    relink_found_adrs(state, operation, execution, &mut published).map_err(&fail)?;
 
     ensure_running_job(state, execution)?;
     record_ingest_metrics(
@@ -2532,8 +2673,9 @@ fn run_ingest(
     Ok(IngestSummary {
         job_id,
         files: layers.files(),
-        nodes: extraction.nodes.len() as u64,
-        edges: extraction.edges.len() as u64,
+        nodes: published.nodes(),
+        edges: published.edges(),
+        merged: published.merged,
         layers,
         delta,
     })
@@ -2705,6 +2847,7 @@ struct AddRepoSummary {
     files: u64,
     nodes: u64,
     edges: u64,
+    merged: MergedFacts,
     layers: LayerBreakdown,
     delta: DeltaSummary,
 }
@@ -2784,23 +2927,27 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         .persist(&primary, &source, &receipts)
         .map_err(&fail)?;
     let bindings = primary_source::matching_bindings(&extraction, &receipts);
+    let mut published = OperationFacts::default();
     {
         let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
         ensure_running_job(&state, &execution)?;
-        load_into_graph_with_bindings(
-            &mut graph,
-            &extraction,
-            &source.repo_key,
-            root,
-            &cloned.commit_sha,
-            &bindings,
-        )
-        .map_err(&fail)?;
+        published.record_load(
+            load_into_graph_with_bindings(
+                &mut graph,
+                &extraction,
+                &source.repo_key,
+                root,
+                &cloned.commit_sha,
+                &bindings,
+            )
+            .map_err(&fail)?
+            .published,
+        );
 
         ensure_running_job(&state, &execution)?;
-        stitch_backings(&mut graph).map_err(&fail)?;
+        stitch_backings(&mut graph, &mut published).map_err(&fail)?;
     }
-    relink_found_adrs(&state, &operation, &execution).map_err(&fail)?;
+    relink_found_adrs(&state, &operation, &execution, &mut published).map_err(&fail)?;
     ensure_running_job(&state, &execution)?;
     record_ingest_metrics(
         &state,
@@ -2817,8 +2964,9 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         repo: source.repo_key,
         commit_sha: cloned.commit_sha,
         files: layers.files(),
-        nodes: extraction.nodes.len() as u64,
-        edges: extraction.edges.len() as u64,
+        nodes: published.nodes(),
+        edges: published.edges(),
+        merged: published.merged,
         layers,
         delta,
     })
@@ -2844,6 +2992,7 @@ struct AddSystemSummary {
     files: u64,
     nodes: u64,
     edges: u64,
+    merged: MergedFacts,
     layers: LayerBreakdown,
     delta: DeltaSummary,
 }
@@ -2917,7 +3066,8 @@ fn add_system_blocking<R: tauri::Runtime>(
 
     let mut repos = Vec::new();
     let mut repo_identities = std::collections::BTreeSet::new();
-    let (mut files, mut nodes, mut edges) = (0u64, 0u64, 0u64);
+    let mut files = 0u64;
+    let mut published = OperationFacts::default();
     let mut layers = LayerBreakdown::default();
     let mut delta = DeltaSummary::default();
     let mut on_file = detail_throttle(&app, job_id);
@@ -2978,8 +3128,6 @@ fn add_system_blocking<R: tauri::Runtime>(
             .map_err(&fail)?;
         let bindings = primary_source::matching_bindings(&extraction, &receipts);
         files += repo_layers.files();
-        nodes += extraction.nodes.len() as u64;
-        edges += extraction.edges.len() as u64;
         layers.add(repo_layers);
         delta.add(
             repo_delta.recomputed_files,
@@ -2989,8 +3137,18 @@ fn add_system_blocking<R: tauri::Runtime>(
         {
             let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
             ensure_running_job(&state, &execution)?;
-            load_into_graph_with_bindings(&mut graph, &extraction, &repo, root, &commit, &bindings)
-                .map_err(&fail)?;
+            published.record_load(
+                load_into_graph_with_bindings(
+                    &mut graph,
+                    &extraction,
+                    &repo,
+                    root,
+                    &commit,
+                    &bindings,
+                )
+                .map_err(&fail)?
+                .published,
+            );
         }
         let sha12: String = commit.chars().take(12).collect();
         repos.push(format!("{repo}@{sha12}"));
@@ -3001,9 +3159,9 @@ fn add_system_blocking<R: tauri::Runtime>(
         // published by another.
         let mut graph = state.graph.lock().map_err(|e| fail(e.to_string()))?;
         ensure_running_job(&state, &execution)?;
-        stitch_backings(&mut graph).map_err(&fail)?;
+        stitch_backings(&mut graph, &mut published).map_err(&fail)?;
     }
-    relink_found_adrs(&state, &operation, &execution).map_err(&fail)?;
+    relink_found_adrs(&state, &operation, &execution, &mut published).map_err(&fail)?;
     // One history record for the whole system; the per-repo identities are
     // the record's identity (a system has no single commit).
     ensure_running_job(&state, &execution)?;
@@ -3021,8 +3179,9 @@ fn add_system_blocking<R: tauri::Runtime>(
         job_id,
         repos,
         files,
-        nodes,
-        edges,
+        nodes: published.nodes(),
+        edges: published.edges(),
+        merged: published.merged,
         layers,
         delta,
     })
@@ -4069,6 +4228,274 @@ resource "aws_sqs_queue" "orders" {
     }
 
     #[test]
+    fn ingest_summary_quotes_distinct_published_facts_and_reports_merges() {
+        // AC-0195 (#242): one relation cited from several sites, and distinct
+        // declarations sharing one id, collapse to one stored fact each. The
+        // summary must quote what the store holds and state what it merged.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("util.ts"),
+            "export function helper() {}\nexport function other() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("app.ts"),
+            "import { helper } from './util';\nimport { other } from './util';\n\
+             export function run() { helper(); helper(); other(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Owner.java"),
+            "package demo;\nclass Owner {\n  Pet getPet(String name) { return null; }\n  \
+             Pet getPet(int id) { return null; }\n}\nclass Pet {}\n",
+        )
+        .unwrap();
+        let (extraction, layers) = crate::extract_tree_with_summary(
+            dir.path(),
+            "local/merges",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        let mut published = crate::OperationFacts::default();
+        published.record_load(
+            crate::load_into_graph(
+                &mut store,
+                &extraction,
+                "local/merges",
+                dir.path(),
+                "workdir",
+            )
+            .unwrap()
+            .published,
+        );
+
+        // The summary totals are the store's own counts after a first ingest.
+        assert_eq!(
+            store.fact_counts().unwrap(),
+            (published.nodes(), published.edges())
+        );
+        // Nothing vanishes unreported: raw occurrences = published + merged
+        // (the Repo node is the load's own addition).
+        assert_eq!(
+            extraction.nodes.len() as u64 + 1,
+            published.nodes() + published.merged.nodes
+        );
+        assert_eq!(
+            extraction.edges.len() as u64,
+            published.edges() + published.merged.edges
+        );
+        // `run` calls `helper` twice and imports `./util` twice: one relation each.
+        let calls_helper = extraction
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.label == "CALLS" && edge.src.ends_with("#run") && edge.dst.ends_with("#helper")
+            })
+            .count();
+        assert_eq!(calls_helper, 2, "fixture must emit repeated call sites");
+        assert!(published.merged.edges >= 2);
+        // The two `getPet` overloads share one symbol id with differing spans.
+        assert_eq!(published.merged.node_collisions, 1);
+        assert!(published.merged.nodes >= 1);
+        // Per-layer rows count distinct facts, so they never exceed the store.
+        let java_symbols = extraction
+            .nodes
+            .iter()
+            .filter(|node| node.id.contains("Owner.java"))
+            .map(|node| node.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(java_symbols.len() as u64 <= layers.java.nodes);
+        assert_eq!(
+            layers.ts.edges,
+            crate::distinct_edge_count(
+                &extraction
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.props["prov"]["extractor_id"] == "t0.adapter-ts")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            )
+        );
+    }
+
+    #[test]
+    fn system_summary_counts_a_channel_shared_by_two_repos_once() {
+        // AC-0195 (#242 review): a channel is keyed globally
+        // (`chan:{kind}:{identity}`), so two repos that publish to one queue
+        // share one stored fact. Summing per-repo counts would count it
+        // twice; the operation reports it once and states the repeat.
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        let mut published = crate::OperationFacts::default();
+        let mut per_repo_sum = (0u64, 0u64);
+        let mut channel_ids = Vec::new();
+        for repo in ["orders", "billing"] {
+            let root = dir.path().join(repo);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("app.ts"),
+                r#"
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+const sqs = new SQSClient({});
+export function queue() {
+  return sqs.send(new SendMessageCommand({ QueueUrl: 'https://sqs.us-east-1.amazonaws.com/9/orders', MessageBody: '{}' }));
+}
+"#,
+            )
+            .unwrap();
+            let identity = format!("local/{repo}");
+            let extraction = crate::extract_tree(
+                &root,
+                &identity,
+                "workdir",
+                &[],
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
+            channel_ids.extend(
+                extraction
+                    .nodes
+                    .iter()
+                    .filter(|node| node.label == "Channel")
+                    .map(|node| node.id.clone()),
+            );
+            let loaded =
+                crate::load_into_graph(&mut store, &extraction, &identity, &root, "workdir")
+                    .unwrap()
+                    .published;
+            per_repo_sum.0 += loaded.nodes.len() as u64;
+            per_repo_sum.1 += loaded.edges.len() as u64;
+            published.record_load(loaded);
+        }
+        crate::stitch_backings(&mut store, &mut published).unwrap();
+
+        assert_eq!(channel_ids.len(), 2, "each repo emits the shared channel");
+        assert_eq!(channel_ids[0], channel_ids[1]);
+        assert_eq!(
+            store.fact_counts().unwrap(),
+            (published.nodes(), published.edges())
+        );
+        assert!(
+            per_repo_sum.0 > published.nodes(),
+            "a per-repo sum double counts"
+        );
+        assert!(published.merged.nodes >= 1);
+    }
+
+    #[test]
+    fn operation_facts_follow_a_whole_graph_patch() {
+        // AC-0195 (#242 review): found-ADR relinking retracts and re-adds
+        // facts after the load. The operation mirrors the store's patch
+        // order, so a retracted node takes its incident edges with it and a
+        // re-published key is neither lost nor counted as merged.
+        let key = |src: &str, dst: &str| (src.to_string(), dst.to_string(), "DECIDES".to_string());
+        let mut published = crate::OperationFacts::default();
+        published.record_load(crate::PublishedFacts {
+            nodes: ["adr:a", "adr:stale", "sym:x"].map(String::from).into(),
+            edges: [key("adr:a", "sym:x"), key("adr:stale", "sym:x")].into(),
+            merged: crate::MergedFacts::default(),
+        });
+        let node = |id: &str| Node {
+            id: id.into(),
+            label: "ADR".into(),
+            props: serde_json::json!({}),
+        };
+        published.record_patch(&core_graph::GraphPatch {
+            upsert_nodes: vec![node("adr:a"), node("adr:b")],
+            upsert_edges: vec![Edge {
+                src: "adr:b".into(),
+                dst: "sym:x".into(),
+                label: "DECIDES".into(),
+                props: serde_json::json!({}),
+            }],
+            delete_node_ids: vec!["adr:stale".into()],
+            delete_edges: vec![key("adr:a", "sym:x")],
+        });
+        assert_eq!(
+            published.nodes,
+            ["adr:a", "adr:b", "sym:x"].map(String::from).into()
+        );
+        assert_eq!(published.edges, [key("adr:b", "sym:x")].into());
+        assert_eq!(published.merged, crate::MergedFacts::default());
+    }
+
+    #[test]
+    fn ingest_summary_includes_state_backed_backs_edges() {
+        // AC-0195 (#242 review): BACKS edges are stitched after the load,
+        // from observed state. The summary is taken after that stage, so it
+        // still equals the store's counts.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("main.tf"),
+            "resource \"aws_sqs_queue\" \"orders\" {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("app.ts"),
+            r#"
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+const sqs = new SQSClient({});
+export function queueOrder() {
+  return sqs.send(new SendMessageCommand({ QueueUrl: 'https://sqs.us-east-1.amazonaws.com/9/orders', MessageBody: '{}' }));
+}
+"#,
+        )
+        .unwrap();
+        let state = dir.path().join("shop.state.json");
+        std::fs::write(
+            &state,
+            r#"{
+  "format_version": "1.0",
+  "values": { "root_module": { "resources": [{
+    "address": "aws_sqs_queue.orders", "mode": "managed",
+    "type": "aws_sqs_queue", "name": "orders",
+    "values": { "url": "https://sqs.us-east-1.amazonaws.com/9/orders" },
+    "sensitive_values": {}
+  }] } }
+}"#,
+        )
+        .unwrap();
+        let extraction = crate::extract_tree(
+            dir.path(),
+            "local/shop",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            Some(&state),
+            None,
+            &[],
+        )
+        .unwrap();
+        let mut store = SqliteGraphStore::open_in_memory().unwrap();
+        let mut published = crate::OperationFacts::default();
+        published.record_load(
+            crate::load_into_graph(&mut store, &extraction, "local/shop", dir.path(), "workdir")
+                .unwrap()
+                .published,
+        );
+        let loaded_edges = published.edges();
+
+        assert_eq!(
+            crate::stitch_backings(&mut store, &mut published).unwrap(),
+            1
+        );
+        assert_eq!(published.edges(), loaded_edges + 1);
+        assert_eq!(
+            store.fact_counts().unwrap(),
+            (published.nodes(), published.edges())
+        );
+    }
+
+    #[test]
     fn toolchain_facts_land_in_the_graph_with_defined_in_edges() {
         // AC-0096 (#215): config files become Tool nodes with cited
         // settings, DEFINED_IN the config File node — end to end through
@@ -5066,7 +5493,10 @@ export const orders = new aws.sqs.Queue('orders', {});
                 props: serde_json::json!({}),
             })
             .unwrap();
-        assert_eq!(crate::stitch_backings(&mut store).unwrap(), 1);
+        assert_eq!(
+            crate::stitch_backings(&mut store, &mut crate::OperationFacts::default()).unwrap(),
+            1
+        );
         let backing = store.edges_with_labels(&["BACKS"]).unwrap();
         assert_eq!(backing.len(), 1);
         assert_eq!(
@@ -5093,7 +5523,10 @@ export const orders = new aws.sqs.Queue('orders', {});
             "workdir",
         )
         .unwrap();
-        assert_eq!(crate::stitch_backings(&mut store).unwrap(), 0);
+        assert_eq!(
+            crate::stitch_backings(&mut store, &mut crate::OperationFacts::default()).unwrap(),
+            0
+        );
         assert!(store.edges_with_labels(&["BACKS"]).unwrap().is_empty());
     }
 
@@ -5768,7 +6201,8 @@ state_json = "shop.state.json"
             .unwrap();
             crate::load_into_graph(&mut store, &ex, "local/shop", &root, "workdir").unwrap();
         }
-        let backed = crate::stitch_backings(&mut store).unwrap();
+        let backed =
+            crate::stitch_backings(&mut store, &mut crate::OperationFacts::default()).unwrap();
         assert_eq!(backed, 1);
 
         let resources = store.nodes_with_label("Resource").unwrap();
@@ -5801,7 +6235,10 @@ state_json = "shop.state.json"
         assert!(mmd.contains(r#"[("sqs-queue:https://sqs.us-east-1.amazonaws.com/9/orders")]"#));
         assert!(mmd.contains("-->|BACKS|"));
         // Re-running the join is idempotent (US-0014 re-ingest).
-        assert_eq!(crate::stitch_backings(&mut store).unwrap(), 1);
+        assert_eq!(
+            crate::stitch_backings(&mut store, &mut crate::OperationFacts::default()).unwrap(),
+            1
+        );
         assert_eq!(store.edges_with_labels(&["BACKS"]).unwrap().len(), 1);
 
         // AC-0009/T-0009 and AC-0040: removing the observation on re-ingest
@@ -5825,7 +6262,10 @@ state_json = "shop.state.json"
             "workdir",
         )
         .unwrap();
-        assert_eq!(crate::stitch_backings(&mut store).unwrap(), 0);
+        assert_eq!(
+            crate::stitch_backings(&mut store, &mut crate::OperationFacts::default()).unwrap(),
+            0
+        );
         assert!(store.edges_with_labels(&["BACKS"]).unwrap().is_empty());
         let queue = store
             .get_node("res:local/shop@aws_sqs_queue.orders")

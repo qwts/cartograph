@@ -67,7 +67,13 @@ fn recover(state: &AppState, source: &RegisteredSource) -> (DeltaSummary, Reconc
         "workdir",
     )
     .unwrap();
-    relink_found_adrs(state, &operation, &execution).unwrap();
+    relink_found_adrs(
+        state,
+        &operation,
+        &execution,
+        &mut crate::OperationFacts::default(),
+    )
+    .unwrap();
     record_ingest_metrics(
         state,
         job.id,

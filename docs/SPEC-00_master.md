@@ -151,6 +151,7 @@ EvidenceRef { repo, path, span(byte_start, byte_end), commit_sha }
 
 ### 4.4 Store choice
 - **Primary: SQLite/WAL** node/edge tables + **recursive CTE** traversal behind a `GraphStore` trait. *Amended at M0 per ADR-0008: the Kuzu verify-at-build found upstream archived (Apple acquisition, 2025-10-10); the planned fallback is promoted to primary. A Kuzu-fork adapter behind the same trait is the escape hatch if the OQ-3 benchmark demands it.*
+- **Fact identity in the store:** a node is keyed by its `id`; an edge by `(src, dst, label)`. An extraction that emits one key several times — the same relation cited from several call or import sites, or distinct declarations that share an id — is collapsed to one stored fact, the last occurrence in deterministic extraction order supplying its props and evidence. Ingest summaries quote the distinct facts the whole operation published (the union across its repos plus BACKS stitching and found-ADR relinking) and report the collapsed occurrences (merged nodes/edges, node identity collisions) explicitly (AC-0195, #242).
 - ~~Primary: Kuzu~~ — archived upstream; see ADR-0008.
 - **Analytical: DuckDB** (optional) for fact-level aggregate queries (e.g., "endpoints with no inbound FETCHES").
 

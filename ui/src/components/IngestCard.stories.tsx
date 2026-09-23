@@ -46,6 +46,7 @@ export const WithSummary: Story = {
       files: 12,
       nodes: 84,
       edges: 141,
+      merged: { nodes: 0, edges: 0, node_collisions: 0 },
       layers: {
         ts: { files: 8, nodes: 50, edges: 90 },
         python: { files: 0, nodes: 0, edges: 0 },
@@ -63,6 +64,29 @@ export const WithSummary: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId('tools-layer-summary').textContent).toBe(
       '3 configs · 6 nodes · 5 edges',
+    );
+    // AC-0196: nothing merged, so no merge line.
+    await expect(canvas.queryByTestId('merged-summary')).toBeNull();
+  },
+};
+
+// AC-0196 (#242): totals are the distinct facts stored; what was collapsed to
+// reach them is stated next to the totals.
+export const MergedOccurrencesAreStated: Story = {
+  args: {
+    summary: {
+      job_id: 9,
+      files: 49,
+      nodes: 524,
+      edges: 764,
+      merged: { nodes: 4, edges: 8, node_collisions: 3 },
+      layers: { ...EMPTY_LAYERS, java: { files: 49, nodes: 523, edges: 764 } },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId('merged-summary').textContent).toBe(
+      'Merged: 8 repeated relation sites · 4 repeated node ids · 3 identity collisions (distinct declarations sharing one id)',
     );
   },
 };
