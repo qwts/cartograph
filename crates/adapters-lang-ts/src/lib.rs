@@ -2951,52 +2951,15 @@ fn next_pages_screens(out: &mut Extraction, id: &SourceId) {
 /// covered when extraction actually recovered its facts; classification and
 /// extraction cannot disagree by construction.
 pub fn eval_coverage(root: &Path, id: &SourceId) -> Result<Vec<EvalSite>, ExtractError> {
-    Ok(
-        eval_coverage_with_progress(root, id, &mut |_| std::ops::ControlFlow::Continue(()))?
-            .expect("a callback that never breaks runs to completion"),
-    )
-}
-
-/// One file about to be parsed by [`eval_coverage_with_progress`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EvalScanStep<'a> {
-    /// Repo-relative path of the file about to be parsed.
-    pub path: &'a str,
-    /// Files already parsed before this one.
-    pub done: usize,
-    /// Files in the whole walk.
-    pub total: usize,
-}
-
-/// [`eval_coverage`] with a per-file hook that runs before each parse. The
-/// walk parses every TS/JS file, so on a large repo it is the slow half of
-/// preflight (#235): the hook lets the host report live progress and stop
-/// early. Returns `Ok(None)` when the hook breaks — a partial site list is
-/// never returned, because a missing claim would reopen a covered finding.
-pub fn eval_coverage_with_progress(
-    root: &Path,
-    id: &SourceId,
-    on_file: &mut dyn FnMut(EvalScanStep<'_>) -> std::ops::ControlFlow<()>,
-) -> Result<Option<Vec<EvalSite>>, ExtractError> {
     let mut files = Vec::new();
     collect_ts_files(root, root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
-    let total = files.len();
     let mut out = Vec::new();
-    for (done, rel) in files.iter().enumerate() {
-        if on_file(EvalScanStep {
-            path: rel,
-            done,
-            total,
-        })
-        .is_break()
-        {
-            return Ok(None);
-        }
+    for rel in &files {
         let source = std::fs::read(root.join(rel))?;
         out.extend(extract_source(&source, rel, id)?.eval_sites);
     }
-    Ok(Some(out))
+    Ok(out)
 }
 
 fn collect_ts_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {

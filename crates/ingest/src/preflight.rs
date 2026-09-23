@@ -267,6 +267,21 @@ pub enum EvalProof {
     Dynamic,
 }
 
+/// Where a scan's `inline-eval` classification comes from (#214, #243).
+#[derive(Debug, Clone, Copy)]
+pub enum EvalProofSource<'a> {
+    /// Before recovery: nothing has parsed the sources yet, so every textual
+    /// `eval(`/`new Function(` hit is reported as Unsupported *pending* the
+    /// adapter's AST proof — never closed and never silently dropped. The
+    /// AST proof is a full TS parse, too slow to run twice on first contact
+    /// (#243), so recovery supplies it instead.
+    PendingRecovery,
+    /// The adapter's claims from an actual extraction: proven sites close,
+    /// const-shaped-but-unproven ones downgrade to potential Gaps, and the
+    /// rest stay Unsupported (AC-0099).
+    Claims(&'a [EvalSiteCoverage]),
+}
+
 /// One file about to be read by [`preflight_scan`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanStep<'a> {
@@ -307,20 +322,23 @@ pub fn preflight_with_coverage(
     plugins: &[PluginCoverage],
     eval_sites: &[EvalSiteCoverage],
 ) -> std::io::Result<PreflightReport> {
-    Ok(preflight_scan(root, plugins, eval_sites, &mut |_| {
-        std::ops::ControlFlow::Continue(())
-    })?
+    Ok(preflight_scan(
+        root,
+        plugins,
+        EvalProofSource::Claims(eval_sites),
+        &mut |_| std::ops::ControlFlow::Continue(()),
+    )?
     .expect("a callback that never breaks runs to completion"))
 }
 
-/// [`preflight_with_coverage`] with a per-file hook that runs before each
-/// file is read, so a host can stop the walk within one file (#235). Returns
-/// `Ok(None)` when the hook breaks — never a partial report, because a
-/// missing finding would read as a clean tree.
+/// The preflight scan with an explicit eval-proof source and a per-file hook
+/// that runs before each file is read, so a host can report live progress
+/// and stop early (#235). Returns `Ok(None)` when the hook breaks — never a
+/// partial report, because a missing finding would read as a clean tree.
 pub fn preflight_scan(
     root: &Path,
     plugins: &[PluginCoverage],
-    eval_sites: &[EvalSiteCoverage],
+    eval: EvalProofSource<'_>,
     on_file: &mut dyn FnMut(ScanStep<'_>) -> std::ops::ControlFlow<()>,
 ) -> std::io::Result<Option<PreflightReport>> {
     let mut languages: BTreeMap<String, LanguageDetection> = BTreeMap::new();
@@ -328,6 +346,8 @@ pub fn preflight_scan(
     let mut unsupported = Vec::new();
     let mut potential_gaps = Vec::new();
 
+    // Collect first (same order as the previous single pass) so progress can
+    // name the walk's total.
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -357,8 +377,6 @@ pub fn preflight_scan(
         }
     }
 
-    // Collected first (in the same order as a single pass) so the hook can
-    // name the walk's total.
     let total = files.len();
     for (done, (path, name, rel)) in files.into_iter().enumerate() {
         if on_file(ScanStep {
@@ -401,13 +419,7 @@ pub fn preflight_scan(
             extension.as_str(),
             "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
         ) {
-            scan_source(
-                &path,
-                &rel,
-                eval_sites,
-                &mut unsupported,
-                &mut potential_gaps,
-            )?;
+            scan_source(&path, &rel, eval, &mut unsupported, &mut potential_gaps)?;
         }
         let plugin_claim = plugins
             .iter()
@@ -488,7 +500,7 @@ pub fn preflight_scan(
 fn scan_source(
     path: &Path,
     rel: &str,
-    eval_sites: &[EvalSiteCoverage],
+    eval: EvalProofSource<'_>,
     unsupported: &mut Vec<PatternFinding>,
     potential_gaps: &mut Vec<PatternFinding>,
 ) -> std::io::Result<()> {
@@ -499,7 +511,20 @@ fn scan_source(
         let line_no = (index + 1) as u64;
         let has_eval = line.contains("eval(");
         let has_new_function = line.contains("new Function(");
-        if has_eval || has_new_function {
+        if (has_eval || has_new_function) && matches!(eval, EvalProofSource::PendingRecovery) {
+            let message = if has_eval {
+                "inline eval() — pending AST proof at recovery: closes if its \
+                 argument proves to a literal, becomes a potential Gap if \
+                 const-shaped but unproven, otherwise stays Unsupported"
+            } else {
+                "new Function() — pending AST proof at recovery: closes if its \
+                 body proves to a literal, becomes a potential Gap if \
+                 const-shaped but unproven, otherwise stays Unsupported"
+            };
+            unsupported.push(finding("inline-eval", rel, line_no, message));
+        } else if let (true, EvalProofSource::Claims(eval_sites)) =
+            (has_eval || has_new_function, eval)
+        {
             // The adapter's AST claims refine the textual hit (#214); both
             // dynamic-code constructs share one claim pool per line,
             // worst-wins: one unproven site keeps the line flagged even
@@ -920,16 +945,54 @@ mod tests {
     }
 
     #[test]
+    fn eval_sites_stay_pending_until_recovery_supplies_the_proof() {
+        // AC-0199 (#243): before recovery no AST proof exists, so every
+        // textual eval()/new Function() line is reported Unsupported and
+        // marked pending — a proven literal is not claimed closed, and no
+        // line is dropped.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            "src/app.ts",
+            concat!(
+                "eval('function f() {}');\n",
+                "eval(CODE);\n",
+                "new Function('return 1');\n",
+            ),
+        );
+        let report = preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |_| {
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap()
+        .expect("an uninterrupted scan completes");
+        let pending: Vec<u64> = report
+            .unsupported
+            .iter()
+            .filter(|f| f.kind == "inline-eval")
+            .inspect(|f| assert!(f.message.contains("pending AST proof at recovery")))
+            .map(|f| f.line)
+            .collect();
+        assert_eq!(pending, vec![1, 2, 3]);
+        assert!(
+            report
+                .potential_gaps
+                .iter()
+                .all(|f| f.kind != "inline-eval")
+        );
+    }
+
+    #[test]
     fn scan_hook_reports_each_file_and_stops_without_a_partial_report() {
-        // AC-0198 (#235 review): the report walk announces each file before
-        // reading it, so a cancel stops it within one file, and a break
-        // returns no report.
+        // AC-0197/AC-0198 (#235): the walk announces each file with its
+        // position before reading it, so a cancel stops it within one file,
+        // and a break returns no report.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, "a.ts", "export const a = 1;\n");
         write(root, "b.ts", "export const b = 1;\n");
         let mut seen = Vec::new();
-        preflight_scan(root, &[], &[], &mut |step| {
+        preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |step| {
             seen.push((step.path.to_string(), step.done, step.total));
             std::ops::ControlFlow::Continue(())
         })
@@ -940,7 +1003,7 @@ mod tests {
             vec![("a.ts".to_string(), 0, 2), ("b.ts".to_string(), 1, 2)]
         );
         let mut announced = 0;
-        let stopped = preflight_scan(root, &[], &[], &mut |_| {
+        let stopped = preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |_| {
             announced += 1;
             std::ops::ControlFlow::Break(())
         })
