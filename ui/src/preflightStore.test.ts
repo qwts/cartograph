@@ -87,4 +87,27 @@ describe('preflight progress and cancellation (AC-0197/AC-0198, #235)', () => {
     expect(state.preflightError).toBeNull();
     expect(state.preflightBusy).toBe(false);
   });
+
+  it('cancels a running local scan when the source switches to GitHub', async () => {
+    const commands: string[] = [];
+    let reject: (reason: string) => void = () => {};
+    mockIPC((command) => {
+      commands.push(command);
+      if (command === 'cancel_preflight') {
+        reject('cancelled');
+        return null;
+      }
+      return new Promise((_resolve, fail) => { reject = fail; });
+    });
+    const local = useAppStore.getState().runPreflight();
+    useAppStore.setState({ ingestSource: 'github' });
+    await useAppStore.getState().runPreflight();
+    await local;
+
+    expect(commands).toEqual(['preflight', 'cancel_preflight']);
+    const state = useAppStore.getState();
+    expect(state.preflightBusy).toBe(false);
+    expect(state.preflightError).toBeNull();
+    expect(state.preflight).toBeNull();
+  });
 });
