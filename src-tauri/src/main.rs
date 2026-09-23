@@ -1743,42 +1743,61 @@ const PREFLIGHT_CANCELLED: &str = "cancelled";
 /// (#434 review); `writes` serializes register writes.
 #[derive(Default)]
 struct PreflightRuns {
-    current: Mutex<Option<Arc<AtomicBool>>>,
+    current: Mutex<RunsState>,
     writes: Mutex<()>,
+}
+
+#[derive(Default)]
+struct RunsState {
+    run: Option<Arc<AtomicBool>>,
+    /// Orders preflight starts against recovery reconciliations.
+    epoch: u64,
+    /// The epoch of each repo's latest recovery reconciliation (#439
+    /// review): a preflight begun before it holds only pending findings and
+    /// must not overwrite the proven classification.
+    reconciled: std::collections::BTreeMap<String, u64>,
 }
 
 /// One registered preflight: cancelled when the user cancels or a newer
 /// preflight supersedes it.
-struct PreflightToken(Arc<AtomicBool>);
+struct PreflightToken {
+    cancelled: Arc<AtomicBool>,
+    epoch: u64,
+}
 
 impl PreflightToken {
     fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.cancelled.load(Ordering::SeqCst)
     }
 }
 
 impl PreflightRuns {
+    fn current(&self) -> Result<std::sync::MutexGuard<'_, RunsState>, String> {
+        self.current.lock().map_err(|e| e.to_string())
+    }
+
     fn begin(&self) -> Result<PreflightToken, String> {
-        let flag = Arc::new(AtomicBool::new(false));
-        let previous = self
-            .current
-            .lock()
-            .map_err(|e| e.to_string())?
-            .replace(flag.clone());
-        if let Some(previous) = previous {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut current = self.current()?;
+        current.epoch += 1;
+        if let Some(previous) = current.run.replace(cancelled.clone()) {
             previous.store(true, Ordering::SeqCst);
         }
-        Ok(PreflightToken(flag))
+        Ok(PreflightToken {
+            cancelled,
+            epoch: current.epoch,
+        })
     }
 
     fn cancel(&self) -> Result<(), String> {
-        if let Some(current) = self.current.lock().map_err(|e| e.to_string())?.as_ref() {
-            current.store(true, Ordering::SeqCst);
+        if let Some(run) = self.current()?.run.as_ref() {
+            run.store(true, Ordering::SeqCst);
         }
         Ok(())
     }
 
-    /// Run `persist` only if `token` is still live, holding the write lock
+    /// Run `persist` only if `token` is still live and no recovery has
+    /// reconciled `repo` since the token began, holding the write lock
     /// across the check and the write, so register writes never interleave.
     /// A superseding preflight's write therefore always lands after an older
     /// one it raced (#434 review). A cancel never waits here: one that lands
@@ -1788,13 +1807,37 @@ impl PreflightRuns {
     fn persist_if_current<T>(
         &self,
         token: &PreflightToken,
+        repo: &str,
         persist: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
         let _writes = self.writes.lock().map_err(|e| e.to_string())?;
-        if token.is_cancelled() {
+        let reconciled_since = self
+            .current()?
+            .reconciled
+            .get(repo)
+            .is_some_and(|epoch| *epoch > token.epoch);
+        if token.is_cancelled() || reconciled_since {
             return Err(PREFLIGHT_CANCELLED.into());
         }
         persist()
+    }
+
+    /// Recovery's reconciliation write (AC-0200): serialized with preflight
+    /// writes and recorded, so a preflight already running for `repo` can
+    /// never replace the proven classification with its pending one (#439
+    /// review). A preflight begun afterwards is newer and still wins.
+    fn reconcile<T>(
+        &self,
+        repo: &str,
+        persist: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _writes = self.writes.lock().map_err(|e| e.to_string())?;
+        let written = persist()?;
+        let mut current = self.current()?;
+        current.epoch += 1;
+        let epoch = current.epoch;
+        current.reconciled.insert(repo.to_string(), epoch);
+        Ok(written)
     }
 }
 
@@ -1886,7 +1929,9 @@ fn preflight_blocking<R: tauri::Runtime>(
     .ok_or(PREFLIGHT_CANCELLED)?;
     // A stopped scan must not replace the register with a result the user
     // abandoned.
-    runs.persist_if_current(token, || persist_preflight_findings(state, &repo, &report))?;
+    runs.persist_if_current(token, &repo, || {
+        persist_preflight_findings(state, &repo, &report)
+    })?;
     Ok(report)
 }
 
@@ -1931,9 +1976,16 @@ fn persist_preflight_findings(
 /// Proven literals close, const-shaped-but-unproven sites downgrade to
 /// potential Gaps, and the rest stay Unsupported — replacing preflight's
 /// pending findings in the register.
+///
+/// The scan reads each captured file from `capture`, the exact bytes the
+/// claims were proven on, so an edit made after capture cannot pair a claim
+/// with different code (#439 review). The write goes through `runs`, so a
+/// preflight already in flight cannot overwrite it afterwards.
 fn reconcile_preflight_findings(
     state: &AppState,
+    runs: &PreflightRuns,
     root: &std::path::Path,
+    capture: Option<&source_capture::Capture>,
     repo: &str,
     plugins: &[ingest::preflight::PluginCoverage],
     eval_sites: &[adapters_lang_ts::EvalSite],
@@ -1952,9 +2004,25 @@ fn reconcile_preflight_findings(
             },
         })
         .collect();
-    let report = ingest::preflight::preflight_with_coverage(root, plugins, &claims)
-        .map_err(|e| e.to_string())?;
-    persist_preflight_findings(state, repo, &report)
+    let captured = |rel: &str| {
+        capture
+            .and_then(|capture| capture.file(rel).ok())
+            .map(|file| file.bytes())
+    };
+    let eval = match capture {
+        Some(_) => ingest::preflight::EvalProofSource::Captured {
+            sites: &claims,
+            bytes: &captured,
+        },
+        // Uncaptured extraction read the live tree itself.
+        None => ingest::preflight::EvalProofSource::Claims(&claims),
+    };
+    let report = ingest::preflight::preflight_scan(root, plugins, eval, &mut |_| {
+        std::ops::ControlFlow::Continue(())
+    })
+    .map_err(|e| e.to_string())?
+    .ok_or("the reconciliation scan never stops early")?;
+    runs.reconcile(repo, || persist_preflight_findings(state, repo, &report))
 }
 
 /// All configurable tier settings (T0 is always on and absent by design).
@@ -2817,7 +2885,9 @@ fn run_ingest<R: tauri::Runtime>(
     cancelled()?;
     reconcile_preflight_findings(
         state,
+        &app.state::<PreflightRuns>(),
         root,
+        primary.capture.as_ref(),
         &repo,
         &plugin_coverage(&active_plugins),
         &extraction.eval_sites,
@@ -6812,10 +6882,22 @@ export function App() {
         );
         assert_eq!(register_eval_lines(), vec![3, 4, 5, 7, 8]);
 
+        // A preflight already running when recovery starts (#439 review).
+        let runs = app.state::<super::PreflightRuns>();
+        let in_flight = runs.begin().unwrap();
+
         let source = super::register_local_source(&state, &project).unwrap();
         let operation = super::source_operation(&state, vec![(source.clone(), false)]).unwrap();
         let (_, execution) = super::start_job(&state, &source.ingest_job_kind()).unwrap();
         super::run_ingest(&source, &operation, &execution, &handle, &state).unwrap();
+        drop(operation);
+        assert_eq!(register_eval_lines(), vec![5, 7]);
+
+        // It finishes after recovery: its pending findings must not replace
+        // the proven classification.
+        let stale =
+            super::preflight_blocking(&path_arg, &handle, &state, &runs, &in_flight, &mut |_| {});
+        assert_eq!(stale.unwrap_err(), super::PREFLIGHT_CANCELLED);
 
         assert_eq!(
             register_eval_lines(),
@@ -7035,6 +7117,30 @@ export function App() {
     }
 
     #[test]
+    fn recovery_fences_only_older_preflights_of_its_repo() {
+        // AC-0200 (#439 review): a reconciliation refuses preflights of the
+        // same repo that began before it; other repos and later preflights
+        // are unaffected, and a failed reconciliation fences nothing.
+        let runs = super::PreflightRuns::default();
+        let older = runs.begin().unwrap();
+        runs.reconcile("repo", || Ok(())).unwrap();
+        let write = |token: &super::PreflightToken, repo: &str| {
+            runs.persist_if_current(token, repo, || Ok(()))
+        };
+        assert_eq!(
+            write(&older, "repo").unwrap_err(),
+            super::PREFLIGHT_CANCELLED
+        );
+        assert!(write(&older, "other").is_ok());
+        let newer = runs.begin().unwrap();
+        assert!(write(&newer, "repo").is_ok());
+
+        runs.reconcile("other", || Err::<(), _>("disk full".to_string()))
+            .unwrap_err();
+        assert!(write(&newer, "other").is_ok());
+    }
+
+    #[test]
     fn cancel_never_waits_on_persistence() {
         // AC-0198 (#434 review): `cancel_preflight` is synchronous, so it
         // must not block on a register write in progress; a cancel that
@@ -7043,7 +7149,7 @@ export function App() {
         let runs = std::sync::Arc::new(super::PreflightRuns::default());
         let token = runs.begin().unwrap();
         let (cancelled_tx, cancelled_rx) = mpsc::channel();
-        runs.persist_if_current(&token, || {
+        runs.persist_if_current(&token, "repo", || {
             let runs = runs.clone();
             std::thread::spawn(move || {
                 runs.cancel().unwrap();
@@ -7056,7 +7162,7 @@ export function App() {
         .unwrap();
 
         let mut wrote = false;
-        let late = runs.persist_if_current(&token, || {
+        let late = runs.persist_if_current(&token, "repo", || {
             wrote = true;
             Ok(())
         });
@@ -7079,13 +7185,13 @@ export function App() {
             std::thread::spawn(move || {
                 inside_rx.recv().unwrap();
                 let newer = runs.begin().unwrap();
-                runs.persist_if_current(&newer, || {
+                runs.persist_if_current(&newer, "repo", || {
                     assert!(!writing.load(Ordering::SeqCst), "writes interleaved");
                     Ok(())
                 })
             })
         };
-        runs.persist_if_current(&older, || {
+        runs.persist_if_current(&older, "repo", || {
             writing.store(true, Ordering::SeqCst);
             inside_tx.send(()).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(100));

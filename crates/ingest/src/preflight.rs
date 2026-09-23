@@ -268,7 +268,7 @@ pub enum EvalProof {
 }
 
 /// Where a scan's `inline-eval` classification comes from (#214, #243).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub enum EvalProofSource<'a> {
     /// Before recovery: nothing has parsed the sources yet, so every textual
     /// `eval(`/`new Function(` hit is reported as Unsupported *pending* the
@@ -280,6 +280,40 @@ pub enum EvalProofSource<'a> {
     /// const-shaped-but-unproven ones downgrade to potential Gaps, and the
     /// rest stay Unsupported (AC-0099).
     Claims(&'a [EvalSiteCoverage]),
+    /// [`Self::Claims`] read against the exact bytes the extraction proved
+    /// them on (#439 review): a JS/TS file the lookup returns is scanned
+    /// from those bytes instead of the live tree, so an edit made after
+    /// capture can never inherit a stale claim at the same path and line.
+    /// A file the lookup lacks was never extracted, has no claims, and is
+    /// read live — its eval lines stay Unsupported.
+    Captured {
+        /// The adapter's claims from extracting `bytes`.
+        sites: &'a [EvalSiteCoverage],
+        /// Retained source bytes by repo-relative path.
+        bytes: &'a dyn Fn(&str) -> Option<&'a [u8]>,
+    },
+}
+
+impl std::fmt::Debug for EvalProofSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PendingRecovery => f.write_str("PendingRecovery"),
+            Self::Claims(sites) => f.debug_tuple("Claims").field(sites).finish(),
+            Self::Captured { sites, .. } => f
+                .debug_struct("Captured")
+                .field("sites", sites)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+impl<'a> EvalProofSource<'a> {
+    fn claims(self) -> Option<&'a [EvalSiteCoverage]> {
+        match self {
+            Self::PendingRecovery => None,
+            Self::Claims(sites) | Self::Captured { sites, .. } => Some(sites),
+        }
+    }
 }
 
 /// One file about to be read by [`preflight_scan`].
@@ -504,7 +538,19 @@ fn scan_source(
     unsupported: &mut Vec<PatternFinding>,
     potential_gaps: &mut Vec<PatternFinding>,
 ) -> std::io::Result<()> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let captured = match eval {
+        EvalProofSource::Captured { bytes, .. } => bytes(rel),
+        _ => None,
+    };
+    let text = match captured {
+        Some(bytes) => std::str::from_utf8(bytes)
+            .ok()
+            .map(std::borrow::Cow::Borrowed),
+        None => std::fs::read_to_string(path)
+            .ok()
+            .map(std::borrow::Cow::Owned),
+    };
+    let Some(text) = text else {
         return Ok(()); // non-UTF-8 source: nothing to scan
     };
     for (index, line) in text.lines().enumerate() {
@@ -522,9 +568,7 @@ fn scan_source(
                  const-shaped but unproven, otherwise stays Unsupported"
             };
             unsupported.push(finding("inline-eval", rel, line_no, message));
-        } else if let (true, EvalProofSource::Claims(eval_sites)) =
-            (has_eval || has_new_function, eval)
-        {
+        } else if let (true, Some(eval_sites)) = (has_eval || has_new_function, eval.claims()) {
             // The adapter's AST claims refine the textual hit (#214); both
             // dynamic-code constructs share one claim pool per line,
             // worst-wins: one unproven site keeps the line flagged even
@@ -729,6 +773,65 @@ mod tests {
                 .potential_gaps
                 .iter()
                 .all(|f| f.detector == DETECTOR_ID)
+        );
+    }
+
+    #[test]
+    fn captured_claims_reconcile_against_the_proven_bytes_not_the_live_tree() {
+        // AC-0200 (#439 review): the claims were proven on the captured
+        // bytes, and the register must describe that same snapshot. After
+        // capture the live file loses its dynamic eval and gains a literal
+        // one on a line the claims never saw.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "src/app.ts", "const a = 1;\neval('x()');\n");
+        write(root, "src/new.ts", "eval(later());\n");
+        let captured: &[u8] = b"eval(getCode());\neval(CODE);\n";
+        let claim = |line: u64, proof: EvalProof| EvalSiteCoverage {
+            path: "src/app.ts".into(),
+            line,
+            proof,
+        };
+        let claims = [
+            claim(1, EvalProof::Dynamic),
+            claim(2, EvalProof::ConstUnproven),
+        ];
+        let lines = |findings: &[PatternFinding]| -> Vec<(String, u64)> {
+            findings
+                .iter()
+                .filter(|f| f.kind == "inline-eval")
+                .map(|f| (f.path.clone(), f.line))
+                .collect()
+        };
+
+        // Scanning the live tree applies the claims to bytes they were not
+        // proven on: the recovered dynamic eval (line 1) vanishes from the
+        // register, and the new literal inherits line 2's const claim.
+        let live = preflight_with_coverage(root, &[], &claims).unwrap();
+        assert_eq!(lines(&live.unsupported), vec![("src/new.ts".into(), 1)]);
+        assert_eq!(lines(&live.potential_gaps), vec![("src/app.ts".into(), 2)]);
+
+        let bytes = |rel: &str| (rel == "src/app.ts").then_some(captured);
+        let report = preflight_scan(
+            root,
+            &[],
+            EvalProofSource::Captured {
+                sites: &claims,
+                bytes: &bytes,
+            },
+            &mut |_| std::ops::ControlFlow::Continue(()),
+        )
+        .unwrap()
+        .unwrap();
+        // The captured snapshot: line 1 dynamic, line 2 a const-shaped Gap.
+        // A file outside the capture has no claims and stays Unsupported.
+        assert_eq!(
+            lines(&report.unsupported),
+            vec![("src/app.ts".into(), 1), ("src/new.ts".into(), 1)]
+        );
+        assert_eq!(
+            lines(&report.potential_gaps),
+            vec![("src/app.ts".into(), 2)]
         );
     }
 
