@@ -550,9 +550,17 @@ fn emit_eval_extraction(
     // empty: `import`/`export` are syntax errors inside an eval'd script or
     // a function body, and every cross-file/Pulumi proof requires them.
     // inner.eval_sites are dropped too — their lines index the synthetic
-    // source — but a nested unproven site downgrades this site's own claim,
-    // so preflight keeps the potential-Gap finding the recovery just emitted.
+    // source — but the worst nested claim becomes this site's own (#476):
+    // a nested dynamic site keeps the line's Unsupported finding, a nested
+    // unproven one the potential-Gap finding the recovery just emitted. The
+    // facts recovered from the proven outer code stay Confirmed either way.
     let claim = if inner
+        .eval_sites
+        .iter()
+        .any(|site| site.proof == EvalProof::Dynamic)
+    {
+        EvalProof::Dynamic
+    } else if inner
         .eval_sites
         .iter()
         .any(|site| site.proof == EvalProof::ConstUnproven)

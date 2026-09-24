@@ -1935,6 +1935,34 @@ fn nested_const_unproven_eval_downgrades_the_outer_claim_and_rehashes() {
     }
 }
 
+// #476: claims combine worst-wins across nesting. A proven outer eval whose
+// code holds a dynamic eval is claimed Dynamic, so preflight keeps the line's
+// Unsupported finding — also when a const-unproven site sits beside it — while
+// the facts recovered from the proven outer code stay Confirmed T0.
+// (AC-0212, T-0212)
+#[test]
+fn nested_dynamic_eval_makes_the_outer_claim_dynamic() {
+    let src = "export function run(x: string) {\n  eval(\"function inner() {} eval(x + 1);\");\n  eval(\"eval(CODE); eval(build());\");\n  eval(\"eval(CODE);\");\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/dyn.ts", &id()).unwrap();
+    let claims: Vec<(u64, EvalProof)> = ex.eval_sites.iter().map(|s| (s.line, s.proof)).collect();
+    assert_eq!(
+        claims,
+        vec![
+            (2, EvalProof::Dynamic),
+            (3, EvalProof::Dynamic),
+            (4, EvalProof::ConstUnproven),
+        ]
+    );
+    let outer = src.find("eval(\"").unwrap();
+    let inner = ex
+        .nodes
+        .iter()
+        .find(|n| n.id == format!("sym:qwtm/example@src/dyn.ts#eval@{outer}.inner"))
+        .expect("the proven outer code's facts are still recovered");
+    assert_eq!(inner.props["via"], "eval");
+    assert_eq!(inner.props["prov"]["confidence_tier"], "Confirmed");
+}
+
 // A top-level site has no enclosing symbol: the File owns the Gap. A
 // `new Function` with several unproven arguments cites every one of them,
 // while proven literal arguments are not cited. (AC-0201, T-0201)
