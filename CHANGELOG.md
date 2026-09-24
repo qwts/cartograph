@@ -1,5 +1,12 @@
 # cartograph
 
+## 0.15.1
+
+### Patch Changes
+
+- 3916aef: The exported Gap register stays readable on large systems. Past 12 gaps, `gap_register.md` groups gaps by cause (stop reason × extractor, largest first) and shows up to 5 representative instances for each of at most 50 classes. Every omitted instance or class is stated as a counted "N more" line. A new `gap_register.json` sidecar lists every instance by class, and each instance keeps its full provenance in the bundle. On a VSCode checkout the Markdown drops from 105 MB to under 100 KB.
+- 3d9f084: GitHub and system-manifest recoveries now write their preflight findings to the register, as local recoveries already did. Each recovered repo's dynamic `eval()` / `new Function()` sites, uncovered languages and other unsupported constructs show up as Unsupported findings, reconciled with that recovery's own proof. A failed or cancelled recovery writes nothing.
+
 ## 0.15.0
 
 ### Minor Changes
