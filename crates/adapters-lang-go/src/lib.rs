@@ -448,17 +448,30 @@ fn replace_target_dir(root: &Path, from: &str, target: &str) -> Option<String> {
         .map(|_| dir)
 }
 
-/// Every module the repository itself provides, as `(module path,
-/// repo-relative directory)`: each `go.mod` (nested modules included) plus
-/// each `replace … => ./local` target, whose directory is resolved against
-/// its declaring `go.mod` (`None` when it leaves the repository). An import
-/// beneath one of these is inside the system.
-fn repo_modules(root: &Path) -> Result<Vec<(String, Option<String>)>, ExtractError> {
+/// The modules the repository itself provides (#237, #477).
+#[derive(Debug, Default)]
+struct RepoModules {
+    /// `(module path, repo-relative directory)`: each `go.mod` (nested
+    /// modules included) plus each `replace … => ./local` target, whose
+    /// directory is resolved against its declaring `go.mod` (`None` when it
+    /// leaves the repository or the replace is version-qualified). An import
+    /// beneath one of these is inside the system.
+    modules: Vec<(String, Option<String>)>,
+    /// Module paths some `replace` qualifies with a version
+    /// (`replace m v1.2.3 => …`). Go applies such a replacement only to that
+    /// version, and no selected version is known here, so nothing — neither
+    /// the replacement target nor an in-repository `go.mod` declaring the
+    /// path — proves which directory provides the module: it is never
+    /// Confirmed internal.
+    version_qualified: BTreeSet<String>,
+}
+
+fn repo_modules(root: &Path) -> Result<RepoModules, ExtractError> {
     let skip = |name: &str| {
         name.starts_with('.')
             || matches!(name, "vendor" | "node_modules" | "dist" | "build" | "bin")
     };
-    let mut out = Vec::new();
+    let mut out = RepoModules::default();
     for file in source_walk::files(root, &skip, source_walk::Gitignores::Honor)? {
         if file.name != "go.mod" {
             continue;
@@ -471,22 +484,30 @@ fn repo_modules(root: &Path) -> Result<Vec<(String, Option<String>)>, ExtractErr
             .unwrap_or_default();
         for line in raw.lines().map(directive) {
             if let Some(module) = line.strip_prefix("module ") {
-                out.push((
+                out.modules.push((
                     module.trim().trim_matches('"').to_string(),
                     Some(dir.clone()),
                 ));
             } else if let Some((from, to)) = line.split_once("=>") {
                 let to = to.trim();
+                let from = from.trim().trim_start_matches("replace").trim();
+                let mut from = from.split_whitespace();
+                let module = from.next().unwrap_or("").trim_matches('"');
+                if module.is_empty() {
+                    continue;
+                }
+                let version_qualified = from.next().is_some();
+                if version_qualified {
+                    out.version_qualified.insert(module.to_string());
+                }
                 if to.starts_with("./") || to.starts_with("../") {
-                    let from = from.trim().trim_start_matches("replace").trim();
-                    let module = from.split_whitespace().next().unwrap_or("");
-                    if !module.is_empty() {
-                        let target = to.split_whitespace().next().unwrap_or(to).trim_matches('"');
-                        out.push((
-                            module.trim_matches('"').to_string(),
-                            replace_target_dir(root, &dir, target),
-                        ));
-                    }
+                    let target = to.split_whitespace().next().unwrap_or(to).trim_matches('"');
+                    out.modules.push((
+                        module.to_string(),
+                        (!version_qualified)
+                            .then(|| replace_target_dir(root, &dir, target))
+                            .flatten(),
+                    ));
                 }
             }
         }
@@ -500,11 +521,13 @@ fn repo_modules(root: &Path) -> Result<Vec<(String, Option<String>)>, ExtractErr
 /// module, in module mode, the import is external — the standard library
 /// when its first element has no dot (Go's reserved stdlib namespace).
 /// Without a root `go.mod` nothing is provable and the import stays a Gap.
+/// A package directory proves nothing unless it, and the Go file found in
+/// it, resolve (symlinks followed) inside the canonical repository root.
 fn classify_import(
     import_path: &str,
     root: &Path,
     module_path: Option<&str>,
-    modules: &[(String, Option<String>)],
+    repo: &RepoModules,
 ) -> Boundary {
     let beneath = |module: &str| {
         import_path == module
@@ -516,15 +539,29 @@ fn classify_import(
     // matching module path); among equal paths an entry carrying a proven
     // directory beats one that does not, so a `go.mod` or an in-repository
     // `replace` target is probed rather than an escaped replacement.
-    if let Some((module, dir)) = modules
+    if let Some((module, dir)) = repo
+        .modules
         .iter()
         .filter(|(module, _)| beneath(module))
         .max_by_key(|(module, dir)| (module.len(), dir.is_some()))
     {
+        // Beneath any version-qualified module path, which module provides
+        // the package depends on the unknown selected version: fail closed.
+        let dir = dir
+            .as_ref()
+            .filter(|_| !repo.version_qualified.iter().any(|pinned| beneath(pinned)));
         // Only plain path elements are probed: an import path spelling
         // `..`, `.`, or an absolute component never leaves the repository
         // and proves no package directory (it stays a Gap).
-        let package_dir = dir.as_ref().and_then(|dir| {
+        let canonical_root = root.canonicalize().ok();
+        let inside = |path: &Path| {
+            path.canonicalize().ok().filter(|resolved| {
+                canonical_root
+                    .as_ref()
+                    .is_some_and(|root| resolved.starts_with(root))
+            })
+        };
+        let package_dir = dir.and_then(|dir| {
             let suffix = import_path[module.len()..].trim_start_matches('/');
             Path::new(suffix)
                 .components()
@@ -532,11 +569,13 @@ fn classify_import(
                 .then(|| root.join(dir).join(suffix))
         });
         let has_go_source = package_dir
+            .and_then(|dir| inside(&dir))
             .and_then(|dir| std::fs::read_dir(dir).ok())
             .is_some_and(|entries| {
                 entries.flatten().any(|entry| {
-                    entry.path().is_file()
-                        && entry.path().extension().and_then(|ext| ext.to_str()) == Some("go")
+                    let path = entry.path();
+                    path.extension().and_then(|ext| ext.to_str()) == Some("go")
+                        && inside(&path).is_some_and(|file| file.is_file())
                 })
             });
         return if has_go_source {
