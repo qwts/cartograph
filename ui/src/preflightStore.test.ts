@@ -243,3 +243,84 @@ describe('preflight progress and cancellation (AC-0197/AC-0198, #235)', () => {
     expect(useAppStore.getState().preflight?.detector).toBe('repo-b');
   });
 });
+
+describe('register-order precedence for preflight reports (AC-0216, #458)', () => {
+  const stamped = (detector: string, repo: string, epoch: number): PreflightReport => ({
+    ...report(detector),
+    register: { repo, epoch },
+  });
+  const summary = (preflight: PreflightReport, preflight_register: unknown) => ({
+    job_id: 1, files: 1, nodes: 0, edges: 0, layers: {}, preflight, preflight_register,
+  });
+
+  it("shows a same-repo recovery's report even when a preflight began while it ran", async () => {
+    let settleRecovery: (value: unknown) => void = () => {};
+    mockIPC((command) =>
+      command === 'ingest_path'
+        ? new Promise((resolve) => { settleRecovery = resolve; })
+        : command === 'preflight'
+          ? stamped('scan', 'local/same', 2)
+          : null,
+    );
+    const recovery = useAppStore.getState().ingest('/repos/same', 'local');
+    await useAppStore.getState().runPreflight();
+    expect(useAppStore.getState().preflight?.detector).toBe('scan');
+
+    // The recovery reconciled after that scan persisted: the register holds
+    // the recovery's classification, so the surface must show it.
+    settleRecovery(summary(report('reconciled'), { repo: 'local/same', epoch: 3 }));
+    await recovery;
+    expect(useAppStore.getState().preflight?.detector).toBe('reconciled');
+  });
+
+  it('never lets an older scan that settles last replace the newer reconciled report', async () => {
+    let settleScan: (value: unknown) => void = () => {};
+    let settleRecovery: (value: unknown) => void = () => {};
+    mockIPC((command) =>
+      command === 'ingest_path'
+        ? new Promise((resolve) => { settleRecovery = resolve; })
+        : command === 'preflight'
+          ? new Promise((resolve) => { settleScan = resolve; })
+          : null,
+    );
+    const recovery = useAppStore.getState().ingest('/repos/late', 'local');
+    const scan = useAppStore.getState().runPreflight();
+    settleRecovery(summary(report('reconciled'), { repo: 'local/late', epoch: 7 }));
+    await recovery;
+    settleScan(stamped('pending', 'local/late', 6));
+    await scan;
+    expect(useAppStore.getState().preflight?.detector).toBe('reconciled');
+  });
+
+  it('keeps the shown report when the recovery wrote nothing over a newer scan', async () => {
+    mockIPC((command) =>
+      command === 'ingest_path' ? summary(report('reconciled'), null) : null,
+    );
+    useAppStore.setState({ preflight: report('newer scan') });
+    await useAppStore.getState().ingest('/repos/app', 'local');
+    expect(useAppStore.getState().preflight?.detector).toBe('newer scan');
+  });
+
+  it("shows a retried recovery's reconciled report and keeps the job row clean", async () => {
+    const job = {
+      id: 41, kind: 'ingest-source-v1:src_fixture', status: 'done', execution_tracking: 'recorded',
+      created_at: 'c', updated_at: 'u', stage: null, progress: 100,
+    };
+    mockIPC((command) =>
+      command === 'retry_job'
+        ? { ...job, recovery: { preflight: report('retried'), preflight_register: { repo: 'local/retry', epoch: 9 } } }
+        : null,
+    );
+    const applyJobEvent = useAppStore.getState().applyJobEvent;
+    const applied: unknown[] = [];
+    useAppStore.setState({ preflight: report('pending'), applyJobEvent: (row) => applied.push(row) });
+    try {
+      await useAppStore.getState().retryJob(41);
+    } finally {
+      useAppStore.setState({ applyJobEvent });
+    }
+
+    expect(useAppStore.getState().preflight?.detector).toBe('retried');
+    expect(applied).toEqual([job]);
+  });
+});

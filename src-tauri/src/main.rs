@@ -778,6 +778,9 @@ struct IngestSummary {
     /// The preflight report reconciled with this recovery's AST proof
     /// (AC-0200), so the Preflight surface can replace its pending view.
     preflight: ingest::preflight::PreflightReport,
+    /// Where that report stands in the register order (#458); `None` when a
+    /// newer preflight's findings were already there, so it wrote nothing.
+    preflight_register: Option<RegisterStamp>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -1779,7 +1782,7 @@ async fn preflight(
     path: String,
     run: u64,
     app: tauri::AppHandle,
-) -> Result<ingest::preflight::PreflightReport, String> {
+) -> Result<PreflightResult, String> {
     start_preflight(path, run, app).await
 }
 
@@ -1794,7 +1797,7 @@ fn start_preflight<R: tauri::Runtime>(
     path: String,
     run: u64,
     app: tauri::AppHandle<R>,
-) -> impl std::future::Future<Output = Result<ingest::preflight::PreflightReport, String>> {
+) -> impl std::future::Future<Output = Result<PreflightResult, String>> {
     let token = app.state::<PreflightRuns>().begin();
     async move {
         let token = token?;
@@ -1837,10 +1840,11 @@ struct RunsState {
     run: Option<Arc<RunState>>,
     /// Orders preflight starts against recovery reconciliations.
     epoch: u64,
-    /// The epoch of each repo's latest recovery reconciliation (#439
-    /// review): a preflight begun before it holds only pending findings and
-    /// must not overwrite the proven classification.
-    reconciled: std::collections::BTreeMap<String, u64>,
+    /// Each repo's latest recovery reconciliation (#439 review): a preflight
+    /// begun before it holds only pending findings and must not overwrite the
+    /// proven classification; it is answered with the reconciled report the
+    /// register holds instead (#458).
+    reconciled: std::collections::BTreeMap<String, Reconciled>,
     /// The epoch of each repo's latest persisted preflight (#497): a
     /// reconciliation whose fence is older must not overwrite it.
     persisted: std::collections::BTreeMap<String, u64>,
@@ -1890,6 +1894,52 @@ struct PreflightToken {
     epoch: u64,
 }
 
+/// A recovery's reconciled report and its epoch in the register order.
+#[derive(Debug)]
+struct Reconciled {
+    epoch: u64,
+    report: Arc<ingest::preflight::PreflightReport>,
+}
+
+/// What a preflight's register write amounted to.
+#[derive(Debug)]
+enum Persisted<T> {
+    /// This run's findings are in the register.
+    Written(T),
+    /// A recovery reconciled the repo after this run began, so the register
+    /// keeps that newer classification (#458).
+    Reconciled {
+        epoch: u64,
+        report: Arc<ingest::preflight::PreflightReport>,
+    },
+}
+
+/// A report's place in its repo's register order (#458). The register holds
+/// the write with the highest epoch, so a surface that keeps, per repo, the
+/// report with the highest epoch it has seen always matches the register.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct RegisterStamp {
+    repo: String,
+    epoch: u64,
+}
+
+/// The `preflight` command's result: the report the register now holds for
+/// the scanned repo, stamped with its place in the register order.
+#[derive(Debug, Serialize)]
+struct PreflightResult {
+    #[serde(flatten)]
+    report: ingest::preflight::PreflightReport,
+    register: RegisterStamp,
+}
+
+impl std::ops::Deref for PreflightResult {
+    type Target = ingest::preflight::PreflightReport;
+
+    fn deref(&self) -> &Self::Target {
+        &self.report
+    }
+}
+
 /// A recovery's place in the preflight order, reserved before the recovery
 /// publishes `done` (#497): once the UI can see the job finished, any
 /// preflight the user starts is newer than the reconciliation it precedes.
@@ -1937,27 +1987,35 @@ impl PreflightRuns {
     /// handed the commit claim to take inside its transaction immediately
     /// before committing (#493): a cancel that landed during the write wins
     /// the claim and rolls the write back, and one that arrives once the
-    /// claim is taken loses — the scan completes and reports its result.
+    /// claim is taken loses — the scan completes and reports its result. A run
+    /// that a recovery reconciled past writes nothing and is answered with
+    /// the reconciled report the register keeps (#458).
     fn persist_if_current<T>(
         &self,
         token: &PreflightToken,
         repo: &str,
         persist: impl FnOnce(&dyn Fn() -> bool) -> Result<T, String>,
-    ) -> Result<T, String> {
+    ) -> Result<Persisted<T>, String> {
         let _writes = self.writes.lock().map_err(|e| e.to_string())?;
-        let reconciled_since = self
+        if token.is_cancelled() {
+            return Err(PREFLIGHT_CANCELLED.into());
+        }
+        if let Some(reconciled) = self
             .current()?
             .reconciled
             .get(repo)
-            .is_some_and(|epoch| *epoch > token.epoch);
-        if token.is_cancelled() || reconciled_since {
-            return Err(PREFLIGHT_CANCELLED.into());
+            .filter(|reconciled| reconciled.epoch > token.epoch)
+        {
+            return Ok(Persisted::Reconciled {
+                epoch: reconciled.epoch,
+                report: reconciled.report.clone(),
+            });
         }
         let written = persist(&|| token.state.claim_commit())?;
         let mut current = self.current()?;
         let latest = current.persisted.entry(repo.to_string()).or_default();
         *latest = (*latest).max(token.epoch);
-        Ok(written)
+        Ok(Persisted::Written(written))
     }
 
     /// Reserve a recovery's reconciliation epoch. Take it before the job is
@@ -1977,28 +2035,43 @@ impl PreflightRuns {
     /// the fence can never replace the proven classification with its pending
     /// one (#439 review). A preflight begun after the fence is newer and wins
     /// either way (#497): if it already persisted, the reconciliation writes
-    /// nothing (`None`); if it persists later, it is not refused.
-    fn reconcile<T>(
+    /// nothing (`None`); if it persists later, it is not refused. A written
+    /// reconciliation returns its register stamp.
+    fn reconcile(
         &self,
         fence: &ReconcileFence,
         repo: &str,
-        persist: impl FnOnce() -> Result<T, String>,
-    ) -> Result<Option<T>, String> {
+        report: &ingest::preflight::PreflightReport,
+        persist: impl FnOnce() -> Result<(), String>,
+    ) -> Result<Option<RegisterStamp>, String> {
         let _writes = self.writes.lock().map_err(|e| e.to_string())?;
         let newer_persisted = self
             .current()?
             .persisted
             .get(repo)
             .is_some_and(|epoch| *epoch > fence.epoch);
-        let written = if newer_persisted {
-            None
-        } else {
-            Some(persist()?)
-        };
+        if newer_persisted {
+            return Ok(None);
+        }
+        persist()?;
         let mut current = self.current()?;
-        let latest = current.reconciled.entry(repo.to_string()).or_default();
-        *latest = (*latest).max(fence.epoch);
-        Ok(written)
+        let newer_reconciled = current
+            .reconciled
+            .get(repo)
+            .is_some_and(|reconciled| reconciled.epoch > fence.epoch);
+        if !newer_reconciled {
+            current.reconciled.insert(
+                repo.to_string(),
+                Reconciled {
+                    epoch: fence.epoch,
+                    report: Arc::new(report.clone()),
+                },
+            );
+        }
+        Ok(Some(RegisterStamp {
+            repo: repo.to_string(),
+            epoch: fence.epoch,
+        }))
     }
 }
 
@@ -2008,7 +2081,7 @@ fn preflight_uncancelled<R: tauri::Runtime>(
     path: &str,
     app: &tauri::AppHandle<R>,
     state: &AppState,
-) -> Result<ingest::preflight::PreflightReport, String> {
+) -> Result<PreflightResult, String> {
     let runs = PreflightRuns::default();
     let token = runs.begin()?;
     preflight_blocking(path, app, state, &runs, &token, &mut |_| {})
@@ -2071,7 +2144,7 @@ fn preflight_blocking<R: tauri::Runtime>(
     runs: &PreflightRuns,
     token: &PreflightToken,
     on_progress: &mut dyn FnMut(ingest::preflight::ScanStep<'_>),
-) -> Result<ingest::preflight::PreflightReport, String> {
+) -> Result<PreflightResult, String> {
     let stopped = || token.is_cancelled();
     let source = register_local_source(state, std::path::Path::new(path))?;
     let operation = SourceOperation::acquire(&state.sources, [(source.clone(), false)])?;
@@ -2098,10 +2171,22 @@ fn preflight_blocking<R: tauri::Runtime>(
     .ok_or(PREFLIGHT_CANCELLED)?;
     // A stopped scan must not replace the register with a result the user
     // abandoned.
-    runs.persist_if_current(token, &repo, |live| {
+    let persisted = runs.persist_if_current(token, &repo, |live| {
         persist_preflight_findings_if(state, &repo, &report, live)
     })?;
-    Ok(report)
+    Ok(match persisted {
+        Persisted::Written(()) => PreflightResult {
+            report,
+            register: RegisterStamp {
+                repo,
+                epoch: token.epoch,
+            },
+        },
+        Persisted::Reconciled { epoch, report } => PreflightResult {
+            report: (*report).clone(),
+            register: RegisterStamp { repo, epoch },
+        },
+    })
 }
 
 fn plugin_coverage(plugins: &[ActivePlugin]) -> Vec<ingest::preflight::PluginCoverage> {
@@ -3171,9 +3256,11 @@ fn run_ingest<R: tauri::Runtime>(
     // Written only once the job has settled as completed, so a cancel that
     // wins the race writes nothing (AC-0200, #489); through the per-repo
     // fence, as GitHub and manifest recoveries do (AC-0209).
-    app.state::<PreflightRuns>().reconcile(&fence, &repo, || {
-        persist_preflight_findings(state, &repo, &preflight)
-    })?;
+    let preflight_register =
+        app.state::<PreflightRuns>()
+            .reconcile(&fence, &repo, &preflight, || {
+                persist_preflight_findings(state, &repo, &preflight)
+            })?;
     Ok(IngestSummary {
         job_id,
         files: layers.files(),
@@ -3183,6 +3270,7 @@ fn run_ingest<R: tauri::Runtime>(
         layers,
         delta,
         preflight,
+        preflight_register,
     })
 }
 
@@ -3252,8 +3340,34 @@ fn cancel_job(id: i64, app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 /// (`ingest-source-v1:*` reuses the content-addressed cache, so a resume recomputes
 /// only what the interrupted run didn't finish — ADR-0014).
 #[tauri::command]
-async fn retry_job(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
+async fn retry_job(id: i64, app: tauri::AppHandle) -> Result<RetriedJob, String> {
     off_ui_thread(move || retry_job_blocking(id, app)).await
+}
+
+/// A retried job's row, plus — for a retried recovery — its reconciled
+/// preflight report, so the Preflight surface receives it exactly as it does
+/// from the recovery command itself (#458).
+#[derive(Serialize)]
+struct RetriedJob {
+    #[serde(flatten)]
+    job: Job,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<RetriedRecovery>,
+}
+
+#[derive(Serialize)]
+struct RetriedRecovery {
+    preflight: ingest::preflight::PreflightReport,
+    preflight_register: Option<RegisterStamp>,
+}
+
+impl From<Job> for RetriedJob {
+    fn from(job: Job) -> Self {
+        Self {
+            job,
+            recovery: None,
+        }
+    }
 }
 
 fn retry_source(state: &AppState, kind: &str) -> Result<Option<RegisteredSource>, String> {
@@ -3305,19 +3419,29 @@ fn prepare_job_retry(
     Ok((job, execution, source, operation))
 }
 
-fn retry_job_blocking(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
+fn retry_job_blocking<R: tauri::Runtime>(
+    id: i64,
+    app: tauri::AppHandle<R>,
+) -> Result<RetriedJob, String> {
     let state = app.state::<AppState>();
     let (job, execution, source, operation) = prepare_job_retry(&state, id)?;
     emit_job(&app, &job);
     let kind = job.kind;
     if let (Some(source), Some(operation)) = (source, operation) {
-        run_ingest(&source, &operation, &execution, &app, &state)?;
-        return state
+        let summary = run_ingest(&source, &operation, &execution, &app, &state)?;
+        let job = state
             .jobs
             .lock()
             .map_err(|e| e.to_string())?
             .get(id)
-            .map_err(|e| e.to_string());
+            .map_err(|e| e.to_string())?;
+        return Ok(RetriedJob {
+            job,
+            recovery: Some(RetriedRecovery {
+                preflight: summary.preflight,
+                preflight_register: summary.preflight_register,
+            }),
+        });
     }
     // A conformance gate re-runs whole (#206 review): the verdict re-binds
     // to whatever bytes are on disk now, which is exactly what a retry
@@ -3325,7 +3449,10 @@ fn retry_job_blocking(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
     if let Some(plugin_id) = kind.strip_prefix("plugin-gate:") {
         plugin_gate_blocking(plugin_id, &execution, &app)?;
         let jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        return jobs.get(id).map_err(|e| e.to_string());
+        return jobs
+            .get(id)
+            .map(RetriedJob::from)
+            .map_err(|e| e.to_string());
     }
     if kind == "noop" {
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
@@ -3334,7 +3461,7 @@ fn retry_job_blocking(id: i64, app: tauri::AppHandle) -> Result<Job, String> {
                 .map_err(|e| e.to_string())?,
         );
         emit_job(&app, &job);
-        return Ok(job);
+        return Ok(job.into());
     }
     // add-repo / add-system re-dispatch needs their pipelines refactored
     // behind the same job-id seam; until then the caller is told explicitly
@@ -3358,6 +3485,8 @@ struct AddRepoSummary {
     /// The clone's preflight report, reconciled with this recovery's eval
     /// proof exactly as a local recovery's is (AC-0209, #446).
     preflight: ingest::preflight::PreflightReport,
+    /// As `IngestSummary::preflight_register` (#458).
+    preflight_register: Option<RegisterStamp>,
 }
 
 /// Clone a GitHub repo (read-only, shallow) and ingest it with its real
@@ -3484,10 +3613,11 @@ fn add_repo_blocking<R: tauri::Runtime>(
     finish_source_operation(&state, &app, &execution, &mut operation)?;
     // Written only once the job has settled as completed, so a cancel that
     // wins the race writes nothing (AC-0209); through the per-repo fence.
-    app.state::<PreflightRuns>()
-        .reconcile(&fence, &source.repo_key, || {
-            persist_preflight_findings(&state, &source.repo_key, &preflight)
-        })?;
+    let preflight_register =
+        app.state::<PreflightRuns>()
+            .reconcile(&fence, &source.repo_key, &preflight, || {
+                persist_preflight_findings(&state, &source.repo_key, &preflight)
+            })?;
     Ok(AddRepoSummary {
         job_id,
         repo: source.repo_key,
@@ -3499,6 +3629,7 @@ fn add_repo_blocking<R: tauri::Runtime>(
         layers,
         delta,
         preflight,
+        preflight_register,
     })
 }
 
@@ -3743,7 +3874,7 @@ fn add_system_blocking<R: tauri::Runtime>(
     // Written only once the job has settled as completed, so a cancel that
     // wins the race writes nothing (AC-0209); through each repo's fence.
     for preflight in &preflights {
-        runs.reconcile(&fence, &preflight.repo, || {
+        runs.reconcile(&fence, &preflight.repo, &preflight.report, || {
             persist_preflight_findings(&state, &preflight.repo, &preflight.report)
         })?;
     }
@@ -7523,7 +7654,7 @@ export function App() {
 
     #[test]
     fn preflight_defers_eval_proof_and_recovery_reconciles_it() {
-        // AC-0099, AC-0199, AC-0200 (#214, #243): preflight no longer runs
+        // AC-0099, AC-0199, AC-0200, AC-0216 (#214, #243, #458): preflight no longer runs
         // the TS extraction, so every textual eval()/new Function() line is
         // reported pending AST proof — including the proven literal, which
         // preflight used to close. Recovery's own extraction then supplies
@@ -7606,10 +7737,14 @@ export function App() {
         assert_eq!(lines(&summary.preflight.potential_gaps), vec![4]);
 
         // It finishes after recovery: its pending findings must not replace
-        // the proven classification.
+        // the proven classification, and it answers with that classification
+        // stamped at the recovery's place in the register order (#458).
         let stale =
-            super::preflight_blocking(&path_arg, &handle, &state, &runs, &in_flight, &mut |_| {});
-        assert_eq!(stale.unwrap_err(), super::PREFLIGHT_CANCELLED);
+            super::preflight_blocking(&path_arg, &handle, &state, &runs, &in_flight, &mut |_| {})
+                .unwrap();
+        assert_eq!(Some(&stale.register), summary.preflight_register.as_ref());
+        assert_eq!(lines(&stale.unsupported), vec![5, 7]);
+        assert_eq!(lines(&stale.potential_gaps), vec![4]);
 
         assert_eq!(
             register_eval_lines(),
@@ -8067,6 +8202,47 @@ export function App() {
     }
 
     #[test]
+    fn a_retried_recovery_returns_its_reconciled_preflight_report() {
+        // AC-0216 (#458): Jobs → Retry re-runs the recovery through
+        // `run_ingest`; the reconciled preflight report and its register
+        // stamp reach the UI with the retried job row, as they do from the
+        // recovery command itself.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("app.ts"), EVAL_FIXTURE).unwrap();
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let source = super::register_local_source(&state, &project).unwrap();
+        let job_id = {
+            let (job, execution) = super::start_job(&state, &source.ingest_job_kind()).unwrap();
+            state.jobs.lock().unwrap().cancel(job.id).unwrap();
+            drop(execution);
+            job.id
+        };
+
+        let retried = super::retry_job_blocking(job_id, handle.clone()).unwrap();
+
+        assert_eq!(retried.job.status, "done");
+        let recovery = retried.recovery.as_ref().expect("the recovery's report");
+        assert_eq!(inline_eval_lines(&recovery.preflight.unsupported), vec![2]);
+        let stamp = recovery.preflight_register.as_ref().unwrap();
+        assert_eq!(stamp.repo, source.repo_key);
+        assert_eq!(
+            preflight_register(&state, &source.repo_key),
+            vec![(2, false)]
+        );
+        let wire = serde_json::to_value(&retried).unwrap();
+        assert_eq!(wire["id"], job_id, "the job row stays flat on the wire");
+        assert_eq!(
+            wire["recovery"]["preflight_register"]["repo"],
+            source.repo_key
+        );
+    }
+
+    #[test]
     fn a_reconcile_fence_orders_before_later_preflights() {
         // AC-0214 (#497): a preflight begun before the fence is refused after
         // the reconciliation; one begun after it wins whether it persists
@@ -8077,7 +8253,7 @@ export function App() {
         runs.persist_if_current(&newer, "repo", |_| Ok(())).unwrap();
         let mut wrote = false;
         let written = runs
-            .reconcile(&fence, "repo", || {
+            .reconcile(&fence, "repo", &Default::default(), || {
                 wrote = true;
                 Ok(())
             })
@@ -8087,18 +8263,28 @@ export function App() {
         let runs = super::PreflightRuns::default();
         let fence = runs.reserve_reconcile().unwrap();
         let later = runs.begin().unwrap();
-        assert_eq!(runs.reconcile(&fence, "repo", || Ok(1)).unwrap(), Some(1));
-        assert!(runs.persist_if_current(&later, "repo", |_| Ok(())).is_ok());
+        let stamp = runs
+            .reconcile(&fence, "repo", &Default::default(), || Ok(()))
+            .unwrap()
+            .unwrap();
+        assert_eq!((stamp.repo.as_str(), stamp.epoch), ("repo", fence.epoch));
+        assert!(matches!(
+            runs.persist_if_current(&later, "repo", |_| Ok(())),
+            Ok(super::Persisted::Written(()))
+        ));
 
         let runs = super::PreflightRuns::default();
         let older = runs.begin().unwrap();
         let fence = runs.reserve_reconcile().unwrap();
-        assert_eq!(runs.reconcile(&fence, "repo", || Ok(1)).unwrap(), Some(1));
-        assert_eq!(
-            runs.persist_if_current(&older, "repo", |_| Ok(()))
-                .unwrap_err(),
-            super::PREFLIGHT_CANCELLED
+        assert!(
+            runs.reconcile(&fence, "repo", &Default::default(), || Ok(()))
+                .unwrap()
+                .is_some()
         );
+        assert!(matches!(
+            runs.persist_if_current(&older, "repo", |_| Ok(())),
+            Ok(super::Persisted::Reconciled { .. })
+        ));
     }
 
     /// A mock app managing the stores a preflight touches, rooted in `dir`.
@@ -8365,22 +8551,25 @@ export function App() {
         let runs = super::PreflightRuns::default();
         let older = runs.begin().unwrap();
         let fence = runs.reserve_reconcile().unwrap();
-        runs.reconcile(&fence, "repo", || Ok(())).unwrap();
-        let write = |token: &super::PreflightToken, repo: &str| {
-            runs.persist_if_current(token, repo, |_| Ok(()))
+        runs.reconcile(&fence, "repo", &Default::default(), || Ok(()))
+            .unwrap();
+        let written = |token: &super::PreflightToken, repo: &str| {
+            matches!(
+                runs.persist_if_current(token, repo, |_| Ok(())),
+                Ok(super::Persisted::Written(()))
+            )
         };
-        assert_eq!(
-            write(&older, "repo").unwrap_err(),
-            super::PREFLIGHT_CANCELLED
-        );
-        assert!(write(&older, "other").is_ok());
+        assert!(!written(&older, "repo"));
+        assert!(written(&older, "other"));
         let newer = runs.begin().unwrap();
-        assert!(write(&newer, "repo").is_ok());
+        assert!(written(&newer, "repo"));
 
         let fence = runs.reserve_reconcile().unwrap();
-        runs.reconcile(&fence, "other", || Err::<(), _>("disk full".to_string()))
-            .unwrap_err();
-        assert!(write(&newer, "other").is_ok());
+        runs.reconcile(&fence, "other", &Default::default(), || {
+            Err("disk full".to_string())
+        })
+        .unwrap_err();
+        assert!(written(&newer, "other"));
     }
 
     #[test]
