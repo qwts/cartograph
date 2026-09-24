@@ -1997,7 +1997,7 @@ fn preflight_blocking<R: tauri::Runtime>(
     // No TS parse here (#243): the eval-site AST proof is a full extraction,
     // and recovery performs exactly that parse moments later. Inline-eval
     // lines are reported pending that proof, and recovery reconciles them
-    // (`reconcile_preflight_findings`) — never claimed closed before then.
+    // (`reconciled_preflight_report`) — never claimed closed before then.
     let report = ingest::preflight::preflight_scan(
         root,
         &plugins,
@@ -2059,29 +2059,15 @@ fn persist_preflight_findings(
 /// the extraction that just ran is the TS adapter's AST proof, so its eval
 /// sites become the claims and the cheap textual scan re-runs with them.
 /// Proven literals close, const-shaped-but-unproven sites downgrade to
-/// potential Gaps, and the rest stay Unsupported — replacing preflight's
-/// pending findings in the register.
+/// potential Gaps, and the rest stay Unsupported.
 ///
 /// The scan reads each captured file from `capture`, the exact bytes the
 /// claims were proven on, so an edit made after capture cannot pair a claim
-/// with different code (#439 review). The write goes through `runs`, so a
-/// preflight already in flight cannot overwrite it afterwards.
-fn reconcile_preflight_findings(
-    state: &AppState,
-    runs: &PreflightRuns,
-    root: &std::path::Path,
-    capture: Option<&source_capture::Capture>,
-    repo: &str,
-    plugins: &[ingest::preflight::PluginCoverage],
-    eval_sites: &[adapters_lang_ts::EvalSite],
-) -> Result<ingest::preflight::PreflightReport, String> {
-    let report = reconciled_preflight_report(root, capture, plugins, eval_sites)?;
-    runs.reconcile(repo, || persist_preflight_findings(state, repo, &report))?;
-    Ok(report)
-}
-
-/// The scan half of `reconcile_preflight_findings`: the claim-reconciled
-/// report, written nowhere.
+/// with different code (#439 review). It writes nothing: every recovery
+/// replaces preflight's pending register findings with this report only once
+/// its job has settled as completed, so a cancel that wins the race writes
+/// nothing, and through `PreflightRuns::reconcile`, so a preflight already in
+/// flight cannot overwrite it afterwards (AC-0200, AC-0209).
 fn reconciled_preflight_report(
     root: &std::path::Path,
     capture: Option<&source_capture::Capture>,
@@ -2807,6 +2793,10 @@ struct JobDetail<'a> {
     detail: &'a str,
 }
 
+/// The `job://detail` a local recovery reports while it reconciles its
+/// preflight findings with the eval proof it just published (AC-0200).
+const RECONCILE_PREFLIGHT_DETAIL: &str = "Reconciling preflight findings";
+
 fn emit_detail<R: tauri::Runtime>(app: &tauri::AppHandle<R>, job_id: i64, detail: &str) {
     let _ = app.emit("job://detail", JobDetail { id: job_id, detail });
 }
@@ -3061,12 +3051,10 @@ fn run_ingest<R: tauri::Runtime>(
     // Only once the graph holds the recovered facts (#439 review): a
     // recovery that fails earlier leaves preflight's pending findings in
     // place instead of closing sites whose facts were never published.
-    let preflight = reconcile_preflight_findings(
-        state,
-        &app.state::<PreflightRuns>(),
+    emit_detail(app, job_id, RECONCILE_PREFLIGHT_DETAIL);
+    let preflight = reconciled_preflight_report(
         root,
         primary.capture.as_ref(),
-        &repo,
         &plugin_coverage(&active_plugins),
         &extraction.eval_sites,
     )
@@ -3075,13 +3063,21 @@ fn run_ingest<R: tauri::Runtime>(
     // A cancel can land at any point after the last check; `finish` is
     // guarded to only transition a running job, so whichever outcome hit
     // the store first wins — read the row back to learn which.
-    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let job = updated_job(
-        jobs.finish_execution(execution, &[format!("graph:{repo}@workdir")])
-            .map_err(|e| e.to_string())?,
-    );
-    emit_job(app, &job);
-    completed_job(&job)?;
+    {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        let job = updated_job(
+            jobs.finish_execution(execution, &[format!("graph:{repo}@workdir")])
+                .map_err(|e| e.to_string())?,
+        );
+        emit_job(app, &job);
+        completed_job(&job)?;
+    }
+    // Written only once the job has settled as completed, so a cancel that
+    // wins the race writes nothing (AC-0200, #489); through the per-repo
+    // fence, as GitHub and manifest recoveries do (AC-0209).
+    app.state::<PreflightRuns>().reconcile(&repo, || {
+        persist_preflight_findings(state, &repo, &preflight)
+    })?;
     Ok(IngestSummary {
         job_id,
         files: layers.files(),
@@ -7517,6 +7513,58 @@ export function App() {
             pending(),
             vec![(1, true)],
             "the unpublished proof closed nothing"
+        );
+    }
+
+    #[test]
+    fn a_local_recovery_cancelled_during_reconciliation_writes_no_preflight_findings() {
+        // AC-0200 (#489): the reconciled findings are written only once the
+        // job has settled as completed. A cancel that lands while the
+        // reconciliation scan runs — after the last cancellation check —
+        // wins the race, so the register keeps preflight's pending findings.
+        use tauri::{Listener, Manager};
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("app.ts"), EVAL_FIXTURE).unwrap();
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        super::preflight_uncancelled(&project.to_string_lossy(), &handle, &state).unwrap();
+        let source = super::register_local_source(&state, &project).unwrap();
+        assert_eq!(
+            preflight_register(&state, &source.repo_key),
+            vec![(1, true), (2, true)]
+        );
+
+        let event_handle = handle.clone();
+        let listener = handle.listen("job://detail", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            if payload["detail"] != super::RECONCILE_PREFLIGHT_DETAIL {
+                return;
+            }
+            let state = event_handle.state::<super::AppState>();
+            state
+                .jobs
+                .lock()
+                .unwrap()
+                .cancel(payload["id"].as_i64().unwrap())
+                .unwrap();
+        });
+        let operation = super::source_operation(&state, vec![(source.clone(), false)]).unwrap();
+        let (_, execution) = super::start_job(&state, &source.ingest_job_kind()).unwrap();
+        let error = super::run_ingest(&source, &operation, &execution, &handle, &state)
+            .err()
+            .unwrap();
+        handle.unlisten(listener);
+
+        assert_eq!(error, "cancelled");
+        let job = state.jobs.lock().unwrap().get(execution.id()).unwrap();
+        assert_eq!(job.status, "cancelled");
+        assert_eq!(
+            preflight_register(&state, &source.repo_key),
+            vec![(1, true), (2, true)],
+            "a cancelled recovery leaves the pending findings untouched"
         );
     }
 
