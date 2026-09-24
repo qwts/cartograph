@@ -13,6 +13,9 @@ workspace = true
 core-graph = { workspace = true }
 core-prov = { workspace = true }
 source-walk = { workspace = true }
+# Strips the Windows `\\?\` verbatim prefix the same way the app layer does
+# (`src-tauri/src/paths.rs`, #225/#341), so roots compare across the boundary.
+dunce = "1"
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 # hcl-edit is the span-preserving parser in the hcl-rs project family

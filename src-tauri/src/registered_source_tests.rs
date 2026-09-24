@@ -1640,3 +1640,29 @@ fn extraction_facts_are_independent_of_checkout_location() {
         .content_hash
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn managed_clone_root_uses_the_same_canonical_form_as_a_local_root() {
+    // AC-0223 (#341): a cloned repo's root — the key its plugin settings and
+    // evidence reads use — derives from the canonicalized app data directory,
+    // so it has the same prefix-free form a local registration gets even when
+    // the app data directory is reached through a symlink.
+    let dir = tempfile::tempdir().unwrap();
+    let real = directory(dir.path(), "real-app-data");
+    let link = dir.path().join("linked-app-data");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let state = app_state(&link);
+    let managed = state
+        .sources
+        .lock()
+        .unwrap()
+        .reserve_managed("https://github.com/fixture/canonical")
+        .unwrap();
+    assert!(managed.root().starts_with(&real), "{:?}", managed.root());
+    std::fs::create_dir_all(managed.root()).unwrap();
+    assert_eq!(
+        crate::paths::canonicalize(managed.root()).unwrap(),
+        managed.root()
+    );
+}

@@ -908,3 +908,56 @@ fn gitignored_trees_are_not_collected() {
     collect_tf_files(dir.path(), &mut files).unwrap();
     assert_eq!(files, ["infra/main.tf"]);
 }
+
+#[test]
+fn iac_canonicalizes_through_the_prefix_free_boundary() {
+    // AC-0223 (#341): the app hands iac roots canonicalized without the
+    // Windows `\\?\` verbatim prefix (`src-tauri/src/paths.rs`). If iac itself
+    // called `std::fs::canonicalize`, its roots would be verbatim on Windows and
+    // `starts_with` against an app-canonical path would fail. This guard keeps
+    // every iac canonicalize site on `dunce`, which is the same passthrough on
+    // Unix, where no fixture can show the prefix.
+    let source = include_str!("lib.rs");
+    let std_calls = source
+        .matches(concat!("std::fs::", "canonicalize("))
+        .count();
+    assert_eq!(std_calls, 0, "iac must canonicalize through dunce");
+    assert!(source.matches("dunce::canonicalize(").count() >= 4);
+}
+
+#[test]
+fn extraction_through_a_symlinked_root_still_expands_local_modules() {
+    // AC-0223 (#341): roots, module ancestors and module sources all resolve
+    // through one canonicalization, so a root reached through a symlink
+    // expands local modules exactly like its canonical path.
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir_all(real.join("modules/queue")).unwrap();
+    std::fs::write(
+        real.join("main.tf"),
+        r#"module "orders" { source = "./modules/queue" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        real.join("modules/queue/main.tf"),
+        r#"resource "aws_sqs_queue" "q" {}"#,
+    )
+    .unwrap();
+    let link = dir.path().join("link");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&real, &link).unwrap();
+
+    let via_link = extract_dir(&link, &id()).unwrap();
+    let direct = extract_dir(&real, &id()).unwrap();
+    let ids = |ex: &Extraction| {
+        ex.nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    assert!(ids(&via_link).contains("res:qwtm/infra@module.orders.aws_sqs_queue.q"));
+    assert_eq!(ids(&via_link), ids(&direct));
+    assert_eq!(terraform_file_count(&link).unwrap(), 2);
+}
