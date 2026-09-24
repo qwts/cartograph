@@ -1678,7 +1678,7 @@ export function run() {
 }
 
 // Unprovable arguments emit no recovered facts, ever — a const-shaped binding
-// that cannot be proven becomes an explicit Gap (T-0201), and interpolated
+// that cannot be proven becomes an explicit Gap (AC-0201, T-0201), and interpolated
 // templates or computed expressions stay dynamic (Unsupported). (T-0099)
 #[test]
 fn unproven_and_interpolated_eval_yield_classification_but_no_facts() {
@@ -1733,7 +1733,7 @@ fn evidence_texts<'a>(src: &'a str, props: &serde_json::Value) -> Vec<&'a str> {
 // #444: a const-shaped eval() argument that cannot be proven to a literal is
 // an explicit Gap node — never Confirmed, never silently dropped — owned by
 // its enclosing symbol through DEPENDS_ON, citing the call and the argument,
-// with an offset-keyed id that is identical across runs. (T-0201)
+// with an offset-keyed id that is identical across runs. (AC-0201, T-0201)
 #[test]
 fn const_unproven_eval_emits_an_explicit_gap_owned_by_its_symbol() {
     let src = "const CODE = load();\nexport function run() {\n  eval(CODE);\n}\n";
@@ -1800,7 +1800,7 @@ fn const_unproven_eval_emits_an_explicit_gap_owned_by_its_symbol() {
 
 // A top-level site has no enclosing symbol: the File owns the Gap. A
 // `new Function` with several unproven arguments cites every one of them,
-// while proven literal arguments are not cited. (T-0201)
+// while proven literal arguments are not cited. (AC-0201, T-0201)
 #[test]
 fn const_unproven_sites_bind_to_file_and_cite_every_unproven_argument() {
     let src = "import { PARAM, BODY } from './parts';\neval(BODY);\nexport function make() {\n  return new Function(PARAM, \"b\", BODY);\n}\n";
