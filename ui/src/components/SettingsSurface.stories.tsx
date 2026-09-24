@@ -351,6 +351,8 @@ export const IngestParallelismChoice: Story = {
     await expect(canvas.getByRole('option', { name: '1 worker (serial)' })).toBeInTheDocument();
     await expect(canvas.getAllByRole('option')).toHaveLength(13);
     await expect(canvas.getByText(/the recovered graph is identical either way/)).toBeInTheDocument();
+    // #478: the 64-worker ceiling on fixed choices is stated, not implied.
+    await expect(canvas.getByText(/at most 64/)).toBeInTheDocument();
     await userEvent.selectOptions(select, '4');
     await expect(args.onParallelismChange).toHaveBeenCalledWith(4);
   },
