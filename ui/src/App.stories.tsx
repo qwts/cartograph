@@ -196,6 +196,8 @@ function installFakeCore(options: {
   rejectJobActionOnce?: boolean;
   legacyRunningJob?: boolean;
   investigationFlow?: boolean;
+  /** The first result read after completion races the commit and sees none. */
+  straddleResultCommit?: boolean;
 } = {}) {
   let staged = [...(options.staged ?? [])];
   let rejectJobAction = options.rejectJobActionOnce ?? false;
@@ -208,6 +210,7 @@ function installFakeCore(options: {
   let investigation: InvestigationDetail | null = null;
   const investigationJournal: InvestigationEvent[] = [];
   let investigationStep = 1;
+  let straddleResult = options.straddleResultCommit ?? false;
   const appendInvestigationEvent = (kind: InvestigationEvent['kind'], summary: string,
     tool: InvestigationEvent['tool'] = null) => {
     if (!investigation) throw new Error('Fixture task missing');
@@ -286,6 +289,10 @@ function installFakeCore(options: {
           next_sequence: items.at(-1)?.sequence ?? after, has_more: false };
       }
       case 'investigation_result':
+        if (investigation?.has_result && straddleResult) {
+          straddleResult = false;
+          return null;
+        }
         return investigation?.has_result ? investigationResult(investigation.investigation_id) : null;
       case 'investigation_consent':
         return investigation?.status === 'awaiting_consent'
@@ -1528,5 +1535,38 @@ export const InvestigationWorkspaceCloudHistoryAndJobs: Story = {
     await expect(JSON.stringify(useInvestigationStore.getState().result)).toBe(savedResult);
     await expect(canvas.queryByRole('button', { name: /^(Retry|Resume)$/ })).not.toBeInTheDocument();
     await expect(canvas.getByRole('button', { name: 'Workspace' })).toHaveAttribute('aria-current', 'page');
+  },
+};
+
+export const InvestigationResultCommitStraddleIsRejected: Story = {
+  // AC-0204: a refresh whose result read misses the commit its detail already
+  // reports is rejected, not shown as a completed task without findings; the
+  // next refresh reads the consistent pair.
+  beforeEach: () => { installFakeCore({ investigationFlow: true, straddleResultCommit: true }); },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(useAppStore.getState().backend).toBe('up'));
+    await userEvent.click(canvas.getByRole('button', { name: 'Open investigations' }));
+    await waitFor(() => expect(canvas.getByRole('radio', { name: /Domain analyst/ })).toBeVisible());
+    await userEvent.selectOptions(canvas.getByLabelText('Provider'), 'cloud');
+    await userEvent.type(canvas.getByLabelText('Question'), 'Which stock behavior has evidence?');
+    await userEvent.click(canvas.getByRole('button', { name: 'Start investigation' }));
+    for (const step of ['step-1', 'step-2']) {
+      await waitFor(() => expect(canvas.getByRole('button', { name: 'Review next cloud action' })).toBeEnabled());
+      await waitFor(() => expect(useInvestigationStore.getState().consent?.step_id).toBe(step));
+      await userEvent.click(canvas.getByRole('button', { name: 'Review next cloud action' }));
+      const dialog = within(canvas.getByRole('dialog', { name: 'Review exact model payload' }));
+      await userEvent.click(dialog.getByRole('button', { name: 'Allow this action once' }));
+    }
+    await waitFor(() => expect(canvas.getByText(/could not be refreshed consistently/)).toBeVisible());
+    await expect(useInvestigationStore.getState().result).toBeNull();
+    // The approval's completed summary is not merged ahead of a consistent read.
+    await expect(useInvestigationStore.getState().detail?.status).not.toBe('completed');
+    await expect(useInvestigationStore.getState().detail?.has_result).toBe(false);
+    await expect(canvas.queryByText('A local stock guard is present')).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole('button', { name: 'Refresh selected investigation' }));
+    await waitFor(() => expect(canvas.getByText('A local stock guard is present')).toBeVisible());
+    await expect(useInvestigationStore.getState().detail?.status).toBe('completed');
+    await expect(canvas.queryByText(/could not be refreshed consistently/)).not.toBeInTheDocument();
   },
 };

@@ -159,6 +159,49 @@ describe('durable investigation observations (AC-0190)', () => {
     expect(useInvestigationStore.getState().result).toEqual(investigationResult('same'));
   });
 
+  it('rejects a result read that straddles the result commit and recovers on the next refresh', async () => {
+    // AC-0204: `has_result: true` with no result must not be recorded as a completed task without findings.
+    let committed = false;
+    mockIPC((command, args) => command === 'investigation_result' && !committed ? null : response(command, args));
+    await useInvestigationStore.getState().open('same');
+    expect(useInvestigationStore.getState().detail).toBeNull();
+    expect(useInvestigationStore.getState().result).toBeNull();
+    expect(useInvestigationStore.getState().error).toContain('could not be refreshed consistently');
+    committed = true;
+    await useInvestigationStore.getState().refreshSelected();
+    expect(useInvestigationStore.getState().detail?.status).toBe('completed');
+    expect(useInvestigationStore.getState().result).toEqual(investigationResult('same'));
+    expect(useInvestigationStore.getState().error).toBeNull();
+  });
+
+  it('keeps saved findings and activity when a later refresh straddles the result commit', async () => {
+    // AC-0204: an inconsistent later observation leaves the previously saved state in place.
+    let straddle = false;
+    mockIPC((command, args) => command === 'get_investigation' && straddle
+      ? investigationDetail('same', { status: 'running', has_result: false, revision: 10,
+        actions: { can_cancel: true, can_follow_up: false } }) : response(command, args));
+    await useInvestigationStore.getState().open('same');
+    const { detail, result, events } = useInvestigationStore.getState();
+    expect(result).toEqual(investigationResult('same'));
+    straddle = true;
+    await useInvestigationStore.getState().refreshSelected();
+    expect(useInvestigationStore.getState().detail).toEqual(detail);
+    expect(useInvestigationStore.getState().result).toEqual(result);
+    expect(useInvestigationStore.getState().events).toEqual(events);
+    expect(useInvestigationStore.getState().error).toContain('could not be refreshed consistently');
+  });
+
+  it('rejects a result that is newer than the detail it was read with', async () => {
+    // AC-0204: a result paired with a pre-commit detail is an inconsistent observation, not a running task with findings.
+    mockIPC((command, args) => command === 'get_investigation'
+      ? investigationDetail('same', { status: 'running', has_result: false, revision: 8,
+        actions: { can_cancel: true, can_follow_up: false } }) : response(command, args));
+    await useInvestigationStore.getState().open('same');
+    expect(useInvestigationStore.getState().detail).toBeNull();
+    expect(useInvestigationStore.getState().result).toBeNull();
+    expect(useInvestigationStore.getState().error).toContain('could not be refreshed consistently');
+  });
+
   it('fetches multiple journal pages sequentially without inventing or dropping activity', async () => {
     const events: InvestigationEvent[] = Array.from({ length: 70 }, (_, index) => ({
       ...investigationEvents('paged')[0], sequence: index + 1, revision: index + 1,
@@ -201,6 +244,31 @@ describe('investigation consent and historical reads (AC-0186/0189/0190)', () =>
     expect(approvals).toEqual([{ investigationId: 'same', stepId: 'step-1', revision: 4, payloadHash: 'payload:same:step-1' }]);
     expect(useInvestigationStore.getState().consent?.step_id).toBe('step-2');
     expect(useInvestigationStore.getState().consentOpen).toBe(false);
+  });
+
+  it('does not merge an approved completed summary ahead of its result', async () => {
+    // AC-0204: the approval acknowledgment may report completion before the result read sees it.
+    let completed = false;
+    mockIPC((command, args) => {
+      if (command === 'get_investigation') return completed ? investigationDetail('same', { revision: 10 })
+        : investigationDetail('same', { status: 'awaiting_consent', provider_mode: 'cloud', revision: 4,
+          has_result: false, actions: { can_cancel: true, can_follow_up: false } });
+      if (command === 'investigation_consent') return completed ? null : investigationConsent('same', 4, 'step-1');
+      if (command === 'investigation_result') return null;
+      if (command === 'approve_investigation_step') {
+        completed = true;
+        return investigationDetail('same', { revision: 10 });
+      }
+      return response(command, args);
+    });
+    await useInvestigationStore.getState().open('same');
+    useInvestigationStore.getState().showConsent();
+    await useInvestigationStore.getState().approve();
+    expect(useInvestigationStore.getState().error).toContain('could not be refreshed consistently');
+    expect(useInvestigationStore.getState().result).toBeNull();
+    expect(useInvestigationStore.getState().detail?.status).toBe('awaiting_consent');
+    expect(useInvestigationStore.getState().detail?.has_result).toBe(false);
+    expect(useInvestigationStore.getState().history[0].status).toBe('completed');
   });
 
   it('clears stale consent observations without inventing local fallback or a grant', async () => {
