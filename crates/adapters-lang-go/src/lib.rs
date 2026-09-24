@@ -424,10 +424,35 @@ fn endpoint_registration(
     }
 }
 
+/// The repo-relative directory a local `replace` target names, resolved
+/// against the declaring `go.mod`'s directory `from`. `None` (fail closed:
+/// no package directory is provable) when the target leaves the repository
+/// root, lexically or through a symlink, or does not exist.
+fn replace_target_dir(root: &Path, from: &str, target: &str) -> Option<String> {
+    let mut parts: Vec<&str> = from.split('/').filter(|part| !part.is_empty()).collect();
+    for part in target.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    let dir = parts.join("/");
+    let canonical_root = root.canonicalize().ok()?;
+    root.join(&dir)
+        .canonicalize()
+        .ok()
+        .filter(|resolved| resolved.starts_with(&canonical_root))
+        .map(|_| dir)
+}
+
 /// Every module the repository itself provides, as `(module path,
 /// repo-relative directory)`: each `go.mod` (nested modules included) plus
-/// each `replace … => ./local` target. An import beneath one of these is
-/// inside the system.
+/// each `replace … => ./local` target, whose directory is resolved against
+/// its declaring `go.mod` (`None` when it leaves the repository). An import
+/// beneath one of these is inside the system.
 fn repo_modules(root: &Path) -> Result<Vec<(String, Option<String>)>, ExtractError> {
     let skip = |name: &str| {
         name.starts_with('.')
@@ -456,7 +481,11 @@ fn repo_modules(root: &Path) -> Result<Vec<(String, Option<String>)>, ExtractErr
                     let from = from.trim().trim_start_matches("replace").trim();
                     let module = from.split_whitespace().next().unwrap_or("");
                     if !module.is_empty() {
-                        out.push((module.trim_matches('"').to_string(), None));
+                        let target = to.split_whitespace().next().unwrap_or(to).trim_matches('"');
+                        out.push((
+                            module.trim_matches('"').to_string(),
+                            replace_target_dir(root, &dir, target),
+                        ));
                     }
                 }
             }
@@ -483,7 +512,15 @@ fn classify_import(
                 .strip_prefix(module)
                 .is_some_and(|suffix| suffix.starts_with('/'))
     };
-    if let Some((module, dir)) = modules.iter().find(|(module, _)| beneath(module)) {
+    // The most specific module wins (Go resolves an import to its longest
+    // matching module path); among equal paths an entry carrying a proven
+    // directory beats one that does not, so a `go.mod` or an in-repository
+    // `replace` target is probed rather than an escaped replacement.
+    if let Some((module, dir)) = modules
+        .iter()
+        .filter(|(module, _)| beneath(module))
+        .max_by_key(|(module, dir)| (module.len(), dir.is_some()))
+    {
         // Only plain path elements are probed: an import path spelling
         // `..`, `.`, or an absolute component never leaves the repository
         // and proves no package directory (it stays a Gap).
