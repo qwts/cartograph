@@ -75,6 +75,25 @@ describe('preflight progress and cancellation (AC-0197/AC-0198, #235)', () => {
     expect(state.preflight).toBeNull();
   });
 
+  it('shows the result of a scan whose cancel lost to its commit (AC-0215, #493 review)', async () => {
+    let resolve: (value: PreflightReport) => void = () => {};
+    mockIPC((command) => {
+      if (command === 'cancel_preflight') {
+        // The run had already claimed its commit: the backend completes it.
+        resolve(report('completed'));
+        return null;
+      }
+      return new Promise<PreflightReport>((done) => { resolve = done; });
+    });
+    const running = useAppStore.getState().runPreflight();
+    await useAppStore.getState().cancelPreflight();
+    await running;
+    const state = useAppStore.getState();
+    expect(state.preflight?.detector).toBe('completed');
+    expect(state.preflightError).toBeNull();
+    expect(state.preflightBusy).toBe(false);
+  });
+
   it('never lets a superseded scan overwrite the current one', async () => {
     const pending: Array<{ resolve: (value: PreflightReport) => void; reject: (reason: string) => void }> = [];
     mockIPC(() => new Promise<PreflightReport>((resolve, reject) => { pending.push({ resolve, reject }); }));

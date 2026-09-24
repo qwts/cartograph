@@ -80,9 +80,10 @@ impl FindingStore {
             .map(|written| written.unwrap_or_default())
     }
 
-    /// `replace_for`, committed only if `keep` still holds once the batch is
-    /// staged inside the transaction; otherwise it rolls back and returns
-    /// `None`, leaving the register exactly as it was (#493).
+    /// `replace_for`, committed only if `keep` holds once the batch is staged
+    /// inside the transaction — it is asked immediately before the commit, so
+    /// a caller can claim the commit atomically there; otherwise it rolls
+    /// back and returns `None`, leaving the register exactly as it was (#493).
     pub fn replace_for_if(
         &mut self,
         repo: &str,

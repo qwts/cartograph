@@ -38,7 +38,7 @@ use llm::LlmProvider;
 use serde::Serialize;
 use source_access::SourceOperation;
 use sources::{RegisteredSource, SourceRegistry};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
@@ -1812,7 +1812,7 @@ fn start_preflight<R: tauri::Runtime>(
 /// file is parsed and persists no findings.
 #[tauri::command]
 fn cancel_preflight(runs: State<'_, PreflightRuns>) -> Result<(), String> {
-    runs.cancel()
+    runs.cancel().map(drop)
 }
 
 /// The error a stopped preflight returns — the same word a cancelled job uses.
@@ -1834,7 +1834,7 @@ struct PreflightRuns {
 
 #[derive(Default)]
 struct RunsState {
-    run: Option<Arc<AtomicBool>>,
+    run: Option<Arc<RunState>>,
     /// Orders preflight starts against recovery reconciliations.
     epoch: u64,
     /// The epoch of each repo's latest recovery reconciliation (#439
@@ -1846,10 +1846,47 @@ struct RunsState {
     persisted: std::collections::BTreeMap<String, u64>,
 }
 
+/// One preflight's lifecycle (#493 review). A run leaves `RUNNING` exactly
+/// once, by compare-and-swap: to `CANCELLED` when the user cancels or a newer
+/// preflight supersedes it, or to `COMMITTING` immediately before its register
+/// write commits. Whichever lands first wins, so a commit never follows a
+/// successful cancel, and a cancel that finds the run committing lost the
+/// race — the run completes and reports its result. Neither side waits.
+#[derive(Default)]
+struct RunState(std::sync::atomic::AtomicU8);
+
+impl RunState {
+    const RUNNING: u8 = 0;
+    const CANCELLED: u8 = 1;
+    const COMMITTING: u8 = 2;
+
+    fn leave_running(&self, to: u8) -> bool {
+        self.0
+            .compare_exchange(Self::RUNNING, to, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Cancel the run unless it already began committing; `false` means the
+    /// cancel lost (or the run had already been cancelled).
+    fn cancel(&self) -> bool {
+        self.leave_running(Self::CANCELLED)
+    }
+
+    /// Claim the commit unless the run was cancelled first.
+    fn claim_commit(&self) -> bool {
+        self.leave_running(Self::COMMITTING)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == Self::CANCELLED
+    }
+}
+
 /// One registered preflight: cancelled when the user cancels or a newer
-/// preflight supersedes it.
+/// preflight supersedes it, unless its register write already began
+/// committing.
 struct PreflightToken {
-    cancelled: Arc<AtomicBool>,
+    state: Arc<RunState>,
     epoch: u64,
 }
 
@@ -1862,7 +1899,7 @@ struct ReconcileFence {
 
 impl PreflightToken {
     fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        self.state.is_cancelled()
     }
 }
 
@@ -1872,23 +1909,23 @@ impl PreflightRuns {
     }
 
     fn begin(&self) -> Result<PreflightToken, String> {
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(RunState::default());
         let mut current = self.current()?;
         current.epoch += 1;
-        if let Some(previous) = current.run.replace(cancelled.clone()) {
-            previous.store(true, Ordering::SeqCst);
+        if let Some(previous) = current.run.replace(state.clone()) {
+            previous.cancel();
         }
         Ok(PreflightToken {
-            cancelled,
+            state,
             epoch: current.epoch,
         })
     }
 
-    fn cancel(&self) -> Result<(), String> {
-        if let Some(run) = self.current()?.run.as_ref() {
-            run.store(true, Ordering::SeqCst);
-        }
-        Ok(())
+    /// Cancel the run in flight, if any. Returns whether a running scan was
+    /// stopped: `false` when there is none, or when its register write had
+    /// already begun committing — that run completes (#493 review).
+    fn cancel(&self) -> Result<bool, String> {
+        Ok(self.current()?.run.as_ref().is_some_and(|run| run.cancel()))
     }
 
     /// Run `persist` only if `token` is still live and no recovery has
@@ -1897,9 +1934,10 @@ impl PreflightRuns {
     /// A superseding preflight's write therefore always lands after an older
     /// one it raced (#434 review). A cancel never waits here: one that lands
     /// before the check writes nothing and returns `cancelled`. `persist` is
-    /// handed the live check to repeat inside its transaction just before
-    /// committing (#493), so a cancel that lands during the write rolls it
-    /// back too; only a cancel after the commit finds a finished scan.
+    /// handed the commit claim to take inside its transaction immediately
+    /// before committing (#493): a cancel that landed during the write wins
+    /// the claim and rolls the write back, and one that arrives once the
+    /// claim is taken loses — the scan completes and reports its result.
     fn persist_if_current<T>(
         &self,
         token: &PreflightToken,
@@ -1915,7 +1953,7 @@ impl PreflightRuns {
         if token.is_cancelled() || reconciled_since {
             return Err(PREFLIGHT_CANCELLED.into());
         }
-        let written = persist(&|| !token.is_cancelled())?;
+        let written = persist(&|| token.state.claim_commit())?;
         let mut current = self.current()?;
         let latest = current.persisted.entry(repo.to_string()).or_default();
         *latest = (*latest).max(token.epoch);
@@ -2086,14 +2124,14 @@ fn persist_preflight_findings(
     persist_preflight_findings_if(state, repo, report, &|| true)
 }
 
-/// `persist_preflight_findings`, rolled back as `cancelled` unless `live`
-/// still holds at commit, so a preflight cancelled mid-write leaves the
-/// register as it was (AC-0215).
+/// `persist_preflight_findings`, rolled back as `cancelled` unless
+/// `claim_commit` succeeds immediately before the commit, so a preflight
+/// cancelled mid-write leaves the register as it was (AC-0215).
 fn persist_preflight_findings_if(
     state: &AppState,
     repo: &str,
     report: &ingest::preflight::PreflightReport,
-    live: &dyn Fn() -> bool,
+    claim_commit: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     let batch: Vec<NewFinding<'_>> = report
         .unsupported
@@ -2108,7 +2146,7 @@ fn persist_preflight_findings_if(
         .collect();
     let mut findings = state.findings.lock().map_err(|e| e.to_string())?;
     findings
-        .replace_for_if(repo, ingest::preflight::DETECTOR_ID, &batch, live)
+        .replace_for_if(repo, ingest::preflight::DETECTOR_ID, &batch, claim_commit)
         .map_err(|e| e.to_string())?
         .map(drop)
         .ok_or_else(|| PREFLIGHT_CANCELLED.to_string())
@@ -8438,6 +8476,56 @@ export function App() {
             lines,
             vec![1],
             "the cancelled run's findings were rolled back"
+        );
+    }
+
+    #[test]
+    fn a_cancel_after_the_commit_claim_loses_and_the_scan_completes() {
+        // AC-0215 (#493 review): the commit decision is atomic with
+        // cancellation. A cancel that lands right after the run claimed its
+        // commit — the last step before `tx.commit()` — loses: the write
+        // commits and the scan reports its result, never a cancellation it
+        // did not honour. Either the cancel wins and nothing is written, or
+        // the run completes; never both.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let app = preflight_test_app(dir.path());
+        let state = app.state::<super::AppState>();
+        let runs = super::PreflightRuns::default();
+        let token = runs.begin().unwrap();
+        let report = ingest::preflight::PreflightReport {
+            unsupported: vec![ingest::preflight::PatternFinding {
+                kind: "inline-eval".into(),
+                path: "app.ts".into(),
+                line: 1,
+                message: "m".into(),
+                detector: "d".into(),
+                request_adapter: None,
+            }],
+            ..Default::default()
+        };
+        let cancel_won = std::cell::Cell::new(None);
+        let result = runs.persist_if_current(&token, "repo", |claim_commit| {
+            super::persist_preflight_findings_if(&state, "repo", &report, &|| {
+                let claimed = claim_commit();
+                // The cancel arrives between the claim and the commit.
+                cancel_won.set(Some(runs.cancel().unwrap()));
+                claimed
+            })
+        });
+
+        assert_eq!(cancel_won.get(), Some(false), "the cancel lost the race");
+        assert!(!token.is_cancelled());
+        assert!(result.is_ok(), "the run completed: {result:?}");
+        assert_eq!(
+            state
+                .findings
+                .lock()
+                .unwrap()
+                .list_for("repo")
+                .unwrap()
+                .len(),
+            1
         );
     }
 
