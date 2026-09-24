@@ -100,10 +100,13 @@ export interface IngestSummary {
     tools: LayerSummary;
   };
   /**
-   * A local recovery's preflight report, reconciled with its AST proof of
-   * eval sites (AC-0200, #243): it replaces the pending pre-recovery view.
+   * A local or GitHub recovery's preflight report, reconciled with its AST
+   * proof of eval sites (AC-0200, AC-0209): it replaces the pending
+   * pre-recovery view.
    */
   preflight?: PreflightReport;
+  /** Set for system-manifest adds: each repo's reconciled report (AC-0209). */
+  preflights?: { repo: string; report: PreflightReport }[];
   delta?: {
     recomputed_files: number;
     reused_files: number;
@@ -1208,9 +1211,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       preflightProgress: null,
     });
     // Only a local tree can be detected before recovery. GitHub and manifest
-    // targets get no preflight report yet: their recoveries don't run the
-    // scan (#446). Showing nothing beats inventing a report (three-way
-    // honesty starts here).
+    // targets are scanned by their recovery, which writes the reconciled
+    // findings to the register (AC-0209). Showing nothing beats inventing a
+    // report (three-way honesty starts here).
     if (get().ingestSource !== 'local') return;
     set({ preflightBusy: true });
     try {
