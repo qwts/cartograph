@@ -106,7 +106,7 @@ pub fn placeholder_node(
     boundary: Boundary,
     fallback_extractor: &str,
 ) -> Node {
-    let (mut evidence, extractor_id) = match edge_provenance(edge) {
+    let (evidence, extractor_id) = match edge_provenance(edge) {
         Some(provenance) => (provenance.evidence, provenance.extractor_id),
         None => (Vec::new(), fallback_extractor.to_string()),
     };
@@ -120,6 +120,20 @@ pub fn placeholder_node(
         }
         boundary => boundary,
     };
+    mint(id, label, boundary, evidence, extractor_id)
+}
+
+/// The placeholder node for `id` classified as `boundary`, citing
+/// `evidence` (the boundary's own evidence is appended) and attributed to
+/// `extractor_id`. Callers have already failed an evidence-less Confirmed
+/// boundary closed.
+fn mint(
+    id: &str,
+    label: &str,
+    boundary: Boundary,
+    mut evidence: Vec<EvidenceRef>,
+    extractor_id: String,
+) -> Node {
     let kind = boundary.kind();
     let (confidence, reason) = match boundary {
         Boundary::External {
@@ -156,6 +170,93 @@ pub fn placeholder_node(
         id: id.to_string(),
         label: label.to_string(),
         props,
+    }
+}
+
+fn is_placeholder(node: &Node) -> bool {
+    node.props
+        .get("placeholder")
+        .and_then(|flag| flag.as_bool())
+        == Some(true)
+}
+
+/// Whether a placeholder node is an explicit Gap (anything not a readable
+/// Confirmed boundary counts as one — fail closed).
+fn is_gap(node: &Node) -> bool {
+    let confirmed = node
+        .props
+        .get("prov")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Provenance>(value).ok())
+        .is_some_and(|prov| prov.confidence_tier == ConfidenceTier::Confirmed);
+    !confirmed
+        || !matches!(
+            node.props["boundary"].as_str(),
+            Some("external" | "internal")
+        )
+}
+
+/// Reconcile placeholders that several closures minted for the same id
+/// (#237 review): each language adapter closes over its own extraction, so
+/// a merged, polyglot extraction can hold one adapter's Gap and another's
+/// Confirmed boundary for one `mod:` id — and the store keeps the *last*
+/// duplicate. With the same rule as [`close_over_endpoints`], any Gap wins
+/// (the first in extraction order), boundary kinds that disagree prove
+/// neither, and agreeing proofs keep the first. The survivor takes the
+/// first duplicate's position and the rest are dropped, so the result is a
+/// deterministic function of extraction order. An id with any non-placeholder
+/// node is left untouched: a parsed declaration supersedes its placeholders.
+pub fn reconcile_placeholders(nodes: &mut Vec<Node>) {
+    let mut groups: std::collections::BTreeMap<&str, Vec<usize>> = Default::default();
+    for (index, node) in nodes.iter().enumerate() {
+        groups.entry(node.id.as_str()).or_default().push(index);
+    }
+    let mut replace: std::collections::HashMap<usize, Node> = Default::default();
+    let mut drop: HashSet<usize> = HashSet::new();
+    for indices in groups.values() {
+        if indices.len() < 2 || !indices.iter().all(|&index| is_placeholder(&nodes[index])) {
+            continue;
+        }
+        let first = indices[0];
+        let survivor = if let Some(&gap) = indices.iter().find(|&&index| is_gap(&nodes[index])) {
+            nodes[gap].clone()
+        } else if indices
+            .iter()
+            .all(|&index| nodes[index].props["boundary"] == nodes[first].props["boundary"])
+        {
+            nodes[first].clone()
+        } else {
+            let node = &nodes[first];
+            let prov: Option<Provenance> = node
+                .props
+                .get("prov")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok());
+            let (evidence, extractor_id) = prov
+                .map(|prov| (prov.evidence, prov.extractor_id))
+                .unwrap_or_default();
+            mint(
+                &node.id,
+                &node.label,
+                Boundary::Unresolved {
+                    reason: "references disagree on the boundary".into(),
+                },
+                evidence,
+                extractor_id,
+            )
+        };
+        replace.insert(first, survivor);
+        drop.extend(indices[1..].iter().copied());
+    }
+    if replace.is_empty() {
+        return;
+    }
+    let old = std::mem::take(nodes);
+    for (index, node) in old.into_iter().enumerate() {
+        if drop.contains(&index) {
+            continue;
+        }
+        nodes.push(replace.remove(&index).unwrap_or(node));
     }
 }
 
@@ -349,5 +450,110 @@ mod tests {
             );
             assert_eq!(provenance(module).confidence_tier, ConfidenceTier::Gap);
         }
+    }
+
+    fn placeholder_from(extractor: &str, boundary: Boundary) -> Node {
+        let prov = Provenance::new(
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+            vec![span()],
+            extractor,
+            b"IMPORTS",
+        )
+        .unwrap();
+        let edge = Edge {
+            src: "file:r@a".into(),
+            dst: "mod:foo".into(),
+            label: "IMPORTS".into(),
+            props: serde_json::json!({ "prov": prov }),
+        };
+        placeholder_node("mod:foo", "Module", &edge, boundary, extractor)
+    }
+
+    fn external() -> Boundary {
+        Boundary::External {
+            reason: "standard library package".into(),
+            evidence: vec![],
+        }
+    }
+
+    #[test]
+    fn a_polyglot_gap_is_never_overwritten_by_another_adapters_proof() {
+        // AC-0207 (#237 review): the TS closure's Gap for `mod:foo` precedes
+        // the Go closure's Confirmed external one; the store keeps the last
+        // duplicate, so without reconciliation the Gap would read Confirmed.
+        let gap = placeholder_from(
+            "t0.adapter-ts",
+            Boundary::Unresolved {
+                reason: "tsconfig paths alias with no proven file".into(),
+            },
+        );
+        let confirmed = placeholder_from("t0.adapter-go", external());
+        let other = Node {
+            id: "file:r@a".into(),
+            label: "File".into(),
+            props: serde_json::json!({}),
+        };
+        for order in [
+            vec![gap.clone(), other.clone(), confirmed.clone()],
+            vec![confirmed.clone(), other.clone(), gap.clone()],
+        ] {
+            let mut nodes = order.clone();
+            reconcile_placeholders(&mut nodes);
+            assert_eq!(nodes.len(), 2);
+            // The survivor keeps the first duplicate's position.
+            assert_eq!(nodes[0].id, "mod:foo");
+            assert_eq!(nodes[1].id, "file:r@a");
+            assert_eq!(nodes[0], gap);
+            assert_eq!(provenance(&nodes[0]).confidence_tier, ConfidenceTier::Gap);
+            // Deterministic: reconciling again changes nothing.
+            let again = nodes.clone();
+            reconcile_placeholders(&mut nodes);
+            assert_eq!(nodes, again);
+        }
+    }
+
+    #[test]
+    fn polyglot_placeholders_that_disagree_on_the_boundary_are_a_gap() {
+        let internal = placeholder_from(
+            "t0.adapter-ts",
+            Boundary::Internal {
+                reason: "workspace package foo".into(),
+                evidence: vec![],
+            },
+        );
+        let mut nodes = vec![internal, placeholder_from("t0.adapter-go", external())];
+        reconcile_placeholders(&mut nodes);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].props["boundary"], "unresolved");
+        assert_eq!(
+            nodes[0].props["reason"],
+            "references disagree on the boundary"
+        );
+        assert_eq!(nodes[0].props["attempted_tiers"], serde_json::json!(["T0"]));
+        let prov = provenance(&nodes[0]);
+        assert_eq!(prov.confidence_tier, ConfidenceTier::Gap);
+        assert_eq!(prov.evidence, vec![span()]);
+        assert_eq!(prov.extractor_id, "t0.adapter-ts");
+
+        // Agreeing proofs keep the first; a parsed node is never touched.
+        let first = placeholder_from("t0.adapter-ts", external());
+        let mut agreeing = vec![first.clone(), placeholder_from("t0.adapter-go", external())];
+        reconcile_placeholders(&mut agreeing);
+        assert_eq!(agreeing, vec![first]);
+        let parsed = Node {
+            id: "mod:foo".into(),
+            label: "Module".into(),
+            props: serde_json::json!({ "declared": true }),
+        };
+        let gap = placeholder_from(
+            "t0.adapter-ts",
+            Boundary::Unresolved {
+                reason: "unresolved import target".into(),
+            },
+        );
+        let mut mixed = vec![gap.clone(), parsed.clone()];
+        reconcile_placeholders(&mut mixed);
+        assert_eq!(mixed, vec![gap, parsed]);
     }
 }

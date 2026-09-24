@@ -147,23 +147,29 @@ pub fn package_header(text: &str) -> Header {
             };
             at += end + 2;
         } else if rest.starts_with('@') {
-            // `@`, then a (possibly `file:`-targeted, dotted) name.
+            // `@`, then a (possibly `file:`-targeted, dotted) name. JVM
+            // identifiers are Unicode (`@file:Änn`): advance by whole chars
+            // so `at` always stays on a char boundary.
             at += 1;
-            while at < bytes.len()
-                && (bytes[at].is_ascii_alphanumeric()
-                    || matches!(bytes[at], b'_' | b'.' | b':' | b'`'))
-            {
-                at += 1;
-            }
+            let name_len: usize = text[at..]
+                .chars()
+                .take_while(|&ch| ch.is_alphanumeric() || matches!(ch, '_' | '$' | '.' | ':' | '`'))
+                .map(char::len_utf8)
+                .sum();
+            at += name_len;
             let mut probe = at;
             while probe < bytes.len() && bytes[probe].is_ascii_whitespace() {
                 probe += 1;
             }
             if probe < bytes.len() && matches!(bytes[probe], b'(' | b'[') {
-                match balanced_end(text, probe) {
+                match balanced_end(bytes, probe) {
                     Some(end) => at = end,
                     None => return Header::Unknown,
                 }
+            } else if name_len == 0 || (probe == at && probe < bytes.len()) {
+                // A bare `@`, or a name ending on a character the scan does
+                // not understand: the header is not provably parsed.
+                return Header::Unknown;
             }
         } else {
             let word: &str = rest
@@ -196,20 +202,30 @@ pub fn package_header(text: &str) -> Header {
 
 /// The byte just past the bracket group opening at `open`, skipping nested
 /// groups, comments, and string/char literals; `None` if it never closes.
-fn balanced_end(text: &str, open: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
+/// Scans bytes: every delimiter is ASCII and UTF-8 continuation bytes never
+/// are, so non-ASCII text inside the group is stepped over without slicing
+/// (never a panic), and the returned offset follows an ASCII byte — a char
+/// boundary.
+fn balanced_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let find = |from: usize, needle: &[u8]| {
+        bytes
+            .get(from..)?
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map(|offset| from + offset)
+    };
     let mut depth = 0usize;
     let mut at = open;
     while at < bytes.len() {
-        let rest = &text[at..];
-        if let Some(body) = rest.strip_prefix("\"\"\"") {
-            at += 3 + body.find("\"\"\"")? + 3;
+        let rest = &bytes[at..];
+        if rest.starts_with(b"\"\"\"") {
+            at = find(at + 3, b"\"\"\"")? + 3;
             continue;
         }
         match bytes[at] {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => {
-                depth -= 1;
+                depth = depth.checked_sub(1)?;
                 if depth == 0 {
                     return Some(at + 1);
                 }
@@ -226,12 +242,12 @@ fn balanced_end(text: &str, open: usize) -> Option<usize> {
                     return None;
                 }
             }
-            b'/' if rest.starts_with("//") => {
-                at += rest.find('\n')?;
+            b'/' if rest.starts_with(b"//") => {
+                at = find(at, b"\n")?;
                 continue;
             }
-            b'/' if rest.starts_with("/*") => {
-                at += rest.find("*/")? + 2;
+            b'/' if rest.starts_with(b"/*") => {
+                at = find(at + 2, b"*/")? + 2;
                 continue;
             }
             _ => {}
@@ -265,5 +281,45 @@ mod tests {
         assert_eq!(package_header("@file:JvmName(\n\"X\"\n"), Header::Unknown);
         assert_eq!(package_header("/* never closed"), Header::Unknown);
         assert_eq!(package_header("package ;"), Header::Unknown);
+    }
+
+    #[test]
+    fn a_unicode_file_annotation_does_not_hide_the_package() {
+        // #237 review: a non-ASCII annotation name no longer stops the scan
+        // early and reports the default package.
+        assert_eq!(
+            package_header("@file:Änn\npackage a.b\n"),
+            Header::Package("a.b".into())
+        );
+        assert_eq!(
+            package_header("@Ünïcödé\n@file:Änn.Ö\npackage a.b.ç\nclass X\n"),
+            Header::Package("a.b.ç".into())
+        );
+    }
+
+    #[test]
+    fn non_ascii_annotation_arguments_never_panic() {
+        // #237 review: a multibyte char inside an unquoted (or escaped)
+        // argument used to slice the header off a char boundary.
+        for header in [
+            "@file:Suppress(Änn)\npackage a.b\n",
+            "@file:X(Ä/*Ö*/ü // ß\n)\npackage a.b\n",
+            "@file:X(\"Ä\", '\\Ä', \"\"\"Ö\"\"\")\npackage a.b\n",
+            "@file:[Ä(ö) Ü]\npackage a.b\n",
+        ] {
+            assert_eq!(
+                package_header(header),
+                Header::Package("a.b".into()),
+                "{header}"
+            );
+        }
+        // Unclosed or unparseable non-ASCII groups fail closed, still no panic.
+        assert_eq!(
+            package_header("@file:X(Änn\npackage a.b\n"),
+            Header::Unknown
+        );
+        assert_eq!(package_header("@file:X(\"Ä)\n"), Header::Unknown);
+        assert_eq!(package_header("@\u{a0}X\npackage a.b\n"), Header::Unknown);
+        assert_eq!(package_header("@Änn\u{a0}\npackage a.b\n"), Header::Unknown);
     }
 }
