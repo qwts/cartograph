@@ -3908,13 +3908,47 @@ fn read_evidence(
 
 /// Open a URL in the system browser — never inside the webview (#154).
 fn open_external(url: &str) {
-    #[cfg(target_os = "macos")]
-    let launcher = "open";
-    #[cfg(target_os = "linux")]
-    let launcher = "xdg-open";
-    #[cfg(target_os = "windows")]
-    let launcher = "explorer";
-    let _ = std::process::Command::new(launcher).arg(url).spawn();
+    let Some((program, args)) = url_launcher(std::env::consts::OS, url) else {
+        eprintln!(
+            "cartograph: no system browser launcher for {}; not opening {url}",
+            std::env::consts::OS
+        );
+        return;
+    };
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    // A GUI app spawning a console program flashes a console window on
+    // Windows unless the child is created without one (#226).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    if let Err(error) = command.spawn() {
+        eprintln!("cartograph: could not launch {program} for {url}: {error}");
+    }
+}
+
+/// The program and arguments that hand `url` to the system browser on `os`
+/// (`std::env::consts::OS`), or `None` where no launcher is known (AC-0222).
+///
+/// Windows uses the URL protocol handler rather than `explorer`, which cuts a
+/// URL at its first `&` and exits nonzero even on success. `rundll32` gets
+/// the URL as one argument and no shell parses it, so `&` needs no quoting
+/// (unlike `cmd /C start`).
+fn url_launcher(os: &str, url: &str) -> Option<(&'static str, Vec<String>)> {
+    match os {
+        "macos" => Some(("open", vec![url.to_string()])),
+        "linux" | "freebsd" | "netbsd" | "openbsd" | "dragonfly" => {
+            Some(("xdg-open", vec![url.to_string()]))
+        }
+        "windows" => Some((
+            "rundll32",
+            vec!["url.dll,FileProtocolHandler".to_string(), url.to_string()],
+        )),
+        _ => None,
+    }
 }
 
 /// Native Help submenu (#154): in-app Help, the wiki user guide, issue
@@ -4109,6 +4143,33 @@ mod tests {
     use super::test_source_registry;
     use core_graph::{Edge, GraphStore, Node, SqliteGraphStore};
     use llm::{Embedding, Locality, ProviderCaps, ProviderError};
+
+    #[test]
+    fn windows_url_launcher_keeps_every_query_parameter() {
+        // AC-0222 (#226): the URL reaches the protocol handler as one
+        // argument, `&` and all; `explorer` truncated it at the first `&`.
+        let url = "https://github.com/qwts/cartograph/issues/new?labels=bug&title=a%20b&body=x";
+        let (program, args) = super::url_launcher("windows", url).unwrap();
+        assert_eq!(program, "rundll32");
+        assert_eq!(args, ["url.dll,FileProtocolHandler", url]);
+    }
+
+    #[test]
+    fn url_launcher_covers_desktop_oses_and_declines_unknown_ones() {
+        // AC-0222: macOS and Linux pass the URL through untouched; an OS
+        // with no known launcher gets None (logged, never a guessed program).
+        let url = "https://example.test/?a=1&b=2";
+        assert_eq!(
+            super::url_launcher("macos", url),
+            Some(("open", vec![url.to_string()]))
+        );
+        assert_eq!(
+            super::url_launcher("linux", url),
+            Some(("xdg-open", vec![url.to_string()]))
+        );
+        assert_eq!(super::url_launcher("ios", url), None);
+        assert_eq!(super::url_launcher("android", url), None);
+    }
 
     #[test]
     fn findings_summary_counts_with_register_predicates() {
