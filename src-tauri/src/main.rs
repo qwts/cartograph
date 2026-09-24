@@ -1304,9 +1304,10 @@ const MAX_MERGED_EDGE_EVIDENCE: usize = 32;
 /// (AC-0203, #436). The last occurrence in extraction order still supplies
 /// the props, tier and confidence; the evidence of every occurrence with the
 /// same tier, confidence and extractor is unioned, sorted, de-duplicated and
-/// bounded, so no call or import site loses its citation. When the unioned
-/// occurrences carried more than one content hash, the edge's hash is derived
-/// from their sorted distinct hashes, so it covers every unioned occurrence.
+/// bounded, so no call or import site loses its citation. When more than one
+/// occurrence is unioned, the edge's hash is derived from their sorted
+/// distinct hashes and the canonical span list (spans beyond the bound and
+/// their count included), so adding, removing or moving any site changes it.
 fn merge_edge_occurrences(edges: &[Edge]) -> std::collections::BTreeMap<EdgeKey, Edge> {
     let mut groups = std::collections::BTreeMap::<EdgeKey, Vec<&Edge>>::new();
     for edge in edges {
@@ -1332,6 +1333,7 @@ fn merge_edge_group(occurrences: &[&Edge]) -> Edge {
     };
     let mut evidence = Vec::new();
     let mut hashes = std::collections::BTreeSet::new();
+    let mut unioned = 0usize;
     for occurrence in occurrences
         .iter()
         .filter_map(|edge| parse(edge))
@@ -1343,6 +1345,7 @@ fn merge_edge_group(occurrences: &[&Edge]) -> Edge {
     {
         evidence.extend(occurrence.evidence);
         hashes.insert(occurrence.content_hash);
+        unioned += 1;
     }
     evidence.sort_by(|a, b| {
         (&a.repo, &a.path, a.byte_start, a.byte_end, &a.commit_sha).cmp(&(
@@ -1355,12 +1358,16 @@ fn merge_edge_group(occurrences: &[&Edge]) -> Edge {
     });
     evidence.dedup();
     let omitted = evidence.len().saturating_sub(MAX_MERGED_EDGE_EVIDENCE);
+    if unioned > 1 {
+        // Occurrences can share one fact hash while citing different sites
+        // (duplicate imports), so the canonical span list — omitted spans
+        // included — is part of the merged hash alongside the source hashes.
+        let canonical = serde_json::to_vec(&("merged-edge-v1", &hashes, &evidence, omitted))
+            .expect("merged evidence serializes");
+        prov.content_hash = core_prov::content_hash(&canonical);
+    }
     evidence.truncate(MAX_MERGED_EDGE_EVIDENCE);
     prov.evidence = evidence;
-    if hashes.len() > 1 {
-        let joined = hashes.into_iter().collect::<Vec<_>>().join("\n");
-        prov.content_hash = core_prov::content_hash(joined.as_bytes());
-    }
     merged.props["prov"] = serde_json::to_value(prov).expect("provenance serializes");
     if omitted > 0 {
         merged.props["evidence_omitted"] = serde_json::json!(omitted);
@@ -4828,6 +4835,57 @@ resource "aws_sqs_queue" "orders" {
             crate::merge_edge_occurrences(&edges).values().next(),
             Some(edge)
         );
+    }
+
+    #[test]
+    fn collapsed_relation_hash_tracks_sites_that_share_one_fact_hash() {
+        // AC-0203 (#456 review): duplicate imports hash the same fact bytes
+        // at every site. The merged hash must still change when a site is
+        // added, removed or moved, while a single site keeps its own hash.
+        let site = |start: u64| Edge {
+            src: "file:r@a.ts".into(),
+            dst: "file:r@b.ts".into(),
+            label: "IMPORTS".into(),
+            props: serde_json::json!({
+                "prov": core_prov::Provenance::new(
+                    core_prov::Tier::Deterministic,
+                    core_prov::ConfidenceTier::Confirmed,
+                    vec![core_prov::EvidenceRef {
+                        repo: "r".into(),
+                        path: "a.ts".into(),
+                        byte_start: start,
+                        byte_end: start + 10,
+                        commit_sha: "c".into(),
+                    }],
+                    "t0.test",
+                    b"IMPORTS ./b",
+                )
+                .unwrap(),
+            }),
+        };
+        let hash = |starts: &[u64]| {
+            let edges = starts.iter().map(|start| site(*start)).collect::<Vec<_>>();
+            let merged = crate::merge_edge_occurrences(&edges);
+            let edge = merged.values().next().unwrap();
+            edge.props["prov"]["content_hash"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let single = hash(&[0]);
+        assert_eq!(single, site(0).props["prov"]["content_hash"]);
+        let two = hash(&[0, 40]);
+        assert_ne!(two, single);
+        assert_ne!(hash(&[0, 40, 80]), two); // site added
+        assert_ne!(hash(&[0, 60]), two); // site moved
+        assert_eq!(hash(&[40, 0]), two); // order-independent
+        assert_eq!(hash(&[0, 40, 40]), two); // exact duplicate span
+        // Spans beyond the bound still count toward the hash.
+        let bound = crate::MAX_MERGED_EDGE_EVIDENCE as u64;
+        let full = (0..bound).map(|n| n * 20).collect::<Vec<_>>();
+        let mut over = full.clone();
+        over.push(bound * 20);
+        assert_ne!(hash(&over), hash(&full));
     }
 
     #[test]
