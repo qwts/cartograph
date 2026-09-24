@@ -1798,6 +1798,48 @@ fn const_unproven_eval_emits_an_explicit_gap_owned_by_its_symbol() {
         && e.label == "DEPENDS_ON"));
 }
 
+// #451 review: a proven outer eval whose code holds an unproven eval is not
+// Covered — its claim downgrades so preflight keeps the potential-Gap finding
+// the recovery emitted — and the same nested code at two outer sites yields
+// distinct content hashes derived from each Gap's final, namespaced id.
+// (AC-0201, T-0201)
+#[test]
+fn nested_const_unproven_eval_downgrades_the_outer_claim_and_rehashes() {
+    let src = "export function run() {\n  eval(\"eval(CODE)\");\n  eval(\"eval(CODE)\");\n  eval(\"function ok() {}\");\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/nested.ts", &id()).unwrap();
+    let claims: Vec<(u64, EvalProof)> = ex.eval_sites.iter().map(|s| (s.line, s.proof)).collect();
+    assert_eq!(
+        claims,
+        vec![
+            (2, EvalProof::ConstUnproven),
+            (3, EvalProof::ConstUnproven),
+            (4, EvalProof::Covered),
+        ]
+    );
+    let gaps = eval_gaps(&ex);
+    assert_eq!(gaps.len(), 2, "{gaps:?}");
+    let hash =
+        |props: &serde_json::Value| props["prov"]["content_hash"].as_str().unwrap().to_string();
+    assert_ne!(hash(&gaps[0].props), hash(&gaps[1].props));
+    for gap in &gaps {
+        assert_eq!(
+            hash(&gap.props),
+            core_prov::content_hash(format!("Gap {}", gap.id).as_bytes())
+        );
+        let owner = ex
+            .edges
+            .iter()
+            .find(|e| e.dst == gap.id && e.label == "DEPENDS_ON")
+            .expect("nested Gap keeps its owner edge");
+        assert_eq!(
+            hash(&owner.props),
+            core_prov::content_hash(
+                format!("DEPENDS_ON {} -> {}", owner.src, owner.dst).as_bytes()
+            )
+        );
+    }
+}
+
 // A top-level site has no enclosing symbol: the File owns the Gap. A
 // `new Function` with several unproven arguments cites every one of them,
 // while proven literal arguments are not cited. (AC-0201, T-0201)
