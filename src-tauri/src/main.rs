@@ -2075,6 +2075,19 @@ fn reconcile_preflight_findings(
     plugins: &[ingest::preflight::PluginCoverage],
     eval_sites: &[adapters_lang_ts::EvalSite],
 ) -> Result<ingest::preflight::PreflightReport, String> {
+    let report = reconciled_preflight_report(root, capture, plugins, eval_sites)?;
+    runs.reconcile(repo, || persist_preflight_findings(state, repo, &report))?;
+    Ok(report)
+}
+
+/// The scan half of `reconcile_preflight_findings`: the claim-reconciled
+/// report, written nowhere.
+fn reconciled_preflight_report(
+    root: &std::path::Path,
+    capture: Option<&source_capture::Capture>,
+    plugins: &[ingest::preflight::PluginCoverage],
+    eval_sites: &[adapters_lang_ts::EvalSite],
+) -> Result<ingest::preflight::PreflightReport, String> {
     let claims: Vec<ingest::preflight::EvalSiteCoverage> = eval_sites
         .iter()
         .map(|site| ingest::preflight::EvalSiteCoverage {
@@ -2118,7 +2131,6 @@ fn reconcile_preflight_findings(
     })
     .map_err(|e| e.to_string())?
     .ok_or("the reconciliation scan never stops early")?;
-    runs.reconcile(repo, || persist_preflight_findings(state, repo, &report))?;
     Ok(report)
 }
 
@@ -3365,20 +3377,23 @@ fn add_repo_blocking<R: tauri::Runtime>(
         &std::collections::BTreeSet::from([source.repo_key.clone()]),
     )
     .map_err(&fail)?;
-    // As for a local recovery (AC-0200, AC-0209): only once the graph holds
-    // the recovered facts, scanning the captured bytes the claims were
-    // proven on, through the per-repo fence.
-    let preflight = reconcile_preflight_findings(
-        &state,
-        &app.state::<PreflightRuns>(),
+    // As for a local recovery (AC-0200, AC-0209): scanned only once the
+    // graph holds the recovered facts, from the captured bytes the claims
+    // were proven on.
+    let preflight = reconciled_preflight_report(
         root,
         primary.capture.as_ref(),
-        &source.repo_key,
         &plugin_coverage(&active_plugins),
         &extraction.eval_sites,
     )
     .map_err(&fail)?;
     finish_source_operation(&state, &app, &execution, &operation)?;
+    // Written only once the job has settled as completed, so a cancel that
+    // wins the race writes nothing (AC-0209); through the per-repo fence.
+    app.state::<PreflightRuns>()
+        .reconcile(&source.repo_key, || {
+            persist_preflight_findings(&state, &source.repo_key, &preflight)
+        })?;
     Ok(AddRepoSummary {
         job_id,
         repo: source.repo_key,
@@ -3617,25 +3632,25 @@ fn add_system_blocking<R: tauri::Runtime>(
     )
     .map_err(&fail)?;
     // AC-0200, AC-0209: each repo reconciles exactly as a local recovery.
-    let runs = app.state::<PreflightRuns>();
     let preflights = proofs
         .into_iter()
         .map(|(repo, primary, plugins, eval_sites)| {
             let root = operation.root(&repo)?;
-            let report = reconcile_preflight_findings(
-                &state,
-                &runs,
-                root,
-                primary.capture.as_ref(),
-                &repo,
-                &plugins,
-                &eval_sites,
-            )?;
+            let report =
+                reconciled_preflight_report(root, primary.capture.as_ref(), &plugins, &eval_sites)?;
             Ok(RepoPreflight { repo, report })
         })
         .collect::<Result<Vec<_>, String>>()
         .map_err(&fail)?;
     finish_source_operation(&state, &app, &execution, &operation)?;
+    // Written only once the job has settled as completed, so a cancel that
+    // wins the race writes nothing (AC-0209); through each repo's fence.
+    let runs = app.state::<PreflightRuns>();
+    for preflight in &preflights {
+        runs.reconcile(&preflight.repo, || {
+            persist_preflight_findings(&state, &preflight.repo, &preflight.report)
+        })?;
+    }
     Ok(AddSystemSummary {
         job_id,
         repos,
@@ -7589,6 +7604,41 @@ export function App() {
         assert_eq!(preflight_register(&state, &summary.repo), vec![(2, false)]);
         assert_eq!(inline_eval_lines(&summary.preflight.unsupported), vec![2]);
         assert!(summary.preflight.potential_gaps.is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_github_recovery_writes_no_preflight_findings() {
+        // AC-0209 (#485 review): the findings are written only once the job
+        // has settled as completed, so a cancel during recovery leaves the
+        // register untouched.
+        use tauri::{Listener, Manager};
+        let dir = tempfile::tempdir().unwrap();
+        let bare = preflight_bare_repo(dir.path(), "shop", &[("app.ts", EVAL_FIXTURE)]);
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let event_handle = handle.clone();
+        let listener = handle.listen("job://detail", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            let state = event_handle.state::<super::AppState>();
+            let _ = state
+                .jobs
+                .lock()
+                .unwrap()
+                .cancel(payload["id"].as_i64().unwrap());
+        });
+
+        let error = super::add_repo_blocking(format!("file://{}", bare.display()), handle.clone())
+            .err()
+            .unwrap();
+        handle.unlisten(listener);
+
+        assert_eq!(error, "cancelled");
+        let findings = state.findings.lock().unwrap().list().unwrap();
+        assert!(
+            findings.is_empty(),
+            "a cancelled recovery writes nothing: {findings:?}"
+        );
     }
 
     #[test]
