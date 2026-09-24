@@ -1,0 +1,110 @@
+# Help wiki sync (#470). `docs/help/*.md` is the single authored source; the
+# public wiki mirrors it as `Help-<slug>` pages. The wiki follows main after
+# merge and never gates a PR (the PR gate only validates docs/help locally).
+#
+# Runs on every main push, not only help changes, so a failed or skipped sync
+# self-heals on the next merge. Each run syncs from its own checked-out
+# commit; runs are serialized, so a later push always re-syncs last.
+#
+# Credential: the repository GITHUB_TOKEN cannot push the wiki, so the push
+# uses the HELP_WIKI_TOKEN secret: a fine-grained personal access token scoped
+# to qwts/cartograph only with "Contents: Read and write". The job fails loudly
+# when it is absent or refused; it never falls back to another credential.
+name: Help wiki sync
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: help-wiki-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: Action Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Authorize direct workflow event
+        uses: qwts/qwts-agent-ci/.github/actions/ci-policy@3a5617b287d922e37f262210a1d8750d8217b56d
+        with:
+          authorization-only: 'true'
+
+  sync:
+    name: Sync help to the wiki
+    needs: policy
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The repository token only reads source; the wiki write uses the
+    # dedicated secret at the push boundary.
+    permissions:
+      contents: read
+    env:
+      HAS_WIKI_TOKEN: ${{ secrets.HELP_WIKI_TOKEN != '' }}
+    steps:
+      - name: Require the wiki credential
+        run: |
+          if [ "$HAS_WIKI_TOKEN" != true ]; then
+            echo '::error::HELP_WIKI_TOKEN is not set; the help wiki cannot be synced from main.'
+            exit 1
+          fi
+
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Validate docs/help
+        run: node scripts/check-help-mirror.mjs --validate
+
+      - name: Sync and push the wiki
+        env:
+          WIKI_TOKEN: ${{ secrets.HELP_WIKI_TOKEN }}
+          WIKI_URL: https://github.com/${{ github.repository }}.wiki.git
+        run: |
+          set -euo pipefail
+          # The token travels only in a per-command auth header; it is never
+          # written to disk or embedded in the remote URL.
+          auth=$(printf 'x-access-token:%s' "$WIKI_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          wiki() { git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" "$@"; }
+
+          # Called in an `if`, so `set -e` is off inside: every step returns
+          # explicitly on failure.
+          sync_once() {
+            rm -rf "$RUNNER_TEMP/wiki"
+            wiki clone --quiet --depth 1 "$WIKI_URL" "$RUNNER_TEMP/wiki" || return 1
+            node scripts/check-help-mirror.mjs --sync "$RUNNER_TEMP/wiki" || return 1
+            git -C "$RUNNER_TEMP/wiki" add -A -- 'Help-*.md' || return 1
+            if git -C "$RUNNER_TEMP/wiki" diff --cached --quiet; then
+              echo 'Wiki help mirror already matches main.'
+              return 0
+            fi
+            git -C "$RUNNER_TEMP/wiki" \
+              -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit --quiet -m "Sync help from ${GITHUB_REPOSITORY}@${GITHUB_SHA}" || return 1
+            wiki -C "$RUNNER_TEMP/wiki" push --quiet origin HEAD
+          }
+
+          # A concurrent wiki edit rejects the push; re-clone and re-sync.
+          for attempt in 1 2 3; do
+            if sync_once; then exit 0; fi
+            echo "::warning::Wiki sync attempt $attempt failed; retrying from a fresh clone."
+            sleep $((attempt * 10))
+          done
+          echo '::error::Could not push the help mirror to the wiki. Check that HELP_WIKI_TOKEN is valid and the repository wiki is enabled.'
+          exit 1

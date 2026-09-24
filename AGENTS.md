@@ -147,7 +147,7 @@ enabled, the exact-commit `main` fallback protects merge/squash SHA rewrites.
 ## Verification before "done"
 
 ```sh
-node scripts/check-traceability.mjs && npm run version:check && npm run test:version
+node scripts/check-traceability.mjs && node scripts/check-help-mirror.mjs --validate && npm run version:check && npm run test:version
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 npm --prefix ui run lint && npm --prefix ui run typecheck && npm --prefix ui run test && npm --prefix ui run build
 ```
@@ -183,6 +183,9 @@ Storybook itself: `npm run storybook` (from `ui/`).
 - `docs/adapters/AUTHORING_GUIDE.md` — how to add language-adapter coverage
   (sandboxed WASM plugin, or extending a compiled-in `adapters-lang-*` crate)
 - GitHub wiki — narrative contributor/process docs (`CONTRIBUTING.md` is a stub)
+- `docs/help/` — the single authored copy of in-app Help. The wiki's `Help-*`
+  pages are generated from main after merge by `help-wiki-sync.yml`; never
+  edit them on the wiki, and never push the wiki to make a PR pass
 
 <!-- governed:shared-agent-discovery:start -->
 

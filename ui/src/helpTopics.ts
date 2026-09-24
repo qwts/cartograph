@@ -2,7 +2,7 @@ import type { SurfaceView } from './views';
 
 /** Single-sourced help topics (#154/#155): the markdown under `docs/help/`
  * is bundled at build time (offline, no network dependency) and mirrored to
- * the wiki — `npm run check:help-mirror` fails when the two diverge. */
+ * the wiki from main after merge by `.github/workflows/help-wiki-sync.yml`. */
 const RAW = import.meta.glob('../../docs/help/*.md', {
   query: '?raw',
   import: 'default',
