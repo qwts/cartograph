@@ -608,6 +608,8 @@ function installFakeCore(options: {
         return tiers;
       case 'egress_summary':
         return egressSummary();
+      case 'get_ingest_parallelism':
+        return { setting: 0, auto_workers: 7, workers: 7, max_workers: 12 };
       case 'cloud_disclosure': {
         const tier = (args as { tier: string }).tier;
         return {

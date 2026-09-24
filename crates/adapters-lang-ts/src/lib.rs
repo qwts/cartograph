@@ -2724,32 +2724,57 @@ pub fn extract_dir_incremental_with_progress(
         .filter(|path| !active.contains(*path))
         .count() as u64;
     cache.files.retain(|path, _| active.contains(path));
-    for rel in &files {
-        on_file(rel);
-        let source = std::fs::read(root.join(rel))?;
-        let source_hash = core_prov::content_hash(&source);
-        let ex = if let Some(cached) = cache
-            .files
-            .get(rel)
-            .filter(|cached| cached.source_hash == source_hash)
-        {
-            stats.reused_files += 1;
-            let mut extraction = cached.extraction.clone();
-            retarget_commit(&mut extraction, id.commit);
-            extraction
-        } else {
-            stats.recomputed_files += 1;
-            extract_source(&source, rel, id)?
-        };
-        cache.files.insert(
-            rel.clone(),
-            CachedFile {
-                source_hash,
-                extraction: ex.clone(),
-            },
-        );
-        append_extraction(&mut out, ex);
+    // Files parse on parallel workers (#236); results merge here in sorted
+    // order, so the output is byte-identical to a serial run.
+    let previous = std::mem::take(&mut cache.files);
+    let merged = source_walk::parallel::map_ordered(
+        &files,
+        |rel| {
+            let source = std::fs::read(root.join(rel))?;
+            let source_hash = core_prov::content_hash(&source);
+            let reusable = previous
+                .get(rel)
+                .is_some_and(|cached| cached.source_hash == source_hash);
+            let fresh = if reusable {
+                None
+            } else {
+                Some(extract_source(&source, rel, id)?)
+            };
+            Ok::<_, ExtractError>((source_hash, fresh))
+        },
+        |rel, (source_hash, fresh)| {
+            on_file(rel);
+            let ex = match fresh {
+                Some(ex) => {
+                    stats.recomputed_files += 1;
+                    ex
+                }
+                None => {
+                    stats.reused_files += 1;
+                    let mut extraction = previous[rel].extraction.clone();
+                    retarget_commit(&mut extraction, id.commit);
+                    extraction
+                }
+            };
+            cache.files.insert(
+                rel.to_string(),
+                CachedFile {
+                    source_hash,
+                    extraction: ex.clone(),
+                },
+            );
+            append_extraction(&mut out, ex);
+            Ok(())
+        },
+    );
+    if merged.is_err() {
+        // Keep the reusable parses of files after the failure, as a serial
+        // walk that stopped there would have.
+        for (path, cached) in previous {
+            cache.files.entry(path).or_insert(cached);
+        }
     }
+    merged?;
     complete_directory(&mut out, root, id)?;
     Ok((out, stats))
 }
@@ -2955,10 +2980,14 @@ pub fn eval_coverage(root: &Path, id: &SourceId) -> Result<Vec<EvalSite>, Extrac
     collect_ts_files(root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let mut out = Vec::new();
-    for rel in &files {
-        let source = std::fs::read(root.join(rel))?;
-        out.extend(extract_source(&source, rel, id)?.eval_sites);
-    }
+    source_walk::parallel::map_ordered(
+        &files,
+        |rel| Ok(extract_source(&std::fs::read(root.join(rel))?, rel, id)?.eval_sites),
+        |_, sites| {
+            out.extend(sites);
+            Ok::<_, ExtractError>(())
+        },
+    )?;
     Ok(out)
 }
 

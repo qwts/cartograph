@@ -21,6 +21,7 @@ rusqlite = { workspace = true }
 core-graph = { workspace = true }
 core-prov = { workspace = true }
 source-capture = { workspace = true }
+source-walk = { workspace = true }
 cap-std = "4.0.3"
 cap-fs-ext = "4.0.3"
 context-hub = { workspace = true }

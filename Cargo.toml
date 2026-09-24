@@ -20,9 +20,11 @@ missing_docs = "warn"
 #   lto="thin"    — cross-crate link-time optimization; thin keeps release
 #                   build times reasonable for ~a 2 MB size cost vs fat LTO
 #   codegen-units — single unit maximizes optimization (slower compile)
-#   panic=abort   — no unwinding tables; smaller binary. Safe here: the tree
-#                   has no catch_unwind/should_panic outside the test profile,
-#                   and wasmtime guest traps do not rely on host unwinding.
+#   panic=abort   — no unwinding tables; smaller binary. Safe here: nothing
+#                   relies on unwinding in release — source-walk's parallel
+#                   merge only uses catch_unwind to re-raise a worker panic on
+#                   the caller (a release panic aborts either way) — and
+#                   wasmtime guest traps do not rely on host unwinding.
 [profile.release]
 strip = "symbols"
 lto = "thin"

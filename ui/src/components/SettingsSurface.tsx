@@ -1,5 +1,11 @@
 import { lazy, Suspense, useState } from 'react';
-import type { AdapterInventory, CloudDisclosure, PluginStatus, TierSettings } from '../store';
+import type {
+  AdapterInventory,
+  CloudDisclosure,
+  IngestParallelism,
+  PluginStatus,
+  TierSettings,
+} from '../store';
 
 // Code-split: the bundled third-party notices string is large, so it only
 // loads when the user opens the Open-source licenses panel (#222).
@@ -25,6 +31,60 @@ export interface SettingsSurfaceProps {
   onProviderChange: (tier: string, provider: 'local' | 'cloud') => void;
   onGrantConsent: (tier: string) => void;
   onRevokeConsent: (tier: string) => void;
+  /** Extraction worker setting (#236); null with no backend. */
+  parallelism?: IngestParallelism | null;
+  /** Persist a new setting: 0 = Auto, otherwise a fixed worker count. */
+  onParallelismChange?: (setting: number) => void;
+}
+
+/** "Ingest parallelism" (#236): Auto or a fixed worker count. Workers only
+ *  change how fast T0 extraction runs — facts are merged in the same order
+ *  either way, so the recovered graph is identical. */
+function ParallelismSetting({
+  parallelism,
+  canEdit,
+  onChange,
+}: {
+  parallelism: IngestParallelism | null;
+  canEdit: boolean;
+  onChange?: (setting: number) => void;
+}) {
+  if (!parallelism) {
+    return (
+      <p className="muted">
+        Ingest parallelism lives in the core — connect a backend to change it.
+      </p>
+    );
+  }
+  const fixed = Array.from({ length: parallelism.max_workers }, (_, index) => index + 1);
+  return (
+    <div className="tier-card parallelism-card">
+      <span className="tier-code">T0</span>
+      <div className="tier-main">
+        <h4>
+          <label htmlFor="ingest-parallelism">Ingest parallelism</label>
+        </h4>
+        <p className="muted">
+          Files are parsed on this many workers during recovery. More workers finish sooner;
+          the recovered graph is identical either way. Auto uses one worker per performance core,
+          minus one, and fewer on low-memory machines.
+        </p>
+        <select
+          id="ingest-parallelism"
+          value={parallelism.setting}
+          disabled={!canEdit || !onChange}
+          onChange={(event) => onChange?.(Number(event.target.value))}
+        >
+          <option value={0}>Auto ({parallelism.auto_workers} workers)</option>
+          {fixed.map((workers) => (
+            <option key={workers} value={workers}>
+              {workers === 1 ? '1 worker (serial)' : `${workers} workers`}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
 }
 
 /** Request-adapter lane (epic #147): a prefilled issue names the adapter. */
@@ -187,6 +247,8 @@ export function SettingsSurface({
   onProviderChange,
   onGrantConsent,
   onRevokeConsent,
+  parallelism = null,
+  onParallelismChange,
 }: SettingsSurfaceProps) {
   return (
     <section className="settings-surface" aria-label="Settings">
@@ -303,6 +365,13 @@ export function SettingsSurface({
           local-only until then.
         </p>
       )}
+
+      <h3 className="settings-section-title">Ingest</h3>
+      <ParallelismSetting
+        parallelism={parallelism}
+        canEdit={canEdit}
+        onChange={onParallelismChange}
+      />
 
       <h3 className="settings-section-title">Adapters</h3>
       <p className="muted adapter-explainer">

@@ -764,38 +764,68 @@ pub fn extract_dir_incremental_with_progress(
     };
     cache.files.retain(|path, _| active.contains(path));
     let mut out = Extraction::default();
-    for path in files {
-        on_file(&path);
-        let source = std::fs::read(root.join(&path))?;
-        let source_hash = core_prov::content_hash(&source);
-        let context_hash = core_prov::content_hash(
-            format!("{source_hash}\0{}", module_path.as_deref().unwrap_or("")).as_bytes(),
-        );
-        let extraction = if let Some(cached) = cache
-            .files
-            .get(&path)
-            .filter(|cached| cached.source_hash == context_hash)
-        {
-            stats.reused_files += 1;
-            let mut extraction = cached.extraction.clone();
-            retarget_commit(&mut extraction, id.commit);
-            extraction
-        } else {
-            stats.recomputed_files += 1;
-            extract_source_with_module(&source, &path, id, module_path.as_deref())?
-        };
-        cache.files.insert(
-            path,
-            CachedFile {
-                source_hash: context_hash,
-                extraction: extraction.clone(),
-            },
-        );
-        out.nodes.extend(extraction.nodes);
-        out.edges.extend(extraction.edges);
-        out.pending_calls.extend(extraction.pending_calls);
-        out.pending_endpoints.extend(extraction.pending_endpoints);
+    // Files parse on parallel workers (#236); results merge here in sorted
+    // order, so the output is byte-identical to a serial run.
+    let previous = std::mem::take(&mut cache.files);
+    let merged = source_walk::parallel::map_ordered(
+        &files,
+        |path| {
+            let source = std::fs::read(root.join(path))?;
+            let source_hash = core_prov::content_hash(&source);
+            let context_hash = core_prov::content_hash(
+                format!("{source_hash}\0{}", module_path.as_deref().unwrap_or("")).as_bytes(),
+            );
+            let reusable = previous
+                .get(path)
+                .is_some_and(|cached| cached.source_hash == context_hash);
+            let fresh = if reusable {
+                None
+            } else {
+                Some(extract_source_with_module(
+                    &source,
+                    path,
+                    id,
+                    module_path.as_deref(),
+                )?)
+            };
+            Ok::<_, ExtractError>((context_hash, fresh))
+        },
+        |path, (context_hash, fresh)| {
+            on_file(path);
+            let extraction = match fresh {
+                Some(extraction) => {
+                    stats.recomputed_files += 1;
+                    extraction
+                }
+                None => {
+                    stats.reused_files += 1;
+                    let mut extraction = previous[path].extraction.clone();
+                    retarget_commit(&mut extraction, id.commit);
+                    extraction
+                }
+            };
+            cache.files.insert(
+                path.to_string(),
+                CachedFile {
+                    source_hash: context_hash,
+                    extraction: extraction.clone(),
+                },
+            );
+            out.nodes.extend(extraction.nodes);
+            out.edges.extend(extraction.edges);
+            out.pending_calls.extend(extraction.pending_calls);
+            out.pending_endpoints.extend(extraction.pending_endpoints);
+            Ok(())
+        },
+    );
+    if merged.is_err() {
+        // Keep the reusable parses of files after the failure, as a serial
+        // walk that stopped there would have.
+        for (path, cached) in previous {
+            cache.files.entry(path).or_insert(cached);
+        }
     }
+    merged?;
     let symbol_index = out
         .nodes
         .iter()

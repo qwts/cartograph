@@ -102,3 +102,94 @@ fn an_oversized_gitignore_fails_instead_of_truncating() {
     assert!(files(dir.path(), &|_| false, Gitignores::Honor).is_err());
     assert!(files(dir.path(), &|_| false, Gitignores::Disregard).is_ok());
 }
+
+mod parallel_merge {
+    //! AC-0208 / T-0208: parallel extraction merges in walk order.
+    use crate::parallel::{MAX_WORKERS, Parallelism, map_ordered, with_workers, workers};
+
+    fn items(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("f{i:04}")).collect()
+    }
+
+    /// Uneven per-item cost so completion order differs from item order.
+    fn slow_echo(item: &str) -> Result<String, String> {
+        let n: u64 = item[1..].parse().unwrap();
+        std::thread::sleep(std::time::Duration::from_micros((n * 7919) % 500));
+        Ok(item.to_uppercase())
+    }
+
+    #[test]
+    fn results_merge_in_item_order_for_every_worker_count() {
+        let items = items(200);
+        let serial = with_workers(1, || {
+            let mut seen = Vec::new();
+            map_ordered(&items, slow_echo, |item, value| {
+                seen.push((item.to_string(), value));
+                Ok::<_, String>(())
+            })
+            .unwrap();
+            seen
+        });
+        for n in [2, 3, 8] {
+            let parallel = with_workers(n, || {
+                assert_eq!(workers(), n);
+                let mut seen = Vec::new();
+                map_ordered(&items, slow_echo, |item, value| {
+                    seen.push((item.to_string(), value));
+                    Ok::<_, String>(())
+                })
+                .unwrap();
+                seen
+            });
+            assert_eq!(parallel, serial);
+        }
+    }
+
+    #[test]
+    fn the_first_error_in_item_order_wins_and_nothing_after_it_merges() {
+        let items = items(64);
+        let failing = |item: &str| {
+            let n: usize = item[1..].parse().unwrap();
+            if n == 40 || n == 50 {
+                return Err(format!("bad {item}"));
+            }
+            slow_echo(item)
+        };
+        with_workers(6, || {
+            let mut merged = 0;
+            let error = map_ordered(&items, failing, |_, _| {
+                merged += 1;
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(error, "bad f0040");
+            assert_eq!(merged, 40);
+        });
+    }
+
+    #[test]
+    fn a_worker_panic_resumes_on_the_calling_thread() {
+        let items = items(16);
+        let outcome = std::panic::catch_unwind(|| {
+            with_workers(4, || {
+                map_ordered(
+                    &items,
+                    |item| {
+                        assert_ne!(item, "f0009", "boom");
+                        Ok::<_, String>(())
+                    },
+                    |_, ()| Ok(()),
+                )
+            })
+        });
+        assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn settings_resolve_to_a_bounded_worker_count() {
+        assert_eq!(Parallelism::Fixed(0).workers(), 1);
+        assert_eq!(Parallelism::Fixed(10_000).workers(), MAX_WORKERS);
+        let auto = Parallelism::Auto.workers();
+        assert!((1..=MAX_WORKERS).contains(&auto));
+    }
+}

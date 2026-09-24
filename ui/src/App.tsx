@@ -113,6 +113,7 @@ export default function App() {
     evals,
     tierSettings,
     egress,
+    ingestParallelism,
     disclosures,
     settingsError,
     selected,
@@ -136,6 +137,7 @@ export default function App() {
     cancelPreflight,
     startRecovery,
     setTierEnabled,
+    setIngestParallelism,
     setTierProvider,
     grantCloudConsent,
     revokeCloudConsent,
@@ -601,6 +603,8 @@ export default function App() {
             onProviderChange={(tier, provider) => void setTierProvider(tier, provider)}
             onGrantConsent={(tier) => void grantCloudConsent(tier)}
             onRevokeConsent={(tier) => void revokeCloudConsent(tier)}
+            parallelism={ingestParallelism}
+            onParallelismChange={(setting) => void setIngestParallelism(setting)}
           />
           <SourceRetention sources={primarySource.sources} preview={primarySource.preview}
             busy={primarySource.retentionBusy} error={primarySource.retentionError}

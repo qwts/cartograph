@@ -2102,6 +2102,32 @@ fn revoke_cloud_consent(
     store.all().map_err(|e| e.to_string())
 }
 
+/// The "Ingest parallelism" setting and what it resolves to here (#236).
+#[tauri::command]
+fn get_ingest_parallelism(
+    state: State<'_, AppState>,
+) -> Result<settings::IngestParallelism, String> {
+    let store = state.settings.lock().map_err(|e| e.to_string())?;
+    store.ingest_parallelism().map_err(|e| e.to_string())
+}
+
+/// Persist and apply "Ingest parallelism" (`0` = Auto). Takes effect for
+/// the next extraction; recovered facts never depend on it (#236).
+#[tauri::command]
+fn set_ingest_parallelism(
+    setting: u32,
+    state: State<'_, AppState>,
+) -> Result<settings::IngestParallelism, String> {
+    let mut store = state.settings.lock().map_err(|e| e.to_string())?;
+    let applied = store
+        .set_ingest_parallelism(setting)
+        .map_err(|e| e.to_string())?;
+    source_walk::parallel::set_parallelism(settings::IngestParallelism::parallelism(
+        applied.setting,
+    ));
+    Ok(applied)
+}
+
 /// Live egress summary for the status bar (#103's seam, now real).
 #[tauri::command]
 fn egress_summary(state: State<'_, AppState>) -> Result<settings::EgressSummary, String> {
@@ -3805,6 +3831,10 @@ fn main() {
             let sources =
                 SourceRegistry::open(&state_path, &data_dir).map_err(std::io::Error::other)?;
             let tier_settings = settings::SettingsStore::open(&state_path)?;
+            // Extraction reads the worker count process-wide (#236).
+            source_walk::parallel::set_parallelism(settings::IngestParallelism::parallelism(
+                tier_settings.ingest_parallelism()?.setting,
+            ));
             let decisions = agents::DecisionLog::open(&state_path)?;
             let staged_proposals = agents::ProposalStore::open(data_dir.join("proposals.sqlite"))?;
             let recovery_metrics = metrics::MetricsStore::open(&state_path)?;
@@ -3869,6 +3899,8 @@ fn main() {
             grant_cloud_consent,
             revoke_cloud_consent,
             egress_summary,
+            get_ingest_parallelism,
+            set_ingest_parallelism,
             cloud_disclosure,
             ingest_history,
             extractor_coverage,
@@ -5981,6 +6013,91 @@ export function beat() { bus.emit('heartbeat'); }
         let chans = store.nodes_with_label("Channel").unwrap();
         assert_eq!(chans.len(), 1);
         assert_eq!(chans[0].id, "chan:inproc-event:heartbeat");
+    }
+
+    #[test]
+    fn parallel_extraction_is_byte_identical_to_serial() {
+        // AC-0208/T-0208 (#236): the same tree extracted with one worker and
+        // with many yields byte-identical facts and an identical graph hash
+        // set; parallelism changes only wall-clock time.
+        let dir = tempfile::tempdir().unwrap();
+        let write = |rel: &str, text: String| {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        for i in 0..24 {
+            let next = (i + 1) % 24;
+            write(
+                &format!("web/src/m{i:02}.ts"),
+                format!(
+                    "import {{ f{next} }} from './m{next:02}';\n\
+                     export function f{i}() {{ return f{next}(); }}\n\
+                     app.get('/r{i}', f{i});\n"
+                ),
+            );
+            write(
+                &format!("svc/pkg{}/m{i:02}.py", i % 3),
+                format!("def g{i}():\n    return g{i}()\n"),
+            );
+            write(
+                &format!("go/p{}/m{i:02}.go", i % 4),
+                format!("package p{}\n\nfunc H{i}() {{ H{i}() }}\n", i % 4),
+            );
+            write(
+                &format!("jvm/src/C{i:02}.java"),
+                format!("package demo;\nclass C{i:02} {{ void m() {{ m(); }} }}\n"),
+            );
+            write(
+                &format!("jvm/src/K{i:02}.kt"),
+                format!("package demo\nclass K{i:02} {{ fun m() {{ m() }} }}\n"),
+            );
+        }
+        let extract = |workers: usize| {
+            source_walk::parallel::with_workers(workers, || {
+                let (extraction, layers, delta) = crate::extract_tree_incremental(
+                    dir.path(),
+                    "local/parallel",
+                    "workdir",
+                    &[],
+                    &std::collections::BTreeMap::new(),
+                    None,
+                    None,
+                    &[],
+                    &mut crate::RepoExtractionCache::default(),
+                    &[],
+                    &mut |_| {},
+                )
+                .unwrap();
+                let mut store = SqliteGraphStore::open_in_memory().unwrap();
+                crate::load_into_graph(
+                    &mut store,
+                    &extraction,
+                    "local/parallel",
+                    dir.path(),
+                    "workdir",
+                )
+                .unwrap();
+                (
+                    serde_json::to_vec(&(&extraction.nodes, &extraction.edges)).unwrap(),
+                    serde_json::to_vec(&layers).unwrap(),
+                    delta.recomputed_files,
+                    crate::deterministic_graph_hashes(&store).unwrap(),
+                )
+            })
+        };
+        let serial = extract(1);
+        assert!(serial.2 >= 120, "every fixture file is parsed");
+        for workers in [2, 8] {
+            let parallel = extract(workers);
+            assert!(
+                parallel.0 == serial.0,
+                "facts differ with {workers} workers"
+            );
+            assert_eq!(parallel.1, serial.1);
+            assert_eq!(parallel.2, serial.2);
+            assert_eq!(parallel.3, serial.3);
+        }
     }
 
     #[test]

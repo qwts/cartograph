@@ -220,6 +220,7 @@ dependencies = [
  "serde",
  "serde_json",
  "source-capture",
+ "source-walk",
  "spec",
  "tauri",
  "tauri-build",
