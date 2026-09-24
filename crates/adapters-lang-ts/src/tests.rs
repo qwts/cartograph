@@ -1893,6 +1893,37 @@ fn const_unproven_eval_emits_an_explicit_gap_owned_by_its_symbol() {
         && e.label == "DEPENDS_ON"));
 }
 
+// #474: decoded offsets are not mapped back into the outer literal, so a
+// nested Gap that cites its inner call and unproven argument collapses to ONE
+// outer-literal span (never N identical ones) and says how many inner spans
+// stayed unmapped; single-span eval facts carry no marker. (AC-0213, T-0213)
+#[test]
+fn nested_eval_gap_cites_one_outer_span_and_marks_inner_spans_unmapped() {
+    let src = "export function run() {\n  eval(\"eval(CODE)\");\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/nested.ts", &id()).unwrap();
+    let gaps = eval_gaps(&ex);
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    let owner = ex
+        .edges
+        .iter()
+        .find(|e| e.dst == gaps[0].id && e.label == "DEPENDS_ON")
+        .expect("nested Gap keeps its owner edge");
+    for props in [&gaps[0].props, &owner.props] {
+        assert_eq!(evidence_texts(src, props), vec!["\"eval(CODE)\""]);
+        // The inner `eval(CODE)` call and its `CODE` argument.
+        assert_eq!(props["unmapped_inner_spans"], 2);
+    }
+    for node in ex.nodes.iter().filter(|n| n.props["via"] == "eval") {
+        if node.id != gaps[0].id {
+            assert!(
+                node.props.get("unmapped_inner_spans").is_none(),
+                "{}",
+                node.id
+            );
+        }
+    }
+}
+
 // #451 review: a proven outer eval whose code holds an unproven eval is not
 // Covered — its claim downgrades so preflight keeps the potential-Gap finding
 // the recovery emitted — and the same nested code at two outer sites yields
@@ -1933,6 +1964,34 @@ fn nested_const_unproven_eval_downgrades_the_outer_claim_and_rehashes() {
             )
         );
     }
+}
+
+// #476: claims combine worst-wins across nesting. A proven outer eval whose
+// code holds a dynamic eval is claimed Dynamic, so preflight keeps the line's
+// Unsupported finding — also when a const-unproven site sits beside it — while
+// the facts recovered from the proven outer code stay Confirmed T0.
+// (AC-0212, T-0212)
+#[test]
+fn nested_dynamic_eval_makes_the_outer_claim_dynamic() {
+    let src = "export function run(x: string) {\n  eval(\"function inner() {} eval(x + 1);\");\n  eval(\"eval(CODE); eval(build());\");\n  eval(\"eval(CODE);\");\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/dyn.ts", &id()).unwrap();
+    let claims: Vec<(u64, EvalProof)> = ex.eval_sites.iter().map(|s| (s.line, s.proof)).collect();
+    assert_eq!(
+        claims,
+        vec![
+            (2, EvalProof::Dynamic),
+            (3, EvalProof::Dynamic),
+            (4, EvalProof::ConstUnproven),
+        ]
+    );
+    let outer = src.find("eval(\"").unwrap();
+    let inner = ex
+        .nodes
+        .iter()
+        .find(|n| n.id == format!("sym:qwtm/example@src/dyn.ts#eval@{outer}.inner"))
+        .expect("the proven outer code's facts are still recovered");
+    assert_eq!(inner.props["via"], "eval");
+    assert_eq!(inner.props["prov"]["confidence_tier"], "Confirmed");
 }
 
 // A top-level site has no enclosing symbol: the File owns the Gap. A
@@ -2983,4 +3042,230 @@ fn an_asset_import_escaping_the_repository_is_never_internal() {
     assert_eq!(node.props["boundary"], "unresolved");
     let prov: Provenance = serde_json::from_value(node.props["prov"].clone()).unwrap();
     assert_eq!(prov.confidence_tier, core_prov::ConfidenceTier::Gap);
+}
+
+#[test]
+fn literal_bundler_aliases_keep_package_shaped_specifiers_in_system() {
+    // AC-0220 (#463): a Vite/webpack `resolve.alias` key spelled like a
+    // package name is read as data (never executed). A literal path target
+    // resolves to the real file citing the config; an unproven one stays an
+    // explicit Gap naming the config; a key aliased to another package or to
+    // a non-literal value keeps today's external classification.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    let vite = r#"import { defineConfig } from 'vite';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const dyn = process.env.X;
+export default defineConfig({
+  resolve: {
+    alias: {
+      components: path.resolve(__dirname, 'app/components'),
+      'widgets': './app/widgets',
+      assets: fileURLToPath(new URL('./app/assets', import.meta.url)),
+      lodash: 'lodash-es',
+      dynamic: dyn,
+    },
+  },
+});
+"#;
+    write("vite.config.ts", vite);
+    write(
+        "web/webpack.config.js",
+        "module.exports = { resolve: { alias: { store$: '/abs/store.js', [key]: './x' } } };\n",
+    );
+    write("app/components/Button.tsx", "export const Button = 1;\n");
+    write("app/widgets/index.ts", "export const w = 1;\n");
+    write(
+        "src/main.ts",
+        "import { Button } from 'components/Button';\nimport { w } from 'widgets';\nimport { gone } from 'components/Gone';\nimport logo from 'assets/logo';\nimport _ from 'lodash';\nimport d from 'dynamic';\n",
+    );
+    write(
+        "web/app.ts",
+        "import s from 'store';\nimport sub from 'store/sub';\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let edge = |dst: &str| {
+        out.edges
+            .iter()
+            .find(|edge| edge.label == "IMPORTS" && edge.dst == dst)
+            .unwrap_or_else(|| panic!("no IMPORTS edge to {dst}"))
+    };
+    let button = edge("file:qwtm/example@app/components/Button.tsx");
+    assert_eq!(button.props["resolved_via"], "bundler-alias");
+    let prov: Provenance = serde_json::from_value(button.props["prov"].clone()).unwrap();
+    let cited = prov
+        .evidence
+        .iter()
+        .find(|evidence| evidence.path == "vite.config.ts")
+        .expect("the deciding bundler config is citable evidence");
+    assert_eq!(
+        &vite[cited.byte_start as usize..cited.byte_end as usize],
+        "components"
+    );
+    assert_eq!(
+        edge("file:qwtm/example@app/widgets/index.ts").props["resolved_via"],
+        "bundler-alias"
+    );
+    let boundary = |id: &str| {
+        let node = out
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap_or_else(|| panic!("missing node {id}"));
+        let prov: Provenance = serde_json::from_value(node.props["prov"].clone()).unwrap();
+        (
+            node.props["boundary"].as_str().unwrap().to_string(),
+            prov.confidence_tier,
+            node.props["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    };
+    for (gap, config) in [
+        ("mod:components/Gone", "vite.config.ts"),
+        ("mod:assets/logo", "vite.config.ts"),
+        ("mod:store", "web/webpack.config.js"),
+    ] {
+        let (kind, tier, reason) = boundary(gap);
+        assert_eq!((kind.as_str(), tier), ("unresolved", Gap), "{gap}");
+        assert!(reason.contains(config), "{gap}: {reason}");
+    }
+    // Package-to-package and non-literal aliases keep the old behavior.
+    assert_eq!(boundary("mod:lodash").0, "external");
+    assert_eq!(boundary("mod:lodash").1, Confirmed);
+    assert_eq!(boundary("mod:dynamic").0, "external");
+    // webpack `store$` is exact: it does not address `store/sub`.
+    assert_eq!(boundary("mod:store/sub").0, "external");
+}
+
+/// Extract a tree of `(path, text)` files and return the extraction.
+fn extract_tree(files: &[(&str, &str)]) -> Extraction {
+    let dir = tempfile::tempdir().unwrap();
+    for (rel, text) in files {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    extract_dir(dir.path(), &id()).unwrap()
+}
+
+/// `(boundary, tier, reason)` of placeholder `id`.
+fn placeholder(out: &Extraction, id: &str) -> (String, core_prov::ConfidenceTier, String) {
+    let node = out
+        .nodes
+        .iter()
+        .find(|node| node.id == id)
+        .unwrap_or_else(|| panic!("missing node {id}"));
+    let prov: Provenance = serde_json::from_value(node.props["prov"].clone()).unwrap();
+    (
+        node.props["boundary"].as_str().unwrap().to_string(),
+        prov.confidence_tier,
+        node.props["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+fn imports_file(out: &Extraction, rel: &str) -> bool {
+    let dst = format!("file:qwtm/example@{rel}");
+    out.edges
+        .iter()
+        .any(|edge| edge.label == "IMPORTS" && edge.dst == dst)
+}
+
+#[test]
+fn a_vite_alias_key_keeps_a_trailing_dollar_literally() {
+    // AC-0220 (#507 review): `key$` is webpack's exact-match syntax only; a
+    // Vite key ending in `$` is matched as spelled.
+    let out = extract_tree(&[
+        (
+            "vite.config.ts",
+            "export default { resolve: { alias: { 'ui$': './app/ui' } } };\n",
+        ),
+        ("app/ui/Button.tsx", "export const Button = 1;\n"),
+        (
+            "src/main.ts",
+            "import b from 'ui$/Button';\nimport u from 'ui';\n",
+        ),
+    ]);
+    assert!(imports_file(&out, "app/ui/Button.tsx"));
+    // `ui` is not the Vite key `ui$`, so nothing in-system addresses it.
+    assert_eq!(placeholder(&out, "mod:ui").0, "external");
+}
+
+#[test]
+fn only_an_alias_in_the_exported_config_resolves() {
+    // AC-0220 (#507 review): an alias object not provably in the exported
+    // config — a nested helper, or one of several alias objects in a file —
+    // never resolves a specifier; the specifier stays an in-system Gap
+    // citing the config, never Confirmed and never external.
+    use core_prov::ConfidenceTier::Gap;
+    let out = extract_tree(&[
+        (
+            "vite.config.ts",
+            "export default defineConfig(({ mode }) => ({ resolve: { alias: { kit: './app/kit' } } }));\n",
+        ),
+        (
+            "helper/vite.config.ts",
+            "const unused = { resolve: { alias: { comps: './comps' } } };\nexport default defineConfig({});\n",
+        ),
+        (
+            "multi/webpack.config.js",
+            "module.exports = {\n  resolve: { alias: { parts: './parts' } },\n  plugins: [new P({ resolve: { alias: { other: './other' } } })],\n};\n",
+        ),
+        ("helper/comps/Button.tsx", "export const Button = 1;\n"),
+        ("helper/main.ts", "import { Button } from 'comps/Button';\n"),
+        ("app/kit/Card.tsx", "export const Card = 1;\n"),
+        ("multi/parts/Wheel.ts", "export const Wheel = 1;\n"),
+        ("src/main.ts", "import { Card } from 'kit/Card';\n"),
+        ("multi/app.ts", "import { Wheel } from 'parts/Wheel';\n"),
+    ]);
+    // `defineConfig(env => ({ … }))` is the exported config.
+    assert!(imports_file(&out, "app/kit/Card.tsx"));
+    assert!(!imports_file(&out, "helper/comps/Button.tsx"));
+    assert!(!imports_file(&out, "multi/parts/Wheel.ts"));
+    for (gap, config) in [
+        ("mod:comps/Button", "helper/vite.config.ts"),
+        ("mod:parts/Wheel", "multi/webpack.config.js"),
+    ] {
+        let (kind, tier, reason) = placeholder(&out, gap);
+        assert_eq!((kind.as_str(), tier), ("unresolved", Gap), "{gap}");
+        assert!(reason.contains(config), "{gap}: {reason}");
+    }
+}
+
+#[test]
+fn equal_scope_configs_that_disagree_on_an_alias_never_resolve_it() {
+    // AC-0220 (#507 review): a Vite and a webpack config in one directory
+    // that map the same key to different targets leave the specifier a
+    // Gap; configs that agree still resolve it.
+    use core_prov::ConfidenceTier::Gap;
+    let out = extract_tree(&[
+        (
+            "vite.config.ts",
+            "export default { resolve: { alias: { shared: './a', same: './a' } } };\n",
+        ),
+        (
+            "webpack.config.js",
+            "module.exports = { resolve: { alias: { shared: './b', same: './a' } } };\n",
+        ),
+        ("a/x.ts", "export const x = 1;\n"),
+        ("b/x.ts", "export const x = 2;\n"),
+        (
+            "src/main.ts",
+            "import { x } from 'shared/x';\nimport { x as y } from 'same/x';\n",
+        ),
+    ]);
+    assert!(!imports_file(&out, "b/x.ts"));
+    let (kind, tier, _) = placeholder(&out, "mod:shared/x");
+    assert_eq!((kind.as_str(), tier), ("unresolved", Gap));
+    assert!(imports_file(&out, "a/x.ts"), "agreeing configs resolve");
 }

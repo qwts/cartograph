@@ -105,6 +105,10 @@ export interface IngestSummary {
    * pre-recovery view.
    */
   preflight?: PreflightReport;
+  /** Where `preflight` stands in its repo's register order (AC-0216, #458);
+   *  `null` when a newer preflight's findings were already there, so the
+   *  recovery wrote nothing and its report must not replace that one. */
+  preflight_register?: RegisterStamp | null;
   /** Set for system-manifest adds: each repo's reconciled report (AC-0209). */
   preflights?: { repo: string; report: PreflightReport }[];
   delta?: {
@@ -156,7 +160,24 @@ export interface PreflightReport {
   unsupported: PatternFinding[];
   potential_gaps: PatternFinding[];
   detector: string;
+  /** Set on `preflight` results: the report's place in the register order.
+   *  A scan a recovery reconciled past carries that recovery's report. */
+  register?: RegisterStamp;
 }
+
+/** A report's place in its repo's register order (AC-0216, #458). The
+ *  register holds the write with the highest epoch, so showing, per repo, the
+ *  highest-epoch report seen always matches the register. */
+export interface RegisterStamp {
+  repo: string;
+  epoch: number;
+}
+
+/** A retried job's row; a retried recovery also carries its reconciled
+ *  preflight report, exactly as the recovery command's summary does. */
+type RetriedJob = Job & {
+  recovery?: { preflight: PreflightReport; preflight_register: RegisterStamp | null };
+};
 
 /** One live `preflight://progress` ping (#235): the file the scan is reading
  *  and how far through the walk it is — or, while the tree is still being
@@ -849,6 +870,40 @@ let jobActionVersion = 0;
 /** Only the latest preflight may publish its result: a superseded or
  *  cancelled scan settles late and must not overwrite the current one. */
 let preflightRun = 0;
+/** Per repo, the highest-epoch report any preflight or recovery returned
+ *  (AC-0216, #458), so results that settle out of register order can't show
+ *  an older classification than the register holds. */
+const newestPreflight = new Map<string, { epoch: number; report: PreflightReport }>();
+/** The repo whose report the Preflight surface shows, when stamped. */
+let shownPreflightRepo: string | null = null;
+
+/** Record a stamped report and return the newest report known for its repo. */
+function newestPreflightFor(
+  report: PreflightReport,
+  stamp: RegisterStamp | null | undefined,
+): PreflightReport {
+  if (!stamp) return report;
+  const known = newestPreflight.get(stamp.repo);
+  if (known && known.epoch > stamp.epoch) return known.report;
+  newestPreflight.set(stamp.repo, { epoch: stamp.epoch, report });
+  return report;
+}
+
+/** A recovery's reconciled report replaces the shown one when no preflight
+ *  began since the recovery started, or when the shown report is the same
+ *  repo's — whichever settled first, the register order decides (#458). */
+function recoveredPreflight(
+  report: PreflightReport,
+  stamp: RegisterStamp | null | undefined,
+  since: number,
+): PreflightReport | null {
+  if (stamp === null) return null;
+  const newest = newestPreflightFor(report, stamp);
+  const sameRepoShown = stamp !== undefined && shownPreflightRepo === stamp.repo;
+  if (since !== preflightRun && !sameRepoShown) return null;
+  shownPreflightRepo = stamp?.repo ?? null;
+  return newest;
+}
 
 export const useAppStore = create<AppStore>((set, get) => ({
   view: 'workspace',
@@ -1040,9 +1095,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
         isRepoUrl ? { url: trimmed } : { path: trimmed },
       );
       set({ ingestSummary: summary });
-      if (summary?.preflight && preflightSince === preflightRun) {
-        set({ preflight: summary.preflight, preflightError: null });
-      }
+      const preflight = summary?.preflight
+        ? recoveredPreflight(summary.preflight, summary.preflight_register, preflightSince)
+        : null;
+      if (preflight) set({ preflight, preflightError: null });
     } catch (e) {
       set({ ingestError: String(e) });
     } finally {
@@ -1160,10 +1216,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ jobActionError: `Job #${id} cannot resume this historical execution. Start a fresh operation from its source instead.` });
       return;
     }
+    // A retried recovery reconciles preflight findings like the first run
+    // did (AC-0216, #458); it too must not overwrite a newer scan's report.
+    const preflightSince = preflightRun;
     try {
-      const job = await invokeOr<Job | null>('retry_job', null, { id });
-      if (!job || job.id !== id) throw new Error('The backend did not confirm a job transition.');
+      const retried = await invokeOr<RetriedJob | null>('retry_job', null, { id });
+      if (!retried || retried.id !== id) throw new Error('The backend did not confirm a job transition.');
+      const { recovery, ...job } = retried;
       get().applyJobEvent(job);
+      const preflight = recovery
+        ? recoveredPreflight(recovery.preflight, recovery.preflight_register, preflightSince)
+        : null;
+      if (preflight) set({ preflight, preflightError: null });
       if (version === jobActionVersion) set({ jobActionError: null });
     } catch (error) {
       if (version === jobActionVersion) set({ jobActionError: `Retry for job #${id} was not confirmed: ${String(error)} Wait for the current worker to stop, then refresh Jobs and try again. Legacy records require a fresh operation.` });
@@ -1217,6 +1281,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   runPreflight: async () => {
     const target = get().ingestTarget.trim();
     const run = ++preflightRun;
+    shownPreflightRepo = null;
     set({
       view: 'preflight',
       selected: null,
@@ -1236,7 +1301,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         path: target,
         run,
       });
-      if (run === preflightRun) set({ preflight });
+      // A superseded scan's stamp still counts toward its repo's newest
+      // report; only the current scan's result is shown.
+      const newest = preflight && newestPreflightFor(preflight, preflight.register);
+      if (run === preflightRun) {
+        shownPreflightRepo = preflight?.register?.repo ?? null;
+        set({ preflight: newest });
+      }
     } catch (e) {
       if (run !== preflightRun) return;
       const error = String(e);

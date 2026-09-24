@@ -175,16 +175,25 @@ fn retarget_props_commit(props: &mut serde_json::Value, commit: &str) {
 
 /// Point a fact's evidence at one exact span — used to re-cite facts
 /// recovered from an eval'd string at the string's span at the eval site
-/// (the code's true source location, #214).
+/// (the code's true source location, #214). Decoded offsets are not mapped
+/// back into the literal (escapes shift them), so several inner spans would
+/// all become that one span: they collapse to a single evidence entry and
+/// the fact records how many inner spans stayed unmapped, rather than
+/// claiming N identical spans (#474).
 fn retarget_props_span(props: &mut serde_json::Value, byte_start: u64, byte_end: u64) {
     let Ok(mut provenance) =
         serde_json::from_value::<Provenance>(props.get("prov").cloned().unwrap_or_default())
     else {
         return;
     };
+    let inner_spans = provenance.evidence.len();
     for evidence in &mut provenance.evidence {
         evidence.byte_start = byte_start;
         evidence.byte_end = byte_end;
+    }
+    provenance.evidence.dedup();
+    if inner_spans > provenance.evidence.len() {
+        props["unmapped_inner_spans"] = serde_json::json!(inner_spans);
     }
     props["prov"] = serde_json::to_value(provenance).expect("provenance serializes");
 }
@@ -550,9 +559,17 @@ fn emit_eval_extraction(
     // empty: `import`/`export` are syntax errors inside an eval'd script or
     // a function body, and every cross-file/Pulumi proof requires them.
     // inner.eval_sites are dropped too — their lines index the synthetic
-    // source — but a nested unproven site downgrades this site's own claim,
-    // so preflight keeps the potential-Gap finding the recovery just emitted.
+    // source — but the worst nested claim becomes this site's own (#476):
+    // a nested dynamic site keeps the line's Unsupported finding, a nested
+    // unproven one the potential-Gap finding the recovery just emitted. The
+    // facts recovered from the proven outer code stay Confirmed either way.
     let claim = if inner
+        .eval_sites
+        .iter()
+        .any(|site| site.proof == EvalProof::Dynamic)
+    {
+        EvalProof::Dynamic
+    } else if inner
         .eval_sites
         .iter()
         .any(|site| site.proof == EvalProof::ConstUnproven)
@@ -3185,6 +3202,7 @@ fn collect_ts_files(root: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
     Ok(())
 }
 
+mod bundler_alias;
 mod callable;
 pub mod captured;
 pub mod chrome_messaging;
