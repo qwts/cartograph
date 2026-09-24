@@ -20,6 +20,7 @@ CLAUDE.md   @qwts
 .claude/    @qwts
 .codex/     @qwts
 .cursor/    @qwts
+.windsurf/  @qwts
 .mcp.json   @qwts
 
 # Architecture decisions.
@@ -33,11 +34,30 @@ CLAUDE.md   @qwts
 /src-tauri/capabilities/ @qwts
 /src-tauri/tauri.conf.json @qwts
 /src-tauri/tauri.macos.conf.json @qwts
+# Host-side egress and consent: provider construction and payload-hash grants
+# (main.rs until #457 moves them out), durable per-call consent, and the
+# provider/key settings.
+/src-tauri/src/main.rs @qwts
+/src-tauri/src/escalation.rs @qwts
+/src-tauri/src/settings.rs @qwts
+/src-tauri/src/investigations/runtime.rs @qwts
+/src-tauri/src/investigations/worker.rs @qwts
 
-# Supply chain: new or changed dependency requirements. Lockfile-only bumps
-# stay automated.
-Cargo.toml   @qwts
-package.json @qwts
+# Build entrypoints that execute code during CI and the signed release build,
+# where signing credentials are present.
+build.rs              @qwts
+/.cargo/              @qwts
+/rust-toolchain.toml  @qwts
+/ui/vite.config.ts    @qwts
+.npmrc                @qwts
+
+# Supply chain: dependency requirements, the resolved graphs CI installs, and
+# the cargo-deny advisory/source/license gate.
+Cargo.toml        @qwts
+Cargo.lock        @qwts
+package.json      @qwts
+package-lock.json @qwts
+/deny.toml        @qwts
 
 # Release decision: only the Version packages PR changes this.
 /CHANGELOG.md @qwts

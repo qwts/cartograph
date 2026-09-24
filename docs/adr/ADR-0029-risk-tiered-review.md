@@ -19,10 +19,18 @@ agent directives or workflows under an automated approval.
 Split review by risk and let GitHub enforce the split:
 
 - The ruleset requires code-owner review. `.github/CODEOWNERS` names the owner
-  only for protected paths: governance and CI (`.github/`, `scripts/`), agent
-  primitives, ADRs, security boundaries (redaction, model egress, plugin host,
-  app capabilities), dependency manifests, and the changelog (release). There
-  is no `*` rule.
+  only for protected paths:
+  - governance and CI: `.github/`, `scripts/`
+  - agent primitives, meaning every agent tool's directives and hook directories
+  - ADRs
+  - security boundaries: redaction, model egress, the plugin host, app
+    capabilities, and the host egress and consent code
+  - build entrypoints that execute code where release credentials are present
+  - supply chain: manifests, lockfiles and the `cargo deny` policy
+  - the changelog, which marks a release
+
+  There is no `*` rule. A PR that adds a new agent tool directory or build
+  entrypoint adds it to CODEOWNERS in the same change.
 - Any other PR merges on an ACA approval of its current head plus the existing
   gates (exact-SHA CI, Advanced CodeQL, signatures, resolved threads). The
   implementing agent merges it.
@@ -40,6 +48,9 @@ not satisfy the required review; the owner accepts it for unprotected paths.
 - Routine fixes merge without waiting on the owner; protected paths cannot
   merge without the owner, whoever opens or approves the PR.
 - Stale-review dismissal still applies, so the ACA must re-approve each push.
+- Dependency bumps, including lockfile-only ones, need the owner. A
+  resolved graph can point at any tarball, so it is not safe on automated
+  approval.
 - A PR the owner authors that touches protected paths needs a bypass or a
   second code owner, since GitHub does not allow self-approval.
 - The protected list is the policy. It changes only through a PR the owner

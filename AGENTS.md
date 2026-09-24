@@ -72,9 +72,10 @@ enforces it. Any other PR merges once the Cursor Approval Agent has approved
 its current head and every gate is green; the implementing agent merges it.
 Request owner review instead (add the `owner-review` label and do not merge)
 for critical changes CODEOWNERS cannot see: fact identity or graph-hash
-changes, confidence-tier or provenance semantics, data migrations or loss.
-Never add a `*` rule to CODEOWNERS or remove a protected path without the
-owner's approval.
+changes, confidence-tier or provenance semantics, data migrations or loss, and
+any `priority:must` change to user data. A PR that adds a new agent tool
+directory or build entrypoint also adds it to CODEOWNERS. Never add a `*` rule
+to CODEOWNERS or remove a protected path without the owner's approval.
 
 ## Governed CI lifecycle
 
