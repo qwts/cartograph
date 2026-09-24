@@ -313,6 +313,185 @@ fn import_targets_carry_provenance_and_only_proven_externals_confirm() {
 }
 
 #[test]
+fn a_local_replace_target_inside_the_repository_is_internal() {
+    // AC-0207 (#477): a local `replace` keeps its target directory, resolved
+    // against the declaring go.mod, so an existing package beneath it is a
+    // Confirmed internal boundary; a missing one, or a target that leaves
+    // the repository root (lexically or via a symlink), stays a Gap.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("repo");
+    let write = |path: &std::path::Path, body: &str| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write(
+        &root.join("svc/go.mod"),
+        "module example.com/svc\n\nreplace (\n\texample.com/shared => ../shared\n\texample.com/outside => ../../outside\n\texample.com/linked => ./linked\n)\n",
+    );
+    write(&root.join("shared/go.mod"), "module example.com/shared\n");
+    write(&root.join("shared/pkg/x.go"), "package pkg\n");
+    // Real packages outside the repository root: never probed.
+    write(&outer.path().join("outside/pkg/x.go"), "package pkg\n");
+    write(&outer.path().join("linked/pkg/x.go"), "package pkg\n");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outer.path().join("linked"), root.join("svc/linked")).unwrap();
+    write(
+        &root.join("svc/main.go"),
+        "package main\n\nimport (\n\t\"example.com/shared/pkg\"\n\t\"example.com/shared/missing\"\n\t\"example.com/outside/pkg\"\n\t\"example.com/linked/pkg\"\n)\n",
+    );
+    let out = extract_dir(&root, &id()).unwrap();
+    let expect = |id: &str| boundary_of(&out, id);
+    assert_eq!(
+        expect("mod:example.com/shared/pkg"),
+        ("internal".into(), Confirmed)
+    );
+    assert_eq!(
+        expect("mod:example.com/shared/missing"),
+        ("unresolved".into(), Gap)
+    );
+    assert_eq!(
+        expect("mod:example.com/outside/pkg"),
+        ("unresolved".into(), Gap)
+    );
+    assert_eq!(
+        expect("mod:example.com/linked/pkg"),
+        ("unresolved".into(), Gap)
+    );
+}
+
+#[test]
+fn a_root_replace_beside_the_target_go_mod_is_internal() {
+    // AC-0207 (#477): the issue's shape — a root `replace … => ./shared`
+    // listed before `shared/go.mod` — resolves to the package directory.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("go.mod"),
+        "module example.com/svc\n\nreplace example.com/shared => ./shared\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("shared/pkg")).unwrap();
+    std::fs::write(
+        dir.path().join("shared/go.mod"),
+        "module example.com/shared\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("shared/pkg/x.go"), "package pkg\n").unwrap();
+    std::fs::write(
+        dir.path().join("main.go"),
+        "package main\n\nimport (\n\t\"example.com/shared/pkg\"\n\t\"example.com/shared/missing\"\n)\n",
+    )
+    .unwrap();
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    assert_eq!(
+        boundary_of(&out, "mod:example.com/shared/pkg"),
+        ("internal".into(), Confirmed)
+    );
+    assert_eq!(
+        boundary_of(&out, "mod:example.com/shared/missing"),
+        ("unresolved".into(), Gap)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_package_directory_symlinked_out_of_the_repository_is_a_gap() {
+    // AC-0207 (#477 review): the complete package directory — and the Go
+    // file proving it — must resolve inside the repository root, beneath a
+    // `replace` target and beneath a discovered `go.mod` alike.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    use std::os::unix::fs::symlink;
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("repo");
+    let write = |path: &std::path::Path, body: &str| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write(
+        &root.join("go.mod"),
+        "module example.com/svc\n\nreplace example.com/shared => ./shared\n",
+    );
+    write(&root.join("shared/go.mod"), "module example.com/shared\n");
+    write(&root.join("shared/ok/x.go"), "package ok\n");
+    write(&outer.path().join("elsewhere/x.go"), "package elsewhere\n");
+    symlink(outer.path().join("elsewhere"), root.join("shared/pkg")).unwrap();
+    symlink(outer.path().join("elsewhere"), root.join("local")).unwrap();
+    std::fs::create_dir_all(root.join("filelink")).unwrap();
+    symlink(
+        outer.path().join("elsewhere/x.go"),
+        root.join("filelink/x.go"),
+    )
+    .unwrap();
+    write(
+        &root.join("main.go"),
+        "package main\n\nimport (\n\t\"example.com/shared/ok\"\n\t\"example.com/shared/pkg\"\n\t\"example.com/svc/local\"\n\t\"example.com/svc/filelink\"\n)\n",
+    );
+    let out = extract_dir(&root, &id()).unwrap();
+    let expect = |id: &str| boundary_of(&out, id);
+    assert_eq!(
+        expect("mod:example.com/shared/ok"),
+        ("internal".into(), Confirmed)
+    );
+    for escaped in [
+        "mod:example.com/shared/pkg",
+        "mod:example.com/svc/local",
+        "mod:example.com/svc/filelink",
+    ] {
+        assert_eq!(expect(escaped), ("unresolved".into(), Gap), "{escaped}");
+    }
+}
+
+#[test]
+fn a_version_qualified_replace_never_confirms_internal() {
+    // AC-0207 (#477 review): `replace m v1.0.0 => …` applies only to that
+    // version and no selected version is known, so a module with a
+    // version-qualified replace is never proven internal — not through the
+    // replacement target, nor through an in-repository go.mod declaring it.
+    // Foreign modules pinned the same way stay Confirmed external.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, body: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write(
+        "go.mod",
+        "module example.com/svc\n\nreplace (\n\texample.com/shared v1.0.0 => ./shared-v1\n\texample.com/other v1.0.0 => example.com/fork v1.0.0\n\tgolang.org/x/net v0.1.0 => golang.org/x/net v0.2.0\n)\n",
+    );
+    write("shared-v1/go.mod", "module example.com/shared\n");
+    write("shared-v1/pkg/x.go", "package pkg\n");
+    write("other/go.mod", "module example.com/other\n");
+    write("other/pkg/x.go", "package pkg\n");
+    // A nested module beneath a pinned path is no proof either.
+    write("shared-v1/sub/go.mod", "module example.com/shared/sub\n");
+    write("shared-v1/sub/x.go", "package sub\n");
+    write(
+        "main.go",
+        "package main\n\nimport (\n\t\"example.com/shared/pkg\"\n\t\"example.com/other/pkg\"\n\t\"example.com/shared/sub\"\n\t\"golang.org/x/net/http2\"\n)\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let expect = |id: &str| boundary_of(&out, id);
+    assert_eq!(
+        expect("mod:example.com/shared/pkg"),
+        ("unresolved".into(), Gap)
+    );
+    assert_eq!(
+        expect("mod:example.com/other/pkg"),
+        ("unresolved".into(), Gap)
+    );
+    assert_eq!(
+        expect("mod:example.com/shared/sub"),
+        ("unresolved".into(), Gap)
+    );
+    assert_eq!(
+        expect("mod:golang.org/x/net/http2"),
+        ("external".into(), Confirmed)
+    );
+}
+
+#[test]
 fn without_go_mod_no_import_is_proven_external() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
