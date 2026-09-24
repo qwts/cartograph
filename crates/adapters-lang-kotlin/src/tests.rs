@@ -596,3 +596,78 @@ fn gitignored_trees_are_not_collected() {
     collect_kotlin_files(dir.path(), &mut files).unwrap();
     assert_eq!(files, ["src/App.kt"]);
 }
+
+/// Sorted `METHOD path` of every Endpoint in `out`.
+fn endpoint_routes(out: &Extraction) -> Vec<String> {
+    let mut routes: Vec<String> = out
+        .nodes
+        .iter()
+        .filter(|node| node.label == "Endpoint")
+        .map(|node| {
+            format!(
+                "{} {}",
+                node.props["method"].as_str().unwrap(),
+                node.props["path"].as_str().unwrap()
+            )
+        })
+        .collect();
+    routes.sort_unstable();
+    routes
+}
+
+// AC-0205 (#445): a trailing slash spelled in the source survives
+// composition — Spring 6 matches `/a` and `/a/` as distinct routes — while
+// segments still meet at exactly one `/`.
+#[test]
+fn spring_routes_keep_literal_trailing_slashes() {
+    let slashed_base = br#"package com.demo.web
+
+import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/api/")
+class ApiController {
+    @GetMapping
+    fun root(): String = "r"
+
+    @PostMapping("/items")
+    fun create(): String = "c"
+}
+"#;
+    let out = extract_source(
+        slashed_base,
+        "src/main/kotlin/com/demo/web/ApiController.kt",
+        &id(),
+    )
+    .unwrap();
+    assert_eq!(endpoint_routes(&out), ["GET /api/", "POST /api/items"]);
+
+    let slashed_tail = br#"package com.demo.web
+
+import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/v1")
+class V1Controller {
+    @GetMapping("/")
+    fun root(): String = "r"
+
+    @GetMapping("/x")
+    fun x(): String = "x"
+
+    @GetMapping("/x/")
+    fun xSlash(): String = "xs"
+}
+"#;
+    let out = extract_source(
+        slashed_tail,
+        "src/main/kotlin/com/demo/web/V1Controller.kt",
+        &id(),
+    )
+    .unwrap();
+    assert_eq!(
+        endpoint_routes(&out),
+        ["GET /v1/", "GET /v1/x", "GET /v1/x/"]
+    );
+    assert!(!out.nodes.iter().any(|node| node.id.contains("//")));
+}

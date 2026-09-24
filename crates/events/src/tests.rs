@@ -362,6 +362,56 @@ fn unresolvable_fetches_emit_gaps_with_reasons() {
     assert_eq!(gap_edges, 3);
 }
 
+// AC-0205 (#445): endpoint routes keep a literal trailing slash, so a fetch
+// that differs from a route only by that slash is not the same route — it
+// never confirms against it and escalates to a Gap instead. (T-0205)
+#[test]
+fn trailing_slash_only_differences_never_confirm() {
+    let endpoints = eps(&["ep:test@GET:/api/", "ep:test@GET:/v1/items"]);
+    let cfg = ConfigIndex::default();
+    let id = SourceId {
+        repo: "test",
+        commit: "deadbeef",
+    };
+    let out = stitch_fetches(
+        &[
+            fetch_site("GET", IdentityExpr::Literal("/api".into())),
+            fetch_site("GET", IdentityExpr::Literal("/v1/items/".into())),
+            fetch_site("GET", IdentityExpr::Literal("/api/".into())),
+        ],
+        &endpoints,
+        &cfg,
+        &id,
+    );
+    let fetches: Vec<(&str, &str)> = out
+        .edges
+        .iter()
+        .filter(|e| e.label == "FETCHES")
+        .map(|e| (e.dst.as_str(), confidence(&e.props)))
+        .collect();
+    assert_eq!(
+        fetches,
+        [
+            ("gap:fetch:test@app.tsx@10", "Gap"),
+            ("gap:fetch:test@app.tsx@10", "Gap"),
+            ("ep:test@GET:/api/", "Confirmed"),
+        ]
+    );
+    let reasons: Vec<&str> = out
+        .nodes
+        .iter()
+        .filter(|n| n.label == "Gap")
+        .map(|n| n.props["reason"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            "no recovered endpoint matches GET /api",
+            "no recovered endpoint matches GET /v1/items/"
+        ]
+    );
+}
+
 // An env-resolved base URL confirms through the config resolver, same as
 // channel identities (AC-0011 discipline applied to AC-0014).
 #[test]

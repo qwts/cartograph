@@ -434,14 +434,19 @@ fn mapping_method(annotation_name: &str) -> Option<&'static str> {
     }
 }
 
+/// Compose a class-level base with a method-level path (AC-0205, #445).
+/// Segments meet at exactly one `/`, but a trailing slash spelled in the
+/// source is kept: Spring 6 matches `/a` and `/a/` as distinct routes, so
+/// `"/api/"` + `""` is `/api/` and `"/api"` + `"/"` is `/api/`.
 fn join_route(base: &str, tail: &str) -> String {
-    let base = base.trim_end_matches('/');
-    let tail = tail.trim_start_matches('/');
     match (base.is_empty(), tail.is_empty()) {
         (true, true) => "/".to_string(),
-        (true, false) => format!("/{tail}"),
         (false, true) => base.to_string(),
-        (false, false) => format!("{base}/{tail}"),
+        (_, false) => format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            tail.trim_start_matches('/')
+        ),
     }
 }
 
@@ -719,8 +724,8 @@ pub fn extract_source(
                 });
                 continue;
             };
-            // Sorted and de-duplicated: `{ "/a", "/a/" }` is one route, and
-            // emission order must not depend on source order (determinism).
+            // Sorted and de-duplicated so emission order never depends on
+            // source order (determinism); `{ "/a", "/a/" }` stays two routes.
             let routes: BTreeSet<String> = bases
                 .iter()
                 .flat_map(|base| tails.iter().map(move |tail| join_route(base, tail)))
