@@ -52,6 +52,17 @@ the universal application and disk-image build, signing or explicit
 `unsigned-dev` handling, notarization, Gatekeeper and staple validation, bundle
 inspection, stable artifact staging, and upload.
 
+### Amendment — 2026-09-23: signing secrets never reach compilation (#480)
+
+Cargo expands `env!`/`option_env!` and runs build scripts and proc macros, so
+any signing input present while compiling could be embedded in the shipped
+binary. Packaging therefore compiles the universal binary with
+`tauri build --no-bundle` in a step that has no signing variables and no
+decoded key file, and only then decodes the App Store Connect key and runs
+`tauri bundle` with the mapped Tauri inputs to package, sign, and notarize.
+The key path travels as a step output, never through `$GITHUB_ENV`. The
+fail-closed mode check still runs before the build.
+
 ## Consequences
 
 - One artifact runs natively on supported Intel and Apple Silicon Macs.

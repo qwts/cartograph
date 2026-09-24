@@ -173,7 +173,31 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: node scripts/signing-secrets.mjs >> "$GITHUB_OUTPUT"
 
+      # Compile with no signing material in the environment (#480). Cargo runs
+      # every crate's build script and proc macro and expands env!/option_env!,
+      # so any secret visible here could be embedded in the shipped binary
+      # (e.g. `include_str!(env!("APPLE_API_KEY_PATH"))`). Compilation is split
+      # from bundling: `tauri build --no-bundle` compiles and lipos the
+      # universal binary; `tauri bundle` below only packages, signs, and
+      # notarizes it (tauri-cli 2.11.4 runs no Cargo compilation there, only
+      # `cargo metadata`). The App Store Connect key is decoded only after this
+      # step and is passed as a step output, never through $GITHUB_ENV, so the
+      # key file does not exist and no APPLE_* variable is set while compiling.
+      - name: Compile universal binary without signing secrets
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY \
+            APPLE_API_KEY_PATH APPLE_API_ISSUER APPLE_SIGNING_IDENTITY \
+            CSC_LINK CSC_KEY_PASSWORD; do
+            if [ -n "${!name:-}" ]; then
+              echo "::error::$name must not be set while compiling"
+              exit 1
+            fi
+          done
+          npm run package:macos:compile
+
       - name: Decode App Store Connect key
+        id: apple_key
         if: steps.signing.outputs.signed == 'true'
         env:
           APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
@@ -184,9 +208,9 @@ jobs:
           key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           printf '%s' "$APPLE_API_KEY_B64" | openssl base64 -d -A -out "$key_path"
           test -s "$key_path"
-          echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+          echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
 
-      - name: Build signed and notarized universal bundle
+      - name: Bundle, sign, and notarize universal app
         if: steps.signing.outputs.signed == 'true'
         env:
           # Map the established Photos secret names to Tauri's documented inputs.
@@ -194,14 +218,15 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run package:macos
+          APPLE_API_KEY_PATH: ${{ steps.apple_key.outputs.key_path }}
+        run: npm run package:macos:bundle
 
-      - name: Build ad-hoc signed unsigned-dev universal bundle
+      - name: Bundle ad-hoc signed unsigned-dev universal app
         if: steps.signing.outputs.signed == 'false'
         env:
           # Apple Silicon requires a signature; '-' is Tauri's ad-hoc identity.
           APPLE_SIGNING_IDENTITY: '-'
-        run: npm run package:macos
+        run: npm run package:macos:bundle
 
       - name: Locate bundles
         id: bundles
@@ -220,6 +245,7 @@ jobs:
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ steps.apple_key.outputs.key_path }}
         run: |
           set -euo pipefail
           dmg="${{ steps.bundles.outputs.dmg }}"
