@@ -308,6 +308,52 @@ test('macOS packaging is exact-SHA, universal, fail-closed, and verified', () =>
   assert.doesNotMatch(workflow, /Run required repository gates/u);
 });
 
+test('macOS packaging compiles with no signing secrets in the environment (#480)', () => {
+  // Cargo expands env!/option_env! and runs build scripts and proc macros, so
+  // any signing input visible while compiling could be embedded in the binary.
+  const workflow = readFileSync(path.join(root, '.github/workflows/package.yml'), 'utf8');
+  const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const steps = workflow.split(/\n(?= {6}- name: )/u);
+  const step = (name) => steps.find((block) => block.startsWith(`      - name: ${name}`)) ?? '';
+  const index = (name) => steps.findIndex((block) => block.startsWith(`      - name: ${name}`));
+
+  assert.match(manifest.scripts['package:macos:compile'], /^tauri build --no-bundle --target universal-apple-darwin$/u);
+  assert.match(manifest.scripts['package:macos:bundle'], /^tauri bundle --bundles app,dmg --target universal-apple-darwin$/u);
+
+  const compile = step('Compile universal binary without signing secrets');
+  assert.match(compile, /npm run package:macos:compile/u);
+  assert.doesNotMatch(compile, /^\s+env:/mu);
+  assert.doesNotMatch(compile, /secrets\./u);
+
+  // No step may export signing material into later steps' environment.
+  assert.doesNotMatch(workflow, /APPLE_[A-Z_]*=.*GITHUB_ENV/u);
+  assert.doesNotMatch(workflow, />>\s*"?\$GITHUB_ENV/u);
+
+  // Fail-closed mode selection precedes the compile; every step that holds a
+  // signing secret other than mode selection runs after it.
+  const compileAt = index('Compile universal binary without signing secrets');
+  assert.ok(index('Select signing mode') < compileAt);
+  for (const name of [
+    'Decode App Store Connect key',
+    'Bundle, sign, and notarize universal app',
+    'Bundle ad-hoc signed unsigned-dev universal app',
+    'Notarize and staple disk image',
+  ]) {
+    assert.ok(index(name) > compileAt, `${name} must run after compilation`);
+  }
+  steps.forEach((block, position) => {
+    if (/secrets\.(?:CSC_|APPLE_)/u.test(block) && !block.startsWith('      - name: Select signing mode')) {
+      assert.ok(position > compileAt, `signing secret visible before compilation in: ${block.split('\n')[0]}`);
+    }
+  });
+
+  for (const name of ['Bundle, sign, and notarize universal app', 'Bundle ad-hoc signed unsigned-dev universal app']) {
+    assert.match(step(name), /npm run package:macos:bundle/u);
+  }
+  assert.match(step('Bundle, sign, and notarize universal app'), /APPLE_API_KEY_PATH: \$\{\{ steps\.apple_key\.outputs\.key_path \}\}/u);
+  assert.doesNotMatch(workflow, /npm run package:macos\n/u);
+});
+
 test('release publication is reviewed, exact-evidence-only, and idempotent', () => {
   const workflow = readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8');
 
