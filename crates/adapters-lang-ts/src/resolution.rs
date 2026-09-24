@@ -10,12 +10,15 @@
 //! on every walk), and every rewrite is proven against the set of files
 //! that actually exist. Anything unproven keeps its opaque `mod:` node —
 //! fail closed, never a guess. External packages (`node_modules`) are
-//! explicitly out of scope and always stay `mod:` nodes.
+//! explicitly out of scope and always stay `mod:` nodes. Literal Vite and
+//! webpack `resolve.alias` entries (#463) join the same proof after
+//! tsconfig and workspace packages; see [`crate::bundler_alias`].
 //!
 //! The tsconfig parse is [`adapters_fw::tsconfig`] — the same parser the
 //! toolchain detector (#215) stores facts from, so the resolution behavior
 //! and the graph's `Tool` facts can never disagree.
 
+use crate::bundler_alias::{self, BundlerAlias};
 use crate::{Extraction, SOURCE_EXTENSIONS, SourceId};
 use core_graph::placeholder::Boundary;
 use core_prov::{EvidenceRef, Provenance};
@@ -69,6 +72,9 @@ pub(crate) struct ResolutionIndex {
     workspace_names: std::collections::BTreeMap<String, (String, (u64, u64))>,
     /// Every `package.json`'s declared dependencies (#237 corroboration).
     manifests: Vec<Manifest>,
+    /// Literal Vite/webpack `resolve.alias` entries (#463), nearest config
+    /// first, declaration order within one config.
+    bundler_aliases: Vec<BundlerAlias>,
 }
 
 /// One `package.json`'s declared dependency names, for citing the
@@ -189,6 +195,13 @@ impl ResolutionIndex {
                     span: facts.span,
                     extends: facts.settings.contains_key("extends"),
                 });
+            } else if bundler_alias::is_bundler_config(&name) {
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                index
+                    .bundler_aliases
+                    .extend(bundler_alias::parse(&text, &dir_rel, &rel));
             } else if name == "package.json" {
                 let Ok(text) = std::fs::read_to_string(&path) else {
                     continue;
@@ -244,6 +257,13 @@ impl ResolutionIndex {
                 .then(a.config_path.cmp(&b.config_path))
         });
         index.packages.sort_by(|a, b| a.name.cmp(&b.name));
+        // Stable: declaration order survives within one config.
+        index.bundler_aliases.sort_by(|a, b| {
+            b.dir
+                .len()
+                .cmp(&a.dir.len())
+                .then(a.config_path.cmp(&b.config_path))
+        });
         // Nearest manifest first, like Node's upward `node_modules` walk.
         index.manifests.sort_by(|a, b| {
             b.dir
@@ -255,7 +275,16 @@ impl ResolutionIndex {
     }
 
     fn is_empty(&self) -> bool {
-        self.tsconfigs.is_empty() && self.packages.is_empty()
+        self.tsconfigs.is_empty() && self.packages.is_empty() && self.bundler_aliases.is_empty()
+    }
+
+    /// The first literal bundler alias governing `importer` that addresses
+    /// `spec`: a config governs every file beneath its directory.
+    fn bundler_alias(&self, spec: &str, importer: &str) -> Option<&BundlerAlias> {
+        self.bundler_aliases.iter().find(|alias| {
+            (alias.dir.is_empty() || importer.starts_with(&format!("{}/", alias.dir)))
+                && alias.matches(spec)
+        })
     }
 
     /// The tsconfig scope governing `importer` (nearest wins outright).
@@ -415,6 +444,22 @@ fn resolve_spec(
             }
         }
     }
+    // Literal bundler aliases (#463): the replacement path is proven
+    // against real files exactly like a tsconfig alias target.
+    if let Some(alias) = index.bundler_alias(spec, importer)
+        && let Some(target) = &alias.target
+    {
+        let rest = &spec[alias.key.len()..];
+        let candidate = normalize(&format!("{target}{rest}"));
+        if let Some(real) = prove_candidate(candidate.trim_start_matches('/'), repo, known_files) {
+            return Some(Resolved {
+                rel_path: real,
+                config_path: alias.config_path.clone(),
+                span: alias.span,
+                via: "bundler-alias",
+            });
+        }
+    }
     None
 }
 
@@ -531,8 +576,8 @@ fn package_name(spec: &str) -> Option<&str> {
 
 /// Classify a bare specifier config-driven resolution left as a `mod:`
 /// node (#237, ADR-0031). Anything the repository could still answer —
-/// a `#` subpath import, a tsconfig alias or `baseUrl` path, a workspace
-/// package, a repository source directory, or a spelling that cannot name
+/// a `#` subpath import, a tsconfig alias or `baseUrl` path, a literal
+/// bundler `resolve.alias`, a workspace package, a repository source directory, or a spelling that cannot name
 /// an npm package — stays an explicit Gap. What remains resolves only from
 /// `node_modules` (or Node core) under Node's rules: an external boundary,
 /// citing the nearest `package.json` that declares it when one does.
@@ -560,6 +605,16 @@ pub(crate) fn classify_bare_import(
             .any(|(pattern, _)| apply_pattern(pattern, "", spec).is_some())
     }) {
         return unresolved("tsconfig paths alias with no proven file");
+    }
+    // A literal bundler alias makes the specifier the repository's own even
+    // when it is spelled like a package name (#463).
+    if let Some(alias) = index.bundler_alias(spec, importer) {
+        return Boundary::Unresolved {
+            reason: format!(
+                "bundler resolve.alias {} in {} with no proven file",
+                alias.key, alias.config_path
+            ),
+        };
     }
     if let Some(builtin) = spec.strip_prefix("node:") {
         return Boundary::External {

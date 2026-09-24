@@ -3012,3 +3012,104 @@ fn an_asset_import_escaping_the_repository_is_never_internal() {
     let prov: Provenance = serde_json::from_value(node.props["prov"].clone()).unwrap();
     assert_eq!(prov.confidence_tier, core_prov::ConfidenceTier::Gap);
 }
+
+#[test]
+fn literal_bundler_aliases_keep_package_shaped_specifiers_in_system() {
+    // AC-0220 (#463): a Vite/webpack `resolve.alias` key spelled like a
+    // package name is read as data (never executed). A literal path target
+    // resolves to the real file citing the config; an unproven one stays an
+    // explicit Gap naming the config; a key aliased to another package or to
+    // a non-literal value keeps today's external classification.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    let vite = r#"import { defineConfig } from 'vite';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const dyn = process.env.X;
+export default defineConfig({
+  resolve: {
+    alias: {
+      components: path.resolve(__dirname, 'app/components'),
+      'widgets': './app/widgets',
+      assets: fileURLToPath(new URL('./app/assets', import.meta.url)),
+      lodash: 'lodash-es',
+      dynamic: dyn,
+    },
+  },
+});
+"#;
+    write("vite.config.ts", vite);
+    write(
+        "web/webpack.config.js",
+        "module.exports = { resolve: { alias: { store$: '/abs/store.js', [key]: './x' } } };\n",
+    );
+    write("app/components/Button.tsx", "export const Button = 1;\n");
+    write("app/widgets/index.ts", "export const w = 1;\n");
+    write(
+        "src/main.ts",
+        "import { Button } from 'components/Button';\nimport { w } from 'widgets';\nimport { gone } from 'components/Gone';\nimport logo from 'assets/logo';\nimport _ from 'lodash';\nimport d from 'dynamic';\n",
+    );
+    write(
+        "web/app.ts",
+        "import s from 'store';\nimport sub from 'store/sub';\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let edge = |dst: &str| {
+        out.edges
+            .iter()
+            .find(|edge| edge.label == "IMPORTS" && edge.dst == dst)
+            .unwrap_or_else(|| panic!("no IMPORTS edge to {dst}"))
+    };
+    let button = edge("file:qwtm/example@app/components/Button.tsx");
+    assert_eq!(button.props["resolved_via"], "bundler-alias");
+    let prov: Provenance = serde_json::from_value(button.props["prov"].clone()).unwrap();
+    let cited = prov
+        .evidence
+        .iter()
+        .find(|evidence| evidence.path == "vite.config.ts")
+        .expect("the deciding bundler config is citable evidence");
+    assert_eq!(
+        &vite[cited.byte_start as usize..cited.byte_end as usize],
+        "components"
+    );
+    assert_eq!(
+        edge("file:qwtm/example@app/widgets/index.ts").props["resolved_via"],
+        "bundler-alias"
+    );
+    let boundary = |id: &str| {
+        let node = out
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap_or_else(|| panic!("missing node {id}"));
+        let prov: Provenance = serde_json::from_value(node.props["prov"].clone()).unwrap();
+        (
+            node.props["boundary"].as_str().unwrap().to_string(),
+            prov.confidence_tier,
+            node.props["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    };
+    for (gap, config) in [
+        ("mod:components/Gone", "vite.config.ts"),
+        ("mod:assets/logo", "vite.config.ts"),
+        ("mod:store", "web/webpack.config.js"),
+    ] {
+        let (kind, tier, reason) = boundary(gap);
+        assert_eq!((kind.as_str(), tier), ("unresolved", Gap), "{gap}");
+        assert!(reason.contains(config), "{gap}: {reason}");
+    }
+    // Package-to-package and non-literal aliases keep the old behavior.
+    assert_eq!(boundary("mod:lodash").0, "external");
+    assert_eq!(boundary("mod:lodash").1, Confirmed);
+    assert_eq!(boundary("mod:dynamic").0, "external");
+    // webpack `store$` is exact: it does not address `store/sub`.
+    assert_eq!(boundary("mod:store/sub").0, "external");
+}

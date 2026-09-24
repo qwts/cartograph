@@ -34,7 +34,8 @@ and broke R-INT-2: a fact without provenance could not show why it was there.
        repository `go.mod` and local `replace`.
      - Python: no repository directory or module has the same top-level name.
      - JS/TS: a bare specifier that matches no tsconfig alias or `baseUrl` path,
-       workspace package, `#` subpath import, or repository source directory,
+       literal bundler `resolve.alias` key (#463), workspace package, `#`
+       subpath import, or repository source directory,
        and that names a valid npm package. When a `package.json` declares the
        package, its declaration is cited too. Inherited tsconfig settings are
        not loaded, so under a tsconfig that `extends` another only a
@@ -83,8 +84,11 @@ and broke R-INT-2: a fact without provenance could not show why it was there.
   exactly what was proven.
 - A bundler-only alias (webpack or Vite `resolve.alias`) that is spelled as
   a valid package name and matches no tsconfig alias or source directory
-  counts as external. T0 does not read bundler configs, and this limit is
-  tracked separately (#463).
+  is the repository's own when its key and path-shaped replacement are
+  literal (#463, AC-0220): T0 reads the config as data, never executing it,
+  and resolves the specifier or keeps it a Gap naming the config. A
+  non-literal alias (a variable, a computed key, a regex `find`) is not
+  read, so a package-shaped specifier it names still counts as external.
 - `mod:` ids that name an imported type rather than a module are an
   id-scheme question, tracked in #464.
 - Shared external modules (such as `mod:react`) have global ids. Two repos in

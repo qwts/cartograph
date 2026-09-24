@@ -3193,6 +3193,7 @@ fn collect_ts_files(root: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
     Ok(())
 }
 
+mod bundler_alias;
 mod callable;
 pub mod captured;
 pub mod chrome_messaging;
