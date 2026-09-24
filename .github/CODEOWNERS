@@ -1,16 +1,19 @@
-# Require repository-owner review for all changes when branch protection enables
-# code-owner reviews.
-* @qwts
+# Owner review is required (ruleset: require_code_owner_review) for the paths
+# below. Everything else merges on the automated approval plus green gates
+# (ADR-0029). There is deliberately no `*` rule: add paths here, never a
+# wildcard, so routine changes stay agent-mergeable and these stay protected
+# against untrusted collaborators and automation alike.
 
-# Keep repository governance files explicitly owned even if more specific rules are
-# added later.
+# Repository governance and CI: workflows, action pins, templates, this file.
 /.github/ @qwts
 
+# Scripts that CI, release, and signing execute.
+/scripts/ @qwts
+
 # Agent primitives: text agents read as directives, and configuration they
-# execute. Named explicitly rather than relying on the `*` wildcard above, so
-# these survive any future relaxation of it. `.claude/settings.json` and its
-# peers can define hooks that run shell commands, which is why the directories
-# matter at least as much as the markdown.
+# execute. `.claude/settings.json` and its peers can define hooks that run
+# shell commands, which is why the directories matter at least as much as the
+# markdown.
 AGENTS.md   @qwts
 CLAUDE.md   @qwts
 .agents/    @qwts
@@ -18,3 +21,23 @@ CLAUDE.md   @qwts
 .codex/     @qwts
 .cursor/    @qwts
 .mcp.json   @qwts
+
+# Architecture decisions.
+/docs/adr/ @qwts
+
+# Security boundaries: redaction before egress, model/provider egress and
+# keys, third-party plugin execution, and the desktop app's permissions.
+/crates/core-redact/ @qwts
+/crates/llm/ @qwts
+/crates/adapters-plugin-host/ @qwts
+/src-tauri/capabilities/ @qwts
+/src-tauri/tauri.conf.json @qwts
+/src-tauri/tauri.macos.conf.json @qwts
+
+# Supply chain: new or changed dependency requirements. Lockfile-only bumps
+# stay automated.
+Cargo.toml   @qwts
+package.json @qwts
+
+# Release decision: only the Version packages PR changes this.
+/CHANGELOG.md @qwts

@@ -64,6 +64,18 @@ interoperability. Delivery gates distinguish planned capabilities from shipped o
    test code cites its AC in a comment. Manual procedures run at milestone
    boundaries, results recorded on the milestone's task issue.
 
+## Review and merge policy
+
+Review is risk-tiered ([ADR-0029](docs/adr/ADR-0029-risk-tiered-review.md)).
+Paths in `.github/CODEOWNERS` require the owner's approval, and the ruleset
+enforces it. Any other PR merges once the Cursor Approval Agent has approved
+its current head and every gate is green; the implementing agent merges it.
+Request owner review instead (add the `owner-review` label and do not merge)
+for critical changes CODEOWNERS cannot see: fact identity or graph-hash
+changes, confidence-tier or provenance semantics, data migrations or loss.
+Never add a `*` rule to CODEOWNERS or remove a protected path without the
+owner's approval.
+
 ## Governed CI lifecycle
 
 Cartograph inherits the execution policy from `qwts/playbook-engineering`
