@@ -98,7 +98,7 @@ jobs:
           echo "validated=$validated" >> "$GITHUB_OUTPUT"
 
   # Keeps the spec, user stories, traceability matrix, ADRs, release tooling,
-  # and public help mirror mutually consistent in every complete suite.
+  # and help mirror source mutually consistent in every complete suite.
   docs:
     name: Docs & traceability
     needs: [policy, merge-evidence, preflight-evidence]
@@ -129,10 +129,10 @@ jobs:
       - name: Version and workflow tooling tests
         run: npm run test:version
 
-      - name: Help mirror drift check
-        run: |
-          git clone --depth 1 https://github.com/qwts/cartograph.wiki.git /tmp/wiki
-          node scripts/check-help-mirror.mjs /tmp/wiki
+      # Validates docs/help only; the wiki never gates a PR. The post-merge
+      # help-wiki-sync workflow mirrors main to the wiki (#470).
+      - name: Help mirror source check
+        run: node scripts/check-help-mirror.mjs --validate
 
   # Rust core: format, lint-as-error, tests. The pinned toolchain comes from
   # rust-toolchain.toml; the commands and stable context are unchanged.

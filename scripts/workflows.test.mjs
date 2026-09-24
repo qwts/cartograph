@@ -93,6 +93,7 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
     '.github/workflows/package.yml',
     '.github/workflows/release.yml',
     '.github/workflows/version-cut.yml',
+    '.github/workflows/help-wiki-sync.yml',
   ].map((file) => readFileSync(path.join(root, file), 'utf8'));
   for (const workflow of workflows) {
     assert.match(workflow, new RegExp(`ci-policy@${PLAYBOOK_RUNTIME_PIN}`, 'u'));
@@ -105,6 +106,25 @@ test('direct non-CI entrypoints authorize before checkout and reusable calls inh
   const packageWorkflow = workflows[1];
   assert.match(packageWorkflow, /if: github\.event_name != 'workflow_call'/u);
   assert.match(packageWorkflow, /github\.event_name == 'workflow_call' \|\| needs\.policy\.result == 'success'/u);
+});
+
+test('the help wiki follows main post-merge and never gates a PR (#470)', () => {
+  const ci = readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+  assert.doesNotMatch(ci, /\.wiki\.git/u);
+  assert.match(ci, /node scripts\/check-help-mirror\.mjs --validate/u);
+
+  const sync = readFileSync(path.join(root, '.github/workflows/help-wiki-sync.yml'), 'utf8');
+  assert.match(sync, /on:\n  push:\n    branches:\n      - main\n/u);
+  assert.doesNotMatch(sync, /pull_request/u);
+  assert.match(sync, /if: github\.ref == 'refs\/heads\/main'/u);
+  assert.match(sync, /cancel-in-progress: false/u);
+  // Least privilege: the repository token only reads; the wiki write uses
+  // the dedicated secret, fail-closed, and never persists checkout creds.
+  assert.doesNotMatch(sync, /: write/u);
+  assert.match(sync, /HAS_WIKI_TOKEN: \$\{\{ secrets\.HELP_WIKI_TOKEN != '' \}\}/u);
+  assert.match(sync, /persist-credentials: false/u);
+  assert.match(sync, /node scripts\/check-help-mirror\.mjs --sync/u);
+  assert.ok(sync.indexOf('Require the wiki credential') < sync.indexOf('actions/checkout@'));
 });
 
 test('the immutable policy action contract covers both actor fields and fork refusal', () => {
