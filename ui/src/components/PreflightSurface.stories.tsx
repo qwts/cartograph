@@ -112,7 +112,11 @@ export const ThreeWayClassification: Story = {
 
     // Structure only is visible but deferred to #120.
     await expect(canvas.getByRole('button', { name: 'Structure only' })).toBeDisabled();
-    await userEvent.click(canvas.getByRole('button', { name: /run full recovery/i }));
+    // A completed report keeps recovery the primary action (AC-0224).
+    const recover = canvas.getByRole('button', { name: /run full recovery/i });
+    await expect(recover).not.toHaveClass('secondary-button');
+    await expect(canvas.queryByText(/Preflight did not complete/)).not.toBeInTheDocument();
+    await userEvent.click(recover);
     await expect(args.onRunRecovery).toHaveBeenCalled();
   },
 };
@@ -148,13 +152,20 @@ export const RemoteTargetDefersDetection: Story = {
   },
 };
 
+/** AC-0224 (#246): a failed preflight demotes Run full recovery from the
+ *  primary action and says why; recovery stays available and fails closed. */
 export const DetectionFailed: Story = {
   args: { report: null, error: 'io: No such file or directory (os error 2)' },
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     await expect(
       canvas.getByText('io: No such file or directory (os error 2)'),
     ).toBeInTheDocument();
+    await expect(canvas.getByText(/Preflight did not complete/)).toBeInTheDocument();
+    const recover = canvas.getByRole('button', { name: /run full recovery/i });
+    await expect(recover).toHaveClass('secondary-button');
+    await userEvent.click(recover);
+    await expect(args.onRunRecovery).toHaveBeenCalledOnce();
   },
 };
 
@@ -210,5 +221,9 @@ export const Cancelled: Story = {
       canvas.getByText('Preflight cancelled. No findings were recorded.'),
     ).toBeInTheDocument();
     await expect(canvas.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    // A cancelled scan has no report either, so recovery is demoted (AC-0224).
+    await expect(canvas.getByRole('button', { name: /run full recovery/i })).toHaveClass(
+      'secondary-button',
+    );
   },
 };

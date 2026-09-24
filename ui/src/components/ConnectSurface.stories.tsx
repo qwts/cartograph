@@ -70,3 +70,47 @@ export const NoBackend: Story = {
     await expect(canvas.getByRole('button', { name: /preflight/i })).toBeDisabled();
   },
 };
+
+/** AC-0224 (#246): re-opening Connect keeps the last target, but focused with
+ *  the whole value selected, so typing a new path replaces it rather than
+ *  appending to it. */
+export const ReopenSelectsPreviousTarget: Story = {
+  args: { source: 'local', target: '/Users/me/Code/spring-petclinic' },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole('textbox') as HTMLInputElement;
+    await expect(input).toHaveFocus();
+    await expect(input.selectionStart).toBe(0);
+    await expect(input.selectionEnd).toBe(input.value.length);
+  },
+};
+
+/** AC-0224 (#246): Enter in the target field submits the preflight. */
+export const EnterSubmitsPreflight: Story = {
+  args: { source: 'local', target: '/repos/image-trail' },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByRole('textbox'), '{Enter}');
+    await expect(args.onPreflight).toHaveBeenCalledOnce();
+  },
+};
+
+/** AC-0224 (#246): Enter never submits what the Preflight button would not —
+ *  an empty target or no backend. */
+export const EnterRespectsDisabledPreflight: Story = {
+  args: { source: 'local', target: '   ' },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByRole('textbox'), '{Enter}');
+    await expect(args.onPreflight).not.toHaveBeenCalled();
+  },
+};
+
+export const EnterWithoutBackend: Story = {
+  args: { source: 'local', target: '/repos/image-trail', canPreflight: false },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByRole('textbox'), '{Enter}');
+    await expect(args.onPreflight).not.toHaveBeenCalled();
+  },
+};

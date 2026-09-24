@@ -68,6 +68,11 @@ export function PreflightSurface({
   onCancel,
   onRunRecovery,
 }: PreflightSurfaceProps) {
+  // A preflight that ended in an error (a missing path, a cancel) has no
+  // report to back a recovery, so recovery is demoted from the primary
+  // action (#246). It stays available: recovery scans the target itself and
+  // fails closed if it cannot read it.
+  const failed = !busy && report === null && error !== null;
   return (
     <section className="ingest-flow" aria-label="Preflight checks">
       <header className="ingest-hero">
@@ -112,6 +117,12 @@ export function PreflightSurface({
         </div>
       )}
       {error && <p className="error-text">{error}</p>}
+      {failed && (
+        <p className="muted preflight-failed-note">
+          Preflight did not complete. Go back to check the target, or run recovery anyway — it
+          scans the target itself and stops with an error if it cannot read it.
+        </p>
+      )}
 
       {!busy && !error && report === null && (
         <div className="preflight-card">
@@ -233,7 +244,12 @@ export function PreflightSurface({
           >
             Structure only
           </button>
-          <button type="button" onClick={onRunRecovery} disabled={!canRecover || busy}>
+          <button
+            type="button"
+            className={failed ? 'secondary-button' : undefined}
+            onClick={onRunRecovery}
+            disabled={!canRecover || busy}
+          >
             <span className="material-symbols-outlined" aria-hidden="true">
               play_arrow
             </span>

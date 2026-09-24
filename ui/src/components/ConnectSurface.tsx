@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { IngestSource } from '../store';
 
 export interface ConnectSurfaceProps {
@@ -44,8 +45,25 @@ export function ConnectSurface({
   onPreflight,
 }: ConnectSurfaceProps) {
   const active = SOURCES.find((s) => s.id === source) ?? SOURCES[0];
+  const input = useRef<HTMLInputElement>(null);
+  // Re-opening Connect keeps the last target (#246): focus it with the whole
+  // value selected, so typing a new path replaces it instead of appending.
+  useEffect(() => {
+    input.current?.focus();
+    input.current?.select();
+  }, []);
+  const canSubmit = canPreflight && target.trim() !== '';
   return (
-    <section className="ingest-flow" aria-label="Connect a target">
+    <form
+      className="ingest-flow"
+      aria-label="Connect a target"
+      onSubmit={(e) => {
+        // Enter in the target field submits (#246); a disabled Preflight
+        // stays disabled for Enter too.
+        e.preventDefault();
+        if (canSubmit) onPreflight();
+      }}
+    >
       <header className="ingest-hero">
         <h2>Connect a target</h2>
         <p className="muted">
@@ -73,6 +91,7 @@ export function ConnectSurface({
       <label className="target-field">
         <span className="target-label">Target</span>
         <input
+          ref={input}
           type="text"
           value={target}
           placeholder={active.placeholder}
@@ -90,17 +109,13 @@ export function ConnectSurface({
         <button type="button" className="secondary-button" onClick={onBack}>
           Back
         </button>
-        <button
-          type="button"
-          onClick={onPreflight}
-          disabled={!canPreflight || target.trim() === ''}
-        >
+        <button type="submit" disabled={!canSubmit}>
           <span className="material-symbols-outlined" aria-hidden="true">
             arrow_forward
           </span>
           Preflight
         </button>
       </footer>
-    </section>
+    </form>
   );
 }
