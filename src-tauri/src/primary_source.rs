@@ -600,17 +600,16 @@ pub(crate) fn matching_bindings(
     extraction: &adapters_lang_ts::Extraction,
     receipts: &[Receipt],
 ) -> Vec<SourceBinding> {
-    // Match the same last-value winners that graph publication materializes.
+    // Match the same facts that graph publication materializes: last-value
+    // node winners, and edges after evidence union (AC-0203). A relation
+    // collapsed from several sites is not the fact any one receipt attested,
+    // so it publishes unbound rather than failing the digest check.
     let nodes: std::collections::BTreeMap<_, _> = extraction
         .nodes
         .iter()
         .map(|node| (&node.id, node))
         .collect();
-    let edges: std::collections::BTreeMap<_, _> = extraction
-        .edges
-        .iter()
-        .map(|edge| ((&edge.src, &edge.label, &edge.dst), edge))
-        .collect();
+    let edges = crate::merge_edge_occurrences(&extraction.edges);
     receipts
         .iter()
         .filter(|receipt| match receipt.fact_key() {
@@ -620,7 +619,7 @@ pub(crate) fn matching_bindings(
                 label,
                 destination,
             } => edges
-                .get(&(source, label, destination))
+                .get(&(source.clone(), destination.clone(), label.clone()))
                 .is_some_and(|edge| receipt.matches_edge(edge)),
         })
         .map(|receipt| {
