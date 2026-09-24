@@ -18,7 +18,7 @@
 - **AC-0003** Given an unauthorized repo, when I add it, then I get a clear auth-failure with remediation and no partial clone.
 - **AC-0049** Given any completed ingest, when its summary is shown, then TypeScript and Terraform each report source-file, node, and edge counts including explicit zeros.
 - **AC-0050** Given a non-empty graph, when I request a clear and confirm the warning, then all graph facts are removed while durable job history remains intact.
-- **AC-0076** Given accumulated terminal jobs, when I clear finished jobs and confirm the warning, then done/failed/cancelled rows are removed while queued/running/interrupted jobs and all graph facts remain intact.
+- **AC-0076** Given accumulated terminal jobs, when I clear finished jobs and confirm the warning, then done/failed/cancelled rows are removed while queued/running/resumable interrupted jobs and all graph facts remain intact (an ended investigation's interrupted row is cleared per AC-0202).
 - **AC-0077** Given the production Jobs surface, when it renders, then it offers only lifecycle verbs on existing work (Cancel/Retry/Resume and Clear finished) — no job-creation control.
 - **AC-0078** Given any recovery command (ingest, add-repo, add-system, or an ingest retry/resume), when it runs, then extraction executes on a blocking worker thread — the webview/main thread never blocks, the UI stays interactive, and job progress renders throughout.
 - **AC-0085** Given one or more ingested targets, when the Workspace renders, then it states what the current system contains — each repo with its commit identity, derived from the graph's own facts (never from history logs, which survive a clear) — and that further ingests merge into the same system; the destructive action is labeled in system terms (Clear system) and its confirmation names exactly what is removed (every recovered fact) and what survives (job history and settings).
@@ -27,9 +27,10 @@
 - **AC-0196** Given an ingest summary, when the IngestCard renders it, then merged occurrences and node identity collisions are stated beside the totals whenever either is non-zero, and no merge line appears when both are zero.
 - **AC-0197** Given a local preflight, when it scans a repository, then the scan runs on a blocking worker thread rather than the invoking webview/main thread, and the Preflight surface shows live, throttled progress naming the file being read and its position in the walk.
 - **AC-0198** Given a running preflight, when I cancel it (or start another preflight, which supersedes it, or switch the source away from a local tree), then it stops before reading the next file, persists no findings, reports that it was cancelled rather than a raw error, and a superseded result never replaces the current one.
+- **AC-0202** Given an investigation ended by owner death, whose Job row is `interrupted` and offers no Retry/Resume, when I clear finished jobs and confirm, then that row is removed — the confirmation counts it — while its task keeps its interrupted or outcome-unknown status and journal in investigation history; the row is never relabelled done or failed, and resumable interrupted jobs are kept.
 - **Security:** Tokens stored in OS keychain; never logged; least-privilege App scopes.
 - **Performance:** Shallow/sparse clone; 1 GB repo clones within bounded progress feedback.
-- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0078,T-0085,T-0094,T-0195..0198
+- **Trace:** M0–M3 · `ingest`, `core-graph`, `app`, `ui` · — · T-0001..0003,T-0049..0050,T-0076..0078,T-0085,T-0094,T-0195..0198,T-0202
 
 ### US-0002 — Deterministic extraction of server-side facts (TS/JS/Python/Go/Java/Kotlin)
 - **Actor:** Engine

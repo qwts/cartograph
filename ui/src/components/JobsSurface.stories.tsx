@@ -255,6 +255,30 @@ export const InvestigationCoordinatorOwnsActions: Story = {
   },
 };
 
+export const EndedInvestigationRowsClear: Story = {
+  // AC-0202: an interrupted investigation row has no Resume, so Clear finished
+  // counts it; its status is shown as recorded, never as done or failed, and
+  // an ordinary interrupted row stays resumable and uncounted.
+  args: { jobs: [
+    job({ id: 102, kind: 'another-kind', status: 'interrupted', investigation_id: 'opaque-investigation-unknown' }),
+    job({ id: 1, kind: 'ingest-source-v1:src_33333333333333333333333333333333', status: 'interrupted' }),
+  ], onViewInvestigation: fn(), onCancelInvestigation: fn() },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getAllByText('interrupted')).toHaveLength(2);
+    await expect(canvas.queryByText('done')).not.toBeInTheDocument();
+    await expect(canvas.queryByText('failed')).not.toBeInTheDocument();
+    await expect(canvas.getAllByRole('button', { name: 'Resume' })).toHaveLength(1);
+    await userEvent.click(canvas.getByRole('button', { name: 'Clear finished' }));
+    const alert = within(canvas.getByRole('alert'));
+    await expect(
+      alert.getByText(/Remove 1 finished job\? Queued, running, and resumable work is kept\./),
+    ).toBeInTheDocument();
+    await userEvent.click(alert.getByRole('button', { name: 'Confirm clear' }));
+    await expect(args.onClearFinished).toHaveBeenCalledTimes(1);
+  },
+};
+
 export const RejectedActionRemainsVisible: Story = {
   // AC-0162: an ownership rejection does not invent a new status or remove
   // retry controls; the user can wait for the owner to finish and try again.
