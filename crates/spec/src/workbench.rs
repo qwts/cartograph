@@ -42,7 +42,7 @@ pub struct SpecArtifact {
     pub file_name: String,
     /// Display title.
     pub title: String,
-    /// `markdown` or `mermaid`.
+    /// `markdown`, `mermaid`, or `json`.
     pub format: String,
     /// Complete portable artifact text.
     pub content: String,
@@ -686,11 +686,139 @@ pub fn is_drift_edge(edge: &Edge) -> bool {
     matches!(edge.label.as_str(), "CONFLICTS" | "DRIFTS_FROM")
 }
 
+/// Registers at or below this many rows stay one flat table, as the Gaps
+/// lane does (`GROUP_THRESHOLD` in `ui/src/gapClasses.ts`).
+pub const GAP_REGISTER_FLAT_LIMIT: usize = 12;
+/// Cause classes detailed in `gap_register.md` (#240, AC-0209). Classes past
+/// the cap are counted in one explicit line; the sidecar lists them all.
+pub const GAP_REGISTER_MAX_CLASSES: usize = 50;
+/// Representative instances rendered per class in `gap_register.md`.
+pub const GAP_CLASS_REPRESENTATIVES: usize = 5;
+/// Cause labels longer than this are shortened in prose only.
+const GAP_CAUSE_MAX_CHARS: usize = 240;
+
+/// The escalation rung after the tier that established the gap — mirrors
+/// `nextTier` in `ui/src/gapClasses.ts`.
+fn next_tier(provenance: &Provenance) -> &'static str {
+    match provenance.tier {
+        Tier::Dynamic => "T2",
+        Tier::Semantic | Tier::Agentic => "T3",
+        Tier::Deterministic => "T1",
+    }
+}
+
+/// A gap's cause: a Gap node's stop reason, otherwise the unresolved
+/// relation kind — the same key the Gaps lane groups by (AC-0082), so the
+/// artifact's class counts reconcile with the UI's.
+fn gap_cause(assertion: &SpecAssertion) -> String {
+    if assertion.subject_kind == "Gap" {
+        assertion
+            .summary
+            .strip_prefix("Gap: ")
+            .unwrap_or(&assertion.summary)
+            .to_string()
+    } else {
+        format!("unresolved {} edge", assertion.subject_kind)
+    }
+}
+
+/// One cause class of the gap register.
+struct GapClass<'a> {
+    cause: String,
+    extractor: &'a str,
+    next_tier: &'static str,
+    members: Vec<&'a SpecAssertion>,
+}
+
+/// Group gaps into cause classes (cause × extractor), largest first, then by
+/// cause and extractor in byte order; members keep the register's id order.
+fn gap_classes(assertions: &[SpecAssertion]) -> Vec<GapClass<'_>> {
+    let mut classes: BTreeMap<(String, &str), GapClass<'_>> = BTreeMap::new();
+    for assertion in assertions {
+        let cause = gap_cause(assertion);
+        let extractor = assertion.provenance.extractor_id.as_str();
+        classes
+            .entry((cause.clone(), extractor))
+            .or_insert_with(|| GapClass {
+                cause,
+                extractor,
+                next_tier: next_tier(&assertion.provenance),
+                members: Vec::new(),
+            })
+            .members
+            .push(assertion);
+    }
+    let mut classes: Vec<GapClass<'_>> = classes.into_values().collect();
+    classes.sort_by(|left, right| {
+        right
+            .members
+            .len()
+            .cmp(&left.members.len())
+            .then_with(|| left.cause.cmp(&right.cause))
+            .then_with(|| left.extractor.cmp(right.extractor))
+    });
+    classes
+}
+
+fn class_id(index: usize) -> String {
+    format!("C-{:02}", index + 1)
+}
+
+fn short_cause(cause: &str) -> String {
+    if cause.chars().count() <= GAP_CAUSE_MAX_CHARS {
+        return cause.to_string();
+    }
+    let mut short: String = cause.chars().take(GAP_CAUSE_MAX_CHARS).collect();
+    short.push('…');
+    short
+}
+
+/// Structured index of every register instance (`gap_register.json`).
+#[derive(Serialize)]
+struct GapRegisterIndex<'a> {
+    schema: &'static str,
+    mode: ExportMode,
+    findings: usize,
+    instances: usize,
+    classes: Vec<GapClassIndex<'a>>,
+}
+
+#[derive(Serialize)]
+struct GapClassIndex<'a> {
+    id: String,
+    cause: &'a str,
+    extractor: &'a str,
+    next_tier: &'static str,
+    instances: usize,
+    /// Assertion ids; each carries its full provenance in the bundle.
+    members: Vec<&'a str>,
+}
+
+fn register_row(content: &mut String, assertion: &SpecAssertion) {
+    writeln!(
+        content,
+        "| `{}` | {} |",
+        markdown_safe(&assertion.subject_id),
+        markdown_safe(&assertion.summary)
+    )
+    .expect("write to string");
+}
+
+/// The Gap register as a bounded, grouped artifact plus its JSON sidecar
+/// (#240, AC-0209). Past [`GAP_REGISTER_FLAT_LIMIT`] rows the Markdown is
+/// grouped by cause class with at most [`GAP_CLASS_REPRESENTATIVES`]
+/// instances per class and [`GAP_REGISTER_MAX_CLASSES`] classes, and every
+/// omission is an explicit counted line — nothing is silently dropped. The
+/// returned assertions stay complete: the Gaps lane groups them and each
+/// keeps its inline provenance in the bundle. The sidecar indexes every
+/// instance by class.
 fn gap_register(
     nodes: &[&Node],
     edges: &[&Edge],
     flow_assertions: &[SpecAssertion],
-) -> (String, Vec<SpecAssertion>) {
+    findings: usize,
+    mode: ExportMode,
+) -> (String, String, Vec<SpecAssertion>) {
     let mut assertions: Vec<SpecAssertion> = nodes
         .iter()
         .filter(|node| is_gap_node(node))
@@ -710,20 +838,129 @@ fn gap_register(
     );
     assertions.sort_by(|left, right| left.id.cmp(&right.id));
     assertions.dedup_by(|left, right| left.id == right.id);
-    let mut content = String::from("# Gap register\n\n| Subject | Reason |\n|---|---|\n");
-    for assertion in &assertions {
+    let (content, sidecar) = render_gap_register(&assertions, findings, mode);
+    (content, sidecar, assertions)
+}
+
+/// Render the register prose and its JSON index from the sorted assertions.
+fn render_gap_register(
+    assertions: &[SpecAssertion],
+    findings: usize,
+    mode: ExportMode,
+) -> (String, String) {
+    let classes = gap_classes(assertions);
+
+    let mut content = String::from("# Gap register\n\n");
+    if assertions.len() <= GAP_REGISTER_FLAT_LIMIT {
+        content.push_str("| Subject | Reason |\n|---|---|\n");
+        for assertion in assertions {
+            register_row(&mut content, assertion);
+        }
+        if assertions.is_empty() {
+            content.push_str("| — | No unresolved facts |\n");
+        }
+        append_assertions(&mut content, assertions);
+    } else {
+        let shown = &classes[..classes.len().min(GAP_REGISTER_MAX_CLASSES)];
         writeln!(
             content,
-            "| `{}` | {} |",
-            markdown_safe(&assertion.subject_id),
-            markdown_safe(&assertion.summary)
+            "{findings} open findings · {} register rows in {} cause classes \
+             (stop reason × extractor), largest first. Each class lists up to \
+             {GAP_CLASS_REPRESENTATIVES} representative instances; \
+             `gap_register.json` lists every instance by class, and each \
+             instance keeps its inline provenance in the bundle's assertions.\n",
+            assertions.len(),
+            classes.len(),
+        )
+        .expect("write to string");
+        content.push_str(
+            "| Class | Cause | Extractor | Next tier | Instances |\n|---|---|---|---|---|\n",
+        );
+        for (index, class) in shown.iter().enumerate() {
+            writeln!(
+                content,
+                "| {} | {} | `{}` | {} | {} |",
+                class_id(index),
+                markdown_safe(&short_cause(&class.cause)),
+                markdown_safe(class.extractor),
+                class.next_tier,
+                class.members.len(),
+            )
+            .expect("write to string");
+        }
+        let hidden = &classes[shown.len()..];
+        if !hidden.is_empty() {
+            writeln!(
+                content,
+                "| … | {} more classes, not detailed here — listed in `gap_register.json` | — | — | {} |",
+                hidden.len(),
+                hidden.iter().map(|class| class.members.len()).sum::<usize>(),
+            )
+            .expect("write to string");
+        }
+        let mut representatives: Vec<SpecAssertion> = Vec::new();
+        for (index, class) in shown.iter().enumerate() {
+            writeln!(
+                content,
+                "\n## {} — {} ({} instances)\n\n| Subject | Reason |\n|---|---|",
+                class_id(index),
+                markdown_safe(&short_cause(&class.cause)),
+                class.members.len(),
+            )
+            .expect("write to string");
+            for member in class.members.iter().take(GAP_CLASS_REPRESENTATIVES) {
+                register_row(&mut content, member);
+                representatives.push((*member).clone());
+            }
+            let more = class
+                .members
+                .len()
+                .saturating_sub(GAP_CLASS_REPRESENTATIVES);
+            if more > 0 {
+                writeln!(
+                    content,
+                    "\n… {more} more instances in this class — listed in `gap_register.json` under `{}`.",
+                    class_id(index),
+                )
+                .expect("write to string");
+            }
+        }
+        append_assertions(&mut content, &representatives);
+        writeln!(
+            content,
+            "\nInline provenance is shown for the {} representative instances above; \
+             the other {} carry theirs in the bundle's structured assertions.",
+            representatives.len(),
+            assertions.len() - representatives.len(),
         )
         .expect("write to string");
     }
-    if assertions.is_empty() {
-        content.push_str("| — | No unresolved facts |\n");
-    }
-    (content, assertions)
+
+    let index = GapRegisterIndex {
+        schema: "cartograph.gap-register-index/v1",
+        mode,
+        findings,
+        instances: assertions.len(),
+        classes: classes
+            .iter()
+            .enumerate()
+            .map(|(index, class)| GapClassIndex {
+                id: class_id(index),
+                cause: &class.cause,
+                extractor: class.extractor,
+                next_tier: class.next_tier,
+                instances: class.members.len(),
+                members: class
+                    .members
+                    .iter()
+                    .map(|member| member.id.as_str())
+                    .collect(),
+            })
+            .collect(),
+    };
+    let mut sidecar = serde_json::to_string(&index).expect("serialize gap register index");
+    sidecar.push('\n');
+    (content, sidecar)
 }
 
 /// True when `node` records ADR/code drift (see [`is_gap_node`] for why
@@ -947,7 +1184,6 @@ pub fn compile_spec(
     let (topology, topology_assertions) = topology_artifact(&nodes, &edges);
     let (data, data_assertions) = data_model(&nodes, &edges);
     let (adrs, adr_assertions) = adr_set(&nodes, &edges);
-    let (gaps, gap_assertions) = gap_register(&nodes, &edges, &flow_assertions);
     let (drifts, drift_assertions, drift_count) = drift_register(&nodes, &edges);
     let (security, security_assertions, security_count) = security_view(&nodes);
     let (toolchain, toolchain_assertions) = toolchain_view(&nodes, &edges);
@@ -957,6 +1193,8 @@ pub fn compile_spec(
     // rows, but the count the Workbench displays uses the shared finding
     // definition, so it reconciles with the findings-summary headline.
     let gap_count = count_gap_findings(nodes.iter().copied(), edges.iter().copied());
+    let (gaps, gap_index, gap_assertions) =
+        gap_register(&nodes, &edges, &flow_assertions, gap_count, mode);
     let artifacts = vec![
         artifact(
             "user-stories",
@@ -1006,14 +1244,25 @@ pub fn compile_spec(
             adrs,
             adr_assertions,
         ),
-        artifact(
-            "gap-register",
-            "gap_register.md",
-            "Gap register",
-            "markdown",
-            gaps,
-            gap_assertions,
-        ),
+        // The register renders its own bounded provenance table (#240).
+        SpecArtifact {
+            id: "gap-register".into(),
+            file_name: "gap_register.md".into(),
+            title: "Gap register".into(),
+            format: "markdown".into(),
+            content: gaps,
+            assertions: gap_assertions,
+        },
+        // Every register instance by class; the assertions stay on the
+        // register above so they are counted once.
+        SpecArtifact {
+            id: "gap-register-index".into(),
+            file_name: "gap_register.json".into(),
+            title: "Gap register index".into(),
+            format: "json".into(),
+            content: gap_index,
+            assertions: Vec::new(),
+        },
         artifact(
             "drift-register",
             "drift_register.md",
@@ -1251,6 +1500,7 @@ mod tests {
                 "data_model.md",
                 "adrs.md",
                 "gap_register.md",
+                "gap_register.json",
                 "drift_register.md",
                 "security.md",
                 "toolchain.md",
@@ -1258,10 +1508,13 @@ mod tests {
             ]
         );
         for artifact in &bundle.artifacts {
-            assert!(
+            assert_eq!(
                 artifact
                     .content
-                    .contains("Assertions and inline provenance")
+                    .contains("Assertions and inline provenance"),
+                artifact.format != "json",
+                "{}",
+                artifact.file_name
             );
             for assertion in &artifact.assertions {
                 assert!(!assertion.provenance.extractor_id.is_empty());
@@ -1721,5 +1974,207 @@ mod tests {
                 .content
                 .contains("No toolchain facts recovered")
         );
+    }
+
+    fn reason_gap(id: &str, reason: &str) -> Node {
+        Node {
+            id: id.into(),
+            label: "Gap".into(),
+            props: serde_json::json!({
+                "reason": reason,
+                "prov": prov(Tier::Deterministic, ConfidenceTier::Gap, id),
+            }),
+        }
+    }
+
+    fn gap_artifacts(bundle: &SpecBundle) -> (&SpecArtifact, serde_json::Value) {
+        let register = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.file_name == "gap_register.md")
+            .unwrap();
+        let index = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.file_name == "gap_register.json")
+            .unwrap();
+        assert_eq!(index.format, "json");
+        assert!(index.assertions.is_empty(), "instances are counted once");
+        (register, serde_json::from_str(&index.content).unwrap())
+    }
+
+    #[test]
+    fn gap_register_groups_caps_and_indexes_every_instance() {
+        // AC-0209 (T-0209): a large register renders bounded, grouped prose
+        // with counted omissions, and the JSON sidecar lists every instance.
+        let mut nodes: Vec<Node> = (0..30)
+            .map(|index| reason_gap(&format!("gap:a{index:03}"), "computed identity"))
+            .collect();
+        nodes.extend((0..8).map(|index| reason_gap(&format!("gap:b{index:03}"), "dynamic import")));
+        nodes.push(reason_gap("gap:c000", "eval"));
+        nodes.push(node(
+            "sym:a",
+            "Symbol",
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+        ));
+        let mut edges: Vec<Edge> = (0..7)
+            .map(|index| {
+                edge(
+                    "sym:a",
+                    &format!("sym:missing{index}"),
+                    "CALLS",
+                    Tier::Deterministic,
+                    ConfidenceTier::Gap,
+                )
+            })
+            .collect();
+        edges.push(edge(
+            "sym:a",
+            "gap:a000",
+            "DEPENDS_ON",
+            Tier::Deterministic,
+            ConfidenceTier::Gap,
+        ));
+        let compile = || {
+            compile_spec(
+                &nodes,
+                &edges,
+                &[],
+                ExportMode::VerifiedOnly,
+                &BTreeSet::new(),
+            )
+        };
+        let bundle = compile();
+        let (register, index) = gap_artifacts(&bundle);
+        let total = register.assertions.len();
+        assert_eq!(
+            total,
+            30 + 8 + 1 + 7 + 1,
+            "every gap stays a structured assertion"
+        );
+
+        // Classes: largest first; the omission count plus the representatives
+        // equals each class's size.
+        let classes = index["classes"].as_array().unwrap();
+        let summary: Vec<(&str, u64)> = classes
+            .iter()
+            .map(|class| {
+                (
+                    class["cause"].as_str().unwrap(),
+                    class["instances"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("computed identity", 30),
+                ("dynamic import", 8),
+                ("unresolved CALLS edge", 7),
+                ("eval", 1),
+                ("unresolved DEPENDS_ON edge", 1),
+            ]
+        );
+        let content = &register.content;
+        assert!(content.contains("| C-01 | computed identity | `spec.workbench.test` | T1 | 30 |"));
+        assert!(content.contains("## C-01 — computed identity (30 instances)"));
+        assert!(content.contains(
+            "… 25 more instances in this class — listed in `gap_register.json` under `C-01`."
+        ));
+        assert!(content.contains(
+            "… 3 more instances in this class — listed in `gap_register.json` under `C-02`."
+        ));
+        assert!(content.contains("… 2 more instances in this class"));
+        assert!(content.contains("`gap:a004`") && !content.contains("`gap:a005`"));
+        assert!(content.contains("Inline provenance is shown for the 17 representative instances above; the other 30 carry theirs"));
+
+        // The sidecar indexes every register assertion exactly once.
+        let mut indexed: Vec<&str> = classes
+            .iter()
+            .flat_map(|class| class["members"].as_array().unwrap())
+            .map(|member| member.as_str().unwrap())
+            .collect();
+        indexed.sort_unstable();
+        let mut ids: Vec<&str> = register.assertions.iter().map(|a| a.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(indexed, ids);
+        assert_eq!(index["instances"], total);
+        assert_eq!(index["findings"], bundle.gap_count);
+
+        // Deterministic across compiles.
+        assert_eq!(
+            serde_json::to_string(&bundle).unwrap(),
+            serde_json::to_string(&compile()).unwrap()
+        );
+    }
+
+    #[test]
+    fn gap_register_prose_stays_bounded_as_the_register_grows() {
+        // AC-0209 (T-0209): past the class cap, remaining classes are one
+        // counted line, and prose size does not track instance count.
+        let register_for = |per_class: usize| {
+            let nodes: Vec<Node> = (0..GAP_REGISTER_MAX_CLASSES + 10)
+                .flat_map(|class| {
+                    (0..per_class).map(move |index| {
+                        reason_gap(
+                            &format!("gap:{class:03}:{index:05}"),
+                            &format!("cause {class:03}"),
+                        )
+                    })
+                })
+                .collect();
+            let bundle = compile_spec(&nodes, &[], &[], ExportMode::VerifiedOnly, &BTreeSet::new());
+            let (register, index) = gap_artifacts(&bundle);
+            assert_eq!(register.assertions.len(), nodes.len());
+            assert_eq!(
+                index["classes"].as_array().unwrap().len(),
+                GAP_REGISTER_MAX_CLASSES + 10
+            );
+            register.content.clone()
+        };
+        let small = register_for(10);
+        let large = register_for(200);
+        assert!(small.contains("| … | 10 more classes, not detailed here — listed in `gap_register.json` | — | — | 100 |"));
+        assert!(large.contains("| … | 10 more classes, not detailed here — listed in `gap_register.json` | — | — | 2000 |"));
+        assert!(!large.contains("## C-51"));
+        // 20x the instances, same shape: only the digits of counts differ.
+        assert!(
+            large.len() < small.len() + 1024,
+            "{} vs {}",
+            large.len(),
+            small.len()
+        );
+    }
+
+    #[test]
+    fn small_gap_register_stays_one_flat_table() {
+        // AC-0209: at or below the Gaps lane's grouping threshold the register
+        // keeps every row and its full provenance table.
+        let nodes: Vec<Node> = (0..GAP_REGISTER_FLAT_LIMIT)
+            .map(|index| reason_gap(&format!("gap:{index:02}"), "computed identity"))
+            .collect();
+        let bundle = compile_spec(&nodes, &[], &[], ExportMode::VerifiedOnly, &BTreeSet::new());
+        let (register, index) = gap_artifacts(&bundle);
+        assert!(
+            register
+                .content
+                .starts_with("# Gap register\n\n| Subject | Reason |")
+        );
+        assert!(!register.content.contains("more instances"));
+        for node in &nodes {
+            assert_eq!(
+                register.content.matches(&format!("`{}`", node.id)).count(),
+                1
+            );
+        }
+        assert_eq!(
+            register
+                .content
+                .matches("| Gap: computed identity | Deterministic | Gap |")
+                .count(),
+            GAP_REGISTER_FLAT_LIMIT
+        );
+        assert_eq!(index["instances"], GAP_REGISTER_FLAT_LIMIT);
     }
 }
