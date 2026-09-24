@@ -49,7 +49,7 @@ CLAUDE.md   @qwts
 # Build entrypoints that execute code during CI and the signed release build,
 # where signing credentials are present.
 build.rs              @qwts
-/.cargo/              @qwts
+.cargo/               @qwts
 /rust-toolchain.toml  @qwts
 # Every config filename Vite (and the PostCSS it loads) auto-discovers.
 /ui/vite.config.*     @qwts
