@@ -67,7 +67,8 @@ function ParallelismSetting({
         <p className="muted">
           Files are parsed on this many workers during recovery. More workers finish sooner;
           the recovered graph is identical either way. Auto uses one worker per performance core,
-          minus one, and fewer on low-memory machines.
+          minus one, and fewer on low-memory machines. Fixed counts go up to this machine&apos;s
+          cores, at most 64.
         </p>
         <select
           id="ingest-parallelism"

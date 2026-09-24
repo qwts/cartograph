@@ -55,7 +55,7 @@ pub struct IngestParallelism {
     pub auto_workers: u32,
     /// Workers the current setting actually runs.
     pub workers: u32,
-    /// Largest fixed choice offered: this machine's available parallelism.
+    /// Largest fixed choice offered: [`max_workers`] (available parallelism, at most 64).
     pub max_workers: u32,
 }
 
@@ -68,8 +68,13 @@ impl IngestParallelism {
         }
     }
 
+    /// Describe a stored `setting` against this machine. A fixed count above
+    /// today's [`max_workers`] (the state DB was written on a larger machine,
+    /// or a CPU quota shrank) is normalized down to it, so startup never
+    /// oversubscribes and Settings shows a choice it actually offers (#478).
     fn describe(setting: u32) -> Self {
         let clamp = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let setting = normalize_setting(setting, clamp(max_workers()));
         Self {
             setting,
             auto_workers: clamp(source_walk::parallel::auto_workers()),
@@ -79,7 +84,18 @@ impl IngestParallelism {
     }
 }
 
-/// Largest fixed worker count offered in Settings.
+/// A stored setting as it applies on a machine offering `max` fixed workers:
+/// Auto (`0`) is kept, a fixed count is capped at `max`.
+fn normalize_setting(setting: u32, max: u32) -> u32 {
+    if setting == 0 {
+        0
+    } else {
+        setting.min(max.max(1))
+    }
+}
+
+/// Largest fixed worker count offered in Settings: this machine's available
+/// parallelism, capped at [`source_walk::parallel::MAX_WORKERS`] (64).
 pub fn max_workers() -> usize {
     std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
@@ -411,7 +427,7 @@ impl SettingsStore {
     }
 
     /// Persist the "Ingest parallelism" setting: `0` = Auto, otherwise a
-    /// fixed worker count up to this machine's available parallelism. The
+    /// fixed worker count up to [`max_workers`]. The
     /// caller applies it to extraction; output never depends on it.
     pub fn set_ingest_parallelism(
         &mut self,
@@ -474,6 +490,30 @@ mod tests {
             Err(SettingsError::InvalidParallelism(n)) if n == too_many
         ));
         assert_eq!(store.ingest_parallelism().unwrap().setting, 1);
+    }
+
+    #[test]
+    fn a_stored_worker_count_above_this_machine_is_normalized_on_read() {
+        // AC-0208 (#478): a fixed count persisted on a larger machine (or
+        // before a CPU quota shrank) resolves to this machine's maximum, both
+        // for what Settings shows and for what startup applies.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = SettingsStore::open(&path).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE ingest_settings SET parallelism = 10000 WHERE id = 1",
+                [],
+            )
+            .unwrap();
+        let read = store.ingest_parallelism().unwrap();
+        assert_eq!(read.setting, read.max_workers);
+        assert_eq!(read.workers, read.max_workers);
+        assert_eq!(normalize_setting(0, 8), 0, "Auto is kept");
+        assert_eq!(normalize_setting(5, 8), 5);
+        assert_eq!(normalize_setting(65, 64), 64);
+        assert_eq!(normalize_setting(3, 0), 1, "never below one worker");
     }
 
     #[test]
