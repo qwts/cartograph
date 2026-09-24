@@ -362,9 +362,9 @@ fn unresolvable_fetches_emit_gaps_with_reasons() {
     assert_eq!(gap_edges, 3);
 }
 
-// AC-0205 (#445): endpoint routes keep a literal trailing slash, so a fetch
+// AC-0206 (#445): endpoint routes keep a literal trailing slash, so a fetch
 // that differs from a route only by that slash is not the same route — it
-// never confirms against it and escalates to a Gap instead. (T-0205)
+// never confirms against it and escalates to a Gap instead. (T-0206)
 #[test]
 fn trailing_slash_only_differences_never_confirm() {
     let endpoints = eps(&["ep:test@GET:/api/", "ep:test@GET:/v1/items"]);

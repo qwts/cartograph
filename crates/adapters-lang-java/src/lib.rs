@@ -434,7 +434,7 @@ fn mapping_method(annotation_name: &str) -> Option<&'static str> {
     }
 }
 
-/// Compose a class-level base with a method-level path (AC-0205, #445).
+/// Compose a class-level base with a method-level path (AC-0206, #445).
 /// Segments meet at exactly one `/`, but a trailing slash spelled in the
 /// source is kept: Spring 6 matches `/a` and `/a/` as distinct routes, so
 /// `"/api/"` + `""` is `/api/` and `"/api"` + `"/"` is `/api/`.

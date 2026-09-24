@@ -615,7 +615,7 @@ fn endpoint_routes(out: &Extraction) -> Vec<String> {
     routes
 }
 
-// AC-0205 (#445): a trailing slash spelled in the source survives
+// AC-0206 (#445): a trailing slash spelled in the source survives
 // composition — Spring 6 matches `/a` and `/a/` as distinct routes — while
 // segments still meet at exactly one `/`.
 #[test]
