@@ -804,7 +804,7 @@ pub fn extract_dir_incremental_with_progress(
     cache: &mut IncrementalCache,
     on_file: &mut dyn FnMut(&str),
 ) -> Result<(Extraction, IncrementalStats), ExtractError> {
-    let root = std::fs::canonicalize(root)?;
+    let root = dunce::canonicalize(root)?;
     let mut files = Vec::new();
     collect_tf_files(&root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
@@ -837,7 +837,7 @@ pub fn extract_dir_incremental_with_progress(
 /// Count physical Terraform source files using the same confined walk as
 /// extraction. Module instantiations do not inflate this count.
 pub fn terraform_file_count(root: &Path) -> Result<u64, ExtractError> {
-    let root = std::fs::canonicalize(root)?;
+    let root = dunce::canonicalize(root)?;
     let mut files = Vec::new();
     collect_tf_files(&root, &mut files)?;
     Ok(files.len() as u64)
@@ -868,7 +868,7 @@ fn expand_local_modules(
         let mut ancestors = declaration.ancestors.clone();
         if ancestors.is_empty()
             && let Some(parent) = root.join(&declaration.declaring_path).parent()
-            && let Ok(parent) = std::fs::canonicalize(parent)
+            && let Ok(parent) = dunce::canonicalize(parent)
             && parent.starts_with(root)
         {
             ancestors.push(parent);
@@ -955,7 +955,7 @@ fn resolve_local_module_source(root: &Path, declaration: &ModuleDeclaration) -> 
     if !candidate.starts_with(root) {
         return None;
     }
-    let canonical = std::fs::canonicalize(candidate).ok()?;
+    let canonical = dunce::canonicalize(candidate).ok()?;
     (canonical.starts_with(root) && canonical.is_dir()).then_some(canonical)
 }
 

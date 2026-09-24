@@ -2240,6 +2240,7 @@ version = "0.15.2"
 dependencies = [
  "core-graph",
  "core-prov",
+ "dunce",
  "hcl-edit",
  "serde_json",
  "source-walk",
