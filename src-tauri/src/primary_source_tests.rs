@@ -870,6 +870,66 @@ fn primary_source_same_name_sources_forget_only_previewed_retention() {
 }
 
 #[test]
+fn primary_source_collapsed_relation_publishes_unbound_without_digest_failure() {
+    // AC-0203 (#456 review): when a receipt-bound relation also occurs at a
+    // second site, the stored edge unions both spans. No single receipt
+    // attested that fact, so publication succeeds with the edge unbound while
+    // the rule node keeps its receipt.
+    let dir = tempfile::tempdir().unwrap();
+    let app_data = directory(dir.path(), "private");
+    let root = directory(dir.path(), "project");
+    std::fs::write(root.join("source.ts"), STABLE_A).unwrap();
+    let state = app_state(&app_data);
+    let source = register_local_source(&state, &root).unwrap();
+    let mut parsed = parse(&state, &source, || {});
+    let rule = rule_node(&parsed);
+    let position = parsed
+        .extraction
+        .edges
+        .iter()
+        .position(|edge| edge.label == "GOVERNS" && edge.src == rule.id)
+        .unwrap();
+    let edge = parsed.extraction.edges[position].clone();
+    let edge_fact = FactKey::from_edge(&edge);
+    assert!(
+        parsed
+            .receipts
+            .iter()
+            .any(|receipt| receipt.matches_edge(&edge))
+    );
+    let mut earlier = edge.clone();
+    let span = &mut earlier.props["prov"]["evidence"][0];
+    let (start, end) = (
+        span["byte_start"].as_u64().unwrap(),
+        span["byte_end"].as_u64().unwrap(),
+    );
+    assert!(start > 0);
+    span["byte_start"] = json!(start - 1);
+    span["byte_end"] = json!(end - 1);
+    // The original stays the last occurrence, so it still supplies the props.
+    parsed.extraction.edges.insert(position, earlier);
+    let bindings = publish(&state, &source, &parsed);
+    assert!(!bindings.iter().any(|binding| binding.fact == edge_fact));
+    assert!(
+        bindings
+            .iter()
+            .any(|binding| binding.fact == FactKey::from_node(&rule))
+    );
+    let graph = state.graph.lock().unwrap();
+    assert!(graph.current_source_binding(&edge_fact).unwrap().is_none());
+    let stored = graph
+        .all_edges()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| FactKey::from_edge(candidate) == edge_fact)
+        .unwrap();
+    assert_eq!(
+        stored.props["prov"]["evidence"].as_array().unwrap().len(),
+        2
+    );
+}
+
+#[test]
 fn primary_source_enrichment_mutation_cannot_reuse_direct_receipt() {
     // AC-0151, AC-0152, AC-0155: unchanged provenance/span is insufficient when
     // a later enrichment changes any complete node or edge property.
