@@ -76,7 +76,10 @@ pub fn discover_token() -> Option<String> {
             return Some(t.trim().to_string());
         }
     }
-    let out = Command::new("gh").args(["auth", "token"]).output().ok()?;
+    let mut gh = Command::new("gh");
+    gh.args(["auth", "token"]);
+    hide_console_window(&mut gh);
+    let out = gh.output().ok()?;
     if out.status.success() {
         let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if !t.is_empty() {
@@ -84,6 +87,20 @@ pub fn discover_token() -> Option<String> {
         }
     }
     None
+}
+
+/// On Windows, a GUI app spawning a console program (`gh`) flashes a console
+/// window unless the child is created without one (AC-0222, #226). A no-op
+/// everywhere else.
+fn hide_console_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
 }
 
 /// Parse a repo reference into `(identity, clone_url)`. Accepts

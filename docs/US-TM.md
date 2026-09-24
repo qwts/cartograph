@@ -21,7 +21,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0015 | AC-0041..0042 | iac, spec, ui | M9 | — | ADR-0003, ADR-0013 | T-0041..0042 |
 | US-0016 | AC-0071..0075 | adapters-lang-ts, adapters-fw, events, spec, app, ui | post-M10 | WebExtension flows | ADR-0003, ADR-0013 | T-0071..0075 |
 | US-0017 | AC-0068..0070, AC-0093 | adapters-*, ingest, app, ui | post-M10 | — | ADR-0003, ADR-0017 | T-0068..0070, T-0093 |
-| US-0018 | AC-0090..0092 | app, ui, scripts | post-M10 | — | ADR-0002 | T-0090..0092 |
+| US-0018 | AC-0090..0092, AC-0222 | app, ingest, ui, scripts | post-M10 | — | ADR-0002, ADR-0018 | T-0090..0092, T-0222 |
 | US-0019 | AC-0096..0097 | ingest, core-graph, spec, app, ui | post-M10 | — | ADR-0003 | T-0096..0097 |
 | US-0020 | AC-0101..0105, AC-0137..0139 | context-hub, core-graph, app | H1 | — | ADR-0008, ADR-0019 | T-0101..0105, T-0137..0139 |
 | US-0021 | AC-0106..0109 | context-hub, agents, spec, app, ui | H2–H3 | — | ADR-0019 | T-0106..0109 |
