@@ -1841,12 +1841,22 @@ struct RunsState {
     /// review): a preflight begun before it holds only pending findings and
     /// must not overwrite the proven classification.
     reconciled: std::collections::BTreeMap<String, u64>,
+    /// The epoch of each repo's latest persisted preflight (#497): a
+    /// reconciliation whose fence is older must not overwrite it.
+    persisted: std::collections::BTreeMap<String, u64>,
 }
 
 /// One registered preflight: cancelled when the user cancels or a newer
 /// preflight supersedes it.
 struct PreflightToken {
     cancelled: Arc<AtomicBool>,
+    epoch: u64,
+}
+
+/// A recovery's place in the preflight order, reserved before the recovery
+/// publishes `done` (#497): once the UI can see the job finished, any
+/// preflight the user starts is newer than the reconciliation it precedes.
+struct ReconcileFence {
     epoch: u64,
 }
 
@@ -1904,24 +1914,51 @@ impl PreflightRuns {
         if token.is_cancelled() || reconciled_since {
             return Err(PREFLIGHT_CANCELLED.into());
         }
-        persist()
+        let written = persist()?;
+        let mut current = self.current()?;
+        let latest = current.persisted.entry(repo.to_string()).or_default();
+        *latest = (*latest).max(token.epoch);
+        Ok(written)
+    }
+
+    /// Reserve a recovery's reconciliation epoch. Take it before the job is
+    /// published as completed, and commit the write through `reconcile` after
+    /// (#497): the cancel race still settles first, while a preflight started
+    /// once the job shows `done` is always newer than the reconciliation.
+    fn reserve_reconcile(&self) -> Result<ReconcileFence, String> {
+        let mut current = self.current()?;
+        current.epoch += 1;
+        Ok(ReconcileFence {
+            epoch: current.epoch,
+        })
     }
 
     /// Recovery's reconciliation write (AC-0200): serialized with preflight
-    /// writes and recorded, so a preflight already running for `repo` can
-    /// never replace the proven classification with its pending one (#439
-    /// review). A preflight begun afterwards is newer and still wins.
+    /// writes and recorded at `fence`'s epoch, so a preflight begun before
+    /// the fence can never replace the proven classification with its pending
+    /// one (#439 review). A preflight begun after the fence is newer and wins
+    /// either way (#497): if it already persisted, the reconciliation writes
+    /// nothing (`None`); if it persists later, it is not refused.
     fn reconcile<T>(
         &self,
+        fence: &ReconcileFence,
         repo: &str,
         persist: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
+    ) -> Result<Option<T>, String> {
         let _writes = self.writes.lock().map_err(|e| e.to_string())?;
-        let written = persist()?;
+        let newer_persisted = self
+            .current()?
+            .persisted
+            .get(repo)
+            .is_some_and(|epoch| *epoch > fence.epoch);
+        let written = if newer_persisted {
+            None
+        } else {
+            Some(persist()?)
+        };
         let mut current = self.current()?;
-        current.epoch += 1;
-        let epoch = current.epoch;
-        current.reconciled.insert(repo.to_string(), epoch);
+        let latest = current.reconciled.entry(repo.to_string()).or_default();
+        *latest = (*latest).max(fence.epoch);
         Ok(written)
     }
 }
@@ -3068,6 +3105,9 @@ fn run_ingest<R: tauri::Runtime>(
     )
     .map_err(&fail)?;
 
+    // Ordered before `done` is published (#497), so a preflight the user
+    // starts once they see it is newer than this reconciliation.
+    let fence = app.state::<PreflightRuns>().reserve_reconcile()?;
     // A cancel can land at any point after the last check; `finish` is
     // guarded to only transition a running job, so whichever outcome hit
     // the store first wins — read the row back to learn which.
@@ -3083,7 +3123,7 @@ fn run_ingest<R: tauri::Runtime>(
     // Written only once the job has settled as completed, so a cancel that
     // wins the race writes nothing (AC-0200, #489); through the per-repo
     // fence, as GitHub and manifest recoveries do (AC-0209).
-    app.state::<PreflightRuns>().reconcile(&repo, || {
+    app.state::<PreflightRuns>().reconcile(&fence, &repo, || {
         persist_preflight_findings(state, &repo, &preflight)
     })?;
     Ok(IngestSummary {
@@ -3391,11 +3431,13 @@ fn add_repo_blocking<R: tauri::Runtime>(
         &extraction.eval_sites,
     )
     .map_err(&fail)?;
+    // Reserved before `done` is published (#497).
+    let fence = app.state::<PreflightRuns>().reserve_reconcile()?;
     finish_source_operation(&state, &app, &execution, &operation)?;
     // Written only once the job has settled as completed, so a cancel that
     // wins the race writes nothing (AC-0209); through the per-repo fence.
     app.state::<PreflightRuns>()
-        .reconcile(&source.repo_key, || {
+        .reconcile(&fence, &source.repo_key, || {
             persist_preflight_findings(&state, &source.repo_key, &preflight)
         })?;
     Ok(AddRepoSummary {
@@ -3646,12 +3688,14 @@ fn add_system_blocking<R: tauri::Runtime>(
         })
         .collect::<Result<Vec<_>, String>>()
         .map_err(&fail)?;
+    // Reserved before `done` is published (#497).
+    let runs = app.state::<PreflightRuns>();
+    let fence = runs.reserve_reconcile()?;
     finish_source_operation(&state, &app, &execution, &operation)?;
     // Written only once the job has settled as completed, so a cancel that
     // wins the race writes nothing (AC-0209); through each repo's fence.
-    let runs = app.state::<PreflightRuns>();
     for preflight in &preflights {
-        runs.reconcile(&preflight.repo, || {
+        runs.reconcile(&fence, &preflight.repo, || {
             persist_preflight_findings(&state, &preflight.repo, &preflight.report)
         })?;
     }
@@ -7835,6 +7879,172 @@ export function App() {
         );
     }
 
+    /// On the recovery's `done` event, persist a preflight for every
+    /// registered repo exactly as `preflight_blocking` does (register the
+    /// run, then write through `persist_if_current`): the user saw the job
+    /// finish and started a new preflight before the reconciliation wrote.
+    /// Each write is one Unsupported row on line 99.
+    fn preflight_on_done(handle: &tauri::AppHandle<tauri::test::MockRuntime>) -> tauri::EventId {
+        use tauri::{Listener, Manager};
+        let event_handle = handle.clone();
+        handle.listen("job://changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            if payload["status"] != "done" {
+                return;
+            }
+            let state = event_handle.state::<super::AppState>();
+            let runs = event_handle.state::<super::PreflightRuns>();
+            let repos: Vec<String> = state
+                .sources
+                .lock()
+                .unwrap()
+                .list()
+                .unwrap()
+                .into_iter()
+                .map(|source| source.repo_key)
+                .collect();
+            for repo in repos {
+                let token = runs.begin().unwrap();
+                runs.persist_if_current(&token, &repo, || {
+                    let row = super::NewFinding {
+                        kind: "unsupported",
+                        detector: ingest::preflight::DETECTOR_ID,
+                        path: "app.ts",
+                        line: 99,
+                        message: "newer preflight",
+                    };
+                    state
+                        .findings
+                        .lock()
+                        .unwrap()
+                        .replace_for(&repo, ingest::preflight::DETECTOR_ID, &[row])
+                        .map(drop)
+                        .map_err(|e| e.to_string())
+                })
+                .expect("a preflight started after `done` is never refused");
+            }
+        })
+    }
+
+    #[test]
+    fn a_preflight_started_after_a_local_recovery_is_done_keeps_its_findings() {
+        // AC-0214 (#497): the reconciliation fence is taken before `done` is
+        // published, so a preflight begun once the user sees it is newer:
+        // the reconciliation neither refuses nor overwrites its findings.
+        use tauri::{Listener, Manager};
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("app.ts"), EVAL_FIXTURE).unwrap();
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let source = super::register_local_source(&state, &project).unwrap();
+        let operation = super::source_operation(&state, vec![(source.clone(), false)]).unwrap();
+        let (_, execution) = super::start_job(&state, &source.ingest_job_kind()).unwrap();
+        let listener = preflight_on_done(&handle);
+
+        super::run_ingest(&source, &operation, &execution, &handle, &state).unwrap();
+        handle.unlisten(listener);
+
+        assert_eq!(
+            preflight_register(&state, &source.repo_key),
+            vec![(99, false)]
+        );
+    }
+
+    #[test]
+    fn a_preflight_started_after_a_github_recovery_is_done_keeps_its_findings() {
+        // AC-0214 (#497): as for a local recovery.
+        use tauri::{Listener, Manager};
+        let dir = tempfile::tempdir().unwrap();
+        let bare = preflight_bare_repo(dir.path(), "shop", &[("app.ts", EVAL_FIXTURE)]);
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let listener = preflight_on_done(&handle);
+
+        let summary =
+            super::add_repo_blocking(format!("file://{}", bare.display()), handle.clone()).unwrap();
+        handle.unlisten(listener);
+
+        assert_eq!(preflight_register(&state, &summary.repo), vec![(99, false)]);
+    }
+
+    #[test]
+    fn a_preflight_started_after_a_manifest_recovery_is_done_keeps_its_findings() {
+        // AC-0214 (#497): as for a local recovery, for every repo.
+        use tauri::{Listener, Manager};
+        let dir = tempfile::tempdir().unwrap();
+        let bare = preflight_bare_repo(dir.path(), "web", &[("app.ts", EVAL_FIXTURE)]);
+        let api = dir.path().join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        std::fs::write(api.join("server.ts"), "new Function(getCode());\n").unwrap();
+        let manifest = dir.path().join("cartograph.system.toml");
+        std::fs::write(
+            &manifest,
+            format!(
+                "[[repos]]\nurl = \"file://{}\"\n\n[[repos]]\nurl = \"api\"\n",
+                bare.display()
+            ),
+        )
+        .unwrap();
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let listener = preflight_on_done(&handle);
+
+        let summary =
+            super::add_system_blocking(manifest.to_string_lossy().into_owned(), handle.clone())
+                .unwrap();
+        handle.unlisten(listener);
+
+        assert_eq!(summary.preflights.len(), 2);
+        for preflight in &summary.preflights {
+            assert_eq!(
+                preflight_register(&state, &preflight.repo),
+                vec![(99, false)],
+                "{}",
+                preflight.repo
+            );
+        }
+    }
+
+    #[test]
+    fn a_reconcile_fence_orders_before_later_preflights() {
+        // AC-0214 (#497): a preflight begun before the fence is refused after
+        // the reconciliation; one begun after it wins whether it persists
+        // before the reconciliation (which then writes nothing) or after.
+        let runs = super::PreflightRuns::default();
+        let fence = runs.reserve_reconcile().unwrap();
+        let newer = runs.begin().unwrap();
+        runs.persist_if_current(&newer, "repo", || Ok(())).unwrap();
+        let mut wrote = false;
+        let written = runs
+            .reconcile(&fence, "repo", || {
+                wrote = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(written.is_none() && !wrote, "the newer findings stand");
+
+        let runs = super::PreflightRuns::default();
+        let fence = runs.reserve_reconcile().unwrap();
+        let later = runs.begin().unwrap();
+        assert_eq!(runs.reconcile(&fence, "repo", || Ok(1)).unwrap(), Some(1));
+        assert!(runs.persist_if_current(&later, "repo", || Ok(())).is_ok());
+
+        let runs = super::PreflightRuns::default();
+        let older = runs.begin().unwrap();
+        let fence = runs.reserve_reconcile().unwrap();
+        assert_eq!(runs.reconcile(&fence, "repo", || Ok(1)).unwrap(), Some(1));
+        assert_eq!(
+            runs.persist_if_current(&older, "repo", || Ok(()))
+                .unwrap_err(),
+            super::PREFLIGHT_CANCELLED
+        );
+    }
+
     /// A mock app managing the stores a preflight touches, rooted in `dir`.
     fn preflight_test_app(dir: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
         use tauri::Manager;
@@ -8098,7 +8308,8 @@ export function App() {
         // are unaffected, and a failed reconciliation fences nothing.
         let runs = super::PreflightRuns::default();
         let older = runs.begin().unwrap();
-        runs.reconcile("repo", || Ok(())).unwrap();
+        let fence = runs.reserve_reconcile().unwrap();
+        runs.reconcile(&fence, "repo", || Ok(())).unwrap();
         let write = |token: &super::PreflightToken, repo: &str| {
             runs.persist_if_current(token, repo, || Ok(()))
         };
@@ -8110,7 +8321,8 @@ export function App() {
         let newer = runs.begin().unwrap();
         assert!(write(&newer, "repo").is_ok());
 
-        runs.reconcile("other", || Err::<(), _>("disk full".to_string()))
+        let fence = runs.reserve_reconcile().unwrap();
+        runs.reconcile(&fence, "other", || Err::<(), _>("disk full".to_string()))
             .unwrap_err();
         assert!(write(&newer, "other").is_ok());
     }
