@@ -1,5 +1,24 @@
 # cartograph
 
+## 0.15.3
+
+### Patch Changes
+
+- 3c87e3a: The exported traceability matrix and source-rule evidence stay readable on large systems. Past 200 links, `US-TM.md` groups links by relation and target, and past 50 observations `rule-evidence.md` groups observations by source file. Each shows a few representatives for at most 50 groups and states every omitted link, observation or group as a counted "N more" line. New `US-TM.json` and `rule-evidence.json` sidecars list every item by group, and each keeps its full provenance in the bundle. Smaller outputs render exactly as before.
+- e472481: Bare JS/TS imports that match a literal Vite or webpack `resolve.alias` key are no longer classified as external packages. Cartograph reads the bundler config as data, without running it. When the alias's literal path points at a file in the repository, the import resolves to that file and cites the config. Otherwise the import stays an explicit gap that names the config. Aliases whose key or target isn't a literal (and aliases that map one package name to another) are classified as before.
+- dd09b4d: Connect flow: a kept target opens selected so typing replaces it, Enter submits the preflight, and Run full recovery is demoted to a secondary action when the preflight ended without a report.
+- ef7c080: The `DEPENDS_ON` edge to an `eval()` code's source-rule Gap now has its own content hash. Before, it reused the Gap node's hash, so two distinct facts shared one. The edge's hash changes once on the next ingest, then stays stable.
+- 20b4662: A traced flow is now Partial, not Verified, when a symbol on it runs code T0 could not recover, such as an `eval()` whose argument could not be proven to a literal. The Gap appears as a hop in the flow with its reason. Rule-evidence gaps, which only mark where business-rule evidence stops, still leave a flow Verified.
+- 973e15c: Terraform extraction now canonicalizes its root, module ancestors and module sources the same way the app does, without the Windows `\\?\` verbatim prefix, so the two sides compare one path form.
+- c934d73: A fixed "Ingest parallelism" worker count saved on a larger machine (or before a CPU quota shrank) is now read back as this machine's maximum, so startup no longer oversubscribes and Settings shows a choice it actually offers. Settings also states that fixed counts stop at 64 workers.
+- 709ddef: An `eval()` whose code holds a dynamic nested `eval` (for example `eval("eval(x + 1)")`) now keeps its Unsupported finding in Preflight after recovery. Before, the line was marked covered even though the recovered code still held an unsupported dynamic eval. The facts recovered from the outer code are unchanged.
+- 9be4669: A Gap found inside `eval()` code now cites the eval's string argument once, not once per inner location. It also records how many inner locations could not be mapped back into that string (`unmapped_inner_spans`). Before, its evidence listed the same outer span several times.
+- fdb5cf4: Cancelling a preflight while it is saving its findings now discards that save. Before, those findings could stay in the register and reappear on the next refresh.
+- 8ed8f42: The Preflight surface now always shows the classification the register holds. Before, a preflight that overlapped a recovery of the same repo could leave the surface pending or empty, and a recovery re-run from Jobs → Retry never showed its reconciled report.
+- 164defa: A preflight started right after a recovery shows as done is no longer cancelled or overwritten by that recovery's late write of its reconciled findings. Local, GitHub and system-manifest recoveries now take their place in the preflight order before they report completion.
+- d4230ba: On Windows, where Cartograph cannot read physical memory, Auto ingest parallelism is now capped at 4 workers instead of one worker per core. Other platforms keep the one-worker-per-2-GiB memory cap.
+- 8d91f7a: On Windows, Help links now open with every query parameter intact (the URL goes to the system URL handler instead of `explorer`), and neither the link launcher nor the `gh auth token` step flashes a console window. An OS with no known browser launcher logs the refusal instead of failing to build.
+
 ## 0.15.2
 
 ### Patch Changes
