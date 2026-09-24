@@ -36,19 +36,27 @@ CLAUDE.md   @qwts
 /src-tauri/tauri.macos.conf.json @qwts
 # Host-side egress and consent: provider construction and payload-hash grants
 # (main.rs until #457 moves them out), durable per-call consent, and the
-# provider/key settings.
+# provider/key settings. #457 also consolidates the consent path so this list
+# can shrink.
 /src-tauri/src/main.rs @qwts
 /src-tauri/src/escalation.rs @qwts
 /src-tauri/src/settings.rs @qwts
 /src-tauri/src/investigations/runtime.rs @qwts
 /src-tauri/src/investigations/worker.rs @qwts
+# Where a durable consent grant is recorded, and the UI that requests it.
+/src-tauri/src/investigations/commands.rs @qwts
+/src-tauri/src/jobs/investigations/transitions.rs @qwts
+/ui/src/investigationStore.ts @qwts
 
 # Build entrypoints that execute code during CI and the signed release build,
 # where signing credentials are present.
 build.rs              @qwts
 /.cargo/              @qwts
 /rust-toolchain.toml  @qwts
-/ui/vite.config.ts    @qwts
+# Every config filename Vite (and the PostCSS it loads) auto-discovers.
+/ui/vite.config.*     @qwts
+/ui/postcss.config.*  @qwts
+/ui/.postcssrc*       @qwts
 .npmrc                @qwts
 
 # Supply chain: dependency requirements, the resolved graphs CI installs, and
