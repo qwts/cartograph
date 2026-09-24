@@ -1658,6 +1658,37 @@ fn identical_eval_code_at_two_sites_yields_distinct_fact_hashes() {
     assert_eq!(ex.edges, again.edges);
 }
 
+// #498: the `eval-rules` Gap and its DEPENDS_ON edge are distinct facts, so
+// each carries the hash of its own final identity — the node's
+// `Gap <id>`, the edge's `DEPENDS_ON <src> -> <dst>` — never a shared one.
+// (AC-0099, T-0099)
+#[test]
+fn eval_rules_gap_and_its_edge_hash_their_own_identities() {
+    let src = "export function run() {\n  eval(\"function f(x) { if (!x) { return; } g(); } function g() {}\");\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/rules.ts", &id()).unwrap();
+    let hash =
+        |props: &serde_json::Value| props["prov"]["content_hash"].as_str().unwrap().to_string();
+    let gap = ex
+        .nodes
+        .iter()
+        .find(|n| n.label == "Gap" && n.id.contains("#eval-rules@"))
+        .expect("guarded return in decoded eval code defers to an eval-rules Gap");
+    let edge = ex
+        .edges
+        .iter()
+        .find(|e| e.label == "DEPENDS_ON" && e.dst == gap.id)
+        .expect("the eval entry DEPENDS_ON its eval-rules Gap");
+    assert_eq!(
+        hash(&gap.props),
+        core_prov::content_hash(format!("Gap {}", gap.id).as_bytes())
+    );
+    assert_eq!(
+        hash(&edge.props),
+        core_prov::content_hash(format!("DEPENDS_ON {} -> {}", edge.src, edge.dst).as_bytes())
+    );
+    assert_ne!(hash(&gap.props), hash(&edge.props));
+}
+
 #[test]
 fn eval_wrapper_projection_preserves_nested_lexical_owners() {
     // AC-0099 / AC-0120 / AC-0121: remove only the synthetic wrapper scope.
