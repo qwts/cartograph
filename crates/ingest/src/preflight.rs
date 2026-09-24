@@ -630,7 +630,8 @@ fn scan_source(
                     line_no,
                     "a const-shaped eval()/new Function() argument the \
                      adapter could not prove to a literal — recovery records \
-                     it as an explicit Gap bound to its owning symbol",
+                     it as an explicit Gap owned by its enclosing symbol, or by \
+                     its File at top level",
                 ));
             }
             // Every site on the line proved literal: the adapter extracted
