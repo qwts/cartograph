@@ -3113,3 +3113,128 @@ export default defineConfig({
     // webpack `store$` is exact: it does not address `store/sub`.
     assert_eq!(boundary("mod:store/sub").0, "external");
 }
+
+/// Extract a tree of `(path, text)` files and return the extraction.
+fn extract_tree(files: &[(&str, &str)]) -> Extraction {
+    let dir = tempfile::tempdir().unwrap();
+    for (rel, text) in files {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    extract_dir(dir.path(), &id()).unwrap()
+}
+
+/// `(boundary, tier, reason)` of placeholder `id`.
+fn placeholder(out: &Extraction, id: &str) -> (String, core_prov::ConfidenceTier, String) {
+    let node = out
+        .nodes
+        .iter()
+        .find(|node| node.id == id)
+        .unwrap_or_else(|| panic!("missing node {id}"));
+    let prov: Provenance = serde_json::from_value(node.props["prov"].clone()).unwrap();
+    (
+        node.props["boundary"].as_str().unwrap().to_string(),
+        prov.confidence_tier,
+        node.props["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+fn imports_file(out: &Extraction, rel: &str) -> bool {
+    let dst = format!("file:qwtm/example@{rel}");
+    out.edges
+        .iter()
+        .any(|edge| edge.label == "IMPORTS" && edge.dst == dst)
+}
+
+#[test]
+fn a_vite_alias_key_keeps_a_trailing_dollar_literally() {
+    // AC-0220 (#507 review): `key$` is webpack's exact-match syntax only; a
+    // Vite key ending in `$` is matched as spelled.
+    let out = extract_tree(&[
+        (
+            "vite.config.ts",
+            "export default { resolve: { alias: { 'ui$': './app/ui' } } };\n",
+        ),
+        ("app/ui/Button.tsx", "export const Button = 1;\n"),
+        (
+            "src/main.ts",
+            "import b from 'ui$/Button';\nimport u from 'ui';\n",
+        ),
+    ]);
+    assert!(imports_file(&out, "app/ui/Button.tsx"));
+    // `ui` is not the Vite key `ui$`, so nothing in-system addresses it.
+    assert_eq!(placeholder(&out, "mod:ui").0, "external");
+}
+
+#[test]
+fn only_an_alias_in_the_exported_config_resolves() {
+    // AC-0220 (#507 review): an alias object not provably in the exported
+    // config — a nested helper, or one of several alias objects in a file —
+    // never resolves a specifier; the specifier stays an in-system Gap
+    // citing the config, never Confirmed and never external.
+    use core_prov::ConfidenceTier::Gap;
+    let out = extract_tree(&[
+        (
+            "vite.config.ts",
+            "export default defineConfig(({ mode }) => ({ resolve: { alias: { kit: './app/kit' } } }));\n",
+        ),
+        (
+            "helper/vite.config.ts",
+            "const unused = { resolve: { alias: { comps: './comps' } } };\nexport default defineConfig({});\n",
+        ),
+        (
+            "multi/webpack.config.js",
+            "module.exports = {\n  resolve: { alias: { parts: './parts' } },\n  plugins: [new P({ resolve: { alias: { other: './other' } } })],\n};\n",
+        ),
+        ("helper/comps/Button.tsx", "export const Button = 1;\n"),
+        ("helper/main.ts", "import { Button } from 'comps/Button';\n"),
+        ("app/kit/Card.tsx", "export const Card = 1;\n"),
+        ("multi/parts/Wheel.ts", "export const Wheel = 1;\n"),
+        ("src/main.ts", "import { Card } from 'kit/Card';\n"),
+        ("multi/app.ts", "import { Wheel } from 'parts/Wheel';\n"),
+    ]);
+    // `defineConfig(env => ({ … }))` is the exported config.
+    assert!(imports_file(&out, "app/kit/Card.tsx"));
+    assert!(!imports_file(&out, "helper/comps/Button.tsx"));
+    assert!(!imports_file(&out, "multi/parts/Wheel.ts"));
+    for (gap, config) in [
+        ("mod:comps/Button", "helper/vite.config.ts"),
+        ("mod:parts/Wheel", "multi/webpack.config.js"),
+    ] {
+        let (kind, tier, reason) = placeholder(&out, gap);
+        assert_eq!((kind.as_str(), tier), ("unresolved", Gap), "{gap}");
+        assert!(reason.contains(config), "{gap}: {reason}");
+    }
+}
+
+#[test]
+fn equal_scope_configs_that_disagree_on_an_alias_never_resolve_it() {
+    // AC-0220 (#507 review): a Vite and a webpack config in one directory
+    // that map the same key to different targets leave the specifier a
+    // Gap; configs that agree still resolve it.
+    use core_prov::ConfidenceTier::Gap;
+    let out = extract_tree(&[
+        (
+            "vite.config.ts",
+            "export default { resolve: { alias: { shared: './a', same: './a' } } };\n",
+        ),
+        (
+            "webpack.config.js",
+            "module.exports = { resolve: { alias: { shared: './b', same: './a' } } };\n",
+        ),
+        ("a/x.ts", "export const x = 1;\n"),
+        ("b/x.ts", "export const x = 2;\n"),
+        (
+            "src/main.ts",
+            "import { x } from 'shared/x';\nimport { x as y } from 'same/x';\n",
+        ),
+    ]);
+    assert!(!imports_file(&out, "b/x.ts"));
+    let (kind, tier, _) = placeholder(&out, "mod:shared/x");
+    assert_eq!((kind.as_str(), tier), ("unresolved", Gap));
+    assert!(imports_file(&out, "a/x.ts"), "agreeing configs resolve");
+}

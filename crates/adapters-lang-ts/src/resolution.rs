@@ -287,6 +287,26 @@ impl ResolutionIndex {
         })
     }
 
+    /// The bundler alias that may *resolve* `spec`: the nearest governing
+    /// match, only when it belongs to its file's exported config and every
+    /// other config in the same directory (a Vite and a webpack config side
+    /// by side) that addresses `spec` agrees on key and target. Anything
+    /// else leaves the specifier to classification, an in-system Gap.
+    fn resolving_bundler_alias(&self, spec: &str, importer: &str) -> Option<&BundlerAlias> {
+        let first = self.bundler_alias(spec, importer)?;
+        let mut seen = std::collections::BTreeSet::new();
+        for alias in &self.bundler_aliases {
+            // Within one config the first match in declaration order wins.
+            if alias.dir != first.dir || !alias.matches(spec) || !seen.insert(&alias.config_path) {
+                continue;
+            }
+            if !alias.exported || alias.key != first.key || alias.target != first.target {
+                return None;
+            }
+        }
+        Some(first)
+    }
+
     /// The tsconfig scope governing `importer` (nearest wins outright).
     fn nearest_scope(&self, importer: &str) -> Option<&TsconfigScope> {
         self.tsconfigs
@@ -446,7 +466,7 @@ fn resolve_spec(
     }
     // Literal bundler aliases (#463): the replacement path is proven
     // against real files exactly like a tsconfig alias target.
-    if let Some(alias) = index.bundler_alias(spec, importer)
+    if let Some(alias) = index.resolving_bundler_alias(spec, importer)
         && let Some(target) = &alias.target
     {
         let rest = &spec[alias.key.len()..];

@@ -29,6 +29,12 @@ pub(crate) struct BundlerAlias {
     pub(crate) target: Option<String>,
     /// Declaring span of the key in the config text.
     pub(crate) span: (u64, u64),
+    /// Whether this alias provably belongs to the exported config: the
+    /// file's only `resolve.alias` object, inside the object handed to
+    /// `export default`, `module.exports =`, or `defineConfig(…)`. Only an
+    /// exported alias may resolve a specifier; any other collected key
+    /// still keeps a specifier it addresses an in-system Gap.
+    pub(crate) exported: bool,
 }
 
 impl BundlerAlias {
@@ -55,6 +61,11 @@ pub(crate) fn is_bundler_config(name: &str) -> bool {
 
 /// Every literal `resolve.alias` entry in one config, in declaration order.
 pub(crate) fn parse(text: &str, dir: &str, config_path: &str) -> Vec<BundlerAlias> {
+    // `key$` is webpack's exact-match syntax; Vite keys are plain strings.
+    let webpack = config_path
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.starts_with("webpack.config."));
     let mut parser = Parser::new();
     if parser
         .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
@@ -69,8 +80,10 @@ pub(crate) fn parse(text: &str, dir: &str, config_path: &str) -> Vec<BundlerAlia
         text,
         dir,
         config_path,
+        webpack,
     };
     let mut out = Vec::new();
+    let mut alias_objects = 0;
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if node.kind() == "pair"
@@ -78,14 +91,71 @@ pub(crate) fn parse(text: &str, dir: &str, config_path: &str) -> Vec<BundlerAlia
             && is_resolve_object(&cx, &node)
             && let Some(value) = node.child_by_field_name("value")
         {
+            alias_objects += 1;
+            let exported = in_exported_config(&cx, &node);
+            let start = out.len();
             cx.aliases(&value, &mut out);
+            for alias in &mut out[start..] {
+                alias.exported = exported;
+            }
         }
         // Reverse push keeps a depth-first walk in source order.
         let mut cursor = node.walk();
         let children: Vec<_> = node.named_children(&mut cursor).collect();
         stack.extend(children.into_iter().rev());
     }
+    // Several alias objects in one file (per-mode configs, an unused
+    // helper): which one the bundler applies is not provable, so none
+    // resolves anything (fail closed).
+    if alias_objects > 1 {
+        for alias in &mut out {
+            alias.exported = false;
+        }
+    }
     out
+}
+
+/// Whether the `alias` pair's config object is provably the exported
+/// config: the `resolve` object's parent object, possibly wrapped in
+/// parentheses, `as`/`satisfies`, or returned by an arrow function, is the
+/// value of `export default`, of `module.exports =`, or an argument of
+/// `defineConfig(…)`.
+fn in_exported_config(cx: &Cx, alias_pair: &TsNode) -> bool {
+    let Some(config) = alias_pair
+        .parent()
+        .and_then(|resolve_object| resolve_object.parent())
+        .and_then(|resolve_pair| resolve_pair.parent())
+        .filter(|config| config.kind() == "object")
+    else {
+        return false;
+    };
+    let mut node = config;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "parenthesized_expression" | "as_expression" | "satisfies_expression" => {
+                node = parent;
+            }
+            // `(env) => ({ … })`: the returned object is the config.
+            "arrow_function" if parent.child_by_field_name("body") == Some(node) => {
+                node = parent;
+            }
+            "export_statement" => return true,
+            "assignment_expression" => {
+                return parent.child_by_field_name("right") == Some(node)
+                    && parent
+                        .child_by_field_name("left")
+                        .is_some_and(|left| cx.text_of(&left) == "module.exports");
+            }
+            "arguments" => {
+                return parent
+                    .parent()
+                    .and_then(|call| call.child_by_field_name("function"))
+                    .is_some_and(|callee| cx.text_of(&callee) == "defineConfig");
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Whether the `alias` pair sits directly in the object of a `resolve` key.
@@ -101,6 +171,7 @@ struct Cx<'a> {
     text: &'a str,
     dir: &'a str,
     config_path: &'a str,
+    webpack: bool,
 }
 
 impl Cx<'_> {
@@ -187,8 +258,8 @@ impl Cx<'_> {
             return;
         };
         let (key, exact) = match key.strip_suffix('$') {
-            Some(stripped) => (stripped.to_string(), true),
-            None => (key, false),
+            Some(stripped) if self.webpack => (stripped.to_string(), true),
+            _ => (key, false),
         };
         if key.is_empty() {
             return;
@@ -200,6 +271,7 @@ impl Cx<'_> {
             exact,
             target,
             span: (key_node.start_byte() as u64, key_node.end_byte() as u64),
+            exported: false,
         });
     }
 
