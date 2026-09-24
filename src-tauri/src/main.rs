@@ -3251,6 +3251,9 @@ struct AddRepoSummary {
     merged: MergedFacts,
     layers: LayerBreakdown,
     delta: DeltaSummary,
+    /// The clone's preflight report, reconciled with this recovery's eval
+    /// proof exactly as a local recovery's is (AC-0209, #446).
+    preflight: ingest::preflight::PreflightReport,
 }
 
 /// Clone a GitHub repo (read-only, shallow) and ingest it with its real
@@ -3262,7 +3265,10 @@ async fn add_repo(url: String, app: tauri::AppHandle) -> Result<AddRepoSummary, 
     off_ui_thread(move || add_repo_blocking(url, app)).await
 }
 
-fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummary, String> {
+fn add_repo_blocking<R: tauri::Runtime>(
+    url: String,
+    app: tauri::AppHandle<R>,
+) -> Result<AddRepoSummary, String> {
     let state = app.state::<AppState>();
     let source = state
         .sources
@@ -3359,6 +3365,19 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         &std::collections::BTreeSet::from([source.repo_key.clone()]),
     )
     .map_err(&fail)?;
+    // As for a local recovery (AC-0200, AC-0209): only once the graph holds
+    // the recovered facts, scanning the captured bytes the claims were
+    // proven on, through the per-repo fence.
+    let preflight = reconcile_preflight_findings(
+        &state,
+        &app.state::<PreflightRuns>(),
+        root,
+        primary.capture.as_ref(),
+        &source.repo_key,
+        &plugin_coverage(&active_plugins),
+        &extraction.eval_sites,
+    )
+    .map_err(&fail)?;
     finish_source_operation(&state, &app, &execution, &operation)?;
     Ok(AddRepoSummary {
         job_id,
@@ -3370,6 +3389,7 @@ fn add_repo_blocking(url: String, app: tauri::AppHandle) -> Result<AddRepoSummar
         merged: published.merged,
         layers,
         delta,
+        preflight,
     })
 }
 
@@ -3396,6 +3416,17 @@ struct AddSystemSummary {
     merged: MergedFacts,
     layers: LayerBreakdown,
     delta: DeltaSummary,
+    /// Each recovered repo's reconciled preflight report, in manifest order
+    /// (AC-0209, #446). Not `preflight`: the Preflight surface shows one
+    /// repo's report, and a system has several.
+    preflights: Vec<RepoPreflight>,
+}
+
+/// One repo's reconciled preflight report within a system recovery.
+#[derive(Serialize)]
+struct RepoPreflight {
+    repo: String,
+    report: ingest::preflight::PreflightReport,
 }
 
 fn manifest_dir(path: &std::path::Path) -> &std::path::Path {
@@ -3471,6 +3502,9 @@ fn add_system_blocking<R: tauri::Runtime>(
     let mut published = OperationFacts::default();
     let mut layers = LayerBreakdown::default();
     let mut delta = DeltaSummary::default();
+    // Each repo's eval proof, reconciled only once the whole system is
+    // published: a later repo's failure must leave every register pending.
+    let mut proofs = Vec::new();
     let mut on_file = detail_throttle(&app, job_id);
     for (entry, (source, remote)) in manifest.repos.iter().zip(&admitted) {
         if job_cancelled(&state, &execution)? {
@@ -3553,7 +3587,14 @@ fn add_system_blocking<R: tauri::Runtime>(
         }
         let sha12: String = commit.chars().take(12).collect();
         repos.push(format!("{repo}@{sha12}"));
-        repo_identities.insert(repo.clone());
+        if repo_identities.insert(repo.clone()) {
+            proofs.push((
+                repo,
+                primary,
+                plugin_coverage(&active_plugins),
+                extraction.eval_sites,
+            ));
+        }
     }
     {
         // After every repo is in: infra from one repo can back channels
@@ -3575,6 +3616,25 @@ fn add_system_blocking<R: tauri::Runtime>(
         &repo_identities,
     )
     .map_err(&fail)?;
+    // AC-0200, AC-0209: each repo reconciles exactly as a local recovery.
+    let runs = app.state::<PreflightRuns>();
+    let preflights = proofs
+        .into_iter()
+        .map(|(repo, primary, plugins, eval_sites)| {
+            let root = operation.root(&repo)?;
+            let report = reconcile_preflight_findings(
+                &state,
+                &runs,
+                root,
+                primary.capture.as_ref(),
+                &repo,
+                &plugins,
+                &eval_sites,
+            )?;
+            Ok(RepoPreflight { repo, report })
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(&fail)?;
     finish_source_operation(&state, &app, &execution, &operation)?;
     Ok(AddSystemSummary {
         job_id,
@@ -3585,6 +3645,7 @@ fn add_system_blocking<R: tauri::Runtime>(
         merged: published.merged,
         layers,
         delta,
+        preflights,
     })
 }
 
@@ -7441,6 +7502,169 @@ export function App() {
             pending(),
             vec![(1, true)],
             "the unpublished proof closed nothing"
+        );
+    }
+
+    /// A bare git repo holding `files`, cloneable as `file://<path>`.
+    fn preflight_bare_repo(
+        dir: &std::path::Path,
+        name: &str,
+        files: &[(&str, &str)],
+    ) -> std::path::PathBuf {
+        let src = dir.join(format!("{name}-src"));
+        std::fs::create_dir_all(&src).unwrap();
+        for (path, content) in files {
+            std::fs::write(src.join(path), content).unwrap();
+        }
+        let git = |args: &[&str], cwd: &std::path::Path| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q", "-b", "main"], &src);
+        git(&["add", "."], &src);
+        git(&["commit", "-q", "-m", "init"], &src);
+        let bare = dir.join(format!("{name}.git"));
+        git(
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                src.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+            dir,
+        );
+        bare
+    }
+
+    /// `repo`'s preflight register rows as (line, still pending AST proof).
+    fn preflight_register(state: &super::AppState, repo: &str) -> Vec<(i64, bool)> {
+        state
+            .findings
+            .lock()
+            .unwrap()
+            .list_for(repo)
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.detector == ingest::preflight::DETECTOR_ID)
+            .inspect(|f| assert_eq!(f.kind, "unsupported"))
+            .map(|f| (f.line, f.message.contains("pending AST proof")))
+            .collect()
+    }
+
+    fn inline_eval_lines(findings: &[ingest::preflight::PatternFinding]) -> Vec<u64> {
+        findings
+            .iter()
+            .filter(|f| f.kind == "inline-eval")
+            .map(|f| f.line)
+            .collect()
+    }
+
+    const EVAL_FIXTURE: &str = "eval('function legacySetup() {}');\neval(getCode());\n";
+
+    #[test]
+    fn github_recovery_writes_its_reconciled_preflight_findings() {
+        // AC-0209 (#446): an `add_repo` recovery classifies the clone and
+        // writes the result to the register exactly as a local recovery
+        // does (AC-0200): the proven literal closes and the dynamic site
+        // stays one Unsupported finding, with no pending wording.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let bare = preflight_bare_repo(dir.path(), "shop", &[("app.ts", EVAL_FIXTURE)]);
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+
+        let summary =
+            super::add_repo_blocking(format!("file://{}", bare.display()), handle.clone()).unwrap();
+
+        assert_eq!(preflight_register(&state, &summary.repo), vec![(2, false)]);
+        assert_eq!(inline_eval_lines(&summary.preflight.unsupported), vec![2]);
+        assert!(summary.preflight.potential_gaps.is_empty());
+    }
+
+    #[test]
+    fn manifest_recovery_writes_each_repos_reconciled_preflight_findings() {
+        // AC-0209 (#446): every repo an `add_system` recovers, cloned or
+        // local, gets its own reconciled register findings, and the summary
+        // carries each report in manifest order.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let bare = preflight_bare_repo(dir.path(), "web", &[("app.ts", EVAL_FIXTURE)]);
+        let api = dir.path().join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        std::fs::write(api.join("server.ts"), "new Function(getCode());\n").unwrap();
+        let manifest = dir.path().join("cartograph.system.toml");
+        std::fs::write(
+            &manifest,
+            format!(
+                "[[repos]]\nurl = \"file://{}\"\n\n[[repos]]\nurl = \"api\"\n",
+                bare.display()
+            ),
+        )
+        .unwrap();
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+
+        let summary =
+            super::add_system_blocking(manifest.to_string_lossy().into_owned(), handle.clone())
+                .unwrap();
+
+        let reports: Vec<(&str, Vec<u64>)> = summary
+            .preflights
+            .iter()
+            .map(|p| (p.repo.as_str(), inline_eval_lines(&p.report.unsupported)))
+            .collect();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].1, vec![2], "the clone's dynamic eval");
+        assert_eq!(reports[1].1, vec![1], "the local repo's dynamic Function");
+        assert_eq!(preflight_register(&state, reports[0].0), vec![(2, false)]);
+        assert_eq!(preflight_register(&state, reports[1].0), vec![(1, false)]);
+    }
+
+    #[test]
+    fn a_failed_system_recovery_writes_no_preflight_findings() {
+        // AC-0209 (#446): the first repo recovers, the second fails (its
+        // declared state file is missing), so the system recovery fails and
+        // no repo's register findings change — not even the first repo's.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let bare = preflight_bare_repo(dir.path(), "web", &[("app.ts", EVAL_FIXTURE)]);
+        let api = dir.path().join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        std::fs::write(api.join("server.ts"), "export const ok = 1;\n").unwrap();
+        let manifest = dir.path().join("cartograph.system.toml");
+        std::fs::write(
+            &manifest,
+            format!(
+                "[[repos]]\nurl = \"file://{}\"\n\n[[repos]]\nurl = \"api\"\nstate_json = \"missing.tfstate.json\"\n",
+                bare.display()
+            ),
+        )
+        .unwrap();
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+
+        let error =
+            super::add_system_blocking(manifest.to_string_lossy().into_owned(), handle.clone())
+                .err()
+                .unwrap();
+        assert!(error.contains("state_json"), "{error}");
+
+        let findings = state.findings.lock().unwrap().list().unwrap();
+        assert!(
+            findings.is_empty(),
+            "a failed recovery writes nothing: {findings:?}"
         );
     }
 
