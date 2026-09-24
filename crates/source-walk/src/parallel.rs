@@ -90,7 +90,9 @@ pub fn workers() -> usize {
 /// `Auto`: one worker per performance (non-efficiency) core, leaving one for
 /// the UI and the merge (`max(1, P-cores − 1)`), and at most one worker per 2 GiB of
 /// physical memory so a large ingest degrades to fewer workers rather than
-/// swapping. Computed once per process.
+/// swapping. The memory cap applies where physical memory is known (macOS,
+/// Linux); elsewhere only the core count bounds Auto. Computed once per
+/// process.
 #[must_use]
 pub fn auto_workers() -> usize {
     static AUTO: OnceLock<usize> = OnceLock::new();
