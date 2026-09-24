@@ -3,13 +3,15 @@
 //! No source loader is accepted here: all displays came through the producer's
 //! sanitizer before persistence. Parsing checks the typed payload, not secrecy.
 
-use crate::{SpecAssertion, provenance};
+use crate::workbench::{append_assertions, largest_groups};
+use crate::{ExportMode, SpecAssertion, provenance};
 use core_graph::rules::{
     BranchPolarity, DefinitionExpressionKind, DependencyResolution, GuardedExitEvidence,
     KnownLiteral, LiteralEvidence, LocalExit, SourceExpression,
 };
 use core_graph::{Edge, Node};
 use core_prov::EvidenceRef;
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -210,7 +212,263 @@ fn local_definitions(
     }
 }
 
-pub(crate) fn inventory(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) {
+/// Inventories at or below this many observations render every observation
+/// in full (#487).
+pub const RULE_EVIDENCE_FLAT_LIMIT: usize = 50;
+/// Source files detailed in `rule-evidence.md` past the flat limit; files
+/// past the cap are counted in one explicit line.
+pub const RULE_EVIDENCE_MAX_FILES: usize = 50;
+/// Observations rendered in full per source file past the flat limit.
+pub const RULE_EVIDENCE_REPRESENTATIVES: usize = 3;
+
+const PREAMBLE: &str = "# Source rule evidence\n\nThese are guarded local exit observations from stored source evidence. \
+        A complete execution predicate and the consumer effect are not established. \
+        Source order is lexical, not runtime order. Coverage is limited to the facts in this export.\n\n";
+
+/// Structured index of every observation (`rule-evidence.json`).
+#[derive(Serialize)]
+struct RuleEvidenceIndex<'a> {
+    schema: &'static str,
+    mode: ExportMode,
+    observations: usize,
+    assertions: usize,
+    files: Vec<RuleFileIndex<'a>>,
+}
+
+#[derive(Serialize)]
+struct RuleFileIndex<'a> {
+    id: String,
+    /// `None` when the observation's payload is malformed or unsupported.
+    repo: Option<&'a str>,
+    path: Option<&'a str>,
+    observations: usize,
+    /// Observation assertion ids; each carries its full provenance in the
+    /// bundle.
+    members: Vec<&'a str>,
+    /// Relationship assertion ids asserted by these observations.
+    relationships: Vec<&'a str>,
+}
+
+/// One observation with its parsed payload and its assertions: the
+/// observation first, then each relationship it asserts.
+struct Observation<'a> {
+    node: &'a Node,
+    rule: Option<GuardedExitEvidence>,
+    assertions: Vec<SpecAssertion>,
+}
+
+fn relationships<'a>(
+    node: &Node,
+    edges: &[&'a Edge],
+    visible: &BTreeMap<&str, &Node>,
+) -> Vec<&'a Edge> {
+    let mut relationships: Vec<_> = edges
+        .iter()
+        .copied()
+        .filter(|edge| {
+            edge.src == node.id
+                && matches!(edge.label.as_str(), "GOVERNS" | "DEPENDS_ON")
+                && visible.contains_key(edge.dst.as_str())
+        })
+        .collect();
+    relationships.sort_by(|left, right| (&left.label, &left.dst).cmp(&(&right.label, &right.dst)));
+    relationships
+}
+
+fn render_observation(
+    output: &mut String,
+    observation: &Observation<'_>,
+    edges: &[&Edge],
+    visible: &BTreeMap<&str, &Node>,
+) {
+    let node = observation.node;
+    let producing = &observation.assertions[0].provenance;
+    writeln!(
+        output,
+        "## Observation {}\n\nProducing tier: {:?} · Confidence: {:?}\n",
+        text(&node.id),
+        producing.tier,
+        producing.confidence_tier
+    )
+    .expect("write to string");
+    let Some(rule) = &observation.rule else {
+        output.push_str("Source-rule payload unavailable: malformed or unsupported schema. No source expressions were rendered.\n\n");
+        return;
+    };
+    writeln!(
+        output,
+        "Owner: {}\n\nExit source: {}\n\nSource order within callable: {} (zero-based)\n\n\
+        Complete execution predicate: not established.\n\nConsumer effect: not established.\n",
+        reference(&rule.owner_id, visible),
+        source(&rule.exit_source),
+        rule.source_order
+    )
+    .expect("write to string");
+    output.push_str("### Same-callable branch conditions\n\n| Order | Polarity | Stored expression | Capture | Branch source | Expression source |\n|---|---|---|---|---|---|\n");
+    if rule.conditions.is_empty() {
+        output.push_str("| — | — | No branch conditions captured | — | — | — |\n");
+    }
+    for (index, condition) in rule.conditions.iter().enumerate() {
+        let polarity = match condition.polarity {
+            BranchPolarity::TruthyBranch => "truthy branch",
+            BranchPolarity::FalsyBranch => "falsy branch",
+        };
+        writeln!(
+            output,
+            "| {} | {} | {} | {:?} | {} | {} |",
+            index,
+            polarity,
+            text(condition.expression.display.as_str()),
+            condition.expression.capture,
+            source(&condition.branch_source),
+            source(&condition.expression.source)
+        )
+        .expect("write to string");
+    }
+    output.push_str("\n### Local effect\n\n");
+    match &rule.effect {
+        LocalExit::Return { value } => {
+            output.push_str("Return from this callable.\n\n");
+            match value {
+                Some(value) => expression(output, value),
+                None => output.push_str("Bare return: no value expression.\n\n"),
+            }
+        }
+        LocalExit::Throw { value } => {
+            output.push_str(
+                "Throw from this source location; exception handling is not established.\n\n",
+            );
+            expression(output, value);
+        }
+    }
+    output.push_str("### Dependencies\n\n| Role | Resolution | Source |\n|---|---|---|\n");
+    for dependency in &rule.dependencies {
+        writeln!(
+            output,
+            "| {:?} | {} | {} |",
+            dependency.role,
+            resolution(&dependency.resolution, visible),
+            source(&dependency.source)
+        )
+        .expect("write to string");
+    }
+    if rule.dependencies.is_empty() {
+        output.push_str("| — | No dependencies captured; completeness is not established | — |\n");
+    }
+    local_definitions(output, rule, visible);
+    output.push_str("\nInterpretation gaps:\n\n");
+    if rule.interpretation.gap_ids.is_empty() {
+        output.push_str(
+            "- No gap references supplied; behavioral interpretation remains not established.\n",
+        );
+    }
+    for gap in &rule.interpretation.gap_ids {
+        writeln!(output, "- {}", reference(gap, visible)).expect("write to string");
+    }
+    output.push_str("\n### Redactions\n\n");
+    if rule.redactions.is_empty() {
+        output.push_str("No redactions recorded in this payload.\n");
+    }
+    for redaction in &rule.redactions {
+        writeln!(
+            output,
+            "- {:?}: {}",
+            redaction.reason,
+            source(&redaction.source)
+        )
+        .expect("write to string");
+    }
+    output.push_str("\n### Visible graph relationships\n\n| Relation | Target | Tier | Confidence |\n|---|---|---|---|\n");
+    let relationships = relationships(node, edges, visible);
+    if relationships.is_empty() {
+        output.push_str("| — | No relationships available in this export | — | — |\n");
+    }
+    for edge in relationships {
+        let identity = format!("{} {} {}", edge.src, edge.label, edge.dst);
+        let producing = provenance(&edge.props, &identity);
+        writeln!(
+            output,
+            "| {} | {} | {:?} | {:?} |",
+            edge.label,
+            reference(&edge.dst, visible),
+            producing.tier,
+            producing.confidence_tier
+        )
+        .expect("write to string");
+    }
+    output.push('\n');
+}
+
+/// Parse every observation and collect its assertions, each relationship
+/// asserted once across the inventory.
+fn observations<'a>(
+    rules: &[&'a Node],
+    edges: &[&Edge],
+    visible: &BTreeMap<&str, &Node>,
+) -> Vec<Observation<'a>> {
+    let mut asserted_edges = BTreeSet::new();
+    rules
+        .iter()
+        .map(|node| {
+            let parsed = GuardedExitEvidence::from_value(node.props["rule"].clone()).ok();
+            let mut assertions = vec![SpecAssertion {
+                id: format!("node:{}", node.id),
+                subject_id: node.id.clone(),
+                subject_kind: "BusinessRule".into(),
+                summary: if parsed.is_some() {
+                    "Guarded local exit observation; behavioral interpretation not established"
+                } else {
+                    "Source-rule payload unavailable: malformed or unsupported schema"
+                }
+                .into(),
+                provenance: provenance(&node.props, &node.id),
+            }];
+            // A malformed payload renders no relationships, so it asserts none.
+            if parsed.is_some() {
+                for edge in relationships(node, edges, visible) {
+                    let identity = format!("{} {} {}", edge.src, edge.label, edge.dst);
+                    if asserted_edges.insert(identity.clone()) {
+                        assertions.push(SpecAssertion {
+                            id: format!("edge:{identity}"),
+                            subject_id: identity.clone(),
+                            subject_kind: edge.label.clone(),
+                            summary: format!("Source-rule {} relationship", edge.label),
+                            provenance: provenance(&edge.props, &identity),
+                        });
+                    }
+                }
+            }
+            Observation {
+                node,
+                rule: parsed,
+                assertions,
+            }
+        })
+        .collect()
+}
+
+fn file_id(index: usize) -> String {
+    format!("R-{:02}", index + 1)
+}
+
+fn file_label(key: &Option<(&str, &str)>) -> String {
+    match key {
+        Some((repo, path)) => text(&format!("{repo}:{path}")),
+        None => "Source-rule payload unavailable".into(),
+    }
+}
+
+/// The source-rule inventory, its JSON index, and its complete assertions
+/// (#487). Past [`RULE_EVIDENCE_FLAT_LIMIT`] observations the Markdown groups
+/// them by exit-source file, renders at most [`RULE_EVIDENCE_REPRESENTATIVES`]
+/// observations in full for each of at most [`RULE_EVIDENCE_MAX_FILES`] files,
+/// and states every omission as a counted line; the index lists every
+/// observation and relationship by file.
+pub(crate) fn inventory(
+    nodes: &[&Node],
+    edges: &[&Edge],
+    mode: ExportMode,
+) -> (String, String, Vec<SpecAssertion>) {
     let visible: BTreeMap<_, _> = nodes.iter().map(|node| (node.id.as_str(), *node)).collect();
     let mut rules: Vec<_> = nodes
         .iter()
@@ -218,166 +476,144 @@ pub(crate) fn inventory(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAs
         .filter(|node| node.label == "BusinessRule")
         .collect();
     rules.sort_by(|left, right| left.id.cmp(&right.id));
-    let mut output = String::from(
-        "# Source rule evidence\n\nThese are guarded local exit observations from stored source evidence. \
-        A complete execution predicate and the consumer effect are not established. \
-        Source order is lexical, not runtime order. Coverage is limited to the facts in this export.\n\n",
-    );
-    let mut assertions = Vec::new();
-    let mut asserted_edges = BTreeSet::new();
-    if rules.is_empty() {
+    let observations = observations(&rules, edges, &visible);
+    let assertion_count: usize = observations
+        .iter()
+        .map(|observation| observation.assertions.len())
+        .sum();
+    let files = largest_groups(observations.iter(), |observation| {
+        observation.rule.as_ref().map(|rule| {
+            (
+                rule.exit_source.repo.as_str(),
+                rule.exit_source.path.as_str(),
+            )
+        })
+    });
+    let mut output = String::from(PREAMBLE);
+    if observations.is_empty() {
         output.push_str("No source-rule observations are available in this export.\n");
     }
-    for node in rules {
-        let producing = provenance(&node.props, &node.id);
-        writeln!(
-            output,
-            "## Observation {}\n\nProducing tier: {:?} · Confidence: {:?}\n",
-            text(&node.id),
-            producing.tier,
-            producing.confidence_tier
-        )
-        .expect("write to string");
-        let parsed = GuardedExitEvidence::from_value(node.props["rule"].clone());
-        assertions.push(SpecAssertion {
-            id: format!("node:{}", node.id),
-            subject_id: node.id.clone(),
-            subject_kind: "BusinessRule".into(),
-            summary: if parsed.is_ok() {
-                "Guarded local exit observation; behavioral interpretation not established"
-            } else {
-                "Source-rule payload unavailable: malformed or unsupported schema"
-            }
-            .into(),
-            provenance: producing,
-        });
-        let Ok(rule) = parsed else {
-            output.push_str("Source-rule payload unavailable: malformed or unsupported schema. No source expressions were rendered.\n\n");
-            continue;
-        };
-        writeln!(
-            output,
-            "Owner: {}\n\nExit source: {}\n\nSource order within callable: {} (zero-based)\n\n\
-            Complete execution predicate: not established.\n\nConsumer effect: not established.\n",
-            reference(&rule.owner_id, &visible),
-            source(&rule.exit_source),
-            rule.source_order
-        )
-        .expect("write to string");
-        output.push_str("### Same-callable branch conditions\n\n| Order | Polarity | Stored expression | Capture | Branch source | Expression source |\n|---|---|---|---|---|---|\n");
-        if rule.conditions.is_empty() {
-            output.push_str("| — | — | No branch conditions captured | — | — | — |\n");
+    if observations.len() <= RULE_EVIDENCE_FLAT_LIMIT {
+        for observation in &observations {
+            render_observation(&mut output, observation, edges, &visible);
         }
-        for (index, condition) in rule.conditions.iter().enumerate() {
-            let polarity = match condition.polarity {
-                BranchPolarity::TruthyBranch => "truthy branch",
-                BranchPolarity::FalsyBranch => "falsy branch",
-            };
-            writeln!(
-                output,
-                "| {} | {} | {} | {:?} | {} | {} |",
-                index,
-                polarity,
-                text(condition.expression.display.as_str()),
-                condition.expression.capture,
-                source(&condition.branch_source),
-                source(&condition.expression.source)
-            )
-            .expect("write to string");
-        }
-        output.push_str("\n### Local effect\n\n");
-        match &rule.effect {
-            LocalExit::Return { value } => {
-                output.push_str("Return from this callable.\n\n");
-                match value {
-                    Some(value) => expression(&mut output, value),
-                    None => output.push_str("Bare return: no value expression.\n\n"),
-                }
-            }
-            LocalExit::Throw { value } => {
-                output.push_str(
-                    "Throw from this source location; exception handling is not established.\n\n",
-                );
-                expression(&mut output, value);
-            }
-        }
-        output.push_str("### Dependencies\n\n| Role | Resolution | Source |\n|---|---|---|\n");
-        for dependency in &rule.dependencies {
-            writeln!(
-                output,
-                "| {:?} | {} | {} |",
-                dependency.role,
-                resolution(&dependency.resolution, &visible),
-                source(&dependency.source)
-            )
-            .expect("write to string");
-        }
-        if rule.dependencies.is_empty() {
-            output.push_str(
-                "| — | No dependencies captured; completeness is not established | — |\n",
-            );
-        }
-        local_definitions(&mut output, &rule, &visible);
-        output.push_str("\nInterpretation gaps:\n\n");
-        if rule.interpretation.gap_ids.is_empty() {
-            output.push_str("- No gap references supplied; behavioral interpretation remains not established.\n");
-        }
-        for gap in &rule.interpretation.gap_ids {
-            writeln!(output, "- {}", reference(gap, &visible)).expect("write to string");
-        }
-        output.push_str("\n### Redactions\n\n");
-        if rule.redactions.is_empty() {
-            output.push_str("No redactions recorded in this payload.\n");
-        }
-        for redaction in &rule.redactions {
-            writeln!(
-                output,
-                "- {:?}: {}",
-                redaction.reason,
-                source(&redaction.source)
-            )
-            .expect("write to string");
-        }
-        output.push_str("\n### Visible graph relationships\n\n| Relation | Target | Tier | Confidence |\n|---|---|---|---|\n");
-        let mut relationships: Vec<_> = edges
+        let assertions: Vec<SpecAssertion> = observations
             .iter()
-            .copied()
-            .filter(|edge| {
-                edge.src == node.id
-                    && matches!(edge.label.as_str(), "GOVERNS" | "DEPENDS_ON")
-                    && visible.contains_key(edge.dst.as_str())
-            })
+            .flat_map(|observation| observation.assertions.iter().cloned())
             .collect();
-        relationships
-            .sort_by(|left, right| (&left.label, &left.dst).cmp(&(&right.label, &right.dst)));
-        if relationships.is_empty() {
-            output.push_str("| — | No relationships available in this export | — | — |\n");
-        }
-        for edge in relationships {
-            let identity = format!("{} {} {}", edge.src, edge.label, edge.dst);
-            let producing = provenance(&edge.props, &identity);
+        append_assertions(&mut output, &assertions);
+    } else {
+        let shown = &files[..files.len().min(RULE_EVIDENCE_MAX_FILES)];
+        writeln!(
+            output,
+            "{} observations from {} source files, largest first. Each file lists up to \
+             {RULE_EVIDENCE_REPRESENTATIVES} representative observations in full; \
+             `rule-evidence.json` lists every observation and relationship by file, and \
+             each keeps its inline provenance in the bundle's assertions.\n",
+            observations.len(),
+            files.len(),
+        )
+        .expect("write to string");
+        output.push_str("| File | Source file | Observations |\n|---|---|---|\n");
+        for (index, (key, members)) in shown.iter().enumerate() {
             writeln!(
                 output,
-                "| {} | {} | {:?} | {:?} |",
-                edge.label,
-                reference(&edge.dst, &visible),
-                producing.tier,
-                producing.confidence_tier
+                "| {} | {} | {} |",
+                file_id(index),
+                file_label(key),
+                members.len()
             )
             .expect("write to string");
-            if asserted_edges.insert(identity.clone()) {
-                assertions.push(SpecAssertion {
-                    id: format!("edge:{identity}"),
-                    subject_id: identity,
-                    subject_kind: edge.label.clone(),
-                    summary: format!("Source-rule {} relationship", edge.label),
-                    provenance: producing,
-                });
+        }
+        let hidden = &files[shown.len()..];
+        if !hidden.is_empty() {
+            writeln!(
+                output,
+                "| … | {} more files, not detailed here — listed in `rule-evidence.json` | {} |",
+                hidden.len(),
+                hidden
+                    .iter()
+                    .map(|(_, members)| members.len())
+                    .sum::<usize>(),
+            )
+            .expect("write to string");
+        }
+        let mut representatives: Vec<SpecAssertion> = Vec::new();
+        for (index, (key, members)) in shown.iter().enumerate() {
+            writeln!(
+                output,
+                "\n## {} — {} ({} observations)\n",
+                file_id(index),
+                file_label(key),
+                members.len()
+            )
+            .expect("write to string");
+            for observation in members.iter().take(RULE_EVIDENCE_REPRESENTATIVES) {
+                // Nest the observation's headings under its file heading.
+                // Stored text is escaped by `text`, so only headings start
+                // a line with `#`.
+                let mut rendered = String::new();
+                render_observation(&mut rendered, observation, edges, &visible);
+                for line in rendered.split_inclusive('\n') {
+                    if line.starts_with('#') {
+                        output.push('#');
+                    }
+                    output.push_str(line);
+                }
+                representatives.extend(observation.assertions.iter().cloned());
+            }
+            let more = members.len().saturating_sub(RULE_EVIDENCE_REPRESENTATIVES);
+            if more > 0 {
+                writeln!(
+                    output,
+                    "… {more} more observations from this file — listed in `rule-evidence.json` under `{}`.",
+                    file_id(index),
+                )
+                .expect("write to string");
             }
         }
-        output.push('\n');
+        append_assertions(&mut output, &representatives);
+        writeln!(
+            output,
+            "\nInline provenance is shown for the {} assertions of the representative \
+             observations above; the other {} carry theirs in the bundle's structured assertions.",
+            representatives.len(),
+            assertion_count - representatives.len(),
+        )
+        .expect("write to string");
     }
-    (output, assertions)
+    let index = RuleEvidenceIndex {
+        schema: "cartograph.rule-evidence-index/v1",
+        mode,
+        observations: observations.len(),
+        assertions: assertion_count,
+        files: files
+            .iter()
+            .enumerate()
+            .map(|(index, (key, members))| RuleFileIndex {
+                id: file_id(index),
+                repo: key.map(|(repo, _)| repo),
+                path: key.map(|(_, path)| path),
+                observations: members.len(),
+                members: members
+                    .iter()
+                    .map(|observation| observation.assertions[0].id.as_str())
+                    .collect(),
+                relationships: members
+                    .iter()
+                    .flat_map(|observation| observation.assertions[1..].iter())
+                    .map(|assertion| assertion.id.as_str())
+                    .collect(),
+            })
+            .collect(),
+    };
+    let mut sidecar = serde_json::to_string(&index).expect("serialize rule evidence index");
+    sidecar.push('\n');
+    let assertions = observations
+        .into_iter()
+        .flat_map(|observation| observation.assertions)
+        .collect();
+    (output, sidecar, assertions)
 }
 
 #[cfg(test)]
@@ -892,5 +1128,158 @@ mod tests {
         assert!(!output.contains("\n# Forged"));
         assert!(output.contains("&lt;/table&gt;"));
         assert!(output.contains("\\# Forged \\| \\[claim\\]"));
+    }
+
+    fn index(bundle: &SpecBundle) -> serde_json::Value {
+        let index = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.file_name == "rule-evidence.json")
+            .unwrap();
+        assert!(index.assertions.is_empty());
+        serde_json::from_str(&index.content).unwrap()
+    }
+
+    /// `big` observations in `big.ts`, 4 in `mid.ts`, one each in `extra`
+    /// further files, and one malformed payload; every observation GOVERNS
+    /// `sym:owner`.
+    fn scaled_rules(big: usize, extra: usize) -> (Vec<Node>, Vec<Edge>) {
+        let mut nodes = base();
+        let mut edges = Vec::new();
+        let mut add = |id: String, path: Option<String>| {
+            let mut rule = rule_node(&id, Tier::Deterministic, ConfidenceTier::Confirmed);
+            match path {
+                Some(path) => rule.props["rule"]["exit_source"]["path"] = json!(path),
+                None => rule.props["rule"] = json!({"schema_version": 99}),
+            }
+            nodes.push(rule);
+            edges.push(edge(
+                &id,
+                "sym:owner",
+                "GOVERNS",
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            ));
+        };
+        for index in 0..big {
+            add(format!("rule:big:{index:05}"), Some("big.ts".into()));
+        }
+        for index in 0..4 {
+            add(format!("rule:mid:{index:05}"), Some("mid.ts".into()));
+        }
+        for file in 0..extra {
+            add(
+                format!("rule:extra:{file:03}"),
+                Some(format!("extra{file:03}.ts")),
+            );
+        }
+        add("rule:malformed".into(), None);
+        (nodes, edges)
+    }
+
+    #[test]
+    fn rule_evidence_groups_caps_and_indexes_every_observation() {
+        // AC-0221 (T-0221): past 50 observations, rule-evidence.md groups by
+        // exit-source file with counted omissions, and rule-evidence.json
+        // indexes every observation and relationship exactly once.
+        let extra = RULE_EVIDENCE_MAX_FILES + 5;
+        let (nodes, edges) = scaled_rules(10, extra);
+        let observations = 10 + 4 + extra + 1;
+        let compile = || {
+            compile_spec(
+                &nodes,
+                &edges,
+                &[],
+                ExportMode::VerifiedOnly,
+                &BTreeSet::new(),
+            )
+        };
+        let bundle = compile();
+        let output = artifact(&bundle);
+        // The malformed observation asserts no relationship, as before.
+        assert_eq!(output.assertions.len(), 2 * observations - 1);
+        for expected in [
+            "| R-01 | example/shop:big.ts | 10 |",
+            "| R-02 | example/shop:mid.ts | 4 |",
+            "| R-03 | Source-rule payload unavailable | 1 |",
+            "… 7 more observations from this file — listed in `rule-evidence.json` under `R-01`.",
+            "… 1 more observations from this file — listed in `rule-evidence.json` under `R-02`.",
+            "| … | 8 more files, not detailed here — listed in `rule-evidence.json` | 8 |",
+            "Source-rule payload unavailable: malformed or unsupported schema. No source expressions were rendered.",
+        ] {
+            assert!(output.content.contains(expected), "missing {expected}");
+        }
+        let rendered = 3 + 3 + (RULE_EVIDENCE_MAX_FILES - 2);
+        assert_eq!(
+            output.content.matches("\n### Observation ").count(),
+            rendered
+        );
+        assert!(!output.content.contains("\n## Observation "));
+        let shown_assertions = 2 * rendered - 1;
+        assert!(output.content.contains(&format!(
+            "Inline provenance is shown for the {shown_assertions} assertions of the representative observations above; the other {} carry",
+            output.assertions.len() - shown_assertions
+        )));
+
+        let index = index(&bundle);
+        assert_eq!(index["schema"], "cartograph.rule-evidence-index/v1");
+        assert_eq!(index["observations"], observations);
+        assert_eq!(index["assertions"], output.assertions.len());
+        let files = index["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2 + extra + 1);
+        assert_eq!(files[0]["path"], "big.ts");
+        assert_eq!(files[2]["path"], serde_json::Value::Null);
+        let mut indexed: Vec<&str> = files
+            .iter()
+            .flat_map(|file| {
+                file["members"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .chain(file["relationships"].as_array().unwrap())
+            })
+            .map(|id| id.as_str().unwrap())
+            .collect();
+        indexed.sort_unstable();
+        let mut asserted: Vec<&str> = output
+            .assertions
+            .iter()
+            .map(|assertion| assertion.id.as_str())
+            .collect();
+        asserted.sort_unstable();
+        assert_eq!(indexed, asserted, "every assertion is indexed exactly once");
+
+        assert_eq!(
+            serde_json::to_string(&bundle.artifacts).unwrap(),
+            serde_json::to_string(&compile().artifacts).unwrap()
+        );
+    }
+
+    #[test]
+    fn rule_evidence_prose_stays_bounded_as_observations_grow() {
+        // AC-0221 (T-0221): prose size does not track observation count.
+        let content_for = |big: usize| {
+            let (nodes, edges) = scaled_rules(big, RULE_EVIDENCE_MAX_FILES + 5);
+            let bundle = compile_spec(
+                &nodes,
+                &edges,
+                &[],
+                ExportMode::VerifiedOnly,
+                &BTreeSet::new(),
+            );
+            assert_eq!(
+                index(&bundle)["observations"],
+                big + 4 + RULE_EVIDENCE_MAX_FILES + 6
+            );
+            artifact(&bundle).content.clone()
+        };
+        let small = content_for(20);
+        let large = content_for(2_000);
+        assert!(
+            large.len() < small.len() + 64,
+            "{} vs {}",
+            large.len(),
+            small.len()
+        );
     }
 }

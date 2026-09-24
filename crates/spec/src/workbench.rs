@@ -204,7 +204,7 @@ fn evidence_text(provenance: &Provenance) -> String {
         .join("; ")
 }
 
-fn append_assertions(content: &mut String, assertions: &[SpecAssertion]) {
+pub(crate) fn append_assertions(content: &mut String, assertions: &[SpecAssertion]) {
     content.push_str("\n## Assertions and inline provenance\n\n");
     if assertions.is_empty() {
         content.push_str("No graph-backed assertions were recovered for this artifact.\n");
@@ -319,33 +319,196 @@ const TRACE_LABELS: &[&str] = &[
     "PERFORMED_BY",
 ];
 
-fn traceability_matrix(edges: &[&Edge]) -> (String, Vec<SpecAssertion>) {
-    let relevant: Vec<&Edge> = edges
+/// Group `items` by `key`, largest group first with ties in key order;
+/// members keep their input order. Shared by the bounded artifacts (#487).
+pub(crate) fn largest_groups<K: Ord, T>(
+    items: impl IntoIterator<Item = T>,
+    key: impl Fn(&T) -> K,
+) -> Vec<(K, Vec<T>)> {
+    let mut groups: BTreeMap<K, Vec<T>> = BTreeMap::new();
+    for item in items {
+        groups.entry(key(&item)).or_default().push(item);
+    }
+    let mut groups: Vec<(K, Vec<T>)> = groups.into_iter().collect();
+    groups.sort_by(|(left_key, left), (right_key, right)| {
+        right
+            .len()
+            .cmp(&left.len())
+            .then_with(|| left_key.cmp(right_key))
+    });
+    groups
+}
+
+/// Matrices at or below this many links stay one flat table (#487).
+pub const US_TM_FLAT_LIMIT: usize = 200;
+/// Relation × target classes detailed in `US-TM.md` past the flat limit;
+/// classes past the cap are counted in one explicit line.
+pub const US_TM_MAX_CLASSES: usize = 50;
+/// Representative links rendered per class in `US-TM.md`.
+pub const US_TM_CLASS_REPRESENTATIVES: usize = 5;
+
+/// Structured index of every matrix link (`US-TM.json`).
+#[derive(Serialize)]
+struct MatrixIndex<'a> {
+    schema: &'static str,
+    mode: ExportMode,
+    links: usize,
+    classes: Vec<MatrixClassIndex<'a>>,
+}
+
+#[derive(Serialize)]
+struct MatrixClassIndex<'a> {
+    id: String,
+    relation: &'a str,
+    target: &'a str,
+    links: usize,
+    /// Assertion ids; each carries its full provenance in the bundle.
+    members: Vec<&'a str>,
+}
+
+fn matrix_row(content: &mut String, edge: &Edge) {
+    writeln!(
+        content,
+        "| `{}` | {} | `{}` |",
+        markdown_safe(&edge.src),
+        edge.label,
+        markdown_safe(&edge.dst)
+    )
+    .expect("write to string");
+}
+
+/// The recovered traceability matrix plus its JSON index (#487). Past
+/// [`US_TM_FLAT_LIMIT`] links the Markdown groups links by relation × target,
+/// details at most [`US_TM_MAX_CLASSES`] classes with
+/// [`US_TM_CLASS_REPRESENTATIVES`] links each, and counts every omission; the
+/// returned assertions stay complete and the index lists every link by class.
+fn traceability_matrix(edges: &[&Edge], mode: ExportMode) -> (String, String, Vec<SpecAssertion>) {
+    let relevant: Vec<(&Edge, SpecAssertion)> = edges
         .iter()
         .copied()
         .filter(|edge| TRACE_LABELS.contains(&edge.label.as_str()))
         .filter(|edge| {
             provenance(&edge.props, &edge_identity(edge)).confidence_tier != ConfidenceTier::Gap
         })
+        .map(|edge| (edge, edge_assertion(edge)))
         .collect();
-    let mut content = String::from(
-        "# Recovered US traceability matrix\n\n| Source | Relation | Target |\n|---|---|---|\n",
-    );
-    for edge in &relevant {
+    let classes = largest_groups(relevant.iter(), |(edge, _)| {
+        (edge.label.as_str(), edge.dst.as_str())
+    });
+    let mut content = String::from("# Recovered US traceability matrix\n\n");
+    if relevant.len() <= US_TM_FLAT_LIMIT {
+        content.push_str("| Source | Relation | Target |\n|---|---|---|\n");
+        for (edge, _) in &relevant {
+            matrix_row(&mut content, edge);
+        }
+        if relevant.is_empty() {
+            content.push_str("| — | No recovered mappings | — |\n");
+        }
+        let assertions: Vec<SpecAssertion> = relevant
+            .iter()
+            .map(|(_, assertion)| assertion.clone())
+            .collect();
+        append_assertions(&mut content, &assertions);
+    } else {
+        let shown = &classes[..classes.len().min(US_TM_MAX_CLASSES)];
         writeln!(
             content,
-            "| `{}` | {} | `{}` |",
-            markdown_safe(&edge.src),
-            edge.label,
-            markdown_safe(&edge.dst)
+            "{} recovered links in {} relation × target classes, largest first. Each \
+             class lists up to {US_TM_CLASS_REPRESENTATIVES} representative links; \
+             `US-TM.json` lists every link by class, and each link keeps its inline \
+             provenance in the bundle's assertions.\n",
+            relevant.len(),
+            classes.len(),
+        )
+        .expect("write to string");
+        content.push_str("| Class | Relation | Target | Links |\n|---|---|---|---|\n");
+        for (index, ((relation, target), members)) in shown.iter().enumerate() {
+            writeln!(
+                content,
+                "| {} | {relation} | `{}` | {} |",
+                matrix_class_id(index),
+                markdown_safe(target),
+                members.len(),
+            )
+            .expect("write to string");
+        }
+        let hidden = &classes[shown.len()..];
+        if !hidden.is_empty() {
+            writeln!(
+                content,
+                "| … | {} more classes, not detailed here — listed in `US-TM.json` | — | {} |",
+                hidden.len(),
+                hidden
+                    .iter()
+                    .map(|(_, members)| members.len())
+                    .sum::<usize>(),
+            )
+            .expect("write to string");
+        }
+        let mut representatives: Vec<SpecAssertion> = Vec::new();
+        for (index, ((relation, target), members)) in shown.iter().enumerate() {
+            writeln!(
+                content,
+                "\n## {} — {relation} `{}` ({} links)\n\n| Source | Relation | Target |\n|---|---|---|",
+                matrix_class_id(index),
+                markdown_safe(target),
+                members.len(),
+            )
+            .expect("write to string");
+            for (edge, assertion) in members.iter().take(US_TM_CLASS_REPRESENTATIVES) {
+                matrix_row(&mut content, edge);
+                representatives.push(assertion.clone());
+            }
+            let more = members.len().saturating_sub(US_TM_CLASS_REPRESENTATIVES);
+            if more > 0 {
+                writeln!(
+                    content,
+                    "\n… {more} more links in this class — listed in `US-TM.json` under `{}`.",
+                    matrix_class_id(index),
+                )
+                .expect("write to string");
+            }
+        }
+        append_assertions(&mut content, &representatives);
+        writeln!(
+            content,
+            "\nInline provenance is shown for the {} representative links above; \
+             the other {} carry theirs in the bundle's structured assertions.",
+            representatives.len(),
+            relevant.len() - representatives.len(),
         )
         .expect("write to string");
     }
-    if relevant.is_empty() {
-        content.push_str("| — | No recovered mappings | — |\n");
-    }
-    let assertions = relevant.into_iter().map(edge_assertion).collect();
-    (content, assertions)
+    let index = MatrixIndex {
+        schema: "cartograph.us-tm-index/v1",
+        mode,
+        links: relevant.len(),
+        classes: classes
+            .iter()
+            .enumerate()
+            .map(|(index, ((relation, target), members))| MatrixClassIndex {
+                id: matrix_class_id(index),
+                relation,
+                target,
+                links: members.len(),
+                members: members
+                    .iter()
+                    .map(|(_, assertion)| assertion.id.as_str())
+                    .collect(),
+            })
+            .collect(),
+    };
+    let mut sidecar = serde_json::to_string(&index).expect("serialize matrix index");
+    sidecar.push('\n');
+    let assertions = relevant
+        .into_iter()
+        .map(|(_, assertion)| assertion)
+        .collect();
+    (content, sidecar, assertions)
+}
+
+fn matrix_class_id(index: usize) -> String {
+    format!("M-{:02}", index + 1)
 }
 
 fn project_flows(
@@ -1220,7 +1383,7 @@ pub fn compile_spec(
     let nodes = filter_nodes(&projected_nodes, mode, rejected_hashes);
     let edges = filter_edges(&projected_edges, mode, rejected_hashes);
     let (stories, story_assertions) = recovered_user_stories(&nodes);
-    let (matrix, matrix_assertions) = traceability_matrix(&edges);
+    let (matrix, matrix_index, matrix_assertions) = traceability_matrix(&edges, mode);
     let (dossiers, flow_assertions) = flow_artifact(flows, mode, rejected_hashes);
     let (topology, topology_assertions) = topology_artifact(&nodes, &edges);
     let (data, data_assertions) = data_model(&nodes, &edges);
@@ -1228,7 +1391,7 @@ pub fn compile_spec(
     let (drifts, drift_assertions, drift_count) = drift_register(&nodes, &edges);
     let (security, security_assertions, security_count) = security_view(&nodes);
     let (toolchain, toolchain_assertions) = toolchain_view(&nodes, &edges);
-    let (rules, rule_assertions) = crate::rules::inventory(&nodes, &edges);
+    let (rules, rule_index, rule_assertions) = crate::rules::inventory(&nodes, &edges, mode);
 
     // The register still lists supporting edge and flow-hop assertions as
     // rows, but the count the Workbench displays uses the shared finding
@@ -1245,14 +1408,24 @@ pub fn compile_spec(
             stories,
             story_assertions,
         ),
-        artifact(
-            "us-tm",
-            "US-TM.md",
-            "US traceability matrix",
-            "markdown",
-            matrix,
-            matrix_assertions,
-        ),
+        // The matrix renders its own bounded provenance table (#487).
+        SpecArtifact {
+            id: "us-tm".into(),
+            file_name: "US-TM.md".into(),
+            title: "US traceability matrix".into(),
+            format: "markdown".into(),
+            content: matrix,
+            assertions: matrix_assertions,
+        },
+        // Every matrix link by class; the assertions stay on the matrix.
+        SpecArtifact {
+            id: "us-tm-index".into(),
+            file_name: "US-TM.json".into(),
+            title: "US traceability matrix index".into(),
+            format: "json".into(),
+            content: matrix_index,
+            assertions: Vec::new(),
+        },
         artifact(
             "flow-dossiers",
             "flow_dossiers.md",
@@ -1328,14 +1501,24 @@ pub fn compile_spec(
             toolchain,
             toolchain_assertions,
         ),
-        artifact(
-            "rule-evidence",
-            "rule-evidence.md",
-            "Source rule evidence",
-            "markdown",
-            rules,
-            rule_assertions,
-        ),
+        // The inventory renders its own bounded provenance table (#487).
+        SpecArtifact {
+            id: "rule-evidence".into(),
+            file_name: "rule-evidence.md".into(),
+            title: "Source rule evidence".into(),
+            format: "markdown".into(),
+            content: rules,
+            assertions: rule_assertions,
+        },
+        // Every observation and relationship by source file.
+        SpecArtifact {
+            id: "rule-evidence-index".into(),
+            file_name: "rule-evidence.json".into(),
+            title: "Source rule evidence index".into(),
+            format: "json".into(),
+            content: rule_index,
+            assertions: Vec::new(),
+        },
     ];
     let assertion_count = artifacts
         .iter()
@@ -1536,6 +1719,7 @@ mod tests {
             [
                 "user_stories.md",
                 "US-TM.md",
+                "US-TM.json",
                 "flow_dossiers.md",
                 "topology.md",
                 "data_model.md",
@@ -1546,6 +1730,7 @@ mod tests {
                 "security.md",
                 "toolchain.md",
                 "rule-evidence.md",
+                "rule-evidence.json",
             ]
         );
         for artifact in &bundle.artifacts {
@@ -2270,5 +2455,151 @@ mod tests {
             GAP_REGISTER_FLAT_LIMIT
         );
         assert_eq!(index["instances"], GAP_REGISTER_FLAT_LIMIT);
+    }
+
+    fn matrix_artifacts(bundle: &SpecBundle) -> (&SpecArtifact, serde_json::Value) {
+        let matrix = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.file_name == "US-TM.md")
+            .unwrap();
+        let index = bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.file_name == "US-TM.json")
+            .unwrap();
+        assert!(index.assertions.is_empty());
+        (matrix, serde_json::from_str(&index.content).unwrap())
+    }
+
+    /// `big` sources REALIZE `cap:big`, 20 realize `cap:mid`, and `small`
+    /// classes of two MAPS_TO links each.
+    fn matrix_edges(big: usize, small: usize) -> Vec<Edge> {
+        let confirmed = |src: String, dst: &str, label: &str| {
+            edge(
+                &src,
+                dst,
+                label,
+                Tier::Deterministic,
+                ConfidenceTier::Confirmed,
+            )
+        };
+        let mut edges: Vec<Edge> = (0..big)
+            .map(|index| confirmed(format!("flow:big:{index:05}"), "cap:big", "REALIZES"))
+            .collect();
+        edges.extend(
+            (0..20).map(|index| confirmed(format!("flow:mid:{index:05}"), "cap:mid", "REALIZES")),
+        );
+        for class in 0..small {
+            for index in 0..2 {
+                edges.push(confirmed(
+                    format!("sym:{class:03}:{index}"),
+                    &format!("domain:{class:03}"),
+                    "MAPS_TO",
+                ));
+            }
+        }
+        edges
+    }
+
+    #[test]
+    fn traceability_matrix_groups_caps_and_indexes_every_link() {
+        // AC-0221 (T-0221): past 200 links, US-TM.md groups by relation ×
+        // target, caps classes and representatives with counted lines, and
+        // US-TM.json indexes every link exactly once.
+        let edges = matrix_edges(150, US_TM_MAX_CLASSES + 10);
+        let links = 150 + 20 + 2 * (US_TM_MAX_CLASSES + 10);
+        let bundle = compile_spec(&[], &edges, &[], ExportMode::VerifiedOnly, &BTreeSet::new());
+        let (matrix, index) = matrix_artifacts(&bundle);
+        assert_eq!(matrix.assertions.len(), links);
+        for expected in [
+            "| M-01 | REALIZES | `cap:big` | 150 |",
+            "| M-02 | REALIZES | `cap:mid` | 20 |",
+            "| M-03 | MAPS_TO | `domain:000` | 2 |",
+            "… 145 more links in this class — listed in `US-TM.json` under `M-01`.",
+            "… 15 more links in this class — listed in `US-TM.json` under `M-02`.",
+            "| … | 12 more classes, not detailed here — listed in `US-TM.json` | — | 24 |",
+        ] {
+            assert!(matrix.content.contains(expected), "missing {expected}");
+        }
+        // No class past the cap is detailed, and classes of two list both.
+        assert!(!matrix.content.contains("## M-51"));
+        assert!(
+            !matrix
+                .content
+                .contains("more links in this class — listed in `US-TM.json` under `M-03`")
+        );
+        let representatives = 5 + 5 + 2 * (US_TM_MAX_CLASSES - 2);
+        assert!(matrix.content.contains(&format!(
+            "Inline provenance is shown for the {representatives} representative links above; the other {} carry",
+            links - representatives
+        )));
+
+        assert_eq!(index["schema"], "cartograph.us-tm-index/v1");
+        assert_eq!(index["links"], links);
+        let classes = index["classes"].as_array().unwrap();
+        assert_eq!(classes.len(), 2 + US_TM_MAX_CLASSES + 10);
+        assert_eq!(classes[0]["id"], "M-01");
+        assert_eq!(classes[0]["target"], "cap:big");
+        let mut indexed: Vec<&str> = classes
+            .iter()
+            .flat_map(|class| class["members"].as_array().unwrap())
+            .map(|member| member.as_str().unwrap())
+            .collect();
+        indexed.sort_unstable();
+        let mut asserted: Vec<&str> = matrix
+            .assertions
+            .iter()
+            .map(|assertion| assertion.id.as_str())
+            .collect();
+        asserted.sort_unstable();
+        assert_eq!(indexed, asserted, "every link is indexed exactly once");
+
+        let again = compile_spec(&[], &edges, &[], ExportMode::VerifiedOnly, &BTreeSet::new());
+        let (matrix_again, _) = matrix_artifacts(&again);
+        assert_eq!(matrix.content, matrix_again.content);
+        assert_eq!(
+            serde_json::to_string(&bundle.artifacts).unwrap(),
+            serde_json::to_string(&again.artifacts).unwrap()
+        );
+    }
+
+    #[test]
+    fn traceability_matrix_prose_stays_bounded_as_links_grow() {
+        // AC-0221 (T-0221): prose size does not track link count.
+        let content_for = |big: usize| {
+            let edges = matrix_edges(big, US_TM_MAX_CLASSES + 10);
+            let bundle = compile_spec(&[], &edges, &[], ExportMode::VerifiedOnly, &BTreeSet::new());
+            let (matrix, index) = matrix_artifacts(&bundle);
+            assert_eq!(matrix.assertions.len(), edges.len());
+            assert_eq!(index["links"], edges.len());
+            matrix.content.clone()
+        };
+        let small = content_for(300);
+        let large = content_for(30_000);
+        assert!(
+            large.len() < small.len() + 64,
+            "{} vs {}",
+            large.len(),
+            small.len()
+        );
+    }
+
+    #[test]
+    fn small_traceability_matrix_stays_one_flat_table() {
+        // AC-0221 (T-0221): at or below the flat limit nothing is grouped.
+        let edges = matrix_edges(10, 3);
+        let bundle = compile_spec(&[], &edges, &[], ExportMode::VerifiedOnly, &BTreeSet::new());
+        let (matrix, index) = matrix_artifacts(&bundle);
+        assert!(matrix.content.starts_with(
+            "# Recovered US traceability matrix\n\n| Source | Relation | Target |\n|---|---|---|\n"
+        ));
+        assert!(!matrix.content.contains("| Class |"));
+        assert!(!matrix.content.contains("more links"));
+        for assertion in &matrix.assertions {
+            assert!(matrix.content.contains(&assertion.provenance.content_hash));
+        }
+        assert_eq!(index["links"], 36);
+        assert_eq!(index["classes"].as_array().unwrap().len(), 5);
     }
 }
