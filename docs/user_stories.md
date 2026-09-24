@@ -55,6 +55,10 @@
 - **Security:** No code leaves device at T0.
 - **Performance:** Incremental tree-sitter parse; re-parse only changed files by `content_hash`.
 - **Trace:** M1,M10 · `adapters-lang-ts`, `adapters-lang-python`, `adapters-lang-go`, `adapters-lang-java`, `adapters-lang-kotlin`, `adapters-fw`, `core-prov`, `ingest`, `app`, `ui` · — · T-0004..0006,T-0053..0054,T-0079..0080,T-0095,T-0098..0100,T-0192,T-0199..0201
+- **Trace:** M1,M10 · `adapters-lang-ts`, `adapters-lang-python`, `adapters-lang-go`, `adapters-lang-java`, `adapters-lang-kotlin`, `adapters-fw`, `core-prov`, `ingest`, `app`, `ui` · — · T-0004..0006,T-0053..0054,T-0079..0080,T-0095,T-0098..0100,T-0192,T-0199..0200,T-0205
+- **AC-0206** Given a proven Spring mapping in Java or Kotlin, when the class-level `@RequestMapping` base and the method mapping are composed, then segments meet at exactly one `/` (never `//`) and a trailing slash spelled in either literal is kept (a run of trailing slashes as one) — `"/api/"` with a bare `@GetMapping` is `/api/` and `"/api"` with `@GetMapping("/")` is `/api/` — so `/a` and `/a/` are distinct Confirmed Endpoints, matching Spring 6's default of no trailing-slash matching; a client fetch path that differs from a route only by a trailing slash never confirms against it.
+- **Trace:** M1,M10 · `adapters-lang-ts`, `adapters-lang-python`, `adapters-lang-go`, `adapters-lang-java`, `adapters-lang-kotlin`, `adapters-fw`, `core-prov`, `ingest`, `app`, `ui` · — · T-0004..0006,T-0053..0054,T-0079..0080,T-0095,T-0098..0100,T-0192,T-0199..0200,T-0206
+- **Trace:** M1,M10 · `adapters-lang-ts`, `adapters-lang-python`, `adapters-lang-go`, `adapters-lang-java`, `adapters-lang-kotlin`, `adapters-fw`, `events`, `core-prov`, `ingest`, `app`, `ui` · — · T-0004..0006,T-0053..0054,T-0079..0080,T-0095,T-0098..0100,T-0192,T-0199..0200,T-0206
 
 ### US-0003 — IaC resource graph + cloud capability resolution (Terraform/Pulumi/AWS)
 - **Actor:** Engine

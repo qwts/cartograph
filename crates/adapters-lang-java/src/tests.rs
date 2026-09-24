@@ -558,3 +558,92 @@ fn gitignored_trees_are_not_collected() {
     collect_java_files(dir.path(), &mut files).unwrap();
     assert_eq!(files, ["src/App.java"]);
 }
+
+/// Sorted `METHOD path` of every Endpoint in `out`.
+fn endpoint_routes(out: &Extraction) -> Vec<String> {
+    let mut routes: Vec<String> = out
+        .nodes
+        .iter()
+        .filter(|node| node.label == "Endpoint")
+        .map(|node| {
+            format!(
+                "{} {}",
+                node.props["method"].as_str().unwrap(),
+                node.props["path"].as_str().unwrap()
+            )
+        })
+        .collect();
+    routes.sort_unstable();
+    routes
+}
+
+// AC-0206 (#445): a trailing slash spelled in the source survives
+// composition — Spring 6 matches `/a` and `/a/` as distinct routes — while
+// segments still meet at exactly one `/`.
+#[test]
+fn spring_routes_keep_literal_trailing_slashes() {
+    let slashed_base = br#"package com.demo.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/")
+public class ApiController {
+    @GetMapping
+    public String root() { return "r"; }
+
+    @PostMapping("/items")
+    public String create() { return "c"; }
+
+    @PutMapping({ "/x", "/x/" })
+    public String put() { return "p"; }
+}
+"#;
+    let out = extract_source(slashed_base, "src/ApiController.java", &id()).unwrap();
+    assert_eq!(
+        endpoint_routes(&out),
+        ["GET /api/", "POST /api/items", "PUT /api/x", "PUT /api/x/"]
+    );
+    edge(
+        &out.edges,
+        "ep:local/demo@GET:/api/",
+        "sym:local/demo@src/ApiController.java#ApiController.root",
+        "HANDLES",
+    );
+
+    let slashed_tail = br#"package com.demo.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/v1")
+public class V1Controller {
+    @GetMapping("/")
+    public String root() { return "r"; }
+
+    @GetMapping("items/")
+    public String items() { return "i"; }
+}
+"#;
+    let out = extract_source(slashed_tail, "src/V1Controller.java", &id()).unwrap();
+    assert_eq!(endpoint_routes(&out), ["GET /v1/", "GET /v1/items/"]);
+    assert!(!out.nodes.iter().any(|node| node.id.contains("//")));
+
+    // A run of trailing slashes keeps exactly one.
+    let doubled = br#"package com.demo.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/v2//")
+public class V2Controller {
+    @GetMapping
+    public String root() { return "r"; }
+
+    @GetMapping("items//")
+    public String items() { return "i"; }
+}
+"#;
+    let out = extract_source(doubled, "src/V2Controller.java", &id()).unwrap();
+    assert_eq!(endpoint_routes(&out), ["GET /v2/", "GET /v2/items/"]);
+}
