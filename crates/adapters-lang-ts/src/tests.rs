@@ -1893,6 +1893,37 @@ fn const_unproven_eval_emits_an_explicit_gap_owned_by_its_symbol() {
         && e.label == "DEPENDS_ON"));
 }
 
+// #474: decoded offsets are not mapped back into the outer literal, so a
+// nested Gap that cites its inner call and unproven argument collapses to ONE
+// outer-literal span (never N identical ones) and says how many inner spans
+// stayed unmapped; single-span eval facts carry no marker. (AC-0213, T-0213)
+#[test]
+fn nested_eval_gap_cites_one_outer_span_and_marks_inner_spans_unmapped() {
+    let src = "export function run() {\n  eval(\"eval(CODE)\");\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/nested.ts", &id()).unwrap();
+    let gaps = eval_gaps(&ex);
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    let owner = ex
+        .edges
+        .iter()
+        .find(|e| e.dst == gaps[0].id && e.label == "DEPENDS_ON")
+        .expect("nested Gap keeps its owner edge");
+    for props in [&gaps[0].props, &owner.props] {
+        assert_eq!(evidence_texts(src, props), vec!["\"eval(CODE)\""]);
+        // The inner `eval(CODE)` call and its `CODE` argument.
+        assert_eq!(props["unmapped_inner_spans"], 2);
+    }
+    for node in ex.nodes.iter().filter(|n| n.props["via"] == "eval") {
+        if node.id != gaps[0].id {
+            assert!(
+                node.props.get("unmapped_inner_spans").is_none(),
+                "{}",
+                node.id
+            );
+        }
+    }
+}
+
 // #451 review: a proven outer eval whose code holds an unproven eval is not
 // Covered — its claim downgrades so preflight keeps the potential-Gap finding
 // the recovery emitted — and the same nested code at two outer sites yields
