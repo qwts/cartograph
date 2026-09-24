@@ -69,12 +69,27 @@ impl FindingStore {
     /// Replace `repo`'s findings from `detector` with `batch` — a re-run of
     /// the same detector supersedes its previous report instead of piling
     /// duplicates (deterministic re-preflight ⇒ identical register).
+    #[cfg(test)]
     pub fn replace_for(
         &mut self,
         repo: &str,
         detector: &str,
         batch: &[NewFinding<'_>],
     ) -> rusqlite::Result<Vec<Finding>> {
+        self.replace_for_if(repo, detector, batch, || true)
+            .map(|written| written.unwrap_or_default())
+    }
+
+    /// `replace_for`, committed only if `keep` still holds once the batch is
+    /// staged inside the transaction; otherwise it rolls back and returns
+    /// `None`, leaving the register exactly as it was (#493).
+    pub fn replace_for_if(
+        &mut self,
+        repo: &str,
+        detector: &str,
+        batch: &[NewFinding<'_>],
+        keep: impl FnOnce() -> bool,
+    ) -> rusqlite::Result<Option<Vec<Finding>>> {
         let tx = self.conn.transaction()?;
         tx.execute(
             "DELETE FROM findings WHERE repo = ?1 AND detector = ?2",
@@ -94,8 +109,11 @@ impl FindingStore {
                 ],
             )?;
         }
+        if !keep() {
+            return Ok(None);
+        }
         tx.commit()?;
-        self.list_for(repo)
+        self.list_for(repo).map(Some)
     }
 
     /// All findings for `repo`, oldest first (stable register order).
@@ -189,6 +207,29 @@ mod tests {
         assert_eq!(rows[0].kind, "unsupported");
         assert_eq!(rows[0].detector, "preflight@1");
         assert_eq!(store.counts().unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn a_replacement_not_kept_rolls_back() {
+        // AC-0215 (#493): a replacement whose `keep` check fails at commit
+        // leaves the previous rows exactly as they were.
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = FindingStore::open(dir.path().join("state.db")).unwrap();
+        store
+            .replace_for("local/app", "preflight@1", &[unsupported("a.ts", "old")])
+            .unwrap();
+        let written = store
+            .replace_for_if(
+                "local/app",
+                "preflight@1",
+                &[unsupported("b.ts", "new")],
+                || false,
+            )
+            .unwrap();
+        assert!(written.is_none());
+        let rows = store.list_for("local/app").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "a.ts");
     }
 
     #[test]

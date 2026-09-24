@@ -1896,14 +1896,15 @@ impl PreflightRuns {
     /// across the check and the write, so register writes never interleave.
     /// A superseding preflight's write therefore always lands after an older
     /// one it raced (#434 review). A cancel never waits here: one that lands
-    /// before the check writes nothing and returns `cancelled`; one that
-    /// lands during the write loses the race, and the scan reports what it
-    /// recorded instead of claiming it was cancelled.
+    /// before the check writes nothing and returns `cancelled`. `persist` is
+    /// handed the live check to repeat inside its transaction just before
+    /// committing (#493), so a cancel that lands during the write rolls it
+    /// back too; only a cancel after the commit finds a finished scan.
     fn persist_if_current<T>(
         &self,
         token: &PreflightToken,
         repo: &str,
-        persist: impl FnOnce() -> Result<T, String>,
+        persist: impl FnOnce(&dyn Fn() -> bool) -> Result<T, String>,
     ) -> Result<T, String> {
         let _writes = self.writes.lock().map_err(|e| e.to_string())?;
         let reconciled_since = self
@@ -1914,7 +1915,7 @@ impl PreflightRuns {
         if token.is_cancelled() || reconciled_since {
             return Err(PREFLIGHT_CANCELLED.into());
         }
-        let written = persist()?;
+        let written = persist(&|| !token.is_cancelled())?;
         let mut current = self.current()?;
         let latest = current.persisted.entry(repo.to_string()).or_default();
         *latest = (*latest).max(token.epoch);
@@ -2059,8 +2060,8 @@ fn preflight_blocking<R: tauri::Runtime>(
     .ok_or(PREFLIGHT_CANCELLED)?;
     // A stopped scan must not replace the register with a result the user
     // abandoned.
-    runs.persist_if_current(token, &repo, || {
-        persist_preflight_findings(state, &repo, &report)
+    runs.persist_if_current(token, &repo, |live| {
+        persist_preflight_findings_if(state, &repo, &report, live)
     })?;
     Ok(report)
 }
@@ -2082,6 +2083,18 @@ fn persist_preflight_findings(
     repo: &str,
     report: &ingest::preflight::PreflightReport,
 ) -> Result<(), String> {
+    persist_preflight_findings_if(state, repo, report, &|| true)
+}
+
+/// `persist_preflight_findings`, rolled back as `cancelled` unless `live`
+/// still holds at commit, so a preflight cancelled mid-write leaves the
+/// register as it was (AC-0215).
+fn persist_preflight_findings_if(
+    state: &AppState,
+    repo: &str,
+    report: &ingest::preflight::PreflightReport,
+    live: &dyn Fn() -> bool,
+) -> Result<(), String> {
     let batch: Vec<NewFinding<'_>> = report
         .unsupported
         .iter()
@@ -2095,9 +2108,10 @@ fn persist_preflight_findings(
         .collect();
     let mut findings = state.findings.lock().map_err(|e| e.to_string())?;
     findings
-        .replace_for(repo, ingest::preflight::DETECTOR_ID, &batch)
+        .replace_for_if(repo, ingest::preflight::DETECTOR_ID, &batch, live)
+        .map_err(|e| e.to_string())?
         .map(drop)
-        .map_err(|e| e.to_string())
+        .ok_or_else(|| PREFLIGHT_CANCELLED.to_string())
 }
 
 /// Recovery's half of the inline-eval classification (AC-0099, AC-0200):
@@ -8022,7 +8036,7 @@ export function App() {
         let runs = super::PreflightRuns::default();
         let fence = runs.reserve_reconcile().unwrap();
         let newer = runs.begin().unwrap();
-        runs.persist_if_current(&newer, "repo", || Ok(())).unwrap();
+        runs.persist_if_current(&newer, "repo", |_| Ok(())).unwrap();
         let mut wrote = false;
         let written = runs
             .reconcile(&fence, "repo", || {
@@ -8036,14 +8050,14 @@ export function App() {
         let fence = runs.reserve_reconcile().unwrap();
         let later = runs.begin().unwrap();
         assert_eq!(runs.reconcile(&fence, "repo", || Ok(1)).unwrap(), Some(1));
-        assert!(runs.persist_if_current(&later, "repo", || Ok(())).is_ok());
+        assert!(runs.persist_if_current(&later, "repo", |_| Ok(())).is_ok());
 
         let runs = super::PreflightRuns::default();
         let older = runs.begin().unwrap();
         let fence = runs.reserve_reconcile().unwrap();
         assert_eq!(runs.reconcile(&fence, "repo", || Ok(1)).unwrap(), Some(1));
         assert_eq!(
-            runs.persist_if_current(&older, "repo", || Ok(()))
+            runs.persist_if_current(&older, "repo", |_| Ok(()))
                 .unwrap_err(),
             super::PREFLIGHT_CANCELLED
         );
@@ -8315,7 +8329,7 @@ export function App() {
         let fence = runs.reserve_reconcile().unwrap();
         runs.reconcile(&fence, "repo", || Ok(())).unwrap();
         let write = |token: &super::PreflightToken, repo: &str| {
-            runs.persist_if_current(token, repo, || Ok(()))
+            runs.persist_if_current(token, repo, |_| Ok(()))
         };
         assert_eq!(
             write(&older, "repo").unwrap_err(),
@@ -8340,7 +8354,7 @@ export function App() {
         let runs = std::sync::Arc::new(super::PreflightRuns::default());
         let token = runs.begin().unwrap();
         let (cancelled_tx, cancelled_rx) = mpsc::channel();
-        runs.persist_if_current(&token, "repo", || {
+        runs.persist_if_current(&token, "repo", |_| {
             let runs = runs.clone();
             std::thread::spawn(move || {
                 runs.cancel().unwrap();
@@ -8353,12 +8367,78 @@ export function App() {
         .unwrap();
 
         let mut wrote = false;
-        let late = runs.persist_if_current(&token, "repo", || {
+        let late = runs.persist_if_current(&token, "repo", |_| {
             wrote = true;
             Ok(())
         });
         assert_eq!(late.unwrap_err(), super::PREFLIGHT_CANCELLED);
         assert!(!wrote, "a cancelled run writes nothing");
+    }
+
+    #[test]
+    fn a_cancel_during_the_register_write_rolls_it_back() {
+        // AC-0215 (#493): a cancel that lands while the preflight's register
+        // write is in progress — after the pre-write check, before commit —
+        // rolls the write back: the register keeps its previous rows and the
+        // scan reports that it was cancelled. Cancel still never waits.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let app = preflight_test_app(dir.path());
+        let state = app.state::<super::AppState>();
+        let runs = std::sync::Arc::new(super::PreflightRuns::default());
+        let report = |line: u64| ingest::preflight::PreflightReport {
+            unsupported: vec![ingest::preflight::PatternFinding {
+                kind: "inline-eval".into(),
+                path: "app.ts".into(),
+                line,
+                message: "m".into(),
+                detector: "d".into(),
+                request_adapter: None,
+            }],
+            ..Default::default()
+        };
+        let write = |token: &super::PreflightToken, line: u64, cancel_mid_write: bool| {
+            runs.persist_if_current(token, "repo", |live| {
+                // The cancel arrives from another thread once the batch is
+                // staged, exactly when `live` is re-checked before commit.
+                let live_after_cancel = || {
+                    if cancel_mid_write {
+                        let runs = runs.clone();
+                        std::thread::spawn(move || runs.cancel().unwrap())
+                            .join()
+                            .unwrap();
+                    }
+                    live()
+                };
+                super::persist_preflight_findings_if(
+                    &state,
+                    "repo",
+                    &report(line),
+                    &live_after_cancel,
+                )
+            })
+        };
+        write(&runs.begin().unwrap(), 1, false).unwrap();
+
+        let abandoned = runs.begin().unwrap();
+        assert_eq!(
+            write(&abandoned, 2, true).unwrap_err(),
+            super::PREFLIGHT_CANCELLED
+        );
+        let lines: Vec<i64> = state
+            .findings
+            .lock()
+            .unwrap()
+            .list_for("repo")
+            .unwrap()
+            .into_iter()
+            .map(|f| f.line)
+            .collect();
+        assert_eq!(
+            lines,
+            vec![1],
+            "the cancelled run's findings were rolled back"
+        );
     }
 
     #[test]
@@ -8376,13 +8456,13 @@ export function App() {
             std::thread::spawn(move || {
                 inside_rx.recv().unwrap();
                 let newer = runs.begin().unwrap();
-                runs.persist_if_current(&newer, "repo", || {
+                runs.persist_if_current(&newer, "repo", |_| {
                     assert!(!writing.load(Ordering::SeqCst), "writes interleaved");
                     Ok(())
                 })
             })
         };
-        runs.persist_if_current(&older, "repo", || {
+        runs.persist_if_current(&older, "repo", |_| {
             writing.store(true, Ordering::SeqCst);
             inside_tx.send(()).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(100));
