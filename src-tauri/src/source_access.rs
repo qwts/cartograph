@@ -161,6 +161,13 @@ impl SourceOperation {
         }
     }
 
+    /// Release every guard once the operation's work is published, so
+    /// readers it excluded can proceed while the caller finishes up. Roots
+    /// resolve to the registered sources afterwards.
+    pub(crate) fn release(&mut self) {
+        self.guards.clear();
+    }
+
     pub(crate) fn set_writes_ready(
         &self,
         registry: &Mutex<SourceRegistry>,

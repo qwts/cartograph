@@ -2897,28 +2897,11 @@ fn report_failure<R: tauri::Runtime>(
     }
 }
 
-/// Finish this running attempt, preserving a winning cancellation. Invalid or
-/// missing ownership stays an explicit error rather than a cancellation result.
-fn finish_or_cancelled<R: tauri::Runtime>(
-    state: &AppState,
-    app: &tauri::AppHandle<R>,
-    execution: &JobExecution,
-) -> Result<(), String> {
-    let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-    let done = updated_job(
-        jobs.finish_execution(execution, &[])
-            .map_err(|e| e.to_string())?,
-    );
-    completed_job(&done)?;
-    emit_job(app, &done);
-    Ok(())
-}
-
 fn finish_source_operation<R: tauri::Runtime>(
     state: &AppState,
     app: &tauri::AppHandle<R>,
     execution: &JobExecution,
-    operation: &SourceOperation,
+    operation: &mut SourceOperation,
 ) -> Result<(), String> {
     if job_cancelled(state, execution)? {
         return Err("cancelled".into());
@@ -2926,8 +2909,21 @@ fn finish_source_operation<R: tauri::Runtime>(
     // Settle the cancellation race before publishing readiness. A failed final
     // availability transaction leaves all managed sources unavailable, even if
     // the historical job has already recorded its completed recovery work.
-    finish_or_cancelled(state, app, execution)?;
-    operation.set_writes_ready(&state.sources, true)
+    let job = {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        updated_job(
+            jobs.finish_execution(execution, &[])
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    // Readiness and the released reservations come before `done` is
+    // announced (#497 review): a preflight the user starts once they see it
+    // must be able to read the recovered source.
+    completed_job(&job)?;
+    let ready = operation.set_writes_ready(&state.sources, true);
+    operation.release();
+    emit_job(app, &job);
+    ready
 }
 
 fn job_cancelled(state: &AppState, execution: &JobExecution) -> Result<bool, String> {
@@ -3433,7 +3429,7 @@ fn add_repo_blocking<R: tauri::Runtime>(
     .map_err(&fail)?;
     // Reserved before `done` is published (#497).
     let fence = app.state::<PreflightRuns>().reserve_reconcile()?;
-    finish_source_operation(&state, &app, &execution, &operation)?;
+    finish_source_operation(&state, &app, &execution, &mut operation)?;
     // Written only once the job has settled as completed, so a cancel that
     // wins the race writes nothing (AC-0209); through the per-repo fence.
     app.state::<PreflightRuns>()
@@ -3691,7 +3687,7 @@ fn add_system_blocking<R: tauri::Runtime>(
     // Reserved before `done` is published (#497).
     let runs = app.state::<PreflightRuns>();
     let fence = runs.reserve_reconcile()?;
-    finish_source_operation(&state, &app, &execution, &operation)?;
+    finish_source_operation(&state, &app, &execution, &mut operation)?;
     // Written only once the job has settled as completed, so a cancel that
     // wins the race writes nothing (AC-0209); through each repo's fence.
     for preflight in &preflights {
@@ -7879,58 +7875,64 @@ export function App() {
         );
     }
 
-    /// On the recovery's `done` event, persist a preflight for every
-    /// registered repo exactly as `preflight_blocking` does (register the
-    /// run, then write through `persist_if_current`): the user saw the job
-    /// finish and started a new preflight before the reconciliation wrote.
-    /// Each write is one Unsupported row on line 99.
-    fn preflight_on_done(handle: &tauri::AppHandle<tauri::test::MockRuntime>) -> tauri::EventId {
+    /// Each preflight started on `done`: its repo and whether it ran.
+    type PreflightOutcomes = std::sync::Mutex<Vec<(String, Result<(), String>)>>;
+
+    /// On the recovery's `done` event, run a real preflight (the `preflight`
+    /// command's own path: register the run, scan on a worker, persist) over
+    /// every registered source's root — the user saw the job finish and
+    /// started a new preflight before the reconciliation wrote. Returns each
+    /// scan's outcome, keyed by repo.
+    fn preflight_on_done(
+        handle: &tauri::AppHandle<tauri::test::MockRuntime>,
+    ) -> (tauri::EventId, std::sync::Arc<PreflightOutcomes>) {
         use tauri::{Listener, Manager};
+        let outcomes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = outcomes.clone();
         let event_handle = handle.clone();
-        handle.listen("job://changed", move |event| {
+        let listener = handle.listen("job://changed", move |event| {
             let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
             if payload["status"] != "done" {
                 return;
             }
             let state = event_handle.state::<super::AppState>();
-            let runs = event_handle.state::<super::PreflightRuns>();
-            let repos: Vec<String> = state
-                .sources
-                .lock()
-                .unwrap()
-                .list()
-                .unwrap()
-                .into_iter()
-                .map(|source| source.repo_key)
-                .collect();
-            for repo in repos {
-                let token = runs.begin().unwrap();
-                runs.persist_if_current(&token, &repo, || {
-                    let row = super::NewFinding {
-                        kind: "unsupported",
-                        detector: ingest::preflight::DETECTOR_ID,
-                        path: "app.ts",
-                        line: 99,
-                        message: "newer preflight",
-                    };
-                    state
-                        .findings
-                        .lock()
-                        .unwrap()
-                        .replace_for(&repo, ingest::preflight::DETECTOR_ID, &[row])
-                        .map(drop)
-                        .map_err(|e| e.to_string())
-                })
-                .expect("a preflight started after `done` is never refused");
+            let sources = state.sources.lock().unwrap().list().unwrap();
+            for source in sources {
+                let path = source.root().to_string_lossy().into_owned();
+                let outcome = tauri::async_runtime::block_on(super::start_preflight(
+                    path,
+                    1,
+                    event_handle.clone(),
+                ))
+                .map(drop);
+                seen.lock().unwrap().push((source.repo_key, outcome));
             }
-        })
+        });
+        (listener, outcomes)
+    }
+
+    /// Every preflight started on `done` succeeded, and each repo's register
+    /// holds that preflight's pending findings, not the reconciliation's.
+    fn assert_preflights_on_done_won(
+        state: &super::AppState,
+        outcomes: &PreflightOutcomes,
+        expected: &[(&str, Vec<(i64, bool)>)],
+    ) {
+        let outcomes = outcomes.lock().unwrap();
+        assert_eq!(outcomes.len(), expected.len(), "{outcomes:?}");
+        for (repo, outcome) in outcomes.iter() {
+            assert_eq!(outcome, &Ok(()), "the preflight of {repo} ran");
+        }
+        for (repo, rows) in expected {
+            assert_eq!(&preflight_register(state, repo), rows, "{repo}");
+        }
     }
 
     #[test]
     fn a_preflight_started_after_a_local_recovery_is_done_keeps_its_findings() {
         // AC-0214 (#497): the reconciliation fence is taken before `done` is
         // published, so a preflight begun once the user sees it is newer:
-        // the reconciliation neither refuses nor overwrites its findings.
+        // it runs, and the reconciliation neither refuses nor overwrites it.
         use tauri::{Listener, Manager};
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("proj");
@@ -7942,38 +7944,40 @@ export function App() {
         let source = super::register_local_source(&state, &project).unwrap();
         let operation = super::source_operation(&state, vec![(source.clone(), false)]).unwrap();
         let (_, execution) = super::start_job(&state, &source.ingest_job_kind()).unwrap();
-        let listener = preflight_on_done(&handle);
+        let (listener, outcomes) = preflight_on_done(&handle);
 
         super::run_ingest(&source, &operation, &execution, &handle, &state).unwrap();
         handle.unlisten(listener);
 
-        assert_eq!(
-            preflight_register(&state, &source.repo_key),
-            vec![(99, false)]
-        );
+        let pending = vec![(1, true), (2, true)];
+        assert_preflights_on_done_won(&state, &outcomes, &[(&source.repo_key, pending)]);
     }
 
     #[test]
     fn a_preflight_started_after_a_github_recovery_is_done_keeps_its_findings() {
-        // AC-0214 (#497): as for a local recovery.
+        // AC-0214 (#497 and its review): as for a local recovery. The managed
+        // clone is ready and its write reservation released before `done`,
+        // so the preflight can read it.
         use tauri::{Listener, Manager};
         let dir = tempfile::tempdir().unwrap();
         let bare = preflight_bare_repo(dir.path(), "shop", &[("app.ts", EVAL_FIXTURE)]);
         let app = preflight_test_app(dir.path());
         let handle = app.handle().clone();
         let state = app.state::<super::AppState>();
-        let listener = preflight_on_done(&handle);
+        let (listener, outcomes) = preflight_on_done(&handle);
 
         let summary =
             super::add_repo_blocking(format!("file://{}", bare.display()), handle.clone()).unwrap();
         handle.unlisten(listener);
 
-        assert_eq!(preflight_register(&state, &summary.repo), vec![(99, false)]);
+        let pending = vec![(1, true), (2, true)];
+        assert_preflights_on_done_won(&state, &outcomes, &[(&summary.repo, pending)]);
     }
 
     #[test]
     fn a_preflight_started_after_a_manifest_recovery_is_done_keeps_its_findings() {
-        // AC-0214 (#497): as for a local recovery, for every repo.
+        // AC-0214 (#497 and its review): as for a local recovery, for every
+        // repo, cloned or local.
         use tauri::{Listener, Manager};
         let dir = tempfile::tempdir().unwrap();
         let bare = preflight_bare_repo(dir.path(), "web", &[("app.ts", EVAL_FIXTURE)]);
@@ -7992,7 +7996,7 @@ export function App() {
         let app = preflight_test_app(dir.path());
         let handle = app.handle().clone();
         let state = app.state::<super::AppState>();
-        let listener = preflight_on_done(&handle);
+        let (listener, outcomes) = preflight_on_done(&handle);
 
         let summary =
             super::add_system_blocking(manifest.to_string_lossy().into_owned(), handle.clone())
@@ -8000,14 +8004,14 @@ export function App() {
         handle.unlisten(listener);
 
         assert_eq!(summary.preflights.len(), 2);
-        for preflight in &summary.preflights {
-            assert_eq!(
-                preflight_register(&state, &preflight.repo),
-                vec![(99, false)],
-                "{}",
-                preflight.repo
-            );
-        }
+        assert_preflights_on_done_won(
+            &state,
+            &outcomes,
+            &[
+                (&summary.preflights[0].repo, vec![(1, true), (2, true)]),
+                (&summary.preflights[1].repo, vec![(1, true)]),
+            ],
+        );
     }
 
     #[test]
