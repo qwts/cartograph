@@ -2035,8 +2035,10 @@ impl PreflightRuns {
     /// the fence can never replace the proven classification with its pending
     /// one (#439 review). A preflight begun after the fence is newer and wins
     /// either way (#497): if it already persisted, the reconciliation writes
-    /// nothing (`None`); if it persists later, it is not refused. A written
-    /// reconciliation returns its register stamp.
+    /// nothing (`None`); if it persists later, it is not refused. A recovery
+    /// whose fence is older than another recovery's that already reconciled
+    /// the repo writes nothing either. A written reconciliation returns its
+    /// register stamp.
     fn reconcile(
         &self,
         fence: &ReconcileFence,
@@ -2045,29 +2047,31 @@ impl PreflightRuns {
         persist: impl FnOnce() -> Result<(), String>,
     ) -> Result<Option<RegisterStamp>, String> {
         let _writes = self.writes.lock().map_err(|e| e.to_string())?;
-        let newer_persisted = self
-            .current()?
-            .persisted
-            .get(repo)
-            .is_some_and(|epoch| *epoch > fence.epoch);
-        if newer_persisted {
+        // A newer write of either kind already holds the register (#514
+        // review): an overlapping recovery of the same repo whose fence is
+        // newer reconciled first, or a newer preflight persisted.
+        let newer_written = {
+            let current = self.current()?;
+            current
+                .persisted
+                .get(repo)
+                .is_some_and(|epoch| *epoch > fence.epoch)
+                || current
+                    .reconciled
+                    .get(repo)
+                    .is_some_and(|reconciled| reconciled.epoch > fence.epoch)
+        };
+        if newer_written {
             return Ok(None);
         }
         persist()?;
-        let mut current = self.current()?;
-        let newer_reconciled = current
-            .reconciled
-            .get(repo)
-            .is_some_and(|reconciled| reconciled.epoch > fence.epoch);
-        if !newer_reconciled {
-            current.reconciled.insert(
-                repo.to_string(),
-                Reconciled {
-                    epoch: fence.epoch,
-                    report: Arc::new(report.clone()),
-                },
-            );
-        }
+        self.current()?.reconciled.insert(
+            repo.to_string(),
+            Reconciled {
+                epoch: fence.epoch,
+                report: Arc::new(report.clone()),
+            },
+        );
         Ok(Some(RegisterStamp {
             repo: repo.to_string(),
             epoch: fence.epoch,
@@ -8239,6 +8243,32 @@ export function App() {
         assert_eq!(
             wire["recovery"]["preflight_register"]["repo"],
             source.repo_key
+        );
+    }
+
+    #[test]
+    fn an_older_recovery_fence_never_overwrites_a_newer_reconciliation() {
+        // AC-0216 (#514 review): two overlapping recoveries of one repo. The
+        // newer fence reconciles first; the older one, resuming late, writes
+        // nothing, so the register and the stamps agree on the newer report.
+        let runs = super::PreflightRuns::default();
+        let older = runs.reserve_reconcile().unwrap();
+        let newer = runs.reserve_reconcile().unwrap();
+        let stamp = runs
+            .reconcile(&newer, "repo", &Default::default(), || Ok(()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stamp.epoch, newer.epoch);
+        let mut wrote = false;
+        let late = runs
+            .reconcile(&older, "repo", &Default::default(), || {
+                wrote = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            late.is_none() && !wrote,
+            "the older recovery writes nothing"
         );
     }
 
