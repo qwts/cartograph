@@ -1,20 +1,74 @@
-# Require repository-owner review for all changes when branch protection enables
-# code-owner reviews.
-* @qwts
+# Owner review is required (ruleset: require_code_owner_review) for the paths
+# below. Everything else merges on the automated approval plus green gates
+# (ADR-0029). There is deliberately no `*` rule: add paths here, never a
+# wildcard, so routine changes stay agent-mergeable and these stay protected
+# against untrusted collaborators and automation alike.
 
-# Keep repository governance files explicitly owned even if more specific rules are
-# added later.
+# Repository governance and CI: workflows, action pins, templates, this file.
 /.github/ @qwts
 
+# Scripts that CI, release, and signing execute.
+/scripts/ @qwts
+
 # Agent primitives: text agents read as directives, and configuration they
-# execute. Named explicitly rather than relying on the `*` wildcard above, so
-# these survive any future relaxation of it. `.claude/settings.json` and its
-# peers can define hooks that run shell commands, which is why the directories
-# matter at least as much as the markdown.
+# execute. `.claude/settings.json` and its peers can define hooks that run
+# shell commands, which is why the directories matter at least as much as the
+# markdown.
 AGENTS.md   @qwts
 CLAUDE.md   @qwts
 .agents/    @qwts
 .claude/    @qwts
 .codex/     @qwts
 .cursor/    @qwts
+.windsurf/  @qwts
 .mcp.json   @qwts
+
+# Architecture decisions.
+/docs/adr/ @qwts
+
+# Security boundaries: redaction before egress, model/provider egress and
+# keys, third-party plugin execution, and the desktop app's permissions.
+/crates/core-redact/ @qwts
+/crates/llm/ @qwts
+# Every crate handed a live LlmProvider can call it directly, past the firewall.
+/crates/agents/ @qwts
+/crates/semantic/ @qwts
+/crates/adapters-plugin-host/ @qwts
+/src-tauri/capabilities/ @qwts
+/src-tauri/tauri.conf.json @qwts
+/src-tauri/tauri.macos.conf.json @qwts
+# Host-side egress and consent. Any host module can reach the crate-private
+# cloud provider and the public grant APIs, so the whole host tree stays
+# protected until #457 seals provider and grant construction into one module;
+# then this narrows to that module.
+/src-tauri/src/ @qwts
+# Every UI surface that asks for or submits a consent grant (both cloud flows).
+/ui/src/investigationStore.ts @qwts
+/ui/src/store.ts @qwts
+/ui/src/components/EgressConsentDialog.tsx @qwts
+/ui/src/components/ResolutionStrategyModal.tsx @qwts
+/ui/src/components/InvestigationsSurface.tsx @qwts
+
+# Build entrypoints that execute code during CI and the signed release build,
+# where signing credentials are present.
+build.rs              @qwts
+.cargo/               @qwts
+/rust-toolchain.toml  @qwts
+# Every config filename Vite (and the PostCSS it loads) auto-discovers.
+/ui/vite.config.*     @qwts
+/ui/postcss.config.*  @qwts
+/ui/.postcssrc*       @qwts
+# Vite loads these env files into the build, where signing secrets are present.
+/ui/.env*             @qwts
+.npmrc                @qwts
+
+# Supply chain: dependency requirements, the resolved graphs CI installs, and
+# the cargo-deny advisory/source/license gate.
+Cargo.toml        @qwts
+Cargo.lock        @qwts
+package.json      @qwts
+package-lock.json @qwts
+/deny.toml        @qwts
+
+# Release decision: only the Version packages PR changes this.
+/CHANGELOG.md @qwts
