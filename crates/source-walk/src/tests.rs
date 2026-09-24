@@ -105,7 +105,10 @@ fn an_oversized_gitignore_fails_instead_of_truncating() {
 
 mod parallel_merge {
     //! AC-0208 / T-0208: parallel extraction merges in walk order.
-    use crate::parallel::{MAX_WORKERS, Parallelism, map_ordered, with_workers, workers};
+    use crate::parallel::{
+        MAX_WORKERS, Parallelism, UNKNOWN_MEMORY_AUTO_CAP, map_ordered, resolve_auto, with_workers,
+        workers,
+    };
 
     fn items(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("f{i:04}")).collect()
@@ -218,6 +221,22 @@ mod parallel_merge {
         assert_eq!(Parallelism::Fixed(10_000).workers(), MAX_WORKERS);
         let auto = Parallelism::Auto.workers();
         assert!((1..=MAX_WORKERS).contains(&auto));
+    }
+
+    #[test]
+    fn auto_is_capped_when_physical_memory_is_unknown() {
+        // AC-0208 (#472): where the platform does not report physical memory
+        // (Windows), Auto is conservatively capped instead of running one
+        // worker per core — 16 threads with unknown memory get 4, not 15.
+        const GIB: u64 = 1 << 30;
+        assert_eq!(resolve_auto(16, None), UNKNOWN_MEMORY_AUTO_CAP);
+        assert_eq!(resolve_auto(3, None), 2, "fewer cores than the cap");
+        assert_eq!(resolve_auto(1, None), 1);
+        // Known memory keeps the 2 GiB-per-worker cap.
+        assert_eq!(resolve_auto(16, Some(8 * GIB)), 4);
+        assert_eq!(resolve_auto(16, Some(64 * GIB)), 15);
+        assert_eq!(resolve_auto(16, Some(GIB)), 1, "never below one worker");
+        assert_eq!(resolve_auto(200, Some(1024 * GIB)), MAX_WORKERS);
     }
 }
 
