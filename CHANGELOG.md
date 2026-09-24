@@ -1,5 +1,15 @@
 # cartograph
 
+## 0.15.2
+
+### Patch Changes
+
+- 3705692: Facts recovered from `eval()` / `new Function()` code now get a unique content hash per eval site. Before, the same code evaluated at two sites produced distinct CALLS edges that shared one hash. Each recovered fact's hash now comes from its final site-scoped identity. Existing eval-recovered facts get new hashes once on the next ingest, then stay stable.
+- 88163db: Go imports into a module that a `go.mod` locally replaces (`replace example.com/shared => ./shared`) now resolve to the repository's own package directory and are shown as Confirmed internal instead of Gaps. An import stays a Gap when its package directory or Go file leaves the repository (including through a symlink), or when the module has a version-qualified `replace` (`replace m v1.0.0 => …`), because the version in use is unknown.
+- 170e796: A local recovery cancelled while it reconciles its preflight findings no longer writes them to the register: the reconciled findings are written only once the recovery has completed, as GitHub and system-manifest recoveries already do. A cancelled recovery leaves the pending findings in place.
+- e1857d1: Changing the local path while a preflight is still scanning (for example after going Back mid-scan) now stops that scan, as switching the source away from a local tree already did. The abandoned scan no longer keeps running in the background or records findings for the path you left, and its late progress or result can't reach the Preflight screen.
+- 3b01e0b: Preflight's Cancel now works while the scan is still listing a large repository, not just once it starts checking files. The listing stops at the next directory and records no findings. While it lists, the status line shows "Finding files… N so far" with the folder being read, rather than "Detecting…" with no progress.
+
 ## 0.15.1
 
 ### Patch Changes
