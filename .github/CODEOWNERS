@@ -43,10 +43,15 @@ CLAUDE.md   @qwts
 /src-tauri/src/settings.rs @qwts
 /src-tauri/src/investigations/runtime.rs @qwts
 /src-tauri/src/investigations/worker.rs @qwts
-# Where a durable consent grant is recorded, and the UI that requests it.
+# Where a durable consent grant is recorded, and every UI surface that asks
+# for or submits one (both cloud flows).
 /src-tauri/src/investigations/commands.rs @qwts
 /src-tauri/src/jobs/investigations/transitions.rs @qwts
 /ui/src/investigationStore.ts @qwts
+/ui/src/store.ts @qwts
+/ui/src/components/EgressConsentDialog.tsx @qwts
+/ui/src/components/ResolutionStrategyModal.tsx @qwts
+/ui/src/components/InvestigationsSurface.tsx @qwts
 
 # Build entrypoints that execute code during CI and the signed release build,
 # where signing credentials are present.
@@ -57,6 +62,8 @@ build.rs              @qwts
 /ui/vite.config.*     @qwts
 /ui/postcss.config.*  @qwts
 /ui/.postcssrc*       @qwts
+# Vite loads these env files into the build, where signing secrets are present.
+/ui/.env*             @qwts
 .npmrc                @qwts
 
 # Supply chain: dependency requirements, the resolved graphs CI installs, and
