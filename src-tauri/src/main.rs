@@ -124,7 +124,8 @@ struct MergedFacts {
     /// Repeated node ids beyond the first occurrence.
     nodes: u64,
     /// Repeated relations beyond the first — typically one call or import
-    /// relation cited from several sites.
+    /// relation cited from several sites, whose evidence the stored edge
+    /// unions (AC-0203).
     edges: u64,
     /// Node ids emitted with differing facts: distinct declarations sharing
     /// one identity, of which only the last occurrence is stored.
@@ -1295,6 +1296,78 @@ fn edge_key(edge: &Edge) -> (String, String, String) {
     (edge.src.clone(), edge.dst.clone(), edge.label.clone())
 }
 
+/// Evidence spans one collapsed relation keeps. Truncation happens after the
+/// deterministic sort and is recorded as `evidence_omitted` on the edge.
+const MAX_MERGED_EDGE_EVIDENCE: usize = 32;
+
+/// Collapse repeated `(src, dst, label)` occurrences to one edge per key
+/// (AC-0203, #436). The last occurrence in extraction order still supplies
+/// the props, tier and confidence; the evidence of every occurrence with the
+/// same tier, confidence and extractor is unioned, sorted, de-duplicated and
+/// bounded, so no call or import site loses its citation. When the unioned
+/// occurrences carried more than one content hash, the edge's hash is derived
+/// from their sorted distinct hashes, so it covers every unioned occurrence.
+fn merge_edge_occurrences(edges: &[Edge]) -> std::collections::BTreeMap<EdgeKey, Edge> {
+    let mut groups = std::collections::BTreeMap::<EdgeKey, Vec<&Edge>>::new();
+    for edge in edges {
+        groups.entry(edge_key(edge)).or_default().push(edge);
+    }
+    groups
+        .into_iter()
+        .map(|(key, occurrences)| (key, merge_edge_group(&occurrences)))
+        .collect()
+}
+
+fn merge_edge_group(occurrences: &[&Edge]) -> Edge {
+    let last = *occurrences.last().expect("groups are non-empty");
+    let mut merged = last.clone();
+    if occurrences.len() == 1 {
+        return merged;
+    }
+    let parse = |edge: &Edge| {
+        serde_json::from_value::<core_prov::Provenance>(edge.props.get("prov")?.clone()).ok()
+    };
+    let Some(mut prov) = parse(last) else {
+        return merged;
+    };
+    let mut evidence = Vec::new();
+    let mut hashes = std::collections::BTreeSet::new();
+    for occurrence in occurrences
+        .iter()
+        .filter_map(|edge| parse(edge))
+        .filter(|other| {
+            other.tier == prov.tier
+                && other.confidence_tier == prov.confidence_tier
+                && other.extractor_id == prov.extractor_id
+        })
+    {
+        evidence.extend(occurrence.evidence);
+        hashes.insert(occurrence.content_hash);
+    }
+    evidence.sort_by(|a, b| {
+        (&a.repo, &a.path, a.byte_start, a.byte_end, &a.commit_sha).cmp(&(
+            &b.repo,
+            &b.path,
+            b.byte_start,
+            b.byte_end,
+            &b.commit_sha,
+        ))
+    });
+    evidence.dedup();
+    let omitted = evidence.len().saturating_sub(MAX_MERGED_EDGE_EVIDENCE);
+    evidence.truncate(MAX_MERGED_EDGE_EVIDENCE);
+    prov.evidence = evidence;
+    if hashes.len() > 1 {
+        let joined = hashes.into_iter().collect::<Vec<_>>().join("\n");
+        prov.content_hash = core_prov::content_hash(joined.as_bytes());
+    }
+    merged.props["prov"] = serde_json::to_value(prov).expect("provenance serializes");
+    if omitted > 0 {
+        merged.props["evidence_omitted"] = serde_json::json!(omitted);
+    }
+    merged
+}
+
 #[cfg(test)]
 fn load_into_graph(
     graph: &mut SqliteGraphStore,
@@ -1346,12 +1419,7 @@ fn load_into_graph_with_bindings(
         node_collisions: colliding_ids.len() as u64,
     };
     current_nodes.insert(repo_node.id.clone(), repo_node);
-    let current_edges = extraction
-        .edges
-        .iter()
-        .cloned()
-        .map(|edge| (edge_key(&edge), edge))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let current_edges = merge_edge_occurrences(&extraction.edges);
     let expected = graph.read_snapshot().map_err(|error| error.to_string())?;
     let existing_nodes = expected
         .0
@@ -4616,6 +4684,149 @@ resource "aws_sqs_queue" "orders" {
                     .cloned()
                     .collect::<Vec<_>>()
             )
+        );
+    }
+
+    #[test]
+    fn collapsed_relation_keeps_every_call_site_as_evidence() {
+        // AC-0203 (#436): `run` calls `helper` twice. The stored CALLS edge
+        // cites both sites in source order, and re-ingesting yields the same
+        // edge. A relation cited once keeps its extracted provenance.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("util.ts"),
+            "export function helper() {}\nexport function other() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("app.ts"),
+            "import { helper, other } from './util';\n\
+             export function run() { helper(); other(); helper(); }\n",
+        )
+        .unwrap();
+        let ingest = || {
+            let extraction = crate::extract_tree(
+                dir.path(),
+                "local/sites",
+                "workdir",
+                &[],
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
+            let mut store = SqliteGraphStore::open_in_memory().unwrap();
+            crate::load_into_graph(
+                &mut store,
+                &extraction,
+                "local/sites",
+                dir.path(),
+                "workdir",
+            )
+            .unwrap();
+            (extraction, store)
+        };
+        let calls = |edges: &[Edge], dst: &str| {
+            edges
+                .iter()
+                .filter(|edge| {
+                    edge.label == "CALLS" && edge.src.ends_with("#run") && edge.dst.ends_with(dst)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let prov = |edge: &Edge| {
+            serde_json::from_value::<core_prov::Provenance>(edge.props["prov"].clone()).unwrap()
+        };
+        let (extraction, store) = ingest();
+        let sites = calls(&extraction.edges, "#helper");
+        assert_eq!(sites.len(), 2, "fixture must emit repeated call sites");
+        let stored = store.all_edges().unwrap();
+        let [helper] = calls(&stored, "#helper").try_into().unwrap();
+        let helper_prov = prov(&helper);
+        let mut expected = sites
+            .iter()
+            .flat_map(|site| prov(site).evidence)
+            .collect::<Vec<_>>();
+        expected.sort_by_key(|span| span.byte_start);
+        assert_eq!(helper_prov.evidence, expected);
+        assert!(helper_prov.evidence[0].byte_start < helper_prov.evidence[1].byte_start);
+        // Tier and confidence stay those of the relation itself.
+        assert_eq!(helper_prov.tier, prov(&sites[1]).tier);
+        assert_eq!(helper_prov.confidence_tier, prov(&sites[1]).confidence_tier);
+        // The hash covers every cited site, not just the last one.
+        assert!(
+            sites
+                .iter()
+                .all(|site| prov(site).content_hash != helper_prov.content_hash)
+        );
+        let [other] = calls(&stored, "#other").try_into().unwrap();
+        assert_eq!(other, calls(&extraction.edges, "#other")[0]);
+        // Deterministic: a second ingest stores identical edges and hashes.
+        let (_, again) = ingest();
+        assert_eq!(again.all_edges().unwrap(), stored);
+        assert_eq!(
+            crate::deterministic_graph_hashes(&again).unwrap(),
+            crate::deterministic_graph_hashes(&store).unwrap()
+        );
+    }
+
+    #[test]
+    fn collapsed_relation_evidence_is_bounded_and_keeps_its_confidence() {
+        // AC-0203 (#436): evidence is sorted, de-duplicated and capped with
+        // the overflow recorded; an occurrence at another confidence tier
+        // never lends its span to the stored relation.
+        let site = |start: u64, confidence: core_prov::ConfidenceTier| Edge {
+            src: "sym:r@a.ts#run".into(),
+            dst: "sym:r@b.ts#helper".into(),
+            label: "CALLS".into(),
+            props: serde_json::json!({
+                "prov": core_prov::Provenance::new(
+                    core_prov::Tier::Deterministic,
+                    confidence,
+                    vec![core_prov::EvidenceRef {
+                        repo: "r".into(),
+                        path: "a.ts".into(),
+                        byte_start: start,
+                        byte_end: start + 1,
+                        commit_sha: "c".into(),
+                    }],
+                    "t0.test",
+                    format!("CALLS at {start}").as_bytes(),
+                )
+                .unwrap(),
+            }),
+        };
+        let confirmed = core_prov::ConfidenceTier::Confirmed;
+        let over = crate::MAX_MERGED_EDGE_EVIDENCE as u64 + 3;
+        let mut edges = (0..over)
+            .rev()
+            .map(|start| site(start, confirmed))
+            .collect::<Vec<_>>();
+        edges.push(site(0, confirmed)); // exact duplicate span
+        edges.push(site(1_000, core_prov::ConfidenceTier::Gap));
+        edges.push(site(5, confirmed)); // last occurrence supplies the props
+        let merged = crate::merge_edge_occurrences(&edges);
+        assert_eq!(merged.len(), 1);
+        let edge = merged.values().next().unwrap();
+        let prov =
+            serde_json::from_value::<core_prov::Provenance>(edge.props["prov"].clone()).unwrap();
+        assert_eq!(prov.confidence_tier, confirmed);
+        assert_eq!(
+            prov.evidence
+                .iter()
+                .map(|span| span.byte_start)
+                .collect::<Vec<_>>(),
+            (0..crate::MAX_MERGED_EDGE_EVIDENCE as u64).collect::<Vec<_>>()
+        );
+        assert_eq!(edge.props["evidence_omitted"], 3);
+        // Occurrence order does not change the merged fact.
+        edges.rotate_left(4);
+        edges.push(site(5, confirmed));
+        assert_eq!(
+            crate::merge_edge_occurrences(&edges).values().next(),
+            Some(edge)
         );
     }
 
