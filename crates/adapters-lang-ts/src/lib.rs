@@ -2703,8 +2703,9 @@ pub fn extract_dir_incremental(
 }
 
 /// Same as [`extract_dir_incremental`], calling `on_file` with each file's
-/// repo-relative path as it's read — a live "what's happening right now"
-/// hook for the shell's progress UI (#209); callers that don't need it use
+/// repo-relative path as its result is merged, in sorted walk order (files
+/// parse ahead on parallel workers, #236) — a live progress hook for the
+/// shell's progress UI (#209); callers that don't need it use
 /// [`extract_dir_incremental`], which passes a no-op.
 pub fn extract_dir_incremental_with_progress(
     root: &Path,
@@ -2726,15 +2727,20 @@ pub fn extract_dir_incremental_with_progress(
     cache.files.retain(|path, _| active.contains(path));
     // Files parse on parallel workers (#236); results merge here in sorted
     // order, so the output is byte-identical to a serial run.
-    let previous = std::mem::take(&mut cache.files);
+    // Workers see only each cached file's hash; the merge owns the cache and
+    // replaces entries one at a time, exactly as the serial loop did, so a
+    // re-ingest never holds a second copy of the cache.
+    let previous: std::collections::BTreeMap<String, String> = cache
+        .files
+        .iter()
+        .map(|(path, cached)| (path.clone(), cached.source_hash.clone()))
+        .collect();
     let merged = source_walk::parallel::map_ordered(
         &files,
         |rel| {
             let source = std::fs::read(root.join(rel))?;
             let source_hash = core_prov::content_hash(&source);
-            let reusable = previous
-                .get(rel)
-                .is_some_and(|cached| cached.source_hash == source_hash);
+            let reusable = previous.get(rel).is_some_and(|hash| *hash == source_hash);
             let fresh = if reusable {
                 None
             } else {
@@ -2751,7 +2757,7 @@ pub fn extract_dir_incremental_with_progress(
                 }
                 None => {
                     stats.reused_files += 1;
-                    let mut extraction = previous[rel].extraction.clone();
+                    let mut extraction = cache.files[rel].extraction.clone();
                     retarget_commit(&mut extraction, id.commit);
                     extraction
                 }
@@ -2767,13 +2773,6 @@ pub fn extract_dir_incremental_with_progress(
             Ok(())
         },
     );
-    if merged.is_err() {
-        // Keep the reusable parses of files after the failure, as a serial
-        // walk that stopped there would have.
-        for (path, cached) in previous {
-            cache.files.entry(path).or_insert(cached);
-        }
-    }
     merged?;
     complete_directory(&mut out, root, id)?;
     Ok((out, stats))

@@ -186,6 +186,33 @@ mod parallel_merge {
     }
 
     #[test]
+    fn a_merge_panic_stops_the_workers_and_resumes() {
+        // Many items and 2 workers so the window fills while the merge is
+        // unwinding; a regression hangs, so run it under a timeout.
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let items = items(256);
+            let outcome = std::panic::catch_unwind(|| {
+                with_workers(2, || {
+                    map_ordered(
+                        &items,
+                        |_| Ok::<_, String>(()),
+                        |item, ()| {
+                            assert_ne!(item, "f0001", "merge boom");
+                            Ok(())
+                        },
+                    )
+                })
+            });
+            done.send(outcome.is_err()).unwrap();
+        });
+        let panicked = finished
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("map_ordered hung after a panic in merge");
+        assert!(panicked);
+    }
+
+    #[test]
     fn settings_resolve_to_a_bounded_worker_count() {
         assert_eq!(Parallelism::Fixed(0).workers(), 1);
         assert_eq!(Parallelism::Fixed(10_000).workers(), MAX_WORKERS);

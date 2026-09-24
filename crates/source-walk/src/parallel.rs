@@ -233,7 +233,11 @@ pub fn map_ordered<T: Send, E: Send>(
                 }
             });
         }
-        let result = (|| {
+        // Stop the workers however the merge ends — including a panic in
+        // `merge` itself, which would otherwise leave them blocked on a full
+        // window while `scope` waits for them.
+        let _stop = StopOnDrop(&state, &claimable);
+        (|| {
             for (index, item) in items.iter().enumerate() {
                 let outcome = {
                     let mut guard = lock(&state);
@@ -255,10 +259,16 @@ pub fn map_ordered<T: Send, E: Send>(
                 }
             }
             Ok(())
-        })();
-        stop(&state, &claimable);
-        result
+        })()
     })
+}
+
+struct StopOnDrop<'a, T, E>(&'a Mutex<State<T, E>>, &'a Condvar);
+
+impl<T, E> Drop for StopOnDrop<'_, T, E> {
+    fn drop(&mut self) {
+        stop(self.0, self.1);
+    }
 }
 
 fn stop<T, E>(state: &Mutex<State<T, E>>, claimable: &Condvar) {

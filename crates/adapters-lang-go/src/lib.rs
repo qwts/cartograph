@@ -766,7 +766,14 @@ pub fn extract_dir_incremental_with_progress(
     let mut out = Extraction::default();
     // Files parse on parallel workers (#236); results merge here in sorted
     // order, so the output is byte-identical to a serial run.
-    let previous = std::mem::take(&mut cache.files);
+    // Workers see only each cached file's hash; the merge owns the cache and
+    // replaces entries one at a time, exactly as the serial loop did, so a
+    // re-ingest never holds a second copy of the cache.
+    let previous: std::collections::BTreeMap<String, String> = cache
+        .files
+        .iter()
+        .map(|(path, cached)| (path.clone(), cached.source_hash.clone()))
+        .collect();
     let merged = source_walk::parallel::map_ordered(
         &files,
         |path| {
@@ -775,9 +782,7 @@ pub fn extract_dir_incremental_with_progress(
             let context_hash = core_prov::content_hash(
                 format!("{source_hash}\0{}", module_path.as_deref().unwrap_or("")).as_bytes(),
             );
-            let reusable = previous
-                .get(path)
-                .is_some_and(|cached| cached.source_hash == context_hash);
+            let reusable = previous.get(path).is_some_and(|hash| *hash == context_hash);
             let fresh = if reusable {
                 None
             } else {
@@ -799,7 +804,7 @@ pub fn extract_dir_incremental_with_progress(
                 }
                 None => {
                     stats.reused_files += 1;
-                    let mut extraction = previous[path].extraction.clone();
+                    let mut extraction = cache.files[path].extraction.clone();
                     retarget_commit(&mut extraction, id.commit);
                     extraction
                 }
@@ -818,13 +823,6 @@ pub fn extract_dir_incremental_with_progress(
             Ok(())
         },
     );
-    if merged.is_err() {
-        // Keep the reusable parses of files after the failure, as a serial
-        // walk that stopped there would have.
-        for (path, cached) in previous {
-            cache.files.entry(path).or_insert(cached);
-        }
-    }
     merged?;
     let symbol_index = out
         .nodes
