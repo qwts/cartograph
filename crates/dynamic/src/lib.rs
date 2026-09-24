@@ -587,11 +587,16 @@ pub fn enrich_resources(
             .as_object_mut()
             .expect("resource props are an object");
         props.insert("observed".into(), observed);
-        props.insert(
-            "observed_prov".into(),
-            observed_prov(state_path, &span, &format!("Observed {address}")),
-        );
+        let observation = observed_prov(state_path, &span, &format!("Observed {address}"));
+        props.insert("observed_prov".into(), observation.clone());
         if props.remove("placeholder").is_some() {
+            // The T0 placeholder was an explicit Gap citing the reference
+            // that named it (#237); observation supersedes it (T1 may
+            // confirm what T0 could not), so the Gap framing goes too.
+            props.insert("prov".into(), observation);
+            for gap_prop in ["boundary", "reason", "attempted_tiers"] {
+                props.remove(gap_prop);
+            }
             let rtype = by_address
                 .get(address.as_str())
                 .map(|o| o.rtype.clone())
@@ -1246,7 +1251,12 @@ mod tests {
         let mut nodes = vec![Node {
             id: "res:local/infra@module.vpc".into(),
             label: "Resource".into(),
-            props: serde_json::json!({ "placeholder": true }),
+            props: serde_json::json!({
+                "placeholder": true,
+                "boundary": "unresolved",
+                "reason": "unresolved dependency target",
+                "attempted_tiers": ["T0"],
+            }),
         }];
         let report = enrich_resources(&mut nodes, "local/infra", &state, "state.json", STATE);
         assert_eq!(report.placeholders_resolved, 1);
@@ -1255,6 +1265,10 @@ mod tests {
         assert_eq!(nodes[0].props["logical_id"], "module.vpc");
         assert_eq!(nodes[0].props["observed"]["module_resources"], 1);
         assert_eq!(nodes[0].props["resolved_by"], EXTRACTOR_ID);
+        // #237: the T0 Gap provenance is superseded by the observation.
+        assert_eq!(nodes[0].props["prov"]["tier"], "Dynamic");
+        assert_eq!(nodes[0].props["prov"]["confidence_tier"], "Confirmed");
+        assert!(nodes[0].props.get("reason").is_none());
     }
 
     #[test]

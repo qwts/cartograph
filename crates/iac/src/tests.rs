@@ -520,6 +520,18 @@ fn missing_or_unresolved_policy_document_keeps_explicit_grant() {
         .find(|node| node.id == "res:qwtm/infra@data.aws_iam_policy_document.orders")
         .unwrap();
     assert_eq!(placeholder.props["placeholder"], true);
+    // AC-0207 (#237): the placeholder is an explicit Gap citing the GRANTS
+    // reference that named it, never a fact without provenance.
+    assert_eq!(placeholder.props["boundary"], "unresolved");
+    assert_eq!(placeholder.props["prov"]["confidence_tier"], "Gap");
+    assert_eq!(
+        placeholder.props["prov"]["extractor_id"],
+        "t0.iac-terraform"
+    );
+    assert_eq!(
+        placeholder.props["prov"]["evidence"][0]["path"],
+        "missing.tf"
+    );
 
     let unresolved = extract_source(
         r#"

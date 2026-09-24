@@ -235,36 +235,26 @@ impl Extraction {
 
     /// Ensure every edge endpoint exists as a node; unresolved targets become
     /// placeholder nodes so referential integrity holds in the store.
-    /// Placeholders are labeled by their id scheme (`file:`, `sym:`, `mod:`).
+    /// Placeholders are labeled by their id scheme (`file:`, `sym:`, `mod:`)
+    /// and are explicit Gaps citing the edge that named them (#237). The
+    /// directory walk classifies its own bare-module imports first (see
+    /// `resolution::classify_bare_import`); this pass closes whatever a
+    /// merged extraction still leaves open.
     pub fn close_over_endpoints(&mut self) {
-        let mut known: std::collections::HashSet<String> =
-            self.nodes.iter().map(|n| n.id.clone()).collect();
-        let mut placeholders = Vec::new();
-        for edge in &self.edges {
-            for id in [&edge.src, &edge.dst] {
-                if known.contains(id.as_str()) {
-                    continue;
-                }
-                let label = match id.split(':').next() {
-                    Some("file") => "File",
-                    Some("sym") => "Symbol",
-                    Some("mod") => "Module",
-                    Some("ep") => "Endpoint",
-                    Some("res") => "Resource",
-                    Some("chan") => "Channel",
-                    Some("gap") => "Gap",
-                    Some("screen") => "Screen",
-                    _ => "Unknown",
-                };
-                placeholders.push(Node {
-                    id: id.clone(),
-                    label: label.into(),
-                    props: serde_json::json!({ "placeholder": true }),
-                });
-                known.insert(id.clone());
-            }
-        }
-        self.nodes.extend(placeholders);
+        self.close_over_endpoints_with(|_, _| None);
+    }
+
+    fn close_over_endpoints_with(
+        &mut self,
+        classify: impl FnMut(&str, &Edge) -> Option<core_graph::placeholder::Boundary>,
+    ) {
+        core_graph::placeholder::close_over_endpoints(
+            &mut self.nodes,
+            &self.edges,
+            EXTRACTOR_ID,
+            core_graph::placeholder::label_for_id,
+            classify,
+        );
     }
 }
 
@@ -789,11 +779,43 @@ fn resolve_relative(from: &str, spec: &str) -> Option<String> {
         }
     }
     let mut s = out.to_string_lossy().replace('\\', "/");
-    if !SOURCE_EXTENSIONS.iter().any(|ext| s.ends_with(ext)) {
+    if !SOURCE_EXTENSIONS
+        .iter()
+        .chain(ASSET_EXTENSIONS)
+        .any(|ext| s.ends_with(ext))
+    {
         s.push_str(".ts");
     }
     Some(s)
 }
+
+/// Whether relative `spec` imported from `from` climbs above the repository
+/// root. [`resolve_relative`] clamps such a path at the root, so the `file:`
+/// id it yields names a different in-repo path: never proof of that file.
+fn escapes_root(from: &str, spec: &str) -> bool {
+    let dir = Path::new(from).parent().unwrap_or(Path::new(""));
+    let mut depth = 0usize;
+    for comp in dir.join(spec).components() {
+        match comp {
+            Component::ParentDir => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return true,
+            },
+            Component::CurDir => {}
+            _ => depth += 1,
+        }
+    }
+    false
+}
+
+/// Non-source files a bundler or loader lets JS/TS import (#237). A
+/// relative import spelling one of these names that file exactly — never
+/// the extensionless `.ts` guess, which would mint a phantom `x.css.ts`.
+const ASSET_EXTENSIONS: &[&str] = &[
+    ".css", ".scss", ".sass", ".less", ".styl", ".json", ".svg", ".png", ".jpg", ".jpeg", ".gif",
+    ".webp", ".avif", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".html", ".md", ".mdx", ".txt",
+    ".wasm", ".vue", ".svelte", ".graphql", ".gql", ".yaml", ".yml",
+];
 
 /// The NodeNext/ESM extension idiom (#213): TypeScript's `nodenext` module
 /// resolution requires imports to spell the *emitted* extension, so
@@ -2912,7 +2934,8 @@ fn complete_directory(
     // files, citing the deciding config. Reads configs fresh on every walk —
     // a tsconfig edit must take effect even when every source parse is
     // cache-reused.
-    resolution::resolve_bare_imports(out, root, id, &known_files)?;
+    let index = resolution::ResolutionIndex::load(root)?;
+    resolution::resolve_bare_imports(out, &index, id, &known_files);
     let instance_methods: BTreeSet<_> = out
         .nodes
         .iter()
@@ -2962,7 +2985,42 @@ fn complete_directory(
     }
     out.pulumi_bindings.clear();
     next_pages_screens(out, id);
-    out.close_over_endpoints();
+    // Bare-module import targets are classified against the same index:
+    // external only when nothing in the repository could answer them.
+    let file_prefix = format!("file:{}@", id.repo);
+    out.close_over_endpoints_with(|endpoint, edge| {
+        if edge.label != "IMPORTS" {
+            return None;
+        }
+        // A relative import of a file T0 does not parse (a stylesheet, an
+        // image, JSON) is the repository's own when that file exists.
+        if let Some(path) = endpoint.strip_prefix(&file_prefix) {
+            let asset = ASSET_EXTENSIONS.iter().any(|ext| path.ends_with(ext));
+            let escapes = match (
+                edge.src.strip_prefix(&file_prefix),
+                edge.props["specifier"].as_str(),
+            ) {
+                (Some(importer), Some(spec)) => escapes_root(importer, spec),
+                // Without the spelled specifier the path is unproven.
+                _ => true,
+            };
+            return (asset && !escapes && root.join(path).is_file()).then(|| {
+                core_graph::placeholder::Boundary::Internal {
+                    reason: "non-source file in this repository (not parsed at T0)".into(),
+                    evidence: vec![],
+                }
+            });
+        }
+        let spec = endpoint.strip_prefix("mod:")?;
+        let importer = edge.src.strip_prefix(&file_prefix)?;
+        Some(resolution::classify_bare_import(
+            spec,
+            importer,
+            &index,
+            id,
+            &known_files,
+        ))
+    });
     Ok(())
 }
 

@@ -1175,11 +1175,13 @@ fn extract_tree_with_primary(
         };
         // Config files an adapter already owns (a `.ts`-authored vite
         // config, a webext manifest) keep the adapter's richer File node;
-        // the DEFINED_IN edge targets the same id either way.
+        // the DEFINED_IN edge targets the same id either way. An import
+        // placeholder (an imported `package.json`, #237) owns nothing: the
+        // parsed config's File node supersedes it (last occurrence wins).
         let known_files: std::collections::BTreeSet<String> = extraction
             .nodes
             .iter()
-            .filter(|node| node.label == "File")
+            .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
             .map(|node| node.id.clone())
             .collect();
         extraction.nodes.extend(
@@ -1228,6 +1230,11 @@ fn extract_tree_with_primary(
         }
     }
     extraction.close_over_endpoints();
+    // Each language adapter closed over its own extraction; a shared id
+    // (`mod:foo` imported from TS and Go) can now carry one adapter's Gap
+    // and another's Confirmed boundary. The store keeps the last duplicate,
+    // so reconcile first: a Gap is never shown as Confirmed (#237 review).
+    core_graph::placeholder::reconcile_placeholders(&mut extraction.nodes);
     Ok((extraction, layers, delta))
 }
 
@@ -4471,6 +4478,61 @@ resource "aws_sqs_queue" "orders" {
         assert_eq!(decides.src, adr.id);
         assert_eq!(decides.dst, "sym:local/shop@orders.ts#placeOrder");
         assert_eq!(decides.props["prov"]["confidence_tier"], "Confirmed");
+    }
+
+    #[test]
+    fn polyglot_ingest_keeps_one_adapters_placeholder_gap() {
+        // AC-0207 (#237 review): TS and Go both import `foo`. The TS closure
+        // leaves `mod:foo` a Gap (a tsconfig paths alias with no file); the Go
+        // closure proves it external. The merged extraction must hold one
+        // `mod:foo`, the Gap — never the later Confirmed duplicate.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"foo":["./nowhere/foo"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("app.ts"), "import { x } from \"foo\";\n").unwrap();
+        std::fs::write(
+            dir.path().join("go.mod"),
+            "module example.com/app\n\ngo 1.22\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nimport \"foo\"\n\nfunc main() { foo.X() }\n",
+        )
+        .unwrap();
+
+        let extraction = crate::extract_tree(
+            dir.path(),
+            "local/poly",
+            "workdir",
+            &[],
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        let modules: Vec<_> = extraction
+            .nodes
+            .iter()
+            .filter(|node| node.id == "mod:foo")
+            .collect();
+        assert_eq!(modules.len(), 1, "one reconciled mod:foo");
+        assert_eq!(modules[0].props["placeholder"], true);
+        assert_eq!(modules[0].props["boundary"], "unresolved");
+        assert_eq!(modules[0].props["prov"]["confidence_tier"], "Gap");
+        // Both adapters really did import it.
+        for importer in ["file:local/poly@app.ts", "file:local/poly@main.go"] {
+            assert!(
+                extraction
+                    .edges
+                    .iter()
+                    .any(|edge| edge.src == importer && edge.dst == "mod:foo")
+            );
+        }
     }
 
     #[test]

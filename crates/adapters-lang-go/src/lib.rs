@@ -4,9 +4,10 @@
 //! Endpoint/HANDLES facts. Functions, imports, and direct calls become the
 //! server graph, with Go-module-aware directory joins for local packages.
 
+use core_graph::placeholder::Boundary;
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node as TsNode, Parser, Query, QueryCursor};
@@ -423,34 +424,109 @@ fn endpoint_registration(
     }
 }
 
-fn close_over(extraction: &mut Extraction) {
-    let mut known = extraction
-        .nodes
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<HashSet<_>>();
-    let mut placeholders = Vec::new();
-    for edge in &extraction.edges {
-        for id in [&edge.src, &edge.dst] {
-            if known.contains(id) {
-                continue;
+/// Every module the repository itself provides, as `(module path,
+/// repo-relative directory)`: each `go.mod` (nested modules included) plus
+/// each `replace … => ./local` target. An import beneath one of these is
+/// inside the system.
+fn repo_modules(root: &Path) -> Result<Vec<(String, Option<String>)>, ExtractError> {
+    let skip = |name: &str| {
+        name.starts_with('.')
+            || matches!(name, "vendor" | "node_modules" | "dist" | "build" | "bin")
+    };
+    let mut out = Vec::new();
+    for file in source_walk::files(root, &skip, source_walk::Gitignores::Honor)? {
+        if file.name != "go.mod" {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&file.path)?;
+        let dir = file
+            .rel
+            .rsplit_once('/')
+            .map(|(dir, _)| dir.to_string())
+            .unwrap_or_default();
+        for line in raw.lines().map(directive) {
+            if let Some(module) = line.strip_prefix("module ") {
+                out.push((
+                    module.trim().trim_matches('"').to_string(),
+                    Some(dir.clone()),
+                ));
+            } else if let Some((from, to)) = line.split_once("=>") {
+                let to = to.trim();
+                if to.starts_with("./") || to.starts_with("../") {
+                    let from = from.trim().trim_start_matches("replace").trim();
+                    let module = from.split_whitespace().next().unwrap_or("");
+                    if !module.is_empty() {
+                        out.push((module.trim_matches('"').to_string(), None));
+                    }
+                }
             }
-            let label = match id.split(':').next() {
-                Some("file") => "File",
-                Some("sym") => "Symbol",
-                Some("mod") => "Module",
-                Some("ep") => "Endpoint",
-                _ => "Unknown",
-            };
-            placeholders.push(Node {
-                id: id.clone(),
-                label: label.into(),
-                props: serde_json::json!({"placeholder": true}),
-            });
-            known.insert(id.clone());
         }
     }
-    extraction.nodes.extend(placeholders);
+    Ok(out)
+}
+
+/// Classify an import no declaration resolved (#237, ADR-0031). Beneath a
+/// repository module: an existing package directory is an internal
+/// boundary, anything else an explicit Gap. Outside every repository
+/// module, in module mode, the import is external — the standard library
+/// when its first element has no dot (Go's reserved stdlib namespace).
+/// Without a root `go.mod` nothing is provable and the import stays a Gap.
+fn classify_import(
+    import_path: &str,
+    root: &Path,
+    module_path: Option<&str>,
+    modules: &[(String, Option<String>)],
+) -> Boundary {
+    let beneath = |module: &str| {
+        import_path == module
+            || import_path
+                .strip_prefix(module)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    };
+    if let Some((module, dir)) = modules.iter().find(|(module, _)| beneath(module)) {
+        // Only plain path elements are probed: an import path spelling
+        // `..`, `.`, or an absolute component never leaves the repository
+        // and proves no package directory (it stays a Gap).
+        let package_dir = dir.as_ref().and_then(|dir| {
+            let suffix = import_path[module.len()..].trim_start_matches('/');
+            Path::new(suffix)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+                .then(|| root.join(dir).join(suffix))
+        });
+        let has_go_source = package_dir
+            .and_then(|dir| std::fs::read_dir(dir).ok())
+            .is_some_and(|entries| {
+                entries.flatten().any(|entry| {
+                    entry.path().is_file()
+                        && entry.path().extension().and_then(|ext| ext.to_str()) == Some("go")
+                })
+            });
+        return if has_go_source {
+            Boundary::Internal {
+                reason: "package directory in this repository".into(),
+                evidence: vec![],
+            }
+        } else {
+            Boundary::Unresolved {
+                reason: "import of a repository module path with no package directory".into(),
+            }
+        };
+    }
+    if module_path.is_none() {
+        return Boundary::Unresolved {
+            reason: "import outside module mode (no go.mod) cannot be proven external".into(),
+        };
+    }
+    let first = import_path.split('/').next().unwrap_or(import_path);
+    Boundary::External {
+        reason: if first.contains('.') {
+            "module outside this repository".into()
+        } else {
+            "Go standard library package".into()
+        },
+        evidence: vec![],
+    }
 }
 
 fn extract_source_with_module(
@@ -716,6 +792,12 @@ fn has_platform_suffix(name: &str) -> bool {
     GOOS.contains(&last) || GOARCH.contains(&last)
 }
 
+/// One `go.mod` line without its trailing `//` comment (module paths never
+/// contain `//`), trimmed.
+fn directive(line: &str) -> &str {
+    line.split("//").next().unwrap_or(line).trim()
+}
+
 fn module_path(root: &Path) -> Result<Option<String>, ExtractError> {
     let path = root.join("go.mod");
     let raw = match std::fs::read_to_string(path) {
@@ -724,9 +806,9 @@ fn module_path(root: &Path) -> Result<Option<String>, ExtractError> {
         Err(error) => return Err(error.into()),
     };
     Ok(raw.lines().find_map(|line| {
-        line.trim()
+        directive(line)
             .strip_prefix("module ")
-            .map(str::trim)
+            .map(|module| module.trim().trim_matches('"'))
             .filter(|module| !module.is_empty())
             .map(str::to_string)
     }))
@@ -856,7 +938,23 @@ pub fn extract_dir_incremental_with_progress(
             out.edges.push(pending.edge);
         }
     }
-    close_over(&mut out);
+    let modules = repo_modules(root)?;
+    let Extraction { nodes, edges, .. } = &mut out;
+    core_graph::placeholder::close_over_endpoints(
+        nodes,
+        edges,
+        EXTRACTOR_ID,
+        core_graph::placeholder::label_for_id,
+        |endpoint, _| {
+            let import_path = endpoint.strip_prefix("mod:")?;
+            Some(classify_import(
+                import_path,
+                root,
+                module_path.as_deref(),
+                &modules,
+            ))
+        },
+    );
     Ok((out, stats))
 }
 

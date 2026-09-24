@@ -119,9 +119,9 @@ fun String.shout(): String = this.uppercase()
 
 // AC-0098: import-proven cross-file calls — object/type receivers and
 // imported top-level functions — join repo-wide; a declared-package import
-// whose target cannot be proven fails closed to an explicit Gap; foreign
-// packages assert nothing; unproven receivers (locals, properties) assert
-// nothing.
+// whose target cannot be proven fails closed to an explicit Gap; calls on
+// foreign packages assert nothing; unproven receivers (locals, properties)
+// assert nothing.
 #[test]
 fn imported_calls_resolve_across_files_and_missing_targets_gap() {
     let dir = tempfile::tempdir().unwrap();
@@ -182,8 +182,9 @@ fun publish() {}
     assert_eq!(gap.props["callee"], "Missing.run");
     edge(&out.edges, src, &gap.id, "CALLS");
 
-    // A foreign-package import asserts nothing, and an unproven receiver
-    // (the `helper` property) asserts nothing — no edge, no extra gap.
+    // A call on a foreign-package import asserts nothing, and an unproven
+    // receiver (the `helper` property) asserts nothing — no CALLS edge, no
+    // extra Gap (the foreign import itself is a Confirmed external, AC-0207).
     assert_eq!(
         out.nodes.iter().filter(|node| node.label == "Gap").count(),
         1
@@ -693,4 +694,57 @@ class V2Controller {
     )
     .unwrap();
     assert_eq!(endpoint_routes(&out), ["GET /v2/", "GET /v2/items/"]);
+}
+
+// AC-0207 (#237): import targets carry provenance; only a package the
+// repository (Kotlin or Java sources) provably does not declare confirms as
+// an external boundary. In-repo functions resolve to their declaring File.
+#[test]
+fn import_targets_carry_provenance_and_only_proven_externals_confirm() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = "package com.demo\n\nimport com.demo.util.helper\nimport com.demo.legacy.JavaThing\nimport kotlinx.coroutines.launch\n\nfun main() {}\n";
+    write(dir.path(), "src/main/kotlin/com/demo/App.kt", app);
+    write(
+        dir.path(),
+        "src/main/kotlin/com/demo/util/Util.kt",
+        "package com.demo.util\n\nfun helper() {}\n",
+    );
+    // A Java package in a mixed JVM tree is the repository's own.
+    write(
+        dir.path(),
+        "src/main/java/com/demo/legacy/Other.java",
+        "// header\npackage com.demo.legacy;\n\nclass Other {}\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let app_file = "file:local/demo@src/main/kotlin/com/demo/App.kt";
+    edge(
+        &out.edges,
+        app_file,
+        "file:local/demo@src/main/kotlin/com/demo/util/Util.kt",
+        "IMPORTS",
+    );
+    let check = |id: &str, confidence: ConfidenceTier, boundary: &str, statement: &str| {
+        let node = node(&out.nodes, id);
+        let prov: Provenance = serde_json::from_value(node.props["prov"].clone())
+            .unwrap_or_else(|_| panic!("{id} carries no provenance"));
+        assert_eq!(prov.confidence_tier, confidence, "{id}");
+        assert_eq!(node.props["boundary"], boundary, "{id}");
+        let span = &prov.evidence[0];
+        assert_eq!(
+            &app[span.byte_start as usize..span.byte_end as usize],
+            statement
+        );
+    };
+    check(
+        "mod:kotlinx.coroutines.launch",
+        ConfidenceTier::Confirmed,
+        "external",
+        "import kotlinx.coroutines.launch",
+    );
+    check(
+        "mod:com.demo.legacy.JavaThing",
+        ConfidenceTier::Gap,
+        "unresolved",
+        "import com.demo.legacy.JavaThing",
+    );
 }

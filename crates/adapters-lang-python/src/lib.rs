@@ -6,6 +6,7 @@
 //! tier never calls an LLM and every emitted fact carries exact source-span
 //! provenance.
 
+use core_graph::placeholder::Boundary;
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -492,35 +493,51 @@ fn enclosing_function(mut node: TsNode<'_>, functions: &HashMap<usize, String>) 
     None
 }
 
-fn close_over_endpoints(extraction: &mut Extraction) {
-    let mut known = extraction
-        .nodes
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<HashSet<_>>();
-    let mut placeholders = Vec::new();
-    for edge in &extraction.edges {
-        for id in [&edge.src, &edge.dst] {
-            if known.contains(id) {
-                continue;
-            }
-            let label = match id.split(':').next() {
-                Some("file") => "File",
-                Some("sym") => "Symbol",
-                Some("mod") => "Module",
-                Some("ep") => "Endpoint",
-                Some("gap") => "Gap",
-                _ => "Unknown",
-            };
-            placeholders.push(Node {
-                id: id.clone(),
-                label: label.into(),
-                props: serde_json::json!({"placeholder": true}),
-            });
-            known.insert(id.clone());
+/// Every name a repository source could answer an absolute import's top
+/// level with: each directory beneath the walk and each module stem
+/// (`.py`/`.pyi`/`.pyx`/`.pxd` sources and built `.so`/`.pyd` extensions),
+/// across every source root. Over-inclusion only turns an external
+/// classification into a Gap — fail closed.
+fn local_module_names(root: &Path) -> Result<BTreeSet<String>, ExtractError> {
+    let skip = |name: &str| {
+        name.starts_with('.')
+            || matches!(
+                name,
+                "__pycache__" | "venv" | "site-packages" | "node_modules" | "dist" | "build"
+            )
+    };
+    let mut out = BTreeSet::new();
+    for file in source_walk::files(root, &skip, source_walk::Gitignores::Honor)? {
+        let mut components: Vec<&str> = file.rel.split('/').collect();
+        components.pop();
+        out.extend(components.into_iter().map(str::to_string));
+        if let Some((stem, extension)) = file.name.split_once('.')
+            && matches!(
+                extension.rsplit('.').next(),
+                Some("py" | "pyi" | "pyx" | "pxd" | "so" | "pyd")
+            )
+        {
+            out.insert(stem.to_string());
         }
     }
-    extraction.nodes.extend(placeholders);
+    Ok(out)
+}
+
+/// Classify an absolute import no declaration resolved (#237, ADR-0031):
+/// external only when no directory or module anywhere in the repository
+/// shares its top-level name; otherwise the repository may provide it and
+/// the import stays an explicit Gap. Relative imports are always in-system.
+fn classify_import(module: &str, local_names: &BTreeSet<String>) -> Boundary {
+    let top = module.split('.').next().unwrap_or(module);
+    if module.starts_with('.') || local_names.contains(top) {
+        return Boundary::Unresolved {
+            reason: "unresolved import of a module this repository may provide".into(),
+        };
+    }
+    Boundary::External {
+        reason: "module not provided by any source in this repository".into(),
+        evidence: vec![],
+    }
 }
 
 /// Recover deterministic facts from one Python source file.
@@ -875,7 +892,18 @@ pub fn extract_dir_incremental_with_progress(
             out.edges.push(edge);
         }
     }
-    close_over_endpoints(&mut out);
+    let local_names = local_module_names(root)?;
+    let Extraction { nodes, edges, .. } = &mut out;
+    core_graph::placeholder::close_over_endpoints(
+        nodes,
+        edges,
+        EXTRACTOR_ID,
+        core_graph::placeholder::label_for_id,
+        |endpoint, _| {
+            let module = endpoint.strip_prefix("mod:")?;
+            Some(classify_import(module, &local_names))
+        },
+    );
     Ok((out, stats))
 }
 
