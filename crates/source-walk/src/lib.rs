@@ -24,6 +24,7 @@ pub mod parallel;
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::io::Read;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -113,17 +114,45 @@ pub fn files(
     skip_dir: &dyn Fn(&str) -> bool,
     gitignores: Gitignores,
 ) -> std::io::Result<Vec<WalkedFile>> {
+    Ok(files_until(root, skip_dir, gitignores, &mut |_| {
+        ControlFlow::Continue(())
+    })?
+    .expect("a hook that never breaks walks the whole tree"))
+}
+
+/// One directory [`files_until`] is about to enter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalkStep<'a> {
+    /// Repo-relative, `/`-separated path of the directory (empty for the
+    /// root).
+    pub dir: &'a str,
+    /// Files found before this directory.
+    pub found: usize,
+}
+
+/// [`files`] with a hook that runs before each directory is read, so a
+/// caller can report coarse progress while a large tree is enumerated and
+/// stop the walk early (#453). Returns `Ok(None)` when the hook breaks —
+/// never a partial list, which would read as a smaller tree.
+pub fn files_until(
+    root: &Path,
+    skip_dir: &dyn Fn(&str) -> bool,
+    gitignores: Gitignores,
+    on_dir: &mut dyn FnMut(WalkStep<'_>) -> ControlFlow<()>,
+) -> std::io::Result<Option<Vec<WalkedFile>>> {
     let mut out = Vec::new();
-    visit(
-        root,
-        "",
-        &IgnoreRules::default(),
+    let walk = Walk {
         skip_dir,
         gitignores,
-        &mut out,
-    )?;
+    };
+    if walk
+        .visit(root, "", &IgnoreRules::default(), on_dir, &mut out)?
+        .is_break()
+    {
+        return Ok(None);
+    }
     out.sort_by(|a, b| a.rel.cmp(&b.rel));
-    Ok(out)
+    Ok(Some(out))
 }
 
 /// Read one directory's `.gitignore` within [`MAX_GITIGNORE_BYTES`].
@@ -142,53 +171,74 @@ pub fn read_gitignore(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn visit(
-    dir: &Path,
-    rel_dir: &str,
-    parent: &IgnoreRules,
-    skip_dir: &dyn Fn(&str) -> bool,
+/// The fixed settings of one walk.
+struct Walk<'a> {
+    skip_dir: &'a dyn Fn(&str) -> bool,
     gitignores: Gitignores,
-    out: &mut Vec<WalkedFile>,
-) -> std::io::Result<()> {
-    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    let rules = match gitignores {
-        Gitignores::Honor => {
-            let own = entries
-                .iter()
-                .find(|entry| entry.file_name() == GITIGNORE)
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-                .map(|entry| read_gitignore(std::fs::File::open(entry.path())?))
-                .transpose()?;
-            parent.descend(rel_dir, own.as_deref())
+}
+
+impl Walk<'_> {
+    fn visit(
+        &self,
+        dir: &Path,
+        rel_dir: &str,
+        parent: &IgnoreRules,
+        on_dir: &mut dyn FnMut(WalkStep<'_>) -> ControlFlow<()>,
+        out: &mut Vec<WalkedFile>,
+    ) -> std::io::Result<ControlFlow<()>> {
+        if on_dir(WalkStep {
+            dir: rel_dir,
+            found: out.len(),
+        })
+        .is_break()
+        {
+            return Ok(ControlFlow::Break(()));
         }
-        Gitignores::Disregard => IgnoreRules::default(),
-    };
-    for entry in entries {
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let rel = if rel_dir.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel_dir}/{name}")
+        let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        let rules = match self.gitignores {
+            Gitignores::Honor => {
+                let own = entries
+                    .iter()
+                    .find(|entry| entry.file_name() == GITIGNORE)
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                    .map(|entry| read_gitignore(std::fs::File::open(entry.path())?))
+                    .transpose()?;
+                parent.descend(rel_dir, own.as_deref())
+            }
+            Gitignores::Disregard => IgnoreRules::default(),
         };
-        if kind.is_dir() {
-            if skip_dir(&name) || rules.is_ignored(&rel, true) {
+        for entry in entries {
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
                 continue;
             }
-            visit(&entry.path(), &rel, &rules, skip_dir, gitignores, out)?;
-        } else if kind.is_file() && !rules.is_ignored(&rel, false) {
-            out.push(WalkedFile {
-                rel,
-                path: entry.path(),
-                name,
-            });
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rel = if rel_dir.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel_dir}/{name}")
+            };
+            if kind.is_dir() {
+                if (self.skip_dir)(&name) || rules.is_ignored(&rel, true) {
+                    continue;
+                }
+                if self
+                    .visit(&entry.path(), &rel, &rules, on_dir, out)?
+                    .is_break()
+                {
+                    return Ok(ControlFlow::Break(()));
+                }
+            } else if kind.is_file() && !rules.is_ignored(&rel, false) {
+                out.push(WalkedFile {
+                    rel,
+                    path: entry.path(),
+                    name,
+                });
+            }
         }
+        Ok(ControlFlow::Continue(()))
     }
-    Ok(())
 }
 
 #[cfg(test)]

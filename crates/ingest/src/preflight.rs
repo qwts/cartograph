@@ -321,15 +321,20 @@ impl<'a> EvalProofSource<'a> {
     }
 }
 
-/// One file about to be read by [`preflight_scan`].
+/// One step of [`preflight_scan`]: a directory about to be listed while the
+/// walk enumerates the tree, then each file about to be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanStep<'a> {
-    /// Repo-relative path of the file about to be read.
+    /// Repo-relative path of the file about to be read — or, while listing
+    /// (`total` is `None`), of the directory about to be entered (empty for
+    /// the root).
     pub path: &'a str,
-    /// Files already read before this one.
+    /// Files already read before this one — or, while listing, files found
+    /// so far.
     pub done: usize,
-    /// Files in the whole walk.
-    pub total: usize,
+    /// Files in the whole walk; `None` while the walk is still listing the
+    /// tree and the total is not yet known (#453).
+    pub total: Option<usize>,
 }
 
 /// Run the preflight scan over `root`. Purely local; deterministic for a
@@ -387,8 +392,25 @@ pub fn preflight_scan(
 
     // Collect first so progress can name the walk's total. The walk is the
     // one every extractor uses (#248): `.gitignore`-aware and sorted, so
-    // Preflight never reports files recovery would not read.
-    let files: Vec<_> = source_walk::files(root, &skip_dir, source_walk::Gitignores::Honor)?
+    // Preflight never reports files recovery would not read. The hook runs
+    // before each directory too, so listing a large tree reports coarse
+    // progress and a cancel stops it mid-walk (#453).
+    let Some(walked) = source_walk::files_until(
+        root,
+        &skip_dir,
+        source_walk::Gitignores::Honor,
+        &mut |step| {
+            on_file(ScanStep {
+                path: step.dir,
+                done: step.found,
+                total: None,
+            })
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    let files: Vec<_> = walked
         .into_iter()
         .map(|file| (file.path, file.name, file.rel))
         .collect();
@@ -399,7 +421,7 @@ pub fn preflight_scan(
         if on_file(ScanStep {
             path: &rel,
             done,
-            total,
+            total: Some(total),
         })
         .is_break()
         {
@@ -1182,15 +1204,55 @@ mod tests {
         .expect("completes");
         assert_eq!(
             seen,
-            vec![("a.ts".to_string(), 0, 2), ("b.ts".to_string(), 1, 2)]
+            vec![
+                (String::new(), 0, None),
+                ("a.ts".to_string(), 0, Some(2)),
+                ("b.ts".to_string(), 1, Some(2))
+            ]
         );
         let mut announced = 0;
-        let stopped = preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |_| {
+        let stopped = preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |step| {
+            if step.total.is_none() {
+                return std::ops::ControlFlow::Continue(());
+            }
             announced += 1;
             std::ops::ControlFlow::Break(())
         })
         .unwrap();
         assert!(stopped.is_none());
         assert_eq!(announced, 1);
+    }
+
+    #[test]
+    fn scan_hook_reports_the_listing_walk_and_stops_it_mid_tree() {
+        // AC-0197/AC-0198 (#453): before any file is read, the walk that
+        // lists the tree announces each directory with the files found so
+        // far, and a break there stops the listing itself — no later
+        // directory is entered, no file is announced, and no report returns.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for sub in ["a", "b", "c"] {
+            write(root, &format!("{sub}/x.ts"), "export const x = 1;\n");
+            write(root, &format!("{sub}/notes.md"), "notes\n");
+        }
+        let mut seen = Vec::new();
+        let stopped = preflight_scan(root, &[], EvalProofSource::PendingRecovery, &mut |step| {
+            seen.push((step.path.to_string(), step.done, step.total));
+            if step.path == "b" {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        })
+        .unwrap();
+        assert!(stopped.is_none());
+        assert_eq!(
+            seen,
+            vec![
+                (String::new(), 0, None),
+                ("a".to_string(), 0, None),
+                ("b".to_string(), 2, None)
+            ]
+        );
     }
 }

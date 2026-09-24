@@ -87,7 +87,17 @@ export function PreflightSurface({
             <span className="material-symbols-outlined spinning" aria-hidden="true">
               progress_activity
             </span>{' '}
-            {progress ? (
+            {progress && progress.total === null ? (
+              <>
+                Finding files… {progress.done} so far
+                {progress.path && (
+                  <>
+                    {' '}
+                    <code>{progress.path}</code>
+                  </>
+                )}
+              </>
+            ) : progress ? (
               <>
                 Checking file {progress.done + 1} of {progress.total}{' '}
                 <code>{progress.path}</code>

@@ -1939,27 +1939,35 @@ fn preflight_uncancelled<R: tauri::Runtime>(
 }
 
 /// One live `preflight://progress` ping: the file about to be parsed and how
-/// far through the walk the scan is.
+/// far through the walk the scan is — or, while the tree is still being
+/// listed (`total` is `null`), the directory being entered and how many files
+/// have been found so far (#453).
 #[derive(Clone, Serialize)]
 struct PreflightProgress<'a> {
     /// The UI-issued id of the scan this ping belongs to.
     run: u64,
     path: &'a str,
     done: usize,
-    total: usize,
+    total: Option<usize>,
 }
 
 /// Emits at most one `preflight://progress` event every ~120ms (the same
 /// budget as `job://detail`, #209) so thousands of files can't flood the IPC
-/// bridge. The first step always fires.
+/// bridge. The first step always fires, and so does the first file step
+/// after listing, so the line never sits on a finished listing (#453).
 fn preflight_progress_throttle<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     run: u64,
 ) -> impl FnMut(ingest::preflight::ScanStep<'_>) + '_ {
     let mut last: Option<std::time::Instant> = None;
+    let mut listing = true;
     move |step| {
         let now = std::time::Instant::now();
-        if last.is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(120)) {
+        let listing_ended = listing && step.total.is_some();
+        listing = step.total.is_none();
+        if listing_ended
+            || last.is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(120))
+        {
             let _ = app.emit(
                 "preflight://progress",
                 PreflightProgress {
@@ -7778,15 +7786,19 @@ export function App() {
 
         assert!(report.unsupported.iter().any(|f| f.kind == "inline-eval"));
         let emitters = emitters.lock().unwrap();
-        // One file, read by both walks; the throttle may fold the second
-        // walk's ping into the first.
-        assert!((1..=2).contains(&emitters.len()), "{emitters:?}");
+        // The listing walk's first ping (the root) always fires, and so does
+        // the first file ping after it (#453).
+        assert_eq!(emitters.len(), 2, "{emitters:?}");
         assert!(
             emitters.iter().all(|(worker, _)| *worker != caller),
             "extraction ran on the calling thread"
         );
         assert_eq!(
             emitters[0].1,
+            r#"{"run":7,"path":"","done":0,"total":null}"#
+        );
+        assert_eq!(
+            emitters[1].1,
             r#"{"run":7,"path":"app.ts","done":0,"total":1}"#
         );
     }
@@ -7816,7 +7828,13 @@ export function App() {
             &mut |step| steps.push((step.path.to_string(), step.done, step.total)),
         )
         .unwrap();
-        assert_eq!(steps, vec![("main.go".to_string(), 0, 1)]);
+        assert_eq!(
+            steps,
+            vec![
+                (String::new(), 0, None),
+                ("main.go".to_string(), 0, Some(1))
+            ]
+        );
     }
 
     #[test]
@@ -7838,6 +7856,9 @@ export function App() {
         let mut announced = Vec::new();
         let result =
             super::preflight_blocking(&path_arg, &handle, &state, &runs, &token, &mut |step| {
+                if step.total.is_none() {
+                    return; // still listing the tree
+                }
                 announced.push(step.path.to_string());
                 runs.cancel().unwrap();
             });
@@ -7871,6 +7892,48 @@ export function App() {
             std::fs::write(project.join(name), "eval(getCode());\n").unwrap();
         }
         project
+    }
+
+    #[test]
+    fn cancelled_preflight_stops_while_listing_the_tree() {
+        // AC-0198 (#453): a cancel that lands while the tree is still being
+        // listed stops the listing walk at the next directory — no later
+        // directory is entered, no file is announced or read, and nothing is
+        // persisted.
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        for sub in ["a", "b", "c"] {
+            std::fs::create_dir_all(project.join(sub)).unwrap();
+            std::fs::write(project.join(sub).join("x.ts"), "eval(getCode());\n").unwrap();
+        }
+        let app = preflight_test_app(dir.path());
+        let handle = app.handle().clone();
+        let state = app.state::<super::AppState>();
+        let runs = app.state::<super::PreflightRuns>();
+        let token = runs.begin().unwrap();
+
+        let mut steps = Vec::new();
+        let result = super::preflight_blocking(
+            &project.to_string_lossy(),
+            &handle,
+            &state,
+            &runs,
+            &token,
+            &mut |step| {
+                steps.push((step.path.to_string(), step.total));
+                if step.path == "a" {
+                    runs.cancel().unwrap();
+                }
+            },
+        );
+        assert_eq!(result.unwrap_err(), super::PREFLIGHT_CANCELLED);
+        assert_eq!(
+            steps,
+            vec![(String::new(), None), ("a".to_string(), None)],
+            "the walk stopped listing before directory b"
+        );
+        assert!(state.findings.lock().unwrap().list().unwrap().is_empty());
     }
 
     #[test]

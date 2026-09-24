@@ -159,13 +159,15 @@ export interface PreflightReport {
 }
 
 /** One live `preflight://progress` ping (#235): the file the scan is reading
- *  and how far through the walk it is. */
+ *  and how far through the walk it is — or, while the tree is still being
+ *  listed (`total` is `null`, #453), the directory being entered and how many
+ *  files have been found so far. */
 export interface PreflightProgress {
   /** The scan this ping belongs to — the id `runPreflight` sent. */
   run: number;
   path: string;
   done: number;
-  total: number;
+  total: number | null;
 }
 
 /** One provenance-bearing resolved hop returned by `flowtracer::Flow`. */
