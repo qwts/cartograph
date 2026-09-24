@@ -112,9 +112,10 @@
 - **AC-0016** Given any unresolved hop, when no tier resolves it, then a Gap node truncates that branch (no silent completion).
 - **AC-0017** Given a completed trace, when scored, then flow_status ∈ {Verified, Partial, Inferred} per the scoring rule.
 - **AC-0083** Given a recovered WebExtension graph, when flows are traced, then extension user-action anchors trigger their own flows — every ExtensionContext, and every manifest Command routed to its dispatching context (`_execute_*` to the toolbar action, all others to background, with an explicit Gap when that context is absent) — whose hops walk ENTRY into the entry file and DEFINED_IN in reverse from that file into the symbols it defines, deterministically under input reordering, while internally published channels participate as mid-flow hops rather than triggers.
+- **AC-0219** Given a flow node that owns a Gap through `DEPENDS_ON`, when the flow is traced, then an execution Gap (code the owner runs that T0 could not recover, e.g. an unproven `eval()`) appears as a terminal Gap hop with its reason and attempted tiers and the flow is Partial, while a Gap flagged `rule_evidence_gap` (rule-evidence scope, including decoded eval code awaiting a span mapping) and any `DEPENDS_ON` between non-Gap facts leave the flow's status unchanged (ADR-0032).
 - **Security:** —
 - **Performance:** Path queries bounded; long flows stream incrementally to UI.
-- **Trace:** M3–M5 · `flowtracer` · F-* · T-0015..0017, T-0083
+- **Trace:** M3–M5 · `flowtracer` · F-* · T-0015..0017, T-0083, T-0219
 
 ### US-0007 — Provenance and confidence on every fact
 - **Actor:** Engine

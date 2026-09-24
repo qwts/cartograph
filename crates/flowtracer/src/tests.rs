@@ -702,3 +702,140 @@ fn anchor_probes_count_every_kind_sought() {
     assert_eq!(find("screens"), 1);
     assert_eq!(find("externally published"), 1);
 }
+
+/// `Endpoint → HANDLES → sym:run`, where `run` owns TS-adapter-shaped Gaps
+/// through `DEPENDS_ON` (#473): `const CODE = load(); eval(CODE);` yields an
+/// `eval-unproven` Gap; `extra` adds rule-evidence or ordering dependencies.
+fn eval_owner_chain(extra_nodes: Vec<Node>, extra_edges: Vec<Edge>) -> (Vec<Node>, Vec<Edge>) {
+    let mut nodes = vec![
+        node(
+            "ep:POST:/run",
+            "Endpoint",
+            serde_json::json!({"method": "POST", "path": "/run"}),
+        ),
+        node(
+            "sym:app.ts#run",
+            "Symbol",
+            serde_json::json!({"name": "run"}),
+        ),
+        node(
+            "sym:app.ts#load",
+            "Symbol",
+            serde_json::json!({"name": "load"}),
+        ),
+    ];
+    let mut edges = vec![
+        edge("ep:POST:/run", "sym:app.ts#run", "HANDLES", "Confirmed"),
+        edge("sym:app.ts#run", "sym:app.ts#load", "CALLS", "Confirmed"),
+    ];
+    nodes.extend(extra_nodes);
+    edges.extend(extra_edges);
+    (nodes, edges)
+}
+
+fn flow_for<'a>(flows: &'a [Flow], trigger: &str) -> &'a Flow {
+    flows.iter().find(|f| f.trigger == trigger).unwrap()
+}
+
+// AC-0219: a flow symbol that DEPENDS_ON an execution Gap (an eval whose
+// code T0 could not prove) makes the flow Partial, and the Gap is an
+// explicit, terminal hop — never a silent Verified (R-INT-4). (T-0219)
+#[test]
+fn depends_on_execution_gap_makes_the_flow_partial() {
+    let gap = "gap:r@src/app.ts#eval-unproven@120";
+    let reason = "const-shaped code argument could not be proven to a literal";
+    let (nodes, edges) = eval_owner_chain(
+        vec![node(
+            gap,
+            "Gap",
+            serde_json::json!({
+                "construct": "eval",
+                "reason": reason,
+                "attempted_tiers": ["T0"],
+            }),
+        )],
+        vec![edge("sym:app.ts#run", gap, "DEPENDS_ON", "Gap")],
+    );
+    let flows = trace(&nodes, &edges);
+    let flow = flow_for(&flows, "ep:POST:/run");
+    assert_eq!(flow.status, FlowStatus::Partial);
+    let hop = flow.hops.iter().find(|h| h.label == "DEPENDS_ON").unwrap();
+    assert_eq!(hop.src, "sym:app.ts#run");
+    assert_eq!(hop.dst, gap);
+    assert_eq!(hop.confidence, "Gap");
+    assert_eq!(hop.gap_reason.as_deref(), Some(reason));
+    assert_eq!(hop.attempted_tiers, ["T0"]);
+    // The confirmed call is still walked; only the Gap is terminal.
+    assert!(flow.hops.iter().any(|h| h.dst == "sym:app.ts#load"));
+    assert!((flow.score - 2.0 / 3.0).abs() < 1e-9);
+
+    // Without the Gap the same flow is Verified: the Gap alone decides.
+    let (nodes, edges) = eval_owner_chain(Vec::new(), Vec::new());
+    assert_eq!(
+        flow_for(&trace(&nodes, &edges), "ep:POST:/run").status,
+        FlowStatus::Verified
+    );
+
+    // A Gap the node set does not carry still counts by its `gap:` id.
+    let (_, edges) = eval_owner_chain(
+        Vec::new(),
+        vec![edge("sym:app.ts#run", gap, "DEPENDS_ON", "Gap")],
+    );
+    let (nodes, _) = eval_owner_chain(Vec::new(), Vec::new());
+    assert_eq!(
+        flow_for(&trace(&nodes, &edges), "ep:POST:/run").status,
+        FlowStatus::Partial
+    );
+}
+
+// AC-0219: rule-evidence scope Gaps (`rule_evidence_gap`, including the
+// `eval-rules` source-mapping Gap) do not make a flow Partial, a
+// DEPENDS_ON between non-Gap facts is not a flow hop, and a Gap owned by a
+// symbol the flow never reaches does not touch it. (T-0219)
+#[test]
+fn rule_evidence_and_ordering_dependencies_leave_the_flow_verified() {
+    let rules = "gap:r@src/app.ts#eval-rules@120";
+    let scope = "gap:r@src/app.ts#rule-analysis@40";
+    let elsewhere = "gap:r@src/other.ts#eval-unproven@9";
+    let (nodes, edges) = eval_owner_chain(
+        vec![
+            node(
+                rules,
+                "Gap",
+                serde_json::json!({
+                    "rule_evidence_gap": true,
+                    "reason_code": "eval_source_mapping_unknown",
+                    "reason": "awaits an exact mapping",
+                }),
+            ),
+            node(
+                scope,
+                "Gap",
+                serde_json::json!({"rule_evidence_gap": true, "reason": "scope"}),
+            ),
+            node(
+                "sym:other.ts#unused",
+                "Symbol",
+                serde_json::json!({"name": "unused"}),
+            ),
+            node(elsewhere, "Gap", serde_json::json!({"reason": "unproven"})),
+        ],
+        vec![
+            edge("sym:app.ts#run", rules, "DEPENDS_ON", "Gap"),
+            edge("sym:app.ts#run", scope, "DEPENDS_ON", "Gap"),
+            // Ordering intent between two recovered facts: never walked.
+            edge(
+                "sym:app.ts#run",
+                "sym:other.ts#unused",
+                "DEPENDS_ON",
+                "Confirmed",
+            ),
+            edge("sym:other.ts#unused", elsewhere, "DEPENDS_ON", "Gap"),
+        ],
+    );
+    let flows = trace(&nodes, &edges);
+    let flow = flow_for(&flows, "ep:POST:/run");
+    assert_eq!(flow.status, FlowStatus::Verified);
+    assert!(flow.hops.iter().all(|h| h.label != "DEPENDS_ON"));
+    assert_eq!(flow.hops.len(), 2);
+}
