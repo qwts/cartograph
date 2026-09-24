@@ -34,19 +34,12 @@ CLAUDE.md   @qwts
 /src-tauri/capabilities/ @qwts
 /src-tauri/tauri.conf.json @qwts
 /src-tauri/tauri.macos.conf.json @qwts
-# Host-side egress and consent: provider construction and payload-hash grants
-# (main.rs until #457 moves them out), durable per-call consent, and the
-# provider/key settings. #457 also consolidates the consent path so this list
-# can shrink.
-/src-tauri/src/main.rs @qwts
-/src-tauri/src/escalation.rs @qwts
-/src-tauri/src/settings.rs @qwts
-/src-tauri/src/investigations/runtime.rs @qwts
-/src-tauri/src/investigations/worker.rs @qwts
-# Where a durable consent grant is recorded, and every UI surface that asks
-# for or submits one (both cloud flows).
-/src-tauri/src/investigations/commands.rs @qwts
-/src-tauri/src/jobs/investigations/transitions.rs @qwts
+# Host-side egress and consent. Any host module can reach the crate-private
+# cloud provider and the public grant APIs, so the whole host tree stays
+# protected until #457 seals provider and grant construction into one module;
+# then this narrows to that module.
+/src-tauri/src/ @qwts
+# Every UI surface that asks for or submits a consent grant (both cloud flows).
 /ui/src/investigationStore.ts @qwts
 /ui/src/store.ts @qwts
 /ui/src/components/EgressConsentDialog.tsx @qwts

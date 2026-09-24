@@ -24,7 +24,9 @@ Split review by risk and let GitHub enforce the split:
   - agent primitives, meaning every agent tool's directives and hook directories
   - ADRs
   - security boundaries: redaction, model egress, the plugin host, app
-    capabilities, and the host egress and consent code
+    capabilities, the consent UI, and the whole host source tree
+    (`src-tauri/src/`), since any host module can reach the cloud provider and
+    the grant APIs; #457 seals those into one module and narrows this rule
   - build entrypoints that execute code where release credentials are present
   - supply chain: manifests, lockfiles and the `cargo deny` policy
   - the changelog, which marks a release
