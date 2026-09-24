@@ -632,6 +632,16 @@ export interface TierSettings {
   consented_at: string | null;
 }
 
+/** "Ingest parallelism" (#236): `setting` 0 = Auto, otherwise a fixed worker
+ *  count; the rest is what it resolves to on this machine. Output never
+ *  depends on it — only wall-clock time does. */
+export interface IngestParallelism {
+  setting: number;
+  auto_workers: number;
+  workers: number;
+  max_workers: number;
+}
+
 /** Live egress line for the status bar (#118). */
 export interface EgressSummary {
   cloud_tiers: string[];
@@ -730,6 +740,8 @@ export interface AppStore {
   tierSettings: TierSettings[];
   /** Live status-bar egress line; null with no backend (shown as local-only). */
   egress: EgressSummary | null;
+  /** Persisted extraction worker setting; null with no backend (#236). */
+  ingestParallelism: IngestParallelism | null;
   /** Disclosure for the tier currently offered cloud consent, keyed by tier.
    *  Loaded before the consent panel renders — fail closed: no disclosure,
    *  no recordable consent. */
@@ -788,6 +800,8 @@ export interface AppStore {
   startRecovery: () => Promise<void>;
   /** Enable/disable a configurable tier (#118); refreshes the egress line. */
   setTierEnabled: (tier: string, enabled: boolean) => Promise<void>;
+  /** Persist "Ingest parallelism" (0 = Auto) for later extractions (#236). */
+  setIngestParallelism: (setting: number) => Promise<void>;
   /** Choose local or cloud for an LLM tier. Choosing cloud loads the full
    *  disclosure so the consent panel can render it; leaving cloud revokes
    *  standing consent in the core. */
@@ -876,6 +890,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   stagedError: null,
   tierSettings: [],
   egress: null,
+  ingestParallelism: null,
   disclosures: {},
   settingsError: null,
   selected: null,
@@ -906,6 +921,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         evals: [],
         tierSettings: [],
         egress: null,
+        ingestParallelism: null,
         stagedProposals: [],
         stagedNextCursor: null,
         stagedLoading: false,
@@ -913,7 +929,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, adapters, plugins, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, disclosureT2, disclosureT3] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, adapters, plugins, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, ingestParallelism, disclosureT2, disclosureT3] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -934,6 +950,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       invokeOr<EvalResult[]>('list_evals', []),
       invokeOr<TierSettings[]>('get_settings', []),
       invokeOr<EgressSummary | null>('egress_summary', null),
+      invokeOr<IngestParallelism | null>('get_ingest_parallelism', null),
       // Disclosures are static per tier — prefetched so the consent panel
       // can always show them before consent is recordable (fail closed).
       invokeOr<CloudDisclosure | null>('cloud_disclosure', null, { tier: 'T2' }),
@@ -962,6 +979,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       evals,
       tierSettings,
       egress,
+      ingestParallelism,
       disclosures: { T2: disclosureT2 ?? undefined, T3: disclosureT3 ?? undefined },
     });
     await get().loadStagedProposals();
@@ -1245,6 +1263,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const egress = await invokeOr<EgressSummary | null>('egress_summary', null);
       if (tierSettings) set({ tierSettings, egress });
+    } catch (e) {
+      set({ settingsError: String(e) });
+    }
+  },
+
+  setIngestParallelism: async (setting) => {
+    set({ settingsError: null });
+    try {
+      const ingestParallelism = await invokeOr<IngestParallelism | null>(
+        'set_ingest_parallelism',
+        null,
+        { setting },
+      );
+      if (ingestParallelism) set({ ingestParallelism });
     } catch (e) {
       set({ settingsError: String(e) });
     }

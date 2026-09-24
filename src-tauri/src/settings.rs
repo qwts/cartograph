@@ -46,6 +46,46 @@ pub struct EgressSummary {
     pub label: String,
 }
 
+/// The "Ingest parallelism" setting (#236) with what it resolves to here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IngestParallelism {
+    /// `0` = Auto, otherwise a fixed worker count (`1` = serial).
+    pub setting: u32,
+    /// Workers Auto resolves to on this machine (P-cores − 1, memory-capped).
+    pub auto_workers: u32,
+    /// Workers the current setting actually runs.
+    pub workers: u32,
+    /// Largest fixed choice offered: this machine's available parallelism.
+    pub max_workers: u32,
+}
+
+impl IngestParallelism {
+    /// The worker model for a stored `setting`.
+    pub fn parallelism(setting: u32) -> source_walk::parallel::Parallelism {
+        match setting {
+            0 => source_walk::parallel::Parallelism::Auto,
+            workers => source_walk::parallel::Parallelism::Fixed(workers as usize),
+        }
+    }
+
+    fn describe(setting: u32) -> Self {
+        let clamp = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        Self {
+            setting,
+            auto_workers: clamp(source_walk::parallel::auto_workers()),
+            workers: clamp(Self::parallelism(setting).workers()),
+            max_workers: clamp(max_workers()),
+        }
+    }
+}
+
+/// Largest fixed worker count offered in Settings.
+pub fn max_workers() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(source_walk::parallel::MAX_WORKERS)
+}
+
 /// A settings transition that violates an invariant, or a storage failure.
 #[derive(Debug)]
 pub enum SettingsError {
@@ -53,6 +93,7 @@ pub enum SettingsError {
     NoProvider(String),
     NotCloudProvider,
     InvalidProvider(String),
+    InvalidParallelism(u32),
     Store(rusqlite::Error),
 }
 
@@ -71,6 +112,11 @@ impl std::fmt::Display for SettingsError {
             Self::InvalidProvider(provider) => {
                 write!(f, "provider must be 'local' or 'cloud', got '{provider}'")
             }
+            Self::InvalidParallelism(workers) => write!(
+                f,
+                "ingest parallelism must be Auto (0) or 1..={} workers, got {workers}",
+                max_workers()
+            ),
             Self::Store(error) => write!(f, "settings store: {error}"),
         }
     }
@@ -120,6 +166,11 @@ impl SettingsStore {
                  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                  PRIMARY KEY (plugin_id, content_hash)
              ) STRICT;
+             CREATE TABLE IF NOT EXISTS ingest_settings (
+                 id          INTEGER PRIMARY KEY CHECK (id = 1),
+                 parallelism INTEGER NOT NULL CHECK (parallelism >= 0)
+             ) STRICT;
+             INSERT OR IGNORE INTO ingest_settings (id, parallelism) VALUES (1, 0);
              CREATE TABLE IF NOT EXISTS egress_log (
                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
                  provider   TEXT NOT NULL,
@@ -349,6 +400,33 @@ impl SettingsStore {
         })
     }
 
+    /// The persisted "Ingest parallelism" setting (#236); Auto by default.
+    pub fn ingest_parallelism(&self) -> rusqlite::Result<IngestParallelism> {
+        let setting: u32 = self.conn.query_row(
+            "SELECT parallelism FROM ingest_settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(IngestParallelism::describe(setting))
+    }
+
+    /// Persist the "Ingest parallelism" setting: `0` = Auto, otherwise a
+    /// fixed worker count up to this machine's available parallelism. The
+    /// caller applies it to extraction; output never depends on it.
+    pub fn set_ingest_parallelism(
+        &mut self,
+        setting: u32,
+    ) -> Result<IngestParallelism, SettingsError> {
+        if setting as usize > max_workers() {
+            return Err(SettingsError::InvalidParallelism(setting));
+        }
+        self.conn.execute(
+            "UPDATE ingest_settings SET parallelism = ?1 WHERE id = 1",
+            params![setting],
+        )?;
+        Ok(self.ingest_parallelism()?)
+    }
+
     /// Derive the egress firewall policy from persisted settings: cloud is
     /// allowed only for enabled LLM tiers whose provider is `cloud` **and**
     /// which hold standing consent. Everything else stays local-only.
@@ -373,6 +451,30 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingest_parallelism_defaults_to_auto_persists_and_rejects_out_of_range() {
+        // AC-0208 (#236): Auto by default; a fixed choice persists across
+        // reopen; a value beyond this machine's parallelism is refused.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut store = SettingsStore::open(&path).unwrap();
+        let auto = store.ingest_parallelism().unwrap();
+        assert_eq!(auto.setting, 0);
+        assert_eq!(auto.workers, auto.auto_workers);
+        assert!(auto.auto_workers >= 1 && auto.max_workers >= 1);
+        let serial = store.set_ingest_parallelism(1).unwrap();
+        assert_eq!((serial.setting, serial.workers), (1, 1));
+        drop(store);
+        let mut store = SettingsStore::open(&path).unwrap();
+        assert_eq!(store.ingest_parallelism().unwrap().setting, 1);
+        let too_many = auto.max_workers + 1;
+        assert!(matches!(
+            store.set_ingest_parallelism(too_many),
+            Err(SettingsError::InvalidParallelism(n)) if n == too_many
+        ));
+        assert_eq!(store.ingest_parallelism().unwrap().setting, 1);
+    }
 
     #[test]
     fn plugin_enablement_is_per_project_per_artifact_and_fails_closed() {

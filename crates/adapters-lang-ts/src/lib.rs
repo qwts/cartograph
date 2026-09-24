@@ -2804,8 +2804,9 @@ pub fn extract_dir_incremental(
 }
 
 /// Same as [`extract_dir_incremental`], calling `on_file` with each file's
-/// repo-relative path as it's read — a live "what's happening right now"
-/// hook for the shell's progress UI (#209); callers that don't need it use
+/// repo-relative path as its result is merged, in sorted walk order (files
+/// parse ahead on parallel workers, #236) — a live progress hook for the
+/// shell's progress UI (#209); callers that don't need it use
 /// [`extract_dir_incremental`], which passes a no-op.
 pub fn extract_dir_incremental_with_progress(
     root: &Path,
@@ -2825,32 +2826,55 @@ pub fn extract_dir_incremental_with_progress(
         .filter(|path| !active.contains(*path))
         .count() as u64;
     cache.files.retain(|path, _| active.contains(path));
-    for rel in &files {
-        on_file(rel);
-        let source = std::fs::read(root.join(rel))?;
-        let source_hash = core_prov::content_hash(&source);
-        let ex = if let Some(cached) = cache
-            .files
-            .get(rel)
-            .filter(|cached| cached.source_hash == source_hash)
-        {
-            stats.reused_files += 1;
-            let mut extraction = cached.extraction.clone();
-            retarget_commit(&mut extraction, id.commit);
-            extraction
-        } else {
-            stats.recomputed_files += 1;
-            extract_source(&source, rel, id)?
-        };
-        cache.files.insert(
-            rel.clone(),
-            CachedFile {
-                source_hash,
-                extraction: ex.clone(),
-            },
-        );
-        append_extraction(&mut out, ex);
-    }
+    // Files parse on parallel workers (#236); results merge here in sorted
+    // order, so the output is byte-identical to a serial run.
+    // Workers see only each cached file's hash; the merge owns the cache and
+    // replaces entries one at a time, exactly as the serial loop did, so a
+    // re-ingest never holds a second copy of the cache.
+    let previous: std::collections::BTreeMap<String, String> = cache
+        .files
+        .iter()
+        .map(|(path, cached)| (path.clone(), cached.source_hash.clone()))
+        .collect();
+    let merged = source_walk::parallel::map_ordered(
+        &files,
+        |rel| {
+            let source = std::fs::read(root.join(rel))?;
+            let source_hash = core_prov::content_hash(&source);
+            let reusable = previous.get(rel).is_some_and(|hash| *hash == source_hash);
+            let fresh = if reusable {
+                None
+            } else {
+                Some(extract_source(&source, rel, id)?)
+            };
+            Ok::<_, ExtractError>((source_hash, fresh))
+        },
+        |rel, (source_hash, fresh)| {
+            on_file(rel);
+            let ex = match fresh {
+                Some(ex) => {
+                    stats.recomputed_files += 1;
+                    ex
+                }
+                None => {
+                    stats.reused_files += 1;
+                    let mut extraction = cache.files[rel].extraction.clone();
+                    retarget_commit(&mut extraction, id.commit);
+                    extraction
+                }
+            };
+            cache.files.insert(
+                rel.to_string(),
+                CachedFile {
+                    source_hash,
+                    extraction: ex.clone(),
+                },
+            );
+            append_extraction(&mut out, ex);
+            Ok(())
+        },
+    );
+    merged?;
     complete_directory(&mut out, root, id)?;
     Ok((out, stats))
 }
@@ -3056,10 +3080,14 @@ pub fn eval_coverage(root: &Path, id: &SourceId) -> Result<Vec<EvalSite>, Extrac
     collect_ts_files(root, &mut files)?;
     files.sort(); // deterministic order (US-0014)
     let mut out = Vec::new();
-    for rel in &files {
-        let source = std::fs::read(root.join(rel))?;
-        out.extend(extract_source(&source, rel, id)?.eval_sites);
-    }
+    source_walk::parallel::map_ordered(
+        &files,
+        |rel| Ok(extract_source(&std::fs::read(root.join(rel))?, rel, id)?.eval_sites),
+        |_, sites| {
+            out.extend(sites);
+            Ok::<_, ExtractError>(())
+        },
+    )?;
     Ok(out)
 }
 

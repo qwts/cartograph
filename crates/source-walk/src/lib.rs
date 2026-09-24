@@ -19,6 +19,8 @@
 //! `std::fs`; it shares the matching itself through [`IgnoreRules`], so both
 //! lanes select the same files by construction.
 
+pub mod parallel;
+
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::io::Read;

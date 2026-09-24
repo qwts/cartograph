@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within } from 'storybook/test';
 import { SettingsSurface } from './SettingsSurface';
-import type { AdapterInventory, CloudDisclosure, TierSettings } from '../store';
+import type { AdapterInventory, CloudDisclosure, IngestParallelism, TierSettings } from '../store';
 
 /** Mirrors `ingest::preflight::INSTALLED_ADAPTERS`/`PLANNED_ADAPTERS`. */
 const INVENTORY: AdapterInventory = {
@@ -88,6 +88,9 @@ const T2_DISCLOSURE: CloudDisclosure = {
   notes: ['payload is the exact redacted span set shown by the egress firewall'],
 };
 
+/** Auto on a 12-core machine with 8 performance cores. */
+const PARALLELISM: IngestParallelism = { setting: 0, auto_workers: 7, workers: 7, max_workers: 12 };
+
 const meta = {
   title: 'Surfaces/SettingsSurface',
   component: SettingsSurface,
@@ -102,6 +105,8 @@ const meta = {
     onProviderChange: fn(),
     onGrantConsent: fn(),
     onRevokeConsent: fn(),
+    parallelism: PARALLELISM,
+    onParallelismChange: fn(),
   },
 } satisfies Meta<typeof SettingsSurface>;
 
@@ -335,8 +340,24 @@ export const DiscoveredPluginsToggle: Story = {
   },
 };
 
+export const IngestParallelismChoice: Story = {
+  play: async ({ canvasElement, args }) => {
+    // AC-0208 (#236): Auto names the workers it resolves to; any fixed
+    // count up to the machine's parallelism can be chosen, 1 being serial.
+    const canvas = within(canvasElement);
+    const select = canvas.getByRole('combobox', { name: 'Ingest parallelism' });
+    await expect(select).toHaveValue('0');
+    await expect(canvas.getByRole('option', { name: 'Auto (7 workers)' })).toBeInTheDocument();
+    await expect(canvas.getByRole('option', { name: '1 worker (serial)' })).toBeInTheDocument();
+    await expect(canvas.getAllByRole('option')).toHaveLength(13);
+    await expect(canvas.getByText(/the recovered graph is identical either way/)).toBeInTheDocument();
+    await userEvent.selectOptions(select, '4');
+    await expect(args.onParallelismChange).toHaveBeenCalledWith(4);
+  },
+};
+
 export const NoBackend: Story = {
-  args: { tiers: [], canEdit: false, adapters: null },
+  args: { tiers: [], canEdit: false, adapters: null, parallelism: null },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
@@ -344,6 +365,7 @@ export const NoBackend: Story = {
     ).toBeInTheDocument();
     // T0's floor statement renders even with no core.
     await expect(canvas.getByText('always on')).toBeInTheDocument();
+    await expect(canvas.getByText(/Ingest parallelism lives in the core/)).toBeInTheDocument();
     // No fabricated inventory without a core to report it.
     await expect(
       canvas.getByText(/connect a backend to list installed adapters/),
