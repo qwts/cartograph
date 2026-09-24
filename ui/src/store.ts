@@ -266,7 +266,7 @@ export interface SpecArtifact {
   id: string;
   file_name: string;
   title: string;
-  format: 'markdown' | 'mermaid';
+  format: 'markdown' | 'mermaid' | 'json';
   content: string;
   assertions: SpecAssertion[];
 }
