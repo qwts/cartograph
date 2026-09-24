@@ -444,8 +444,7 @@ fn repo_modules(root: &Path) -> Result<Vec<(String, Option<String>)>, ExtractErr
             .rsplit_once('/')
             .map(|(dir, _)| dir.to_string())
             .unwrap_or_default();
-        for line in raw.lines() {
-            let line = line.trim();
+        for line in raw.lines().map(directive) {
             if let Some(module) = line.strip_prefix("module ") {
                 out.push((
                     module.trim().trim_matches('"').to_string(),
@@ -485,9 +484,15 @@ fn classify_import(
                 .is_some_and(|suffix| suffix.starts_with('/'))
     };
     if let Some((module, dir)) = modules.iter().find(|(module, _)| beneath(module)) {
-        let package_dir = dir.as_ref().map(|dir| {
+        // Only plain path elements are probed: an import path spelling
+        // `..`, `.`, or an absolute component never leaves the repository
+        // and proves no package directory (it stays a Gap).
+        let package_dir = dir.as_ref().and_then(|dir| {
             let suffix = import_path[module.len()..].trim_start_matches('/');
-            root.join(dir).join(suffix)
+            Path::new(suffix)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+                .then(|| root.join(dir).join(suffix))
         });
         let has_go_source = package_dir
             .and_then(|dir| std::fs::read_dir(dir).ok())
@@ -787,6 +792,12 @@ fn has_platform_suffix(name: &str) -> bool {
     GOOS.contains(&last) || GOARCH.contains(&last)
 }
 
+/// One `go.mod` line without its trailing `//` comment (module paths never
+/// contain `//`), trimmed.
+fn directive(line: &str) -> &str {
+    line.split("//").next().unwrap_or(line).trim()
+}
+
 fn module_path(root: &Path) -> Result<Option<String>, ExtractError> {
     let path = root.join("go.mod");
     let raw = match std::fs::read_to_string(path) {
@@ -795,9 +806,9 @@ fn module_path(root: &Path) -> Result<Option<String>, ExtractError> {
         Err(error) => return Err(error.into()),
     };
     Ok(raw.lines().find_map(|line| {
-        line.trim()
+        directive(line)
             .strip_prefix("module ")
-            .map(str::trim)
+            .map(|module| module.trim().trim_matches('"'))
             .filter(|module| !module.is_empty())
             .map(str::to_string)
     }))

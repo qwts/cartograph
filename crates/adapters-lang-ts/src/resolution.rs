@@ -37,6 +37,10 @@ struct TsconfigScope {
     paths_span: (u64, u64),
     /// Declaring span of `"compilerOptions"` (baseUrl-only resolutions).
     span: (u64, u64),
+    /// Whether the config `extends` another: inherited `paths`/`baseUrl`
+    /// are not loaded, so no bare specifier it governs can be proven
+    /// external by the alias checks alone (#237 review, fail closed).
+    extends: bool,
 }
 
 /// One workspace package: a `package.json` with a `name`, resolvable
@@ -183,6 +187,7 @@ impl ResolutionIndex {
                     paths,
                     paths_span: facts.paths_span,
                     span: facts.span,
+                    extends: facts.settings.contains_key("extends"),
                 });
             } else if name == "package.json" {
                 let Ok(text) = std::fs::read_to_string(&path) else {
@@ -609,7 +614,10 @@ pub(crate) fn classify_bare_import(
     if ["", "src"].into_iter().any(under) {
         return unresolved("bare specifier matching a repository source directory");
     }
-    if NODE_BUILTINS.contains(&first) {
+    // An inherited alias could name this specifier, and inherited configs
+    // are not loaded: only a manifest-declared dependency stays provable.
+    let inherits_aliases = scope.is_some_and(|scope| scope.extends);
+    if NODE_BUILTINS.contains(&first) && !inherits_aliases {
         return Boundary::External {
             reason: format!("Node.js built-in module {first}"),
             evidence: vec![],
@@ -633,6 +641,9 @@ pub(crate) fn classify_bare_import(
                 }],
             }
         }
+        None if inherits_aliases => unresolved(
+            "bare specifier under a tsconfig that extends another (inherited aliases not loaded)",
+        ),
         None => Boundary::External {
             reason: format!("package {name} not provided by this repository"),
             evidence: vec![],

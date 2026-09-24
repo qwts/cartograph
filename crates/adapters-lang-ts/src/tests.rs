@@ -2811,3 +2811,81 @@ fn bare_import_targets_carry_provenance_and_only_proven_externals_confirm() {
         );
     }
 }
+
+#[test]
+fn an_extending_tsconfig_never_confirms_an_undeclared_bare_specifier() {
+    // AC-0207 (#237 review): inherited `paths`/`baseUrl` are not loaded, so
+    // under a tsconfig that `extends` another, an inherited alias such as
+    // `@app/foo` stays an explicit Gap; a manifest-declared dependency is
+    // still proven external by its declaration.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "package.json",
+        r#"{ "name": "app", "dependencies": { "react": "^18.0.0" } }"#,
+    );
+    write(
+        "tsconfig.base.json",
+        r#"{ "compilerOptions": { "paths": { "@app/*": ["lib/*"] } } }"#,
+    );
+    write("tsconfig.json", r#"{ "extends": "./tsconfig.base.json" }"#);
+    write(
+        "src/main.ts",
+        "import React from 'react';\nimport { foo } from '@app/foo';\nimport fs from 'fs';\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let boundary = |id: &str| {
+        let node = out
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap_or_else(|| panic!("missing node {id}"));
+        let prov: Provenance = serde_json::from_value(node.props["prov"].clone()).unwrap();
+        (
+            node.props["boundary"].as_str().unwrap().to_string(),
+            prov.confidence_tier,
+        )
+    };
+    assert_eq!(boundary("mod:react"), ("external".into(), Confirmed));
+    assert_eq!(boundary("mod:@app/foo"), ("unresolved".into(), Gap));
+    assert_eq!(boundary("mod:fs"), ("unresolved".into(), Gap));
+}
+
+#[test]
+fn an_asset_import_escaping_the_repository_is_never_internal() {
+    // AC-0207 (#237 review): `../../outside.css` from `src/main.ts` climbs
+    // above the root; the clamped id names an in-repo `outside.css` that
+    // happens to exist, which proves nothing about the imported file.
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("outside.css", "body {}\n");
+    write(
+        "src/main.ts",
+        "import '../../outside.css';\nimport '../outside.css';\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let edges: Vec<_> = out
+        .edges
+        .iter()
+        .filter(|edge| edge.label == "IMPORTS")
+        .collect();
+    assert_eq!(edges.len(), 2);
+    let node = out
+        .nodes
+        .iter()
+        .find(|node| node.id == "file:qwtm/example@outside.css")
+        .unwrap();
+    // Both specifiers clamp to the same id; the escaping one keeps it a Gap.
+    assert_eq!(node.props["boundary"], "unresolved");
+    let prov: Provenance = serde_json::from_value(node.props["prov"].clone()).unwrap();
+    assert_eq!(prov.confidence_tier, core_prov::ConfidenceTier::Gap);
+}

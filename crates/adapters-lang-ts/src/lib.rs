@@ -789,6 +789,25 @@ fn resolve_relative(from: &str, spec: &str) -> Option<String> {
     Some(s)
 }
 
+/// Whether relative `spec` imported from `from` climbs above the repository
+/// root. [`resolve_relative`] clamps such a path at the root, so the `file:`
+/// id it yields names a different in-repo path: never proof of that file.
+fn escapes_root(from: &str, spec: &str) -> bool {
+    let dir = Path::new(from).parent().unwrap_or(Path::new(""));
+    let mut depth = 0usize;
+    for comp in dir.join(spec).components() {
+        match comp {
+            Component::ParentDir => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return true,
+            },
+            Component::CurDir => {}
+            _ => depth += 1,
+        }
+    }
+    false
+}
+
 /// Non-source files a bundler or loader lets JS/TS import (#237). A
 /// relative import spelling one of these names that file exactly — never
 /// the extensionless `.ts` guess, which would mint a phantom `x.css.ts`.
@@ -2977,7 +2996,15 @@ fn complete_directory(
         // image, JSON) is the repository's own when that file exists.
         if let Some(path) = endpoint.strip_prefix(&file_prefix) {
             let asset = ASSET_EXTENSIONS.iter().any(|ext| path.ends_with(ext));
-            return (asset && root.join(path).is_file()).then(|| {
+            let escapes = match (
+                edge.src.strip_prefix(&file_prefix),
+                edge.props["specifier"].as_str(),
+            ) {
+                (Some(importer), Some(spec)) => escapes_root(importer, spec),
+                // Without the spelled specifier the path is unproven.
+                _ => true,
+            };
+            return (asset && !escapes && root.join(path).is_file()).then(|| {
                 core_graph::placeholder::Boundary::Internal {
                     reason: "non-source file in this repository (not parsed at T0)".into(),
                     evidence: vec![],

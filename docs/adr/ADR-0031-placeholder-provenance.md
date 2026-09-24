@@ -27,14 +27,18 @@ and broke R-INT-2: a fact without provenance could not show why it was there.
    classifies its own import targets against the whole tree it walked:
    - `external` (Confirmed): the repository provably cannot provide the target.
      - JVM: no Java or Kotlin source declares the package, lies beneath it, or
-       sits inside a package that encloses it.
+       sits inside a package that encloses it. The header scan skips
+       multiline file annotations; if any header cannot be parsed, no
+       import is proven external.
      - Go, in module mode: a standard-library path, or a module outside every
        repository `go.mod` and local `replace`.
      - Python: no repository directory or module has the same top-level name.
      - JS/TS: a bare specifier that matches no tsconfig alias or `baseUrl` path,
        workspace package, `#` subpath import, or repository source directory,
        and that names a valid npm package. When a `package.json` declares the
-       package, its declaration is cited too.
+       package, its declaration is cited too. Inherited tsconfig settings are
+       not loaded, so under a tsconfig that `extends` another only a
+       manifest-declared dependency is proven external.
    - `internal` (Confirmed): the repository declares this package but no single
      file declares the target. Examples: a JVM package, a Go package directory,
      a workspace package cited by its manifest, or an existing non-source file
@@ -42,10 +46,17 @@ and broke R-INT-2: a fact without provenance could not show why it was there.
    - `unresolved` (Gap): everything else. This covers in-system imports with no
      unique declaration, relative misses, symbols, resources, Go without a
      `go.mod`, and any case the adapter cannot decide.
-   A Confirmed boundary without citable evidence fails closed to a Gap.
-3. **Graph-contract changes.** JVM `IMPORTS` edges to a type (or a member or
-   nested type) that the repository declares exactly once now point to the
-   declaring `file:` node, matching resolved TS relative imports. A relative
+   A Confirmed boundary without citable evidence fails closed to a Gap. A
+   placeholder named by several references is classified from all of them:
+   one unresolved reference keeps it a Gap, and references that disagree on
+   the boundary kind prove neither. A relative asset import that climbs
+   above the repository root, and a Go import path with `..` or `.`
+   elements, prove nothing and stay Gaps.
+3. **Graph-contract changes.** JVM `IMPORTS` edges whose complete target (a
+   type, a nested type, a Kotlin top-level function, or a member whose
+   `Symbol` the declaring type defines) the repository declares exactly once
+   now point to the declaring `file:` node, matching resolved TS relative
+   imports. A prefix alone never retargets: `a.Foo.Missing` stays a Gap. A relative
    JS/TS import of a non-source asset keeps its real path (`file:…/x.css`)
    instead of the extensionless `.ts` guess (`x.css.ts`). Other ids and labels
    do not change: external targets stay `Module` nodes with `mod:` ids.
@@ -57,11 +68,12 @@ and broke R-INT-2: a fact without provenance could not show why it was there.
 
 - Before/after gap findings (T0 adapters, store semantics). spring-petclinic
   drops from 206 to 0, with 195 Confirmed external modules and 11 in-repo
-  imports resolved to files. excalidraw drops from 13,517 to 13,128. What
+  imports resolved to files. excalidraw drops from 13,517 to 13,156. What
   remains is 13,020 existing Gap nodes, which this ADR leaves unchanged, plus
-  108 unresolved in-repo symbols and module paths. On VSCode, placeholder
-  gaps drop from 1,920 to 1,066 (the ~72k in #237 predates other fixes), and
-  855 placeholders become Confirmed boundaries. The external classification also removes most of the input
+  136 unresolved in-repo symbols, module paths, and bare imports under an
+  extending tsconfig. On VSCode, placeholder
+  gaps drop from 1,920 to 1,128 (the ~72k in #237 predates other fixes), and
+  793 placeholders become Confirmed boundaries. The external classification also removes most of the input
   that inflates #240 and #244.
 - "External" means "outside the recovered tree". The classifiers read the
   same `.gitignore`-aware walk as the extractors (ADR-0030). A package that

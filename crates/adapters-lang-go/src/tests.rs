@@ -326,3 +326,39 @@ fn without_go_mod_no_import_is_proven_external() {
         ("unresolved".into(), core_prov::ConfidenceTier::Gap)
     );
 }
+
+#[test]
+fn go_mod_comments_and_dot_segments_never_confirm_a_boundary() {
+    // AC-0207 (#237 review): a trailing comment on the `module` directive is
+    // not part of the path, so in-module imports never read as external; and
+    // an import path spelling `..` probes nothing outside the repository.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("go.mod"),
+        "module example.com/svc // service root\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("pkg/store")).unwrap();
+    std::fs::write(dir.path().join("pkg/store/store.go"), "package store\n").unwrap();
+    std::fs::write(
+        dir.path().join("main.go"),
+        "package main\n\nimport (\n\t\"example.com/svc/pkg/store\"\n\t\"example.com/svc/pkg/gone\"\n\t\"example.com/svc/../svc/pkg/store\"\n)\n",
+    )
+    .unwrap();
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    assert!(
+        out.nodes
+            .iter()
+            .all(|node| node.id != "mod:example.com/svc/pkg/store"
+                || boundary_of(&out, &node.id) == ("internal".into(), Confirmed))
+    );
+    assert_eq!(
+        boundary_of(&out, "mod:example.com/svc/pkg/gone"),
+        ("unresolved".into(), Gap)
+    );
+    assert_eq!(
+        boundary_of(&out, "mod:example.com/svc/../svc/pkg/store"),
+        ("unresolved".into(), Gap)
+    );
+}

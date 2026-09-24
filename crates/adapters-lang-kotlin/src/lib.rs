@@ -10,7 +10,7 @@
 //! anything it cannot prove is simply not asserted. This tier never calls an
 //! LLM and every emitted fact carries exact source-span provenance.
 
-use adapters_lang_java::jvm::{classify_import, dotted_prefixes, foreign_packages, in_system};
+use adapters_lang_java::jvm::{classify_import, foreign_packages, in_system};
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -588,14 +588,17 @@ fn extension_receiver(cx: &FileCx<'_>, function: TsNode<'_>, name: TsNode<'_>) -
     None
 }
 
-/// Retarget each `IMPORTS` edge whose type, object, or top-level function
-/// (or a member of it) this repository declares exactly once to the
-/// declaring `File` (#237). Ambiguous or undeclared targets keep their
-/// `mod:` id and are classified by [`classify_import`].
+/// Retarget each `IMPORTS` edge whose complete target this repository
+/// declares exactly once — a type, a top-level function, or a member whose
+/// `Symbol` the declaring type defines — to the declaring `File`. A prefix
+/// alone never proves it (`a.Foo.missing` is not `a.Foo`): unproven targets
+/// keep their `mod:` id and are classified by [`classify_import`].
 fn resolve_repo_imports(
     edges: &mut [Edge],
     repo: &str,
-    declared: &[&BTreeMap<String, Option<Declared>>],
+    types: &BTreeMap<String, Option<Declared>>,
+    functions: &BTreeMap<String, Option<Declared>>,
+    known_symbols: &HashSet<String>,
 ) {
     for edge in edges {
         if edge.label != "IMPORTS" {
@@ -604,9 +607,21 @@ fn resolve_repo_imports(
         let Some(module) = edge.dst.strip_prefix("mod:") else {
             continue;
         };
-        let unique = dotted_prefixes(module)
-            .find_map(|prefix| declared.iter().find_map(|index| index.get(prefix)))
+        let exact = types
+            .get(module)
+            .or_else(|| functions.get(module))
             .and_then(Option::as_ref);
+        let unique = exact.or_else(|| {
+            let (owner, member) = module.rsplit_once('.')?;
+            let owner = types.get(owner)?.as_ref()?;
+            known_symbols
+                .contains(&symbol_id(
+                    repo,
+                    &owner.path,
+                    &format!("{}.{member}", owner.qualified),
+                ))
+                .then_some(owner)
+        });
         if let Some(unique) = unique {
             edge.dst = file_id(repo, &unique.path);
             edge.props["resolution"] = "import-proven".into();
@@ -1212,7 +1227,8 @@ pub fn extract_dir_incremental_with_progress(
     // Every package this repository declares — Java sources included, so a
     // mixed JVM tree never mistakes its own Java package for external.
     let mut repo_packages: BTreeSet<String> = out.packages.iter().cloned().collect();
-    repo_packages.extend(foreign_packages(root, &["java"])?);
+    let foreign = foreign_packages(root, &["java"])?;
+    repo_packages.extend(foreign.packages);
     let known = out
         .nodes
         .iter()
@@ -1252,7 +1268,13 @@ pub fn extract_dir_incremental_with_progress(
             }
         }
     }
-    resolve_repo_imports(&mut out.edges, id.repo, &[&types_by_fqn, &functions_by_fqn]);
+    resolve_repo_imports(
+        &mut out.edges,
+        id.repo,
+        &types_by_fqn,
+        &functions_by_fqn,
+        &known,
+    );
     let Extraction { nodes, edges, .. } = &mut out;
     core_graph::placeholder::close_over_endpoints(
         nodes,
@@ -1261,7 +1283,7 @@ pub fn extract_dir_incremental_with_progress(
         core_graph::placeholder::label_for_id,
         |endpoint, _| {
             let module = endpoint.strip_prefix("mod:")?;
-            Some(classify_import(module, &repo_packages))
+            Some(classify_import(module, &repo_packages, foreign.complete))
         },
     );
     Ok((out, stats))

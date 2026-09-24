@@ -18,7 +18,7 @@ use tree_sitter::{Node as TsNode, Parser, Query, QueryCursor};
 
 pub mod jvm;
 
-use jvm::{classify_import, dotted_prefixes, foreign_packages, in_system};
+use jvm::{classify_import, foreign_packages, in_system};
 
 const EXTRACTOR_ID: &str = "t0.adapter-java";
 
@@ -461,14 +461,18 @@ fn join_route(base: &str, tail: &str) -> String {
     }
 }
 
-/// Retarget each `IMPORTS` edge whose type (or a member/nested type of it)
-/// this repository declares exactly once to the declaring `File` — the same
-/// shape as a resolved TS relative import. Ambiguous or undeclared targets
-/// keep their `mod:` id and are classified by [`classify_import`].
+/// Retarget each `IMPORTS` edge whose complete target this repository
+/// declares exactly once to the declaring `File` — the same shape as a
+/// resolved TS relative import. The target is proven when it is a declared
+/// type (nested types included), or a member whose `Symbol` the declaring
+/// type defines. A prefix alone never proves it (`a.Foo.Missing` is not
+/// `a.Foo`): unproven targets keep their `mod:` id and are classified by
+/// [`classify_import`].
 fn resolve_repo_imports(
     edges: &mut [Edge],
     repo: &str,
     types_by_fqn: &BTreeMap<&str, Option<&DeclaredType>>,
+    known_symbols: &HashSet<String>,
 ) {
     for edge in edges {
         if edge.label != "IMPORTS" {
@@ -477,10 +481,17 @@ fn resolve_repo_imports(
         let Some(module) = edge.dst.strip_prefix("mod:") else {
             continue;
         };
-        let declared = dotted_prefixes(module)
-            .find_map(|prefix| types_by_fqn.get(prefix))
-            .copied()
-            .flatten();
+        let declared = types_by_fqn.get(module).copied().flatten().or_else(|| {
+            let (owner, member) = module.rsplit_once('.')?;
+            let owner = types_by_fqn.get(owner).copied().flatten()?;
+            known_symbols
+                .contains(&symbol_id(
+                    repo,
+                    &owner.path,
+                    &format!("{}.{member}", owner.qualified),
+                ))
+                .then_some(owner)
+        });
         if let Some(declared) = declared {
             edge.dst = file_id(repo, &declared.path);
             edge.props["resolution"] = "import-proven".into();
@@ -1019,7 +1030,8 @@ pub fn extract_dir_incremental_with_progress(
     // Every package this repository declares — Kotlin sources included, so
     // a mixed JVM tree never mistakes its own Kotlin package for external.
     let mut repo_packages: BTreeSet<String> = out.packages.iter().cloned().collect();
-    repo_packages.extend(foreign_packages(root, &["kt", "kts"])?);
+    let foreign = foreign_packages(root, &["kt", "kts"])?;
+    repo_packages.extend(foreign.packages);
     let known = out
         .nodes
         .iter()
@@ -1054,7 +1066,7 @@ pub fn extract_dir_incremental_with_progress(
             }
         }
     }
-    resolve_repo_imports(&mut out.edges, id.repo, &types_by_fqn);
+    resolve_repo_imports(&mut out.edges, id.repo, &types_by_fqn, &known);
     let Extraction { nodes, edges, .. } = &mut out;
     core_graph::placeholder::close_over_endpoints(
         nodes,
@@ -1063,7 +1075,7 @@ pub fn extract_dir_incremental_with_progress(
         core_graph::placeholder::label_for_id,
         |endpoint, _| {
             let module = endpoint.strip_prefix("mod:")?;
-            Some(classify_import(module, &repo_packages))
+            Some(classify_import(module, &repo_packages, foreign.complete))
         },
     );
     Ok((out, stats))

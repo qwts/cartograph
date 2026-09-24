@@ -764,3 +764,78 @@ public class App {}
         prov_of(node).validate().unwrap();
     }
 }
+
+#[test]
+fn foreign_headers_the_scan_cannot_read_never_confirm_externals() {
+    // AC-0207 (#237 review): a multiline Kotlin file annotation does not
+    // hide its package, and a header the scan cannot parse leaves every
+    // undeclared import an explicit Gap rather than Confirmed external.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/main/java/com/demo/App.java",
+        "package com.demo;\n\nimport com.other.kt.Widget;\nimport jakarta.persistence.Entity;\n\npublic class App {}\n",
+    );
+    write(
+        dir.path(),
+        "src/main/kotlin/com/other/kt/Widget.kt",
+        "@file:JvmName(\n    \"Widgets\"\n)\n\npackage com.other.kt\n\nclass Widget\n",
+    );
+    let boundary = |out: &Extraction, id: &str| {
+        let node = node(&out.nodes, id);
+        (
+            node.props["boundary"].as_str().unwrap().to_string(),
+            prov_of(node).confidence_tier,
+        )
+    };
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    assert_eq!(
+        boundary(&out, "mod:com.other.kt.Widget"),
+        ("unresolved".into(), ConfidenceTier::Gap)
+    );
+    assert_eq!(
+        boundary(&out, "mod:jakarta.persistence.Entity"),
+        ("external".into(), ConfidenceTier::Confirmed)
+    );
+
+    write(
+        dir.path(),
+        "src/main/kotlin/com/other/Broken.kt",
+        "@file:JvmName(\n    \"never closed\"\n\npackage com.hidden\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    assert_eq!(
+        boundary(&out, "mod:jakarta.persistence.Entity"),
+        ("unresolved".into(), ConfidenceTier::Gap)
+    );
+}
+
+#[test]
+fn only_a_complete_import_target_retargets_to_its_file() {
+    // AC-0207 (#237 review): `a.Store.Missing` is not proven by `a.Store`;
+    // a declared member is. An unproven member import stays a Gap.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/a/App.java",
+        "package a;\n\nimport static a.Store.save;\nimport static a.Store.missing;\nimport a.Store.Missing;\n\npublic class App {}\n",
+    );
+    write(
+        dir.path(),
+        "src/a/Store.java",
+        "package a;\n\npublic class Store {\n    public static void save() {}\n}\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let store = "file:local/demo@src/a/Store.java";
+    let into_store = out
+        .edges
+        .iter()
+        .filter(|edge| edge.label == "IMPORTS" && edge.dst == store)
+        .count();
+    assert_eq!(into_store, 1, "only the declared member retargets");
+    for unproven in ["mod:a.Store.missing", "mod:a.Store.Missing"] {
+        let node = node(&out.nodes, unproven);
+        assert_eq!(node.props["boundary"], "unresolved", "{unproven}");
+        assert_eq!(prov_of(node).confidence_tier, ConfidenceTier::Gap);
+    }
+}

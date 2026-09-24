@@ -160,9 +160,12 @@ pub fn placeholder_node(
 }
 
 /// Ensure every edge endpoint exists as a node. Each missing endpoint
-/// becomes one placeholder, labeled by `label_of`, classified by `classify`
-/// from its first referencing edge (`None` = [`Boundary::Unresolved`] with
-/// [`unresolved_reason`]), and cited with that edge's evidence.
+/// becomes one placeholder, labeled by `label_of` and cited with the
+/// evidence of its first referencing edge. `classify` judges it from *every*
+/// referencing edge (`None` = [`Boundary::Unresolved`] with
+/// [`unresolved_reason`]): one unresolved reference keeps it a Gap, and
+/// references that disagree on the boundary kind prove neither — so edge
+/// order never lets one proof complete another reference's unresolved hop.
 pub fn close_over_endpoints(
     nodes: &mut Vec<Node>,
     edges: &[Edge],
@@ -170,26 +173,50 @@ pub fn close_over_endpoints(
     label_of: impl Fn(&str) -> &'static str,
     mut classify: impl FnMut(&str, &Edge) -> Option<Boundary>,
 ) {
-    let mut known: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
-    let mut placeholders = Vec::new();
+    let known: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
+    let mut order: Vec<&str> = Vec::new();
+    let mut pending: std::collections::HashMap<&str, (&Edge, Boundary)> =
+        std::collections::HashMap::new();
     for edge in edges {
-        for id in [&edge.src, &edge.dst] {
-            if !known.insert(id.as_str()) {
+        for id in [edge.src.as_str(), edge.dst.as_str()] {
+            if known.contains(id) {
                 continue;
             }
             let boundary = classify(id, edge).unwrap_or_else(|| Boundary::Unresolved {
                 reason: unresolved_reason(edge),
             });
-            placeholders.push(placeholder_node(
-                id,
-                label_of(id),
-                edge,
-                boundary,
-                fallback_extractor,
-            ));
+            match pending.get_mut(id) {
+                None => {
+                    order.push(id);
+                    pending.insert(id, (edge, boundary));
+                }
+                Some((first, held)) => match (&*held, &boundary) {
+                    (Boundary::Unresolved { .. }, _) => {}
+                    (_, Boundary::Unresolved { .. }) => {
+                        // Cite the reference that did not resolve.
+                        *first = edge;
+                        *held = boundary;
+                    }
+                    (held_kind, _) if held_kind.kind() != boundary.kind() => {
+                        *held = Boundary::Unresolved {
+                            reason: "references disagree on the boundary".into(),
+                        };
+                    }
+                    _ => {}
+                },
+            }
         }
     }
-    nodes.extend(placeholders);
+    for id in order {
+        let (edge, boundary) = pending.remove(id).expect("recorded above");
+        nodes.push(placeholder_node(
+            id,
+            label_of(id),
+            edge,
+            boundary,
+            fallback_extractor,
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -287,5 +314,40 @@ mod tests {
         let module = nodes.iter().find(|node| node.id == "mod:x.Y").unwrap();
         assert_eq!(module.props["boundary"], "unresolved");
         assert_eq!(provenance(module).confidence_tier, ConfidenceTier::Gap);
+    }
+
+    #[test]
+    fn one_unresolved_reference_keeps_a_shared_endpoint_a_gap() {
+        // AC-0207 (#237 review): a later unresolved reference is never
+        // completed by an earlier proof, whatever the edge order.
+        let mut late = import_edge("mod:foo", vec![span()]);
+        late.src = "file:r@nested/b.ts".into();
+        for edges in [
+            vec![import_edge("mod:foo", vec![span()]), late.clone()],
+            vec![late.clone(), import_edge("mod:foo", vec![span()])],
+        ] {
+            let mut nodes = Vec::new();
+            close_over_endpoints(&mut nodes, &edges, "t0.test", label_for_id, |id, edge| {
+                (id == "mod:foo").then(|| {
+                    if edge.src.contains("nested") {
+                        Boundary::Unresolved {
+                            reason: "tsconfig paths alias with no proven file".into(),
+                        }
+                    } else {
+                        Boundary::External {
+                            reason: "package foo not provided by this repository".into(),
+                            evidence: vec![],
+                        }
+                    }
+                })
+            });
+            let module = nodes.iter().find(|node| node.id == "mod:foo").unwrap();
+            assert_eq!(module.props["boundary"], "unresolved");
+            assert_eq!(
+                module.props["reason"],
+                "tsconfig paths alias with no proven file"
+            );
+            assert_eq!(provenance(module).confidence_tier, ConfidenceTier::Gap);
+        }
     }
 }
