@@ -87,23 +87,32 @@ pub fn workers() -> usize {
         .unwrap_or_else(|| parallelism().workers())
 }
 
+/// Auto's worker ceiling where physical memory cannot be read (Windows
+/// today, #472): conservative, since the 2 GiB-per-worker cap is unknowable.
+pub const UNKNOWN_MEMORY_AUTO_CAP: usize = 4;
+
 /// `Auto`: one worker per performance (non-efficiency) core, leaving one for
 /// the UI and the merge (`max(1, P-cores − 1)`), and at most one worker per 2 GiB of
 /// physical memory so a large ingest degrades to fewer workers rather than
-/// swapping. The memory cap applies where physical memory is known (macOS,
-/// Linux); elsewhere only the core count bounds Auto. Computed once per
-/// process.
+/// swapping. Where physical memory is not reported (Windows), Auto is capped
+/// at [`UNKNOWN_MEMORY_AUTO_CAP`] instead. Computed once per process.
 #[must_use]
 pub fn auto_workers() -> usize {
     static AUTO: OnceLock<usize> = OnceLock::new();
-    *AUTO.get_or_init(|| {
-        let cores = performance_cores().saturating_sub(1).max(1);
-        let memory_cap = physical_memory_bytes()
-            .map(|bytes| usize::try_from(bytes / (2 << 30)).unwrap_or(usize::MAX))
-            .unwrap_or(usize::MAX)
-            .max(1);
-        cores.min(memory_cap).min(MAX_WORKERS)
-    })
+    *AUTO.get_or_init(|| resolve_auto(performance_cores(), physical_memory_bytes()))
+}
+
+/// [`auto_workers`] for a machine with `performance_cores` and, when known,
+/// `physical_memory` bytes.
+#[must_use]
+pub fn resolve_auto(performance_cores: usize, physical_memory: Option<u64>) -> usize {
+    let cores = performance_cores.saturating_sub(1).max(1);
+    let memory_cap = physical_memory
+        .map_or(UNKNOWN_MEMORY_AUTO_CAP, |bytes| {
+            usize::try_from(bytes / (2 << 30)).unwrap_or(usize::MAX)
+        })
+        .max(1);
+    cores.min(memory_cap).min(MAX_WORKERS)
 }
 
 /// Cores outside the efficiency cluster where the platform reports clusters
