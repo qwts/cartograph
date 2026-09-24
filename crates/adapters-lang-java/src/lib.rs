@@ -16,6 +16,10 @@ use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node as TsNode, Parser, Query, QueryCursor};
 
+pub mod jvm;
+
+use jvm::{classify_import, dotted_prefixes, foreign_packages, in_system};
+
 const EXTRACTOR_ID: &str = "t0.adapter-java";
 
 /// Java extraction errors.
@@ -49,6 +53,8 @@ pub struct Extraction {
     pub edges: Vec<Edge>,
     pending_calls: Vec<PendingCall>,
     declared_types: Vec<DeclaredType>,
+    /// Package declarations, one per file that has one.
+    packages: Vec<String>,
 }
 
 /// A call to an imported type, resolvable only with the whole directory in
@@ -455,35 +461,31 @@ fn join_route(base: &str, tail: &str) -> String {
     }
 }
 
-fn close_over_placeholders(extraction: &mut Extraction) {
-    let mut known = extraction
-        .nodes
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<HashSet<_>>();
-    let mut placeholders = Vec::new();
-    for edge in &extraction.edges {
-        for id in [&edge.src, &edge.dst] {
-            if known.contains(id) {
-                continue;
-            }
-            let label = match id.split(':').next() {
-                Some("file") => "File",
-                Some("sym") => "Symbol",
-                Some("mod") => "Module",
-                Some("ep") => "Endpoint",
-                Some("gap") => "Gap",
-                _ => "Unknown",
-            };
-            placeholders.push(Node {
-                id: id.clone(),
-                label: label.into(),
-                props: serde_json::json!({"placeholder": true}),
-            });
-            known.insert(id.clone());
+/// Retarget each `IMPORTS` edge whose type (or a member/nested type of it)
+/// this repository declares exactly once to the declaring `File` — the same
+/// shape as a resolved TS relative import. Ambiguous or undeclared targets
+/// keep their `mod:` id and are classified by [`classify_import`].
+fn resolve_repo_imports(
+    edges: &mut [Edge],
+    repo: &str,
+    types_by_fqn: &BTreeMap<&str, Option<&DeclaredType>>,
+) {
+    for edge in edges {
+        if edge.label != "IMPORTS" {
+            continue;
+        }
+        let Some(module) = edge.dst.strip_prefix("mod:") else {
+            continue;
+        };
+        let declared = dotted_prefixes(module)
+            .find_map(|prefix| types_by_fqn.get(prefix))
+            .copied()
+            .flatten();
+        if let Some(declared) = declared {
+            edge.dst = file_id(repo, &declared.path);
+            edge.props["resolution"] = "import-proven".into();
         }
     }
-    extraction.nodes.extend(placeholders);
 }
 
 /// Recover deterministic facts from one Java source file.
@@ -525,6 +527,7 @@ pub fn extract_source(
         }
         package
     };
+    out.packages.extend(package.clone());
     let imports = parse_imports(&cx, root, &language, &mut out);
 
     // Types: classes, interfaces, enums, records — nested chains included.
@@ -993,6 +996,7 @@ pub fn extract_dir_incremental_with_progress(
             out.edges.extend(extraction.edges);
             out.pending_calls.extend(extraction.pending_calls);
             out.declared_types.extend(extraction.declared_types);
+            out.packages.extend(extraction.packages);
             Ok(())
         },
     );
@@ -1001,9 +1005,10 @@ pub fn extract_dir_incremental_with_progress(
     // Directory join: an imported FQN resolves only to a type this repo
     // declares exactly once — a duplicate FQN (the same class in two source
     // roots or modules) is ambiguous and fails closed to a Gap instead of
-    // silently picking whichever file sorts last (#170 review). A
+    // silently picking whichever file sorts last (#170 review). A call on a
     // declared-package import that cannot be proven is an explicit Gap; a
-    // foreign package is outside T0 scope and asserts nothing.
+    // call on a foreign package asserts nothing, while the import itself
+    // closes over a proven external boundary (#237, `jvm::classify_import`).
     let mut types_by_fqn: BTreeMap<&str, Option<&DeclaredType>> = BTreeMap::new();
     for declared in &out.declared_types {
         types_by_fqn
@@ -1011,11 +1016,10 @@ pub fn extract_dir_incremental_with_progress(
             .and_modify(|unique| *unique = None)
             .or_insert(Some(declared));
     }
-    let repo_packages: BTreeSet<&str> = out
-        .declared_types
-        .iter()
-        .filter_map(|declared| declared.fqn.rsplit_once('.').map(|(package, _)| package))
-        .collect();
+    // Every package this repository declares — Kotlin sources included, so
+    // a mixed JVM tree never mistakes its own Kotlin package for external.
+    let mut repo_packages: BTreeSet<String> = out.packages.iter().cloned().collect();
+    repo_packages.extend(foreign_packages(root, &["kt", "kts"])?);
     let known = out
         .nodes
         .iter()
@@ -1042,8 +1046,7 @@ pub fn extract_dir_incremental_with_progress(
                 props: pending.resolved_props,
             }),
             _ => {
-                let package = pending.fqn.rsplit_once('.').map(|(package, _)| package);
-                if package.is_some_and(|package| repo_packages.contains(package)) {
+                if in_system(&pending.fqn, &repo_packages) {
                     let (node, edge) = pending.gap;
                     out.nodes.push(node);
                     out.edges.push(edge);
@@ -1051,7 +1054,18 @@ pub fn extract_dir_incremental_with_progress(
             }
         }
     }
-    close_over_placeholders(&mut out);
+    resolve_repo_imports(&mut out.edges, id.repo, &types_by_fqn);
+    let Extraction { nodes, edges, .. } = &mut out;
+    core_graph::placeholder::close_over_endpoints(
+        nodes,
+        edges,
+        EXTRACTOR_ID,
+        core_graph::placeholder::label_for_id,
+        |endpoint, _| {
+            let module = endpoint.strip_prefix("mod:")?;
+            Some(classify_import(module, &repo_packages))
+        },
+    );
     Ok((out, stats))
 }
 

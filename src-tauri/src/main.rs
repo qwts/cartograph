@@ -1175,11 +1175,13 @@ fn extract_tree_with_primary(
         };
         // Config files an adapter already owns (a `.ts`-authored vite
         // config, a webext manifest) keep the adapter's richer File node;
-        // the DEFINED_IN edge targets the same id either way.
+        // the DEFINED_IN edge targets the same id either way. An import
+        // placeholder (an imported `package.json`, #237) owns nothing: the
+        // parsed config's File node supersedes it (last occurrence wins).
         let known_files: std::collections::BTreeSet<String> = extraction
             .nodes
             .iter()
-            .filter(|node| node.label == "File")
+            .filter(|node| node.label == "File" && node.props.get("placeholder").is_none())
             .map(|node| node.id.clone())
             .collect();
         extraction.nodes.extend(

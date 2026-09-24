@@ -43,6 +43,7 @@ dependencies = [
 name = "adapters-lang-kotlin"
 version = "0.14.4"
 dependencies = [
+ "adapters-lang-java",
  "core-graph",
  "core-prov",
  "serde_json",

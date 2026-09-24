@@ -204,3 +204,35 @@ fn gitignored_trees_are_not_collected() {
     collect_python_files(dir.path(), &mut files).unwrap();
     assert_eq!(files, ["app/main.py"]);
 }
+
+#[test]
+fn import_targets_carry_provenance_and_only_proven_externals_confirm() {
+    // AC-0207 (#237): an absolute import is external only when no directory
+    // or module anywhere in the repository shares its top-level name.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/orders")).unwrap();
+    std::fs::write(dir.path().join("src/orders/__init__.py"), "").unwrap();
+    std::fs::write(
+        dir.path().join("app.py"),
+        "import requests\nimport orders.models\nfrom . import sibling\n",
+    )
+    .unwrap();
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let boundary = |id: &str| {
+        let node = out
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap_or_else(|| panic!("missing node {id}"));
+        let prov: Provenance = serde_json::from_value(node.props["prov"].clone())
+            .unwrap_or_else(|_| panic!("{id} carries no provenance"));
+        assert!(!prov.evidence.is_empty(), "{id} cites its import");
+        (
+            node.props["boundary"].as_str().unwrap().to_string(),
+            prov.confidence_tier,
+        )
+    };
+    assert_eq!(boundary("mod:requests"), ("external".into(), Confirmed));
+    assert_eq!(boundary("mod:orders.models"), ("unresolved".into(), Gap));
+}

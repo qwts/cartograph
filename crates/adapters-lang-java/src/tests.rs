@@ -133,7 +133,8 @@ public class Store {
     assert_eq!(gap.props["callee"], "Missing.run");
     edge(&out.edges, src, &gap.id, "CALLS");
 
-    // A foreign-package import asserts nothing — no edge, no extra gap.
+    // A call on a foreign-package import asserts nothing — no CALLS edge,
+    // no extra Gap (the import itself is a Confirmed external, AC-0207).
     assert_eq!(
         out.nodes.iter().filter(|node| node.label == "Gap").count(),
         1
@@ -646,4 +647,120 @@ public class V2Controller {
 "#;
     let out = extract_source(doubled, "src/V2Controller.java", &id()).unwrap();
     assert_eq!(endpoint_routes(&out), ["GET /v2/", "GET /v2/items/"]);
+}
+
+fn prov_of(node: &Node) -> Provenance {
+    serde_json::from_value(node.props["prov"].clone())
+        .unwrap_or_else(|_| panic!("{} carries no provenance", node.id))
+}
+
+#[test]
+fn import_targets_carry_provenance_and_only_proven_externals_confirm() {
+    // AC-0207 (#237): every closed-over endpoint cites the import that named
+    // it; only a package the repository provably does not declare is a
+    // Confirmed external boundary, in-repo types resolve to their File, and
+    // an in-system target that does not resolve stays an explicit Gap.
+    let dir = tempfile::tempdir().unwrap();
+    let app = r#"package com.demo;
+
+import com.demo.util.Store;
+import com.demo.util.Missing;
+import com.demo.util.*;
+import com.demo.kt.Widget;
+import com.Stray;
+import jakarta.persistence.Entity;
+import static org.junit.Assert.assertEquals;
+
+public class App {}
+"#;
+    write(dir.path(), "src/main/java/com/demo/App.java", app);
+    write(
+        dir.path(),
+        "src/main/java/com/demo/util/Store.java",
+        "package com.demo.util;\n\npublic class Store {}\n",
+    );
+    // A Kotlin package in a mixed JVM tree is the repository's own.
+    write(
+        dir.path(),
+        "src/main/kotlin/com/demo/kt/Widget.kt",
+        "/* header */\n@file:JvmName(\"W\")\npackage com.demo.kt\n\nclass Widget\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let app_file = "file:local/demo@src/main/java/com/demo/App.java";
+
+    // The in-repo type import resolves to the declaring File, Confirmed.
+    let store = edge(
+        &out.edges,
+        app_file,
+        "file:local/demo@src/main/java/com/demo/util/Store.java",
+        "IMPORTS",
+    );
+    assert_eq!(store.props["resolution"], "import-proven");
+    assert!(
+        !out.nodes
+            .iter()
+            .any(|node| node.id == "mod:com.demo.util.Store")
+    );
+
+    let expect = |id: &str, boundary: &str, confidence: ConfidenceTier, statement: &str| {
+        let node = node(&out.nodes, id);
+        assert_eq!(node.label, "Module", "{id}");
+        assert_eq!(node.props["placeholder"], true, "{id}");
+        assert_eq!(node.props["boundary"], boundary, "{id}");
+        assert!(node.props["reason"].as_str().is_some_and(|r| !r.is_empty()));
+        let prov = prov_of(node);
+        assert_eq!(prov.confidence_tier, confidence, "{id}");
+        assert_eq!(prov.extractor_id, EXTRACTOR_ID);
+        // The evidence is the exact import statement that named it.
+        let span = &prov.evidence[0];
+        assert_eq!(span.path, "src/main/java/com/demo/App.java");
+        assert_eq!(
+            &app[span.byte_start as usize..span.byte_end as usize],
+            statement,
+            "{id}"
+        );
+    };
+    expect(
+        "mod:jakarta.persistence.Entity",
+        "external",
+        ConfidenceTier::Confirmed,
+        "import jakarta.persistence.Entity;",
+    );
+    expect(
+        "mod:org.junit.Assert.assertEquals",
+        "external",
+        ConfidenceTier::Confirmed,
+        "import static org.junit.Assert.assertEquals;",
+    );
+    expect(
+        "mod:com.demo.util",
+        "internal",
+        ConfidenceTier::Confirmed,
+        "import com.demo.util.*;",
+    );
+    // Declared package, no such type: an unresolved in-system hop.
+    expect(
+        "mod:com.demo.util.Missing",
+        "unresolved",
+        ConfidenceTier::Gap,
+        "import com.demo.util.Missing;",
+    );
+    // The Kotlin-declared package is in-system, never external.
+    expect(
+        "mod:com.demo.kt.Widget",
+        "unresolved",
+        ConfidenceTier::Gap,
+        "import com.demo.kt.Widget;",
+    );
+    // An enclosing package of a declared one cannot be proven external.
+    expect(
+        "mod:com.Stray",
+        "unresolved",
+        ConfidenceTier::Gap,
+        "import com.Stray;",
+    );
+    // No fact of any kind is left without valid provenance.
+    for node in &out.nodes {
+        prov_of(node).validate().unwrap();
+    }
 }

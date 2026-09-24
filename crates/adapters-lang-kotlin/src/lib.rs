@@ -10,6 +10,7 @@
 //! anything it cannot prove is simply not asserted. This tier never calls an
 //! LLM and every emitted fact carries exact source-span provenance.
 
+use adapters_lang_java::jvm::{classify_import, dotted_prefixes, foreign_packages, in_system};
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -51,6 +52,8 @@ pub struct Extraction {
     pending_calls: Vec<PendingCall>,
     declared_types: Vec<Declared>,
     declared_functions: Vec<Declared>,
+    /// Package headers, one per file that has one.
+    packages: Vec<String>,
 }
 
 /// A call proven by an import, resolvable only with the whole directory in
@@ -585,35 +588,30 @@ fn extension_receiver(cx: &FileCx<'_>, function: TsNode<'_>, name: TsNode<'_>) -
     None
 }
 
-fn close_over_placeholders(extraction: &mut Extraction) {
-    let mut known = extraction
-        .nodes
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<HashSet<_>>();
-    let mut placeholders = Vec::new();
-    for edge in &extraction.edges {
-        for id in [&edge.src, &edge.dst] {
-            if known.contains(id) {
-                continue;
-            }
-            let label = match id.split(':').next() {
-                Some("file") => "File",
-                Some("sym") => "Symbol",
-                Some("mod") => "Module",
-                Some("ep") => "Endpoint",
-                Some("gap") => "Gap",
-                _ => "Unknown",
-            };
-            placeholders.push(Node {
-                id: id.clone(),
-                label: label.into(),
-                props: serde_json::json!({"placeholder": true}),
-            });
-            known.insert(id.clone());
+/// Retarget each `IMPORTS` edge whose type, object, or top-level function
+/// (or a member of it) this repository declares exactly once to the
+/// declaring `File` (#237). Ambiguous or undeclared targets keep their
+/// `mod:` id and are classified by [`classify_import`].
+fn resolve_repo_imports(
+    edges: &mut [Edge],
+    repo: &str,
+    declared: &[&BTreeMap<String, Option<Declared>>],
+) {
+    for edge in edges {
+        if edge.label != "IMPORTS" {
+            continue;
+        }
+        let Some(module) = edge.dst.strip_prefix("mod:") else {
+            continue;
+        };
+        let unique = dotted_prefixes(module)
+            .find_map(|prefix| declared.iter().find_map(|index| index.get(prefix)))
+            .and_then(Option::as_ref);
+        if let Some(unique) = unique {
+            edge.dst = file_id(repo, &unique.path);
+            edge.props["resolution"] = "import-proven".into();
         }
     }
-    extraction.nodes.extend(placeholders);
 }
 
 /// Recover deterministic facts from one Kotlin source file.
@@ -656,6 +654,7 @@ pub fn extract_source(
         }
         package
     };
+    out.packages.extend(package.clone());
     let imports = parse_imports(&cx, root, &language, &mut out);
 
     // Types: classes, interfaces, enums, data classes, objects — nested
@@ -1185,6 +1184,7 @@ pub fn extract_dir_incremental_with_progress(
             out.pending_calls.extend(extraction.pending_calls);
             out.declared_types.extend(extraction.declared_types);
             out.declared_functions.extend(extraction.declared_functions);
+            out.packages.extend(extraction.packages);
             Ok(())
         },
     );
@@ -1194,9 +1194,9 @@ pub fn extract_dir_incremental_with_progress(
     // repo makes exactly once — a duplicate FQN (the same class in two
     // source roots or modules) is ambiguous and fails closed to a Gap
     // instead of silently picking whichever file sorts last (the #170
-    // standard). A declared-package import that cannot be proven is an
-    // explicit Gap; a foreign package is outside T0 scope and asserts
-    // nothing.
+    // standard). A call on a declared-package import that cannot be proven
+    // is an explicit Gap; a call on a foreign package asserts nothing, while
+    // the import itself closes over a proven external boundary (#237).
     let unique_by_fqn = |declared: &[Declared]| {
         let mut by_fqn: BTreeMap<String, Option<Declared>> = BTreeMap::new();
         for item in declared {
@@ -1209,17 +1209,10 @@ pub fn extract_dir_incremental_with_progress(
     };
     let types_by_fqn = unique_by_fqn(&out.declared_types);
     let functions_by_fqn = unique_by_fqn(&out.declared_functions);
-    let repo_packages: BTreeSet<String> = out
-        .declared_types
-        .iter()
-        .chain(out.declared_functions.iter())
-        .filter_map(|declared| {
-            declared
-                .fqn
-                .rsplit_once('.')
-                .map(|(package, _)| package.to_string())
-        })
-        .collect();
+    // Every package this repository declares — Java sources included, so a
+    // mixed JVM tree never mistakes its own Java package for external.
+    let mut repo_packages: BTreeSet<String> = out.packages.iter().cloned().collect();
+    repo_packages.extend(foreign_packages(root, &["java"])?);
     let known = out
         .nodes
         .iter()
@@ -1251,8 +1244,7 @@ pub fn extract_dir_incremental_with_progress(
                 props: pending.resolved_props,
             }),
             _ => {
-                let package = pending.fqn.rsplit_once('.').map(|(package, _)| package);
-                if package.is_some_and(|package| repo_packages.contains(package)) {
+                if in_system(&pending.fqn, &repo_packages) {
                     let (node, edge) = pending.gap;
                     out.nodes.push(node);
                     out.edges.push(edge);
@@ -1260,7 +1252,18 @@ pub fn extract_dir_incremental_with_progress(
             }
         }
     }
-    close_over_placeholders(&mut out);
+    resolve_repo_imports(&mut out.edges, id.repo, &[&types_by_fqn, &functions_by_fqn]);
+    let Extraction { nodes, edges, .. } = &mut out;
+    core_graph::placeholder::close_over_endpoints(
+        nodes,
+        edges,
+        EXTRACTOR_ID,
+        core_graph::placeholder::label_for_id,
+        |endpoint, _| {
+            let module = endpoint.strip_prefix("mod:")?;
+            Some(classify_import(module, &repo_packages))
+        },
+    );
     Ok((out, stats))
 }
 

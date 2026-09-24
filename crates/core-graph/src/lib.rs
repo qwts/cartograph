@@ -7,6 +7,7 @@
 //! benchmark ever demands it.
 
 mod bounded;
+pub mod placeholder;
 pub mod rules;
 pub mod source;
 

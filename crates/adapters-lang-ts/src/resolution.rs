@@ -17,6 +17,7 @@
 //! and the graph's `Tool` facts can never disagree.
 
 use crate::{Extraction, SOURCE_EXTENSIONS, SourceId};
+use core_graph::placeholder::Boundary;
 use core_prov::{EvidenceRef, Provenance};
 use std::collections::HashSet;
 use std::path::{Component, Path};
@@ -59,6 +60,23 @@ struct WorkspacePackage {
 pub(crate) struct ResolutionIndex {
     tsconfigs: Vec<TsconfigScope>,
     packages: Vec<WorkspacePackage>,
+    /// Every `package.json` `name` in the tree, entry map or not, with the
+    /// manifest path and the span of its `"name"` key.
+    workspace_names: std::collections::BTreeMap<String, (String, (u64, u64))>,
+    /// Every `package.json`'s declared dependencies (#237 corroboration).
+    manifests: Vec<Manifest>,
+}
+
+/// One `package.json`'s declared dependency names, for citing the
+/// declaration behind an external import.
+#[derive(Debug, Clone)]
+struct Manifest {
+    /// Repo-relative directory of the manifest (`""` at the root).
+    dir: String,
+    /// Repo-relative path of the `package.json` (the cited evidence).
+    config_path: String,
+    /// Dependency name → declaring span of its key.
+    dependencies: std::collections::BTreeMap<String, (u64, u64)>,
 }
 
 /// First occurrence of `needle` as a byte span; `(0, 0)` when absent.
@@ -173,9 +191,18 @@ impl ResolutionIndex {
                 let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
                     continue;
                 };
+                index.manifests.push(Manifest {
+                    dir: dir_rel.clone(),
+                    config_path: rel.clone(),
+                    dependencies: declared_dependencies(&json, &text),
+                });
                 let Some(pkg_name) = json["name"].as_str() else {
                     continue;
                 };
+                index
+                    .workspace_names
+                    .entry(pkg_name.to_string())
+                    .or_insert_with(|| (rel.clone(), span_of(&text, "\"name\"")));
                 let entries = entry_candidates(&json);
                 if entries.is_empty() {
                     continue;
@@ -212,12 +239,56 @@ impl ResolutionIndex {
                 .then(a.config_path.cmp(&b.config_path))
         });
         index.packages.sort_by(|a, b| a.name.cmp(&b.name));
+        // Nearest manifest first, like Node's upward `node_modules` walk.
+        index.manifests.sort_by(|a, b| {
+            b.dir
+                .len()
+                .cmp(&a.dir.len())
+                .then(a.config_path.cmp(&b.config_path))
+        });
         Ok(index)
     }
 
     fn is_empty(&self) -> bool {
         self.tsconfigs.is_empty() && self.packages.is_empty()
     }
+
+    /// The tsconfig scope governing `importer` (nearest wins outright).
+    fn nearest_scope(&self, importer: &str) -> Option<&TsconfigScope> {
+        self.tsconfigs
+            .iter()
+            .find(|scope| scope.dir.is_empty() || importer.starts_with(&format!("{}/", scope.dir)))
+    }
+}
+
+/// Dependency names declared by a parsed `package.json`, with the span of
+/// each name's key inside its declaring section.
+fn declared_dependencies(
+    json: &serde_json::Value,
+    text: &str,
+) -> std::collections::BTreeMap<String, (u64, u64)> {
+    let mut out = std::collections::BTreeMap::new();
+    for section in [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ] {
+        let Some(names) = json[section].as_object() else {
+            continue;
+        };
+        let offset = text.find(&format!("\"{section}\"")).unwrap_or(0);
+        for name in names.keys() {
+            let (start, end) = span_of(&text[offset..], &format!("\"{name}\""));
+            let span = if end == 0 {
+                (0, 0)
+            } else {
+                (start + offset as u64, end + offset as u64)
+            };
+            out.entry(name.clone()).or_insert(span);
+        }
+    }
+    out
 }
 
 /// Match `spec` against one `paths` pattern (`@/*` or an exact key) and
@@ -278,11 +349,7 @@ fn resolve_spec(
     // tsconfig shadows its parents even when it declares no aliases of its
     // own, so a root alias can never reach into a nested package that
     // didn't declare it — no fall-through to less specific scopes.
-    let nearest = index
-        .tsconfigs
-        .iter()
-        .find(|scope| scope.dir.is_empty() || importer.starts_with(&format!("{}/", scope.dir)));
-    if let Some(scope) = nearest {
+    if let Some(scope) = index.nearest_scope(importer) {
         let base = match &scope.base_url {
             Some(base_url) if scope.dir.is_empty() => normalize(base_url),
             Some(base_url) => normalize(&format!("{}/{}", scope.dir, base_url)),
@@ -353,13 +420,12 @@ fn resolve_spec(
 /// bare specifiers keep their `mod:` node exactly as before.
 pub(crate) fn resolve_bare_imports(
     extraction: &mut Extraction,
-    root: &Path,
+    index: &ResolutionIndex,
     id: &SourceId,
     known_files: &HashSet<String>,
-) -> std::io::Result<()> {
-    let index = ResolutionIndex::load(root)?;
+) {
     if index.is_empty() {
-        return Ok(());
+        return;
     }
     let file_prefix = format!("file:{}@", id.repo);
     for edge in &mut extraction.edges {
@@ -370,7 +436,7 @@ pub(crate) fn resolve_bare_imports(
         let Some(importer) = edge.src.strip_prefix(&file_prefix) else {
             continue;
         };
-        let Some(resolved) = resolve_spec(&spec, importer, &index, id.repo, known_files) else {
+        let Some(resolved) = resolve_spec(&spec, importer, index, id.repo, known_files) else {
             continue;
         };
         edge.dst = format!("{file_prefix}{}", resolved.rel_path);
@@ -389,5 +455,187 @@ pub(crate) fn resolve_bare_imports(
             edge.props["prov"] = serde_json::to_value(provenance).expect("provenance serializes");
         }
     }
-    Ok(())
+}
+
+/// Node.js core modules (`node:`-less spellings); a subpath such as
+/// `fs/promises` is matched by its first segment.
+const NODE_BUILTINS: &[&str] = &[
+    "assert",
+    "async_hooks",
+    "buffer",
+    "child_process",
+    "cluster",
+    "console",
+    "constants",
+    "crypto",
+    "dgram",
+    "diagnostics_channel",
+    "dns",
+    "domain",
+    "events",
+    "fs",
+    "http",
+    "http2",
+    "https",
+    "inspector",
+    "module",
+    "net",
+    "os",
+    "path",
+    "perf_hooks",
+    "process",
+    "punycode",
+    "querystring",
+    "readline",
+    "repl",
+    "stream",
+    "string_decoder",
+    "sys",
+    "timers",
+    "tls",
+    "trace_events",
+    "tty",
+    "url",
+    "util",
+    "v8",
+    "vm",
+    "wasi",
+    "worker_threads",
+    "zlib",
+];
+
+/// The npm package name a bare specifier addresses (`@scope/name` or the
+/// first segment), or `None` when the specifier cannot name a package at
+/// all — `@/x`, `~/x`, and other bundler-alias spellings.
+fn package_name(spec: &str) -> Option<&str> {
+    let valid = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with(['.', '_'])
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.' | '_'))
+    };
+    if let Some(scoped) = spec.strip_prefix('@') {
+        let mut parts = scoped.splitn(3, '/');
+        let (scope, name) = (parts.next()?, parts.next()?);
+        return (valid(scope) && valid(name)).then(|| &spec[..scope.len() + name.len() + 2]);
+    }
+    let name = spec.split('/').next()?;
+    valid(name).then_some(name)
+}
+
+/// Classify a bare specifier config-driven resolution left as a `mod:`
+/// node (#237, ADR-0031). Anything the repository could still answer —
+/// a `#` subpath import, a tsconfig alias or `baseUrl` path, a workspace
+/// package, a repository source directory, or a spelling that cannot name
+/// an npm package — stays an explicit Gap. What remains resolves only from
+/// `node_modules` (or Node core) under Node's rules: an external boundary,
+/// citing the nearest `package.json` that declares it when one does.
+pub(crate) fn classify_bare_import(
+    spec: &str,
+    importer: &str,
+    index: &ResolutionIndex,
+    id: &SourceId,
+    known_files: &HashSet<String>,
+) -> Boundary {
+    let unresolved = |reason: &str| Boundary::Unresolved {
+        reason: reason.into(),
+    };
+    if spec.starts_with('.') || spec.starts_with('/') {
+        return unresolved("unresolved import target");
+    }
+    if spec.starts_with('#') {
+        return unresolved("package subpath import with no proven file");
+    }
+    let scope = index.nearest_scope(importer);
+    if scope.is_some_and(|scope| {
+        scope
+            .paths
+            .iter()
+            .any(|(pattern, _)| apply_pattern(pattern, "", spec).is_some())
+    }) {
+        return unresolved("tsconfig paths alias with no proven file");
+    }
+    if let Some(builtin) = spec.strip_prefix("node:") {
+        return Boundary::External {
+            reason: format!("Node.js built-in module {builtin}"),
+            evidence: vec![],
+        };
+    }
+    let Some(name) = package_name(spec) else {
+        return unresolved("bare specifier that names no package (unconfigured alias?)");
+    };
+    if let Some((manifest, span)) = index.workspace_names.get(name) {
+        // The package itself is proven the repository's own by its manifest;
+        // a module path inside it that no file answers is an explicit Gap.
+        if spec != name {
+            return unresolved("workspace package subpath with no proven file");
+        }
+        return Boundary::Internal {
+            reason: format!("workspace package {name} declared in {manifest}"),
+            evidence: vec![EvidenceRef {
+                repo: id.repo.to_string(),
+                path: manifest.clone(),
+                byte_start: span.0,
+                byte_end: span.1,
+                commit_sha: id.commit.to_string(),
+            }],
+        };
+    }
+    let file_prefix = format!("file:{}@", id.repo);
+    let first = spec.split('/').next().unwrap_or(spec);
+    let under = |dir: &str| {
+        let prefix = if dir.is_empty() {
+            format!("{file_prefix}{first}")
+        } else {
+            format!("{file_prefix}{dir}/{first}")
+        };
+        known_files.iter().any(|file| {
+            file.strip_prefix(&prefix)
+                .is_some_and(|rest| rest.starts_with(['/', '.']))
+        })
+    };
+    let base_dir = scope.and_then(|scope| {
+        let base_url = scope.base_url.as_ref()?;
+        Some(if scope.dir.is_empty() {
+            normalize(base_url)
+        } else {
+            normalize(&format!("{}/{}", scope.dir, base_url))
+        })
+    });
+    if base_dir.as_deref().is_some_and(under) {
+        return unresolved("tsconfig baseUrl path with no proven file");
+    }
+    if ["", "src"].into_iter().any(under) {
+        return unresolved("bare specifier matching a repository source directory");
+    }
+    if NODE_BUILTINS.contains(&first) {
+        return Boundary::External {
+            reason: format!("Node.js built-in module {first}"),
+            evidence: vec![],
+        };
+    }
+    let declared = index.manifests.iter().find(|manifest| {
+        (manifest.dir.is_empty() || importer.starts_with(&format!("{}/", manifest.dir)))
+            && manifest.dependencies.contains_key(name)
+    });
+    match declared {
+        Some(manifest) => {
+            let span = manifest.dependencies[name];
+            Boundary::External {
+                reason: format!("package {name} declared in {}", manifest.config_path),
+                evidence: vec![EvidenceRef {
+                    repo: id.repo.to_string(),
+                    path: manifest.config_path.clone(),
+                    byte_start: span.0,
+                    byte_end: span.1,
+                    commit_sha: id.commit.to_string(),
+                }],
+            }
+        }
+        None => Boundary::External {
+            reason: format!("package {name} not provided by this repository"),
+            evidence: vec![],
+        },
+    }
 }

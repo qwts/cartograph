@@ -235,6 +235,15 @@ const SCALE_GAPS: SpecAssertion[] = [
     summary: 'Gap: unresolved Java import target',
     provenance: { ...gapProvenance('Deterministic'), extractor_id: 't0.adapter-java' },
   })),
+  // Unresolved placeholder nodes (#237) group by their reason, never by
+  // the internal "unresolved Module edge" label.
+  ...Array.from({ length: 20 }, (_, index) => ({
+    id: `node:mod:pkg.Missing${index}`,
+    subject_id: `mod:pkg.Missing${index}`,
+    subject_kind: 'Module',
+    summary: 'Module: import of a repository package with no unique declaration',
+    provenance: { ...gapProvenance('Deterministic'), extractor_id: 't0.adapter-java' },
+  })),
   ...Array.from({ length: 5 }, (_, index) => ({
     id: `edge:sym:a${index} CALLS gap:x${index}`,
     subject_id: `sym:a${index} CALLS gap:x${index}`,
@@ -262,11 +271,11 @@ export const ClassesGroupAtScale: Story = {
   // or classed twice.
   args: {
     summary: {
-      gaps: 345,
+      gaps: 365,
       unsupported: 0,
       no_evidence: 0,
       drift: 0,
-      open_findings: 345,
+      open_findings: 365,
       graph_facts: 40_000,
     },
     gaps: SCALE_GAPS,
@@ -275,19 +284,24 @@ export const ClassesGroupAtScale: Story = {
   },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    // 345 findings read as 3 causes, largest first — the 3 supporting
+    // 365 findings read as 4 causes, largest first — the 3 supporting
     // edges fold into the ×300 class's nodes instead of inflating it.
-    await expect(canvas.getByText('System gaps · 345 — 3 causes')).toBeInTheDocument();
+    await expect(canvas.getByText('System gaps · 365 — 4 causes')).toBeInTheDocument();
     const classes = within(canvas.getByLabelText('Gap classes'));
     const heads = classes.getAllByRole('button', { expanded: false });
-    await expect(heads).toHaveLength(3);
+    await expect(heads).toHaveLength(4);
     await expect(heads[0]).toHaveTextContent('×300');
     await expect(heads[0]).toHaveTextContent('runtime-computed message identity');
     await expect(heads[1]).toHaveTextContent('×40');
     await expect(heads[1]).toHaveTextContent('unresolved Java import target');
     await expect(heads[1]).toHaveTextContent('t0.adapter-java');
-    await expect(heads[2]).toHaveTextContent('×5');
-    await expect(heads[2]).toHaveTextContent('unresolved CALLS edge');
+    await expect(heads[2]).toHaveTextContent('×20');
+    await expect(heads[2]).toHaveTextContent(
+      'import of a repository package with no unique declaration',
+    );
+    await expect(heads[2]).not.toHaveTextContent('unresolved Module edge');
+    await expect(heads[3]).toHaveTextContent('×5');
+    await expect(heads[3]).toHaveTextContent('unresolved CALLS edge');
 
     // Grouping is deterministic: shuffled input yields the same class order.
     const shuffledOrder = groupGapClasses([...SCALE_GAPS].reverse()).map((c) => c.key);
@@ -310,11 +324,11 @@ export const ClassEscalatesAsOneBatch: Story = {
   // classes rank above larger classes that block nothing.
   args: {
     summary: {
-      gaps: 345,
+      gaps: 365,
       unsupported: 0,
       no_evidence: 0,
       drift: 0,
-      open_findings: 345,
+      open_findings: 365,
       graph_facts: 40_000,
     },
     gaps: SCALE_GAPS,

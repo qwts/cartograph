@@ -250,3 +250,79 @@ fn gitignored_trees_are_not_collected() {
     collect_go_files(dir.path(), &mut files).unwrap();
     assert_eq!(files, ["cmd/main.go"]);
 }
+
+fn boundary_of(extraction: &Extraction, id: &str) -> (String, core_prov::ConfidenceTier) {
+    let node = extraction
+        .nodes
+        .iter()
+        .find(|node| node.id == id)
+        .unwrap_or_else(|| panic!("missing node {id}"));
+    let prov: Provenance = serde_json::from_value(node.props["prov"].clone())
+        .unwrap_or_else(|_| panic!("{id} carries no provenance"));
+    assert!(!prov.evidence.is_empty(), "{id} cites its import");
+    (
+        node.props["boundary"].as_str().unwrap().to_string(),
+        prov.confidence_tier,
+    )
+}
+
+#[test]
+fn import_targets_carry_provenance_and_only_proven_externals_confirm() {
+    // AC-0207 (#237): beneath the repository's own module paths an existing
+    // package directory is internal and anything else an explicit Gap;
+    // outside them, stdlib and foreign modules are Confirmed external.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("go.mod"),
+        "module example.com/svc\n\nreplace example.com/shared => ./shared\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("pkg/store")).unwrap();
+    std::fs::write(
+        dir.path().join("pkg/store/store_linux.go"),
+        "package store\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("main.go"),
+        "package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/lib/pq\"\n\t\"example.com/svc/pkg/store\"\n\t\"example.com/svc/pkg/missing\"\n\t\"example.com/shared/x\"\n)\n\nfunc main() { fmt.Println(pq.X, store.Y) }\n",
+    )
+    .unwrap();
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let expect = |id: &str| boundary_of(&out, id);
+    assert_eq!(expect("mod:fmt"), ("external".into(), Confirmed));
+    assert_eq!(
+        expect("mod:github.com/lib/pq"),
+        ("external".into(), Confirmed)
+    );
+    // A package directory whose only file is platform-gated still exists.
+    assert_eq!(
+        expect("mod:example.com/svc/pkg/store"),
+        ("internal".into(), Confirmed)
+    );
+    assert_eq!(
+        expect("mod:example.com/svc/pkg/missing"),
+        ("unresolved".into(), Gap)
+    );
+    // A locally replaced module is the repository's own, never external.
+    assert_eq!(
+        expect("mod:example.com/shared/x"),
+        ("unresolved".into(), Gap)
+    );
+}
+
+#[test]
+fn without_go_mod_no_import_is_proven_external() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("main.go"),
+        "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println() }\n",
+    )
+    .unwrap();
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    assert_eq!(
+        boundary_of(&out, "mod:fmt"),
+        ("unresolved".into(), core_prov::ConfidenceTier::Gap)
+    );
+}

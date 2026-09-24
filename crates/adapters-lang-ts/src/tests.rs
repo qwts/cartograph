@@ -2734,3 +2734,80 @@ function make({parameters}) {{
         );
     }
 }
+
+#[test]
+fn bare_import_targets_carry_provenance_and_only_proven_externals_confirm() {
+    // AC-0207 (#237): a bare specifier left after config-driven resolution
+    // is Confirmed external only when nothing in the repository could answer
+    // it; aliases, workspace packages, subpath imports, source directories,
+    // and relative misses stay explicit Gaps. Every placeholder cites the
+    // import statement that named it.
+    use core_prov::ConfidenceTier::{Confirmed, Gap};
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "package.json",
+        r#"{ "name": "app", "dependencies": { "react": "^18.0.0" } }"#,
+    );
+    write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "@app/*": ["src/*"] } } }"#,
+    );
+    write(
+        "packages/shared/package.json",
+        r#"{ "name": "@acme/shared" }"#,
+    );
+    write("src/utils/format.ts", "export const f = 1;\n");
+    write("src/styles.css", "body {}\n");
+    let main = "import './styles.css';\nimport './gone.css';\nimport React from 'react';\nimport fs from 'node:fs';\nimport path from 'path';\nimport left from 'left-pad';\nimport { gone } from '@app/gone';\nimport { s } from '@acme/shared/deep';\nimport { t } from '@acme/shared';\nimport { h } from '#internal/h';\nimport { u } from 'utils/format';\nimport { a } from '~/alias';\nimport { m } from './missing';\n";
+    write("src/main.ts", main);
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let boundary = |id: &str| {
+        let node = out
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap_or_else(|| panic!("missing node {id}"));
+        assert_eq!(node.props["placeholder"], true, "{id}");
+        let prov: Provenance = serde_json::from_value(node.props["prov"].clone())
+            .unwrap_or_else(|_| panic!("{id} carries no provenance"));
+        let span = &prov.evidence[0];
+        assert_eq!(span.path, "src/main.ts", "{id}");
+        assert!(main[span.byte_start as usize..span.byte_end as usize].starts_with("import "));
+        (
+            node.props["boundary"].as_str().unwrap().to_string(),
+            prov.confidence_tier,
+            prov.evidence.len(),
+        )
+    };
+    // A declared dependency also cites its package.json declaration.
+    assert_eq!(boundary("mod:react"), ("external".into(), Confirmed, 2));
+    assert_eq!(boundary("mod:node:fs"), ("external".into(), Confirmed, 1));
+    assert_eq!(boundary("mod:path"), ("external".into(), Confirmed, 1));
+    assert_eq!(boundary("mod:left-pad"), ("external".into(), Confirmed, 1));
+    // The workspace package itself is the repository's own, cited by its
+    // manifest; a subpath no file answers stays a Gap (below).
+    assert_eq!(
+        boundary("mod:@acme/shared"),
+        ("internal".into(), Confirmed, 2)
+    );
+    for in_system in [
+        "mod:@app/gone",
+        "mod:@acme/shared/deep",
+        "mod:#internal/h",
+        "mod:utils/format",
+        "mod:~/alias",
+        "file:qwtm/example@src/missing.ts",
+        "file:qwtm/example@src/gone.css",
+    ] {
+        assert_eq!(
+            boundary(in_system),
+            ("unresolved".into(), Gap, 1),
+            "{in_system}"
+        );
+    }
+}

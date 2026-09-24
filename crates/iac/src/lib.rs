@@ -247,23 +247,16 @@ impl Extraction {
     }
 
     /// Ensure every edge endpoint exists as a node; unresolved targets become
-    /// flagged placeholder `Resource` nodes (explicit, never silently dropped).
+    /// flagged placeholder `Resource` nodes (explicit, never silently dropped)
+    /// — each an explicit Gap citing the reference that named it (#237).
     pub fn close_over_endpoints(&mut self) {
-        let mut known: std::collections::HashSet<String> =
-            self.nodes.iter().map(|n| n.id.clone()).collect();
-        let mut placeholders = Vec::new();
-        for edge in &self.edges {
-            for id in [&edge.src, &edge.dst] {
-                if known.insert(id.clone()) {
-                    placeholders.push(Node {
-                        id: id.clone(),
-                        label: "Resource".into(),
-                        props: serde_json::json!({ "placeholder": true }),
-                    });
-                }
-            }
-        }
-        self.nodes.extend(placeholders);
+        core_graph::placeholder::close_over_endpoints(
+            &mut self.nodes,
+            &self.edges,
+            EXTRACTOR_ID,
+            |_| "Resource",
+            |_, _| None,
+        );
     }
 }
 
