@@ -186,6 +186,22 @@ export const ScanningWithProgress: Story = {
   },
 };
 
+export const ListingFiles: Story = {
+  args: {
+    report: null,
+    busy: true,
+    progress: { run: 1, path: 'src/vs/base/common', done: 3108, total: null },
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('status')).toHaveTextContent(
+      'Finding files… 3108 so far src/vs/base/common',
+    );
+    await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }));
+    await expect(args.onCancel).toHaveBeenCalledOnce();
+  },
+};
+
 export const Cancelled: Story = {
   args: { report: null, busy: false, error: 'Preflight cancelled. No findings were recorded.' },
   play: async ({ canvasElement }) => {

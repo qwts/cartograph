@@ -220,3 +220,57 @@ mod parallel_merge {
         assert!((1..=MAX_WORKERS).contains(&auto));
     }
 }
+
+#[test]
+fn the_directory_hook_reports_each_directory_and_stops_without_a_partial_list() {
+    // AC-0197/AC-0198 (#453): the walk announces each directory before
+    // reading it, with the files found so far, and a break stops it there —
+    // no further directory is read and no partial list is returned.
+    let dir = fixture();
+    let root = dir.path();
+    let mut seen = Vec::new();
+    let all = files_until(
+        root,
+        &|name| name == "node_modules",
+        Gitignores::Honor,
+        &mut |step| {
+            seen.push((step.dir.to_string(), step.found));
+            ControlFlow::Continue(())
+        },
+    )
+    .unwrap()
+    .expect("completes");
+    assert_eq!(
+        all,
+        files(root, &|name| name == "node_modules", Gitignores::Honor).unwrap()
+    );
+    // Ignored and skipped directories are never entered, so never announced.
+    assert_eq!(
+        seen,
+        vec![
+            (String::new(), 0),
+            ("pkg".to_string(), 1), // the root `.gitignore` sorts first
+            ("pkg/out".to_string(), 1),
+            ("src".to_string(), 2),
+            ("vendor".to_string(), 3),
+        ]
+    );
+
+    let mut announced = Vec::new();
+    let stopped = files_until(
+        root,
+        &|name| name == "node_modules",
+        Gitignores::Honor,
+        &mut |step| {
+            announced.push(step.dir.to_string());
+            if step.dir == "pkg" {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    )
+    .unwrap();
+    assert!(stopped.is_none());
+    assert_eq!(announced, vec![String::new(), "pkg".to_string()]);
+}

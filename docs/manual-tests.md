@@ -356,8 +356,11 @@ PR — per-PR verification is CI's job.
 1. `npm run tauri dev`; **Connect** → a local clone of a large real repo
    (thousands of source files — e.g. a production Next.js monorepo).
 2. **Preflight**. While it scans, the window stays responsive and the
-   status line names the file being read as "Checking file N of M"
-   (AC-0197). **Cancel** it: the scan stops within one file and reports
+   status line first reads "Finding files… N so far" while the tree is
+   listed, then names the file being read as "Checking file N of M"
+   (AC-0197). **Cancel** it, once while it is still finding files and once
+   while it is checking them: the scan stops within one directory or file
+   and reports
    "Preflight cancelled" with no findings recorded (AC-0198). Run
    **Preflight** again and let it finish.
 3. **Run full recovery**. While the Recover stage line is
