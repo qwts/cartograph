@@ -1594,6 +1594,70 @@ export function boot() {
     assert!(calls.contains(&(entry, inner_id.as_str())));
 }
 
+// #475: the same code at two eval sites yields distinct facts (the ids carry
+// the site), so every eval-recovered fact's content hash must be derived
+// from its final namespaced form — node id, or edge (src, label, dst) — not
+// from the pre-namespacing inner fact, or distinct edges share one hash.
+// Re-extraction stays byte-identical. (AC-0099, T-0099)
+#[test]
+fn identical_eval_code_at_two_sites_yields_distinct_fact_hashes() {
+    let code = "function a() { b(); } function b() {} a();";
+    let src = format!("export function run() {{\n  eval(\"{code}\");\n  eval(\"{code}\");\n}}\n");
+    let ex = extract_source(src.as_bytes(), "src/twice.ts", &id()).unwrap();
+    let sites: Vec<usize> = src.match_indices("eval(\"").map(|(at, _)| at).collect();
+    assert_eq!(sites.len(), 2);
+    // Same digit count, so the synthetic wrapper buffers are the same length
+    // and the pre-namespacing inner facts are byte-identical across sites.
+    assert_eq!(sites[0].to_string().len(), sites[1].to_string().len());
+    let hash =
+        |props: &serde_json::Value| props["prov"]["content_hash"].as_str().unwrap().to_string();
+    let sym = |suffix: String| format!("sym:qwtm/example@src/twice.ts#{suffix}");
+    let calls_hash = |src_id: String, dst_id: String| -> String {
+        let edge = ex
+            .edges
+            .iter()
+            .find(|e| e.label == "CALLS" && e.src == src_id && e.dst == dst_id)
+            .unwrap_or_else(|| panic!("missing CALLS {src_id} -> {dst_id}"));
+        hash(&edge.props)
+    };
+    let [s0, s1] = [sites[0], sites[1]];
+    assert_ne!(
+        calls_hash(sym(format!("eval@{s0}.a")), sym(format!("eval@{s0}.b"))),
+        calls_hash(sym(format!("eval@{s1}.a")), sym(format!("eval@{s1}.b"))),
+    );
+    assert_ne!(
+        calls_hash(sym(format!("eval@{s0}")), sym(format!("eval@{s0}.a"))),
+        calls_hash(sym(format!("eval@{s1}")), sym(format!("eval@{s1}.a"))),
+    );
+    // Sweep: no two eval-recovered facts with distinct identities share a
+    // hash, and each hash is the one derived from the fact's final form.
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for node in ex.nodes.iter().filter(|n| n.props["via"] == "eval") {
+        let identity = format!("{} {}", node.label, node.id);
+        assert_eq!(
+            hash(&node.props),
+            core_prov::content_hash(identity.as_bytes())
+        );
+        if let Some(prior) = seen.insert(hash(&node.props), identity.clone()) {
+            panic!("{identity} shares a hash with {prior}");
+        }
+    }
+    for edge in ex.edges.iter().filter(|e| e.props["via"] == "eval") {
+        let identity = format!("{} {} -> {}", edge.label, edge.src, edge.dst);
+        assert_eq!(
+            hash(&edge.props),
+            core_prov::content_hash(identity.as_bytes())
+        );
+        if let Some(prior) = seen.insert(hash(&edge.props), identity.clone()) {
+            panic!("{identity} shares a hash with {prior}");
+        }
+    }
+    // Deterministic: re-ingesting the same source yields the same facts.
+    let again = extract_source(src.as_bytes(), "src/twice.ts", &id()).unwrap();
+    assert_eq!(ex.nodes, again.nodes);
+    assert_eq!(ex.edges, again.edges);
+}
+
 #[test]
 fn eval_wrapper_projection_preserves_nested_lexical_owners() {
     // AC-0099 / AC-0120 / AC-0121: remove only the synthetic wrapper scope.

@@ -511,11 +511,10 @@ fn emit_eval_extraction(
         }
         node.props["via"] = serde_json::json!("eval");
         retarget_props_span(&mut node.props, start, end);
-        // A nested eval Gap's hash was derived from its pre-namespacing id;
-        // the same code at two outer sites must not share one (#451 review).
-        if node.label == "Gap" && node.id.contains(EVAL_GAP_MARKER) {
-            rehash_props(&mut node.props, &format!("Gap {}", node.id));
-        }
+        // Every inner hash was derived from the pre-namespacing fact; the
+        // same code at two outer sites must not share one (#451 review, #475).
+        let fact = node_fact(&node);
+        rehash_props(&mut node.props, &fact);
         out.nodes.push(node);
     }
     for mut edge in inner.edges {
@@ -526,10 +525,8 @@ fn emit_eval_extraction(
         edge.dst = rewrite(&edge.dst);
         edge.props["via"] = serde_json::json!("eval");
         retarget_props_span(&mut edge.props, start, end);
-        if edge.label == "DEPENDS_ON" && edge.dst.contains(EVAL_GAP_MARKER) {
-            let fact = format!("DEPENDS_ON {} -> {}", edge.src, edge.dst);
-            rehash_props(&mut edge.props, &fact);
-        }
+        let fact = edge_fact(&edge);
+        rehash_props(&mut edge.props, &fact);
         out.edges.push(edge);
     }
     for mut event_site in inner.event_sites {
@@ -560,15 +557,17 @@ fn emit_eval_extraction(
         EvalProof::Covered
     };
     if let Some(caller) = enclosing_symbol(cx, site) {
-        out.edges.push(Edge {
+        let mut edge = Edge {
             src: caller,
             dst: entry,
             label: "CALLS".into(),
-            props: serde_json::json!({
-                "via": "eval",
-                "prov": cx.prov(&evidence, &format!("CALLS eval@{offset}")),
-            }),
+            props: serde_json::Value::Null,
+        };
+        edge.props = serde_json::json!({
+            "via": "eval",
+            "prov": cx.prov(&evidence, &edge_fact(&edge)),
         });
+        out.edges.push(edge);
     }
     Some(claim)
 }
@@ -576,9 +575,22 @@ fn emit_eval_extraction(
 /// Id marker of a const-unproven eval Gap, at any eval nesting depth.
 const EVAL_GAP_MARKER: &str = "eval-unproven@";
 
-/// Re-derive a fact's content hash from its final canonical form.
+/// Re-derive a fact's content hash from its final canonical form. Props
+/// without provenance are left alone rather than given a fabricated one.
 fn rehash_props(props: &mut serde_json::Value, fact: &str) {
-    props["prov"]["content_hash"] = serde_json::json!(core_prov::content_hash(fact.as_bytes()));
+    if props["prov"].is_object() {
+        props["prov"]["content_hash"] = serde_json::json!(core_prov::content_hash(fact.as_bytes()));
+    }
+}
+
+/// Canonical fact of a node: its label and id, the store's upsert key.
+fn node_fact(node: &Node) -> String {
+    format!("{} {}", node.label, node.id)
+}
+
+/// Canonical fact of an edge: its label and endpoints, the store's key.
+fn edge_fact(edge: &Edge) -> String {
+    format!("{} {} -> {}", edge.label, edge.src, edge.dst)
 }
 
 /// A const-shaped `eval()` / `new Function()` code argument that could not be
