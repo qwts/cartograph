@@ -23,7 +23,8 @@ Split review by risk and let GitHub enforce the split:
   - governance and CI: `.github/`, `scripts/`
   - agent primitives, meaning every agent tool's directives and hook directories
   - ADRs
-  - security boundaries: redaction, model egress, the plugin host, app
+  - security boundaries: redaction, model egress, every crate handed a live
+    `LlmProvider` (today `agents` and `semantic`), the plugin host, app
     capabilities, the consent UI, and the whole host source tree
     (`src-tauri/src/`), since any host module can reach the cloud provider and
     the grant APIs; #457 seals those into one module and narrows this rule
@@ -32,7 +33,8 @@ Split review by risk and let GitHub enforce the split:
   - the changelog, which marks a release
 
   There is no `*` rule. A PR that adds a new agent tool directory or build
-  entrypoint adds it to CODEOWNERS in the same change.
+  entrypoint, or passes an `LlmProvider` into a new crate, adds it to CODEOWNERS
+  in the same change.
 - Any other PR merges on an ACA approval of its current head plus the existing
   gates (exact-SHA CI, Advanced CodeQL, signatures, resolved threads). The
   implementing agent merges it.

@@ -30,6 +30,9 @@ CLAUDE.md   @qwts
 # keys, third-party plugin execution, and the desktop app's permissions.
 /crates/core-redact/ @qwts
 /crates/llm/ @qwts
+# Every crate handed a live LlmProvider can call it directly, past the firewall.
+/crates/agents/ @qwts
+/crates/semantic/ @qwts
 /crates/adapters-plugin-host/ @qwts
 /src-tauri/capabilities/ @qwts
 /src-tauri/tauri.conf.json @qwts
