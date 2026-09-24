@@ -670,4 +670,27 @@ class V1Controller {
         ["GET /v1/", "GET /v1/x", "GET /v1/x/"]
     );
     assert!(!out.nodes.iter().any(|node| node.id.contains("//")));
+
+    // A run of trailing slashes keeps exactly one.
+    let doubled = br#"package com.demo.web
+
+import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/v2//")
+class V2Controller {
+    @GetMapping
+    fun root(): String = "r"
+
+    @GetMapping("items//")
+    fun items(): String = "i"
+}
+"#;
+    let out = extract_source(
+        doubled,
+        "src/main/kotlin/com/demo/web/V2Controller.kt",
+        &id(),
+    )
+    .unwrap();
+    assert_eq!(endpoint_routes(&out), ["GET /v2/", "GET /v2/items/"]);
 }

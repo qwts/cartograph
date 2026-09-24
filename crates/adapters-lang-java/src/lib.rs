@@ -436,17 +436,22 @@ fn mapping_method(annotation_name: &str) -> Option<&'static str> {
 
 /// Compose a class-level base with a method-level path (AC-0206, #445).
 /// Segments meet at exactly one `/`, but a trailing slash spelled in the
-/// source is kept: Spring 6 matches `/a` and `/a/` as distinct routes, so
-/// `"/api/"` + `""` is `/api/` and `"/api"` + `"/"` is `/api/`.
+/// source is kept (as one `/`): Spring 6 matches `/a` and `/a/` as distinct
+/// routes, so `"/api/"` + `""` is `/api/` and `"/api"` + `"/"` is `/api/`.
 fn join_route(base: &str, tail: &str) -> String {
-    match (base.is_empty(), tail.is_empty()) {
-        (true, true) => "/".to_string(),
-        (false, true) => base.to_string(),
-        (_, false) => format!(
+    let route = if tail.is_empty() {
+        base.to_string()
+    } else {
+        format!(
             "{}/{}",
             base.trim_end_matches('/'),
             tail.trim_start_matches('/')
-        ),
+        )
+    };
+    if route.ends_with('/') || route.is_empty() {
+        format!("{}/", route.trim_end_matches('/'))
+    } else {
+        route
     }
 }
 

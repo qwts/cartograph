@@ -628,4 +628,22 @@ public class V1Controller {
     let out = extract_source(slashed_tail, "src/V1Controller.java", &id()).unwrap();
     assert_eq!(endpoint_routes(&out), ["GET /v1/", "GET /v1/items/"]);
     assert!(!out.nodes.iter().any(|node| node.id.contains("//")));
+
+    // A run of trailing slashes keeps exactly one.
+    let doubled = br#"package com.demo.web;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/v2//")
+public class V2Controller {
+    @GetMapping
+    public String root() { return "r"; }
+
+    @GetMapping("items//")
+    public String items() { return "i"; }
+}
+"#;
+    let out = extract_source(doubled, "src/V2Controller.java", &id()).unwrap();
+    assert_eq!(endpoint_routes(&out), ["GET /v2/", "GET /v2/items/"]);
 }
