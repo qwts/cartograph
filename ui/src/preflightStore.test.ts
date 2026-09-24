@@ -119,6 +119,46 @@ describe('preflight progress and cancellation (AC-0197/AC-0198, #235)', () => {
     expect(commands).toEqual(['preflight', 'cancel_preflight']);
   });
 
+  // AC-0198 (#454): editing the local path abandons the running scan.
+  it('cancels and retires a running local scan when the local path changes', async () => {
+    const commands: string[] = [];
+    let resolve: (value: PreflightReport) => void = () => {};
+    let run = -1;
+    mockIPC((command, args) => {
+      commands.push(command);
+      if (command === 'cancel_preflight') return null;
+      run = (args as { run: number }).run;
+      return new Promise<PreflightReport>((done) => { resolve = done; });
+    });
+    const local = useAppStore.getState().runPreflight();
+    // A whitespace-only edit doesn't change what is being scanned.
+    useAppStore.getState().setIngestTarget(' /repos/app ');
+    expect(commands).toEqual(['preflight']);
+    expect(useAppStore.getState().preflightBusy).toBe(true);
+
+    // Back to Connect during the scan, then a different path.
+    useAppStore.getState().setIngestTarget('/repos/other');
+    expect(commands).toEqual(['preflight', 'cancel_preflight']);
+    let state = useAppStore.getState();
+    expect(state.ingestTarget).toBe('/repos/other');
+    expect(state.preflightBusy).toBe(false);
+    expect(state.preflightProgress).toBeNull();
+
+    // The abandoned run's late ping and result (a cancel that lost the
+    // persist race) never reach the store.
+    useAppStore.getState().applyPreflightProgress({ run, path: 'old/a.ts', done: 1, total: 2 });
+    resolve(report('old-path'));
+    await local;
+    state = useAppStore.getState();
+    expect(state.preflight).toBeNull();
+    expect(state.preflightProgress).toBeNull();
+    expect(state.preflightBusy).toBe(false);
+
+    // Editing while idle sends nothing.
+    useAppStore.getState().setIngestTarget('/repos/third');
+    expect(commands).toEqual(['preflight', 'cancel_preflight']);
+  });
+
   it("ignores a superseded scan's late progress ping (#434 review)", async () => {
     const runs: number[] = [];
     const pending: Array<(value: PreflightReport) => void> = [];

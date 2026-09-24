@@ -1197,7 +1197,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ ingestSource });
   },
 
-  setIngestTarget: (ingestTarget) => set({ ingestTarget }),
+  setIngestTarget: (ingestTarget) => {
+    // A local scan still running for the previous path (e.g. after Back
+    // during a scan) is abandoned: retire its run id so nothing it settles
+    // with reaches the store, and stop the worker so it doesn't persist
+    // findings for a target the user has left (#454, AC-0198). Whitespace
+    // edits don't change what `runPreflight` scanned.
+    if (get().preflightBusy && ingestTarget.trim() !== get().ingestTarget.trim()) {
+      preflightRun += 1;
+      set({ ingestTarget, preflightBusy: false, preflightProgress: null });
+      void get().cancelPreflight();
+      return;
+    }
+    set({ ingestTarget });
+  },
 
   runPreflight: async () => {
     const target = get().ingestTarget.trim();
