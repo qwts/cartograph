@@ -689,7 +689,7 @@ pub fn is_drift_edge(edge: &Edge) -> bool {
 /// Registers at or below this many rows stay one flat table, as the Gaps
 /// lane does (`GROUP_THRESHOLD` in `ui/src/gapClasses.ts`).
 pub const GAP_REGISTER_FLAT_LIMIT: usize = 12;
-/// Cause classes detailed in `gap_register.md` (#240, AC-0209). Classes past
+/// Cause classes detailed in `gap_register.md` (#240, AC-0210). Classes past
 /// the cap are counted in one explicit line; the sidecar lists them all.
 pub const GAP_REGISTER_MAX_CLASSES: usize = 50;
 /// Representative instances rendered per class in `gap_register.md`.
@@ -780,6 +780,10 @@ struct GapRegisterIndex<'a> {
     mode: ExportMode,
     findings: usize,
     instances: usize,
+    /// Register rows that restate a listed Gap node's finding — its
+    /// supporting Gap edges and flow-hop restatements. They are not classes
+    /// of their own, exactly as in the Gaps lane, but stay indexed here.
+    supporting: Vec<&'a str>,
     classes: Vec<GapClassIndex<'a>>,
 }
 
@@ -805,7 +809,7 @@ fn register_row(content: &mut String, assertion: &SpecAssertion) {
 }
 
 /// The Gap register as a bounded, grouped artifact plus its JSON sidecar
-/// (#240, AC-0209). Past [`GAP_REGISTER_FLAT_LIMIT`] rows the Markdown is
+/// (#240, AC-0210). Past [`GAP_REGISTER_FLAT_LIMIT`] rows the Markdown is
 /// grouped by cause class with at most [`GAP_CLASS_REPRESENTATIVES`]
 /// instances per class and [`GAP_REGISTER_MAX_CLASSES`] classes, and every
 /// omission is an explicit counted line — nothing is silently dropped. The
@@ -842,13 +846,46 @@ fn gap_register(
     (content, sidecar, assertions)
 }
 
+/// Split register rows the way the Gaps lane does (#241): a Gap node is a
+/// finding; a Gap edge touching a listed Gap node supports that node's
+/// finding instead of doubling it, while an edge-only Gap (no Gap node on
+/// either end) stays a finding of its own; flow-hop assertions restate gaps
+/// already listed. Classes are built from the findings alone so the Markdown
+/// and the lane agree on classes and counts.
+fn lane_findings(assertions: &[SpecAssertion]) -> (Vec<SpecAssertion>, Vec<&str>) {
+    let listed: std::collections::BTreeSet<&str> = assertions
+        .iter()
+        .filter(|assertion| assertion.id.starts_with("node:"))
+        .map(|assertion| assertion.subject_id.as_str())
+        .collect();
+    let supports_listed = |assertion: &SpecAssertion| {
+        let mut parts = assertion.subject_id.split(' ');
+        let src = parts.next().unwrap_or_default();
+        let dst = parts.nth(1).unwrap_or_default();
+        listed.contains(src) || listed.contains(dst)
+    };
+    let mut findings = Vec::new();
+    let mut supporting = Vec::new();
+    for assertion in assertions {
+        let is_finding = assertion.id.starts_with("node:")
+            || (assertion.id.starts_with("edge:") && !supports_listed(assertion));
+        if is_finding {
+            findings.push(assertion.clone());
+        } else {
+            supporting.push(assertion.id.as_str());
+        }
+    }
+    (findings, supporting)
+}
+
 /// Render the register prose and its JSON index from the sorted assertions.
 fn render_gap_register(
     assertions: &[SpecAssertion],
     findings: usize,
     mode: ExportMode,
 ) -> (String, String) {
-    let classes = gap_classes(assertions);
+    let (lane_rows, supporting) = lane_findings(assertions);
+    let classes = gap_classes(&lane_rows);
 
     let mut content = String::from("# Gap register\n\n");
     if assertions.len() <= GAP_REGISTER_FLAT_LIMIT {
@@ -864,13 +901,16 @@ fn render_gap_register(
         let shown = &classes[..classes.len().min(GAP_REGISTER_MAX_CLASSES)];
         writeln!(
             content,
-            "{findings} open findings · {} register rows in {} cause classes \
-             (stop reason × extractor), largest first. Each class lists up to \
+            "{findings} open findings · {} register rows: {} findings in {} cause \
+             classes (stop reason × extractor), largest first, plus {} supporting \
+             rows that restate a listed gap. Each class lists up to \
              {GAP_CLASS_REPRESENTATIVES} representative instances; \
              `gap_register.json` lists every instance by class, and each \
              instance keeps its inline provenance in the bundle's assertions.\n",
             assertions.len(),
+            lane_rows.len(),
             classes.len(),
+            supporting.len(),
         )
         .expect("write to string");
         content.push_str(
@@ -941,6 +981,7 @@ fn render_gap_register(
         mode,
         findings,
         instances: assertions.len(),
+        supporting,
         classes: classes
             .iter()
             .enumerate()
@@ -2005,7 +2046,7 @@ mod tests {
 
     #[test]
     fn gap_register_groups_caps_and_indexes_every_instance() {
-        // AC-0209 (T-0209): a large register renders bounded, grouped prose
+        // AC-0210 (T-0210): a large register renders bounded, grouped prose
         // with counted omissions, and the JSON sidecar lists every instance.
         let mut nodes: Vec<Node> = (0..30)
             .map(|index| reason_gap(&format!("gap:a{index:03}"), "computed identity"))
@@ -2073,8 +2114,13 @@ mod tests {
                 ("dynamic import", 8),
                 ("unresolved CALLS edge", 7),
                 ("eval", 1),
-                ("unresolved DEPENDS_ON edge", 1),
             ]
+        );
+        // The DEPENDS_ON edge into gap:a000 supports that node's finding, as
+        // in the Gaps lane, so it is indexed as supporting, not a class.
+        assert_eq!(
+            index["supporting"],
+            serde_json::json!(["edge:sym:a DEPENDS_ON gap:a000"])
         );
         let content = &register.content;
         assert!(content.contains("| C-01 | computed identity | `spec.workbench.test` | T1 | 30 |"));
@@ -2087,12 +2133,13 @@ mod tests {
         ));
         assert!(content.contains("… 2 more instances in this class"));
         assert!(content.contains("`gap:a004`") && !content.contains("`gap:a005`"));
-        assert!(content.contains("Inline provenance is shown for the 17 representative instances above; the other 30 carry theirs"));
+        assert!(content.contains("Inline provenance is shown for the 16 representative instances above; the other 31 carry theirs"));
 
         // The sidecar indexes every register assertion exactly once.
         let mut indexed: Vec<&str> = classes
             .iter()
             .flat_map(|class| class["members"].as_array().unwrap())
+            .chain(index["supporting"].as_array().unwrap())
             .map(|member| member.as_str().unwrap())
             .collect();
         indexed.sort_unstable();
@@ -2111,7 +2158,7 @@ mod tests {
 
     #[test]
     fn gap_register_prose_stays_bounded_as_the_register_grows() {
-        // AC-0209 (T-0209): past the class cap, remaining classes are one
+        // AC-0210 (T-0210): past the class cap, remaining classes are one
         // counted line, and prose size does not track instance count.
         let register_for = |per_class: usize| {
             let nodes: Vec<Node> = (0..GAP_REGISTER_MAX_CLASSES + 10)
@@ -2148,8 +2195,55 @@ mod tests {
     }
 
     #[test]
+    fn gap_register_classes_match_the_gaps_lane() {
+        // AC-0210 (T-0210): 13 unresolved calls each emit a Gap node plus
+        // its supporting Gap CALLS edge; the Markdown groups them into one
+        // 13-instance class, as the Gaps lane does, never 26 rows in two.
+        let mut nodes: Vec<Node> = (0..13)
+            .map(|index| reason_gap(&format!("gap:call{index:02}"), "unresolved call"))
+            .collect();
+        nodes.push(node(
+            "sym:a",
+            "Symbol",
+            Tier::Deterministic,
+            ConfidenceTier::Confirmed,
+        ));
+        let edges: Vec<Edge> = (0..13)
+            .map(|index| {
+                edge(
+                    "sym:a",
+                    &format!("gap:call{index:02}"),
+                    "CALLS",
+                    Tier::Deterministic,
+                    ConfidenceTier::Gap,
+                )
+            })
+            .collect();
+        let bundle = compile_spec(
+            &nodes,
+            &edges,
+            &[],
+            ExportMode::VerifiedOnly,
+            &BTreeSet::new(),
+        );
+        let (register, index) = gap_artifacts(&bundle);
+        assert_eq!(
+            register.assertions.len(),
+            26,
+            "every row stays an assertion"
+        );
+        let classes = index["classes"].as_array().unwrap();
+        assert_eq!(classes.len(), 1);
+        assert_eq!(classes[0]["cause"], "unresolved call");
+        assert_eq!(classes[0]["instances"], 13);
+        assert_eq!(index["supporting"].as_array().unwrap().len(), 13);
+        assert!(register.content.contains("13 findings in 1 cause classes"));
+        assert!(!register.content.contains("unresolved CALLS edge"));
+    }
+
+    #[test]
     fn small_gap_register_stays_one_flat_table() {
-        // AC-0209: at or below the Gaps lane's grouping threshold the register
+        // AC-0210: at or below the Gaps lane's grouping threshold the register
         // keeps every row and its full provenance table.
         let nodes: Vec<Node> = (0..GAP_REGISTER_FLAT_LIMIT)
             .map(|index| reason_gap(&format!("gap:{index:02}"), "computed identity"))

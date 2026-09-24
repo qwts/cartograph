@@ -217,7 +217,7 @@ The spec compiler **projects the graph → artifacts**. Artifact set:
 | Resource/topology map | Resource graph | Mermaid/Graphviz + table |
 | Data model | DataEntity + MAPS_TO | ERD (Mermaid) + table |
 | ADR set | found + recovered | author ADR format |
-| Gap register | all `Gap` nodes | table (the explicit 5% the system could not confirm); past 12 rows grouped by cause class with capped representatives and counted omissions, plus a `gap_register.json` index of every instance (AC-0209) |
+| Gap register | all `Gap` nodes | table (the explicit 5% the system could not confirm); past 12 rows grouped by cause class with capped representatives and counted omissions, plus a `gap_register.json` index of every instance (AC-0210) |
 | Drift register | ADR/code conflicts | table |
 | Security findings | explicit endpoint auth facts + IAM `GRANTS` | table mapped to US/AC |
 
