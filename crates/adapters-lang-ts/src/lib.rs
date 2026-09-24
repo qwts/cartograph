@@ -295,16 +295,30 @@ impl FileCx<'_> {
         confidence: ConfidenceTier,
         fact: &str,
     ) -> serde_json::Value {
-        let p = Provenance::new(
-            Tier::Deterministic,
-            confidence,
-            vec![EvidenceRef {
+        self.prov_spanning(&[*node], confidence, fact)
+    }
+
+    /// Provenance citing every node that establishes the fact, in order.
+    fn prov_spanning(
+        &self,
+        nodes: &[TsNode],
+        confidence: ConfidenceTier,
+        fact: &str,
+    ) -> serde_json::Value {
+        let evidence = nodes
+            .iter()
+            .map(|node| EvidenceRef {
                 repo: self.id.repo.into(),
                 path: self.path.into(),
                 byte_start: node.start_byte() as u64,
                 byte_end: node.end_byte() as u64,
                 commit_sha: self.id.commit.into(),
-            }],
+            })
+            .collect();
+        let p = Provenance::new(
+            Tier::Deterministic,
+            confidence,
+            evidence,
             EXTRACTOR_ID,
             fact.as_bytes(),
         )
@@ -376,8 +390,10 @@ fn pending_call(
 /// the flow tracer walks through the eval boundary instead of stopping at
 /// it. Every emitted fact stays Confirmed T0, cites the argument's span at
 /// the eval site (the code's true source location), and carries
-/// `via: "eval"` so surfaces can mark dynamic-code recoveries. Returns
-/// whether facts were actually emitted (a parse failure fails closed).
+/// `via: "eval"` so surfaces can mark dynamic-code recoveries. Returns the
+/// site's claim: `None` when nothing was emitted (a parse failure fails
+/// closed), `ConstUnproven` when the code itself holds an unproven eval that
+/// became a Gap (#444), otherwise `Covered`.
 fn emit_eval_extraction(
     cx: &FileCx<'_>,
     out: &mut Extraction,
@@ -385,12 +401,12 @@ fn emit_eval_extraction(
     evidence: TsNode<'_>,
     params: &[String],
     code: &str,
-) -> bool {
+) -> Option<EvalProof> {
     let offset = site.start_byte();
     let marker = format!("__cgeval{offset}");
     let synthetic = format!("function {marker}({}) {{\n{code}\n}}\n", params.join(", "));
     let Ok(inner) = extract_source(synthetic.as_bytes(), cx.path, cx.id) else {
-        return false;
+        return None;
     };
     let entry = sym_id(cx.id.repo, cx.path, &format!("eval@{offset}"));
     let (start, end) = (evidence.start_byte() as u64, evidence.end_byte() as u64);
@@ -505,6 +521,11 @@ fn emit_eval_extraction(
         }
         node.props["via"] = serde_json::json!("eval");
         retarget_props_span(&mut node.props, start, end);
+        // A nested eval Gap's hash was derived from its pre-namespacing id;
+        // the same code at two outer sites must not share one (#451 review).
+        if node.label == "Gap" && node.id.contains(EVAL_GAP_MARKER) {
+            rehash_props(&mut node.props, &format!("Gap {}", node.id));
+        }
         out.nodes.push(node);
     }
     for mut edge in inner.edges {
@@ -515,6 +536,10 @@ fn emit_eval_extraction(
         edge.dst = rewrite(&edge.dst);
         edge.props["via"] = serde_json::json!("eval");
         retarget_props_span(&mut edge.props, start, end);
+        if edge.label == "DEPENDS_ON" && edge.dst.contains(EVAL_GAP_MARKER) {
+            let fact = format!("DEPENDS_ON {} -> {}", edge.src, edge.dst);
+            rehash_props(&mut edge.props, &fact);
+        }
         out.edges.push(edge);
     }
     for mut event_site in inner.event_sites {
@@ -533,7 +558,17 @@ fn emit_eval_extraction(
     // empty: `import`/`export` are syntax errors inside an eval'd script or
     // a function body, and every cross-file/Pulumi proof requires them.
     // inner.eval_sites are dropped too — their lines index the synthetic
-    // source, and this site already carries the outer claim.
+    // source — but a nested unproven site downgrades this site's own claim,
+    // so preflight keeps the potential-Gap finding the recovery just emitted.
+    let claim = if inner
+        .eval_sites
+        .iter()
+        .any(|site| site.proof == EvalProof::ConstUnproven)
+    {
+        EvalProof::ConstUnproven
+    } else {
+        EvalProof::Covered
+    };
     if let Some(caller) = enclosing_symbol(cx, site) {
         out.edges.push(Edge {
             src: caller,
@@ -545,7 +580,65 @@ fn emit_eval_extraction(
             }),
         });
     }
-    true
+    Some(claim)
+}
+
+/// Id marker of a const-unproven eval Gap, at any eval nesting depth.
+const EVAL_GAP_MARKER: &str = "eval-unproven@";
+
+/// Re-derive a fact's content hash from its final canonical form.
+fn rehash_props(props: &mut serde_json::Value, fact: &str) {
+    props["prov"]["content_hash"] = serde_json::json!(core_prov::content_hash(fact.as_bytes()));
+}
+
+/// A const-shaped `eval()` / `new Function()` code argument that could not be
+/// proven to a literal becomes an explicit Gap (#444, AC-0201): never a
+/// guessed fact, never a silent drop. The owning symbol (or the file, at top
+/// level) DEPENDS_ON it, like the `eval-rules` Gap; evidence cites the site
+/// and every unproven argument. The id is keyed by the site's byte offset,
+/// so the same source always yields the same Gap.
+fn emit_eval_gap(
+    cx: &FileCx<'_>,
+    out: &mut Extraction,
+    site: TsNode<'_>,
+    unproven: &[TsNode<'_>],
+    construct: &str,
+) {
+    let gap_id = format!(
+        "gap:{}@{}#{EVAL_GAP_MARKER}{}",
+        cx.id.repo,
+        cx.path,
+        site.start_byte()
+    );
+    let owner = enclosing_symbol(cx, site).unwrap_or_else(|| file_id(cx.id.repo, cx.path));
+    let evidence: Vec<TsNode<'_>> = std::iter::once(site)
+        .chain(unproven.iter().copied())
+        .collect();
+    let reason = "const-shaped code argument could not be proven to a literal";
+    out.nodes.push(Node {
+        id: gap_id.clone(),
+        label: "Gap".into(),
+        props: serde_json::json!({
+            "construct": construct,
+            "reason": reason,
+            "attempted_tiers": ["T0"],
+            "prov": cx.prov_spanning(&evidence, ConfidenceTier::Gap, &format!("Gap {gap_id}")),
+        }),
+    });
+    out.edges.push(Edge {
+        src: owner.clone(),
+        dst: gap_id.clone(),
+        label: "DEPENDS_ON".into(),
+        props: serde_json::json!({
+            "reason": reason,
+            "attempted_resolution": "const-literal",
+            "prov": cx.prov_spanning(
+                &evidence,
+                ConfidenceTier::Gap,
+                &format!("DEPENDS_ON {owner} -> {gap_id}"),
+            ),
+        }),
+    });
 }
 
 /// Node ids are repo-namespaced (`{kind}:{repo}@{rest}`, US-0001 slice 2):
@@ -1755,8 +1848,9 @@ fn extract_source_recording(
     // opaque construct. The proof mirrors the crate's binding rules: a string
     // literal (or substitution-free template), a same-file `const X = '…'`,
     // or a const-object member proven through `const_resolution` — never a
-    // name coincidence. Anything not provable emits no facts and is
-    // classified for preflight instead (escalation ladder: no guessing).
+    // name coincidence. A const-shaped argument that cannot be proven becomes
+    // an explicit Gap (#444); anything else emits no facts. Every site is also
+    // classified for preflight (escalation ladder: no guessing).
     {
         let mut eval_consts = const_resolution::ConstIndex::default();
         const_resolution::collect_imports(&cx, root, &language, &mut eval_consts);
@@ -1842,12 +1936,14 @@ fn extract_source_recording(
             let proof = match proof {
                 EvalArg::Literal(code) => {
                     let evidence = arg.expect("a literal proof implies an argument");
-                    match emit_eval_extraction(&cx, &mut out, call, evidence, &[], &code) {
-                        true => EvalProof::Covered,
-                        false => EvalProof::Dynamic,
-                    }
+                    emit_eval_extraction(&cx, &mut out, call, evidence, &[], &code)
+                        .unwrap_or(EvalProof::Dynamic)
                 }
-                EvalArg::ConstShaped => EvalProof::ConstUnproven,
+                EvalArg::ConstShaped => {
+                    let arg = arg.expect("a const-shaped proof implies an argument");
+                    emit_eval_gap(&cx, &mut out, call, &[arg], "eval");
+                    EvalProof::ConstUnproven
+                }
                 EvalArg::Dynamic => EvalProof::Dynamic,
             };
             out.eval_sites.push(EvalSite {
@@ -1902,13 +1998,18 @@ fn extract_source_recording(
                     })
                     .collect();
                 let body = literals.pop().expect("at least the body argument");
-                match emit_eval_extraction(&cx, &mut out, site, body_arg, &literals, &body) {
-                    true => EvalProof::Covered,
-                    false => EvalProof::Dynamic,
-                }
+                emit_eval_extraction(&cx, &mut out, site, body_arg, &literals, &body)
+                    .unwrap_or(EvalProof::Dynamic)
             } else if proofs.iter().any(|proof| matches!(proof, EvalArg::Dynamic)) {
                 EvalProof::Dynamic
             } else {
+                let unproven: Vec<_> = arguments
+                    .iter()
+                    .zip(&proofs)
+                    .filter(|(_, proof)| matches!(proof, EvalArg::ConstShaped))
+                    .map(|(arg, _)| *arg)
+                    .collect();
+                emit_eval_gap(&cx, &mut out, site, &unproven, "new Function");
                 EvalProof::ConstUnproven
             };
             out.eval_sites.push(EvalSite {

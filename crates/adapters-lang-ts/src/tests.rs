@@ -1677,9 +1677,9 @@ export function run() {
     assert_eq!(entries, 2);
 }
 
-// Unprovable arguments emit no facts, ever — a const-shaped binding that
-// cannot be proven stays an explicit Gap claim, and interpolated templates
-// or computed expressions stay dynamic (Unsupported). (T-0099)
+// Unprovable arguments emit no recovered facts, ever — a const-shaped binding
+// that cannot be proven becomes an explicit Gap (AC-0201, T-0201), and interpolated
+// templates or computed expressions stay dynamic (Unsupported). (T-0099)
 #[test]
 fn unproven_and_interpolated_eval_yield_classification_but_no_facts() {
     let src = r#"
@@ -1702,6 +1702,194 @@ export function run(name: string) {
             (6, EvalProof::Dynamic),
         ]
     );
+    // Only the const-shaped site surfaces as a Gap; dynamic ones stay findings.
+    let gaps: Vec<_> = ex.nodes.iter().filter(|n| n.label == "Gap").collect();
+    assert_eq!(
+        gaps.len(),
+        1,
+        "one Gap, for the const-shaped site: {gaps:?}"
+    );
+}
+
+fn eval_gaps(ex: &Extraction) -> Vec<&Node> {
+    ex.nodes
+        .iter()
+        .filter(|n| n.label == "Gap" && n.id.contains("eval-unproven@"))
+        .collect()
+}
+
+fn evidence_texts<'a>(src: &'a str, props: &serde_json::Value) -> Vec<&'a str> {
+    props["prov"]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|ev| {
+            &src[ev["byte_start"].as_u64().unwrap() as usize
+                ..ev["byte_end"].as_u64().unwrap() as usize]
+        })
+        .collect()
+}
+
+// #444: a const-shaped eval() argument that cannot be proven to a literal is
+// an explicit Gap node — never Confirmed, never silently dropped — owned by
+// its enclosing symbol through DEPENDS_ON, citing the call and the argument,
+// with an offset-keyed id that is identical across runs. (AC-0201, T-0201)
+#[test]
+fn const_unproven_eval_emits_an_explicit_gap_owned_by_its_symbol() {
+    let src = "const CODE = load();\nexport function run() {\n  eval(CODE);\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/boot.ts", &id()).unwrap();
+    let gaps = eval_gaps(&ex);
+    assert_eq!(gaps.len(), 1, "exactly one Gap for the site: {gaps:?}");
+    let gap = gaps[0];
+    let offset = src.find("eval(CODE)").unwrap();
+    assert_eq!(
+        gap.id,
+        format!("gap:qwtm/example@src/boot.ts#eval-unproven@{offset}")
+    );
+    assert_eq!(gap.props["construct"], "eval");
+    assert_eq!(gap.props["attempted_tiers"], serde_json::json!(["T0"]));
+    assert!(
+        gap.props["reason"]
+            .as_str()
+            .unwrap()
+            .contains("could not be proven to a literal")
+    );
+    assert_eq!(gap.props["prov"]["confidence_tier"], "Gap");
+    assert_eq!(
+        evidence_texts(src, &gap.props),
+        vec!["eval(CODE)", "CODE"],
+        "cites the call site and the unproven argument"
+    );
+    let owners: Vec<_> = ex
+        .edges
+        .iter()
+        .filter(|e| e.dst == gap.id)
+        .map(|e| (e.src.as_str(), e.label.as_str()))
+        .collect();
+    assert_eq!(
+        owners,
+        vec![("sym:qwtm/example@src/boot.ts#run", "DEPENDS_ON")]
+    );
+    // Nothing about the site is asserted as Confirmed.
+    assert!(ex.nodes.iter().all(|n| n.props.get("via").is_none()));
+
+    // Deterministic: the same source yields the same facts.
+    let again = extract_source(src.as_bytes(), "src/boot.ts", &id()).unwrap();
+    assert_eq!(ex.nodes, again.nodes);
+    assert_eq!(ex.edges, again.edges);
+
+    // Inside proven eval code the Gap is namespaced under that eval site, so a
+    // synthetic-buffer offset can never collide with an outer-file Gap id.
+    let nested_src = "export function run() {\n  eval(\"eval(CODE)\");\n}\n";
+    let nested = extract_source(nested_src.as_bytes(), "src/nested.ts", &id()).unwrap();
+    let gaps = eval_gaps(&nested);
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    let outer = nested_src.find("eval(\"").unwrap();
+    assert!(
+        gaps[0].id.starts_with(&format!(
+            "gap:qwtm/example@src/nested.ts#eval@{outer}.eval-unproven@"
+        )),
+        "{}",
+        gaps[0].id
+    );
+    assert_eq!(gaps[0].props["via"], "eval");
+    assert!(nested.edges.iter().any(|e| e.dst == gaps[0].id
+        && e.src == format!("sym:qwtm/example@src/nested.ts#eval@{outer}")
+        && e.label == "DEPENDS_ON"));
+}
+
+// #451 review: a proven outer eval whose code holds an unproven eval is not
+// Covered — its claim downgrades so preflight keeps the potential-Gap finding
+// the recovery emitted — and the same nested code at two outer sites yields
+// distinct content hashes derived from each Gap's final, namespaced id.
+// (AC-0201, T-0201)
+#[test]
+fn nested_const_unproven_eval_downgrades_the_outer_claim_and_rehashes() {
+    let src = "export function run() {\n  eval(\"eval(CODE)\");\n  eval(\"eval(CODE)\");\n  eval(\"function ok() {}\");\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/nested.ts", &id()).unwrap();
+    let claims: Vec<(u64, EvalProof)> = ex.eval_sites.iter().map(|s| (s.line, s.proof)).collect();
+    assert_eq!(
+        claims,
+        vec![
+            (2, EvalProof::ConstUnproven),
+            (3, EvalProof::ConstUnproven),
+            (4, EvalProof::Covered),
+        ]
+    );
+    let gaps = eval_gaps(&ex);
+    assert_eq!(gaps.len(), 2, "{gaps:?}");
+    let hash =
+        |props: &serde_json::Value| props["prov"]["content_hash"].as_str().unwrap().to_string();
+    assert_ne!(hash(&gaps[0].props), hash(&gaps[1].props));
+    for gap in &gaps {
+        assert_eq!(
+            hash(&gap.props),
+            core_prov::content_hash(format!("Gap {}", gap.id).as_bytes())
+        );
+        let owner = ex
+            .edges
+            .iter()
+            .find(|e| e.dst == gap.id && e.label == "DEPENDS_ON")
+            .expect("nested Gap keeps its owner edge");
+        assert_eq!(
+            hash(&owner.props),
+            core_prov::content_hash(
+                format!("DEPENDS_ON {} -> {}", owner.src, owner.dst).as_bytes()
+            )
+        );
+    }
+}
+
+// A top-level site has no enclosing symbol: the File owns the Gap. A
+// `new Function` with several unproven arguments cites every one of them,
+// while proven literal arguments are not cited. (AC-0201, T-0201)
+#[test]
+fn const_unproven_sites_bind_to_file_and_cite_every_unproven_argument() {
+    let src = "import { PARAM, BODY } from './parts';\neval(BODY);\nexport function make() {\n  return new Function(PARAM, \"b\", BODY);\n}\n";
+    let ex = extract_source(src.as_bytes(), "src/factory.ts", &id()).unwrap();
+    let gaps = eval_gaps(&ex);
+    assert_eq!(gaps.len(), 2, "{gaps:?}");
+    let top = gaps
+        .iter()
+        .find(|g| g.props["construct"] == "eval")
+        .unwrap();
+    assert!(
+        ex.edges
+            .iter()
+            .any(|e| e.src == "file:qwtm/example@src/factory.ts"
+                && e.dst == top.id
+                && e.label == "DEPENDS_ON"),
+        "top-level Gap is owned by its File"
+    );
+    let ctor = gaps
+        .iter()
+        .find(|g| g.props["construct"] == "new Function")
+        .unwrap();
+    assert_eq!(
+        evidence_texts(src, &ctor.props),
+        vec!["new Function(PARAM, \"b\", BODY)", "PARAM", "BODY"]
+    );
+    assert!(
+        ex.edges
+            .iter()
+            .any(|e| e.src == "sym:qwtm/example@src/factory.ts#make"
+                && e.dst == ctor.id
+                && e.label == "DEPENDS_ON")
+    );
+    let claims: Vec<(u64, EvalProof)> = ex.eval_sites.iter().map(|s| (s.line, s.proof)).collect();
+    assert_eq!(
+        claims,
+        vec![(2, EvalProof::ConstUnproven), (4, EvalProof::ConstUnproven)]
+    );
+
+    // Proven and dynamic sites never produce an eval Gap.
+    let other = extract_source(
+        b"const OK = 'run()';\nexport function go(x: string) {\n  eval(OK);\n  eval(x + '');\n  new Function(build());\n}\n",
+        "src/other.ts",
+        &id(),
+    )
+    .unwrap();
+    assert!(eval_gaps(&other).is_empty());
 }
 
 // A local binding named `eval` is NOT the global — no facts and no claim,
