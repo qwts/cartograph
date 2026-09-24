@@ -9,7 +9,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | US-0003 | AC-0007..0009, AC-0043..0048, AC-0051..0052 | adapters-lang-ts, iac, dynamic, spec, app | M2, M6 | — | ADR-0003 | T-0007..0009, T-0043..0048, T-0051..0052 |
 | US-0004 | AC-0010..0012 | events, dynamic, flowtracer, app | M3, M5–M6 | F-* | ADR-0002 | T-0010..0012 |
 | US-0005 | AC-0013..0014 | adapters-lang-ts(tsx), adapters-fw | M4 | F-* | ADR-0003 | T-0013..0014 |
-| US-0006 | AC-0015..0017,AC-0083 | flowtracer | M3–M5 | F-* | ADR-0002 | T-0015..0017,T-0083 |
+| US-0006 | AC-0015..0017,AC-0083,AC-0219 | flowtracer | M3–M5 | F-* | ADR-0002, ADR-0032 | T-0015..0017,T-0083,T-0219 |
 | US-0007 | AC-0018..0020,AC-0061 | core-prov, agents, ui | M0, M8 | — | ADR-0002, ADR-0006 | T-0018..0020,T-0061 |
 | US-0008 | AC-0021..0022 | adapters-lang-ts, iac, semantic, llm, app | M7 | F-* | ADR-0002, ADR-0004, ADR-0010 | T-0021..0022 |
 | US-0009 | AC-0023..0025,AC-0055..0056,AC-0063,AC-0087,AC-0089 | agents, llm, ingest, app, ui | M8 | — | ADR-0004 | T-0023..0025,T-0055..0056,T-0063,T-0087,T-0089 |
@@ -86,3 +86,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0029 | Risk-tiered review: owner review for protected paths only |
 | ADR-0030 | One shared, `.gitignore`-aware source walk |
 | ADR-0031 | Placeholder provenance and proven import boundaries |
+| ADR-0032 | Owned execution Gaps make a flow Partial |

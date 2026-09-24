@@ -12,7 +12,10 @@
 //! `SUBSCRIBES` out to consumers. Each hop records the tier and confidence
 //! of the edge that resolved it (AC-0015). A hop into a `Gap` node
 //! truncates that branch — the flow is emitted partial, never silently
-//! completed (AC-0016, R-INT-4). Completed traces score per §5.3
+//! completed (AC-0016, R-INT-4). A flow node that `DEPENDS_ON` an
+//! execution Gap (code it runs that T0 could not recover, such as an
+//! unproven `eval()`) contributes that Gap as a hop too (AC-0219,
+//! ADR-0032). Completed traces score per §5.3
 //! (AC-0017). At M3 every resolvable hop is T0; the T1–T3 rungs join the
 //! ladder at M6–M8.
 
@@ -32,6 +35,8 @@ pub const FLOW_EDGE_LABELS: &[&str] = &[
     "CALLS",
     "PUBLISHES",
     "SUBSCRIBES",
+    // Walked only into execution Gaps (`owns_execution_gap`), never onward.
+    "DEPENDS_ON",
 ];
 
 /// Node labels the tracer needs (for classification and display names).
@@ -204,6 +209,22 @@ fn edge_prov(edge: &Edge) -> (String, String, Option<String>, Provenance) {
     (tier, confidence, evidence, provenance)
 }
 
+/// True when `edge` is a `DEPENDS_ON` from its owner into a Gap that stands
+/// for code the owner runs but T0 could not recover (AC-0219, ADR-0032):
+/// an unproven `eval()` / `new Function()` argument, or any future Gap an
+/// adapter hangs off its owner this way — fail closed, so an unknown kind
+/// counts. A Gap flagged `rule_evidence_gap` is excluded: it scopes where
+/// source-rule *evidence* stops (including decoded eval code awaiting a
+/// span mapping), while the owner's calls were still recovered. Every other
+/// `DEPENDS_ON` (e.g. Terraform ordering between resources) is not a flow
+/// hop at all.
+fn owns_execution_gap(edge: &Edge, by_id: &BTreeMap<&str, &Node>) -> bool {
+    let node = by_id.get(edge.dst.as_str());
+    let is_gap = node.map_or(edge.dst.starts_with("gap:"), |node| node.label == "Gap");
+    let rule_scoped = |props: &serde_json::Value| props["rule_evidence_gap"] == true;
+    is_gap && !rule_scoped(&edge.props) && !node.is_some_and(|node| rule_scoped(&node.props))
+}
+
 fn gap_context(node: Option<&&Node>) -> (Option<String>, Vec<String>) {
     let Some(node) = node.filter(|node| node.label == "Gap") else {
         return (None, Vec::new());
@@ -243,6 +264,9 @@ pub fn trace(nodes: &[Node], edges: &[Edge]) -> Vec<Flow> {
                     .entry(edge.dst.as_str())
                     .or_default()
                     .push(edge);
+            }
+            "DEPENDS_ON" if owns_execution_gap(edge, &by_id) => {
+                out_edges.entry(edge.src.as_str()).or_default().push(edge);
             }
             "DEFINED_IN" => {
                 file_symbols
