@@ -295,16 +295,30 @@ impl FileCx<'_> {
         confidence: ConfidenceTier,
         fact: &str,
     ) -> serde_json::Value {
-        let p = Provenance::new(
-            Tier::Deterministic,
-            confidence,
-            vec![EvidenceRef {
+        self.prov_spanning(&[*node], confidence, fact)
+    }
+
+    /// Provenance citing every node that establishes the fact, in order.
+    fn prov_spanning(
+        &self,
+        nodes: &[TsNode],
+        confidence: ConfidenceTier,
+        fact: &str,
+    ) -> serde_json::Value {
+        let evidence = nodes
+            .iter()
+            .map(|node| EvidenceRef {
                 repo: self.id.repo.into(),
                 path: self.path.into(),
                 byte_start: node.start_byte() as u64,
                 byte_end: node.end_byte() as u64,
                 commit_sha: self.id.commit.into(),
-            }],
+            })
+            .collect();
+        let p = Provenance::new(
+            Tier::Deterministic,
+            confidence,
+            evidence,
             EXTRACTOR_ID,
             fact.as_bytes(),
         )
@@ -546,6 +560,56 @@ fn emit_eval_extraction(
         });
     }
     true
+}
+
+/// A const-shaped `eval()` / `new Function()` code argument that could not be
+/// proven to a literal becomes an explicit Gap (#444, AC-0201): never a
+/// guessed fact, never a silent drop. The owning symbol (or the file, at top
+/// level) DEPENDS_ON it, like the `eval-rules` Gap; evidence cites the site
+/// and every unproven argument. The id is keyed by the site's byte offset,
+/// so the same source always yields the same Gap.
+fn emit_eval_gap(
+    cx: &FileCx<'_>,
+    out: &mut Extraction,
+    site: TsNode<'_>,
+    unproven: &[TsNode<'_>],
+    construct: &str,
+) {
+    let gap_id = format!(
+        "gap:{}@{}#eval-unproven@{}",
+        cx.id.repo,
+        cx.path,
+        site.start_byte()
+    );
+    let owner = enclosing_symbol(cx, site).unwrap_or_else(|| file_id(cx.id.repo, cx.path));
+    let evidence: Vec<TsNode<'_>> = std::iter::once(site)
+        .chain(unproven.iter().copied())
+        .collect();
+    let reason = "const-shaped code argument could not be proven to a literal";
+    out.nodes.push(Node {
+        id: gap_id.clone(),
+        label: "Gap".into(),
+        props: serde_json::json!({
+            "construct": construct,
+            "reason": reason,
+            "attempted_tiers": ["T0"],
+            "prov": cx.prov_spanning(&evidence, ConfidenceTier::Gap, &format!("Gap {gap_id}")),
+        }),
+    });
+    out.edges.push(Edge {
+        src: owner.clone(),
+        dst: gap_id.clone(),
+        label: "DEPENDS_ON".into(),
+        props: serde_json::json!({
+            "reason": reason,
+            "attempted_resolution": "const-literal",
+            "prov": cx.prov_spanning(
+                &evidence,
+                ConfidenceTier::Gap,
+                &format!("DEPENDS_ON {owner} -> {gap_id}"),
+            ),
+        }),
+    });
 }
 
 /// Node ids are repo-namespaced (`{kind}:{repo}@{rest}`, US-0001 slice 2):
@@ -1755,8 +1819,9 @@ fn extract_source_recording(
     // opaque construct. The proof mirrors the crate's binding rules: a string
     // literal (or substitution-free template), a same-file `const X = '…'`,
     // or a const-object member proven through `const_resolution` — never a
-    // name coincidence. Anything not provable emits no facts and is
-    // classified for preflight instead (escalation ladder: no guessing).
+    // name coincidence. A const-shaped argument that cannot be proven becomes
+    // an explicit Gap (#444); anything else emits no facts. Every site is also
+    // classified for preflight (escalation ladder: no guessing).
     {
         let mut eval_consts = const_resolution::ConstIndex::default();
         const_resolution::collect_imports(&cx, root, &language, &mut eval_consts);
@@ -1847,7 +1912,11 @@ fn extract_source_recording(
                         false => EvalProof::Dynamic,
                     }
                 }
-                EvalArg::ConstShaped => EvalProof::ConstUnproven,
+                EvalArg::ConstShaped => {
+                    let arg = arg.expect("a const-shaped proof implies an argument");
+                    emit_eval_gap(&cx, &mut out, call, &[arg], "eval");
+                    EvalProof::ConstUnproven
+                }
                 EvalArg::Dynamic => EvalProof::Dynamic,
             };
             out.eval_sites.push(EvalSite {
@@ -1909,6 +1978,13 @@ fn extract_source_recording(
             } else if proofs.iter().any(|proof| matches!(proof, EvalArg::Dynamic)) {
                 EvalProof::Dynamic
             } else {
+                let unproven: Vec<_> = arguments
+                    .iter()
+                    .zip(&proofs)
+                    .filter(|(_, proof)| matches!(proof, EvalArg::ConstShaped))
+                    .map(|(arg, _)| *arg)
+                    .collect();
+                emit_eval_gap(&cx, &mut out, site, &unproven, "new Function");
                 EvalProof::ConstUnproven
             };
             out.eval_sites.push(EvalSite {

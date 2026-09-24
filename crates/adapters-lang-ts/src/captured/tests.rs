@@ -525,3 +525,24 @@ fn captured_enumeration_rejects_symlinks_and_non_utf8_paths() {
         b"external source"
     );
 }
+
+#[test]
+fn captured_parser_emits_the_same_const_unproven_eval_gap() {
+    // AC-0201: the captured production lane parses the retained bytes with the
+    // same extractor, so the explicit eval Gap and its owner edge are emitted
+    // exactly as the ordinary path emits them.
+    let source = b"const CODE = load();\nexport function run() {\n  eval(CODE);\n}\n";
+    let (_directory, capture) = fixture(source, "src/boot.ts");
+    let (facts, _) = extract_file(capture.file("src/boot.ts").unwrap(), &parser_id()).unwrap();
+    let ordinary = crate::extract_source(source, "src/boot.ts", &parser_id()).unwrap();
+    assert_eq!(facts.nodes, ordinary.nodes);
+    assert_eq!(facts.edges, ordinary.edges);
+    let gap = facts
+        .nodes
+        .iter()
+        .find(|node| node.label == "Gap" && node.id.contains("#eval-unproven@"))
+        .expect("captured extraction carries the eval Gap");
+    assert!(facts.edges.iter().any(|edge| edge.dst == gap.id
+        && edge.label == "DEPENDS_ON"
+        && edge.src.ends_with("#run")));
+}

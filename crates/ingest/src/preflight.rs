@@ -629,9 +629,8 @@ fn scan_source(
                     rel,
                     line_no,
                     "a const-shaped eval()/new Function() argument the \
-                     adapter could not prove to a literal — becomes an \
-                     explicit Gap if recovery cannot resolve it \
-                     deterministically",
+                     adapter could not prove to a literal — recovery records \
+                     it as an explicit Gap bound to its owning symbol",
                 ));
             }
             // Every site on the line proved literal: the adapter extracted
