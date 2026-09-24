@@ -49,6 +49,9 @@ function producerLabel(tier: string): string {
  * as ACs or flows the compiler did not count. */
 export function docChip(artifact: SpecArtifact): { text: string; tone: 'default' | 'alert' } {
   const count = artifact.assertions.length;
+  // Structured indexes (#240, #487) list the instances of their Markdown
+  // artifact, where those instances are counted once.
+  if (artifact.format === 'json') return { text: 'index', tone: 'default' };
   switch (artifact.file_name) {
     case 'user_stories.md':
       return { text: `${count} US`, tone: 'default' };
@@ -61,10 +64,6 @@ export function docChip(artifact: SpecArtifact): { text: string; tone: 'default'
     case 'rule-evidence.md':
       // Includes observations and their GOVERNS/DEPENDS_ON relationships.
       return { text: `${count} assertions`, tone: 'default' };
-    case 'gap_register.json':
-      // Structured index of the register's instances (#240); the instances
-      // themselves are counted once, on gap_register.md.
-      return { text: 'index', tone: 'default' };
     case 'gap_register.md':
     case 'drift_register.md':
     case 'security.md':

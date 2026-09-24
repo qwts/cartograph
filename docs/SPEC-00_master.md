@@ -212,7 +212,7 @@ The spec compiler **projects the graph → artifacts**. Artifact set:
 | Artifact | Source | Format |
 |---|---|---|
 | `user_stories.md` | Capabilities + flows → US/AC | author schema (see `user_stories.md`) |
-| `US-TM.md` | US ↔ AC ↔ Module ↔ Flow ↔ ADR ↔ Test | traceability matrix |
+| `US-TM.md` | US ↔ AC ↔ Module ↔ Flow ↔ ADR ↔ Test | traceability matrix; past 200 links grouped by relation × target with capped representatives and counted omissions, plus a `US-TM.json` index of every link (AC-0221) |
 | Flow dossiers | each BusinessFlow | Markdown + Mermaid sequence + provenance table |
 | Resource/topology map | Resource graph | Mermaid/Graphviz + table |
 | Data model | DataEntity + MAPS_TO | ERD (Mermaid) + table |
@@ -220,6 +220,7 @@ The spec compiler **projects the graph → artifacts**. Artifact set:
 | Gap register | all `Gap` nodes | table (the explicit 5% the system could not confirm); past 12 rows grouped by cause class with capped representatives and counted omissions, plus a `gap_register.json` index of every instance (AC-0210) |
 | Drift register | ADR/code conflicts | table |
 | Security findings | explicit endpoint auth facts + IAM `GRANTS` | table mapped to US/AC |
+| `rule-evidence.md` | stored `BusinessRule` observations | per-observation evidence; past 50 observations grouped by exit-source file with capped representatives and counted omissions, plus a `rule-evidence.json` index of every observation and relationship (AC-0221) |
 
 **US/AC mapping rule:** one `Capability` → one or more US; each terminal/branch condition of its realizing flows → AC (Given/When/Then). Security and performance facts (auth edges, rate limits, IAM grants, timeouts) map onto US/AC per the author's "security/perf mapped to US/AC" standard.
 
