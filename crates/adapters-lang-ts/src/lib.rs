@@ -492,12 +492,17 @@ fn emit_eval_extraction(
             label: "Gap".into(),
             props: props.clone(),
         });
-        out.edges.push(Edge {
+        // The edge starts from the node's props, so its hash is still the
+        // node's; a distinct fact gets the hash of its own identity (#498).
+        let mut edge = Edge {
             src: entry.clone(),
             dst: gap_id,
             label: "DEPENDS_ON".into(),
             props,
-        });
+        };
+        let fact = edge_fact(&edge);
+        rehash_props(&mut edge.props, &fact);
+        out.edges.push(edge);
     }
     for mut node in inner.nodes {
         if node.id == file || deferred_rules.contains(&node.id) {
