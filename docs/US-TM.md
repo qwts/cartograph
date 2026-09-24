@@ -85,5 +85,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0028 | Separate durable investigations from edge-resolution proposals |
 | ADR-0029 | Risk-tiered review: owner review for protected paths only |
 | ADR-0030 | One shared, `.gitignore`-aware source walk |
-
 | ADR-0031 | Placeholder provenance and proven import boundaries |
