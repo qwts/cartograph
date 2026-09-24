@@ -1,5 +1,21 @@
 # cartograph
 
+## 0.15.0
+
+### Minor Changes
+
+- 2624e4c: Recovery now parses source files in parallel, and Settings adds an **Ingest parallelism** control (Auto, or a fixed number of workers). Auto uses one worker per performance core, minus one, and fewer on machines with little memory. Large repositories recover several times faster without using more memory, and the recovered graph is identical whatever the setting.
+- 350f986: Imports of external packages no longer appear as system gaps. A clean spring-petclinic ingest previously reported 206 open findings, all of them imports such as `jakarta.persistence` or `org.springframework`. It now reports none. Every placeholder node now records the import or reference that created it and the reason. A package the repository provably cannot provide is recorded as a confirmed external dependency. A package the repository declares is recorded as internal. An in-repo target that fails to resolve stays an explicit gap and names its cause. Java and Kotlin imports of in-repo types now link to the file that declares the type.
+
+### Patch Changes
+
+- 318f9e1: Clear finished now removes the Jobs row of an investigation ended by owner death (interrupted or outcome unknown). The investigation keeps that outcome in its history; the row is never relabelled done or failed, and resumable interrupted jobs are still kept.
+- d753b82: A relation cited from several call or import sites now keeps every site's evidence, not just the last one's. The stored edge lists the spans in source order, without duplicates and up to a bound. It states how many spans it omitted beyond that bound. Its tier and confidence are unchanged.
+- 09be196: Preflight and recovery now skip everything a repository's own `.gitignore` files exclude. Build output, emitted bundles and vendored code (`build/`, `out/`, `vendor/` and similar) are no longer ingested as source. Every language, Terraform, plugins and Preflight now read the same file set.
+- fa07423: Investigations no longer record a completed task without its findings when the result and detail reads straddle the result commit; the inconsistent observation is rejected and the next refresh reads a consistent pair.
+- 40bd0a8: Java and Kotlin Spring endpoints now keep a trailing slash written in the source. For example, `@RequestMapping("/api/")` with a bare `@GetMapping` is recorded as `/api/` instead of `/api`, and `/a` and `/a/` are separate endpoints, as they are in Spring 6. Endpoint ids for such routes change on the next ingest.
+- 5ac5aa1: A TypeScript/JavaScript `eval()` or `new Function()` whose code argument is a const-shaped binding the adapter cannot prove to a literal now becomes an explicit Gap in the graph, bound to its enclosing symbol (or file) and citing the call and the unproven arguments, instead of appearing only in the preflight report.
+
 ## 0.14.4
 
 ### Patch Changes
