@@ -31,6 +31,8 @@ Split review by risk and let GitHub enforce the split:
   - build entrypoints that execute code where release credentials are present
   - supply chain: manifests, lockfiles and the `cargo deny` policy
   - the changelog, which marks a release
+  - license terms (`LICENSE`, `LICENSE.md`) and third-party notice generation
+    (`about.hbs`, `about.toml`, and the generated notices it writes)
 
   There is no `*` rule. A PR that adds a new agent tool directory or build
   entrypoint, or passes an `LlmProvider` into a new crate, adds it to CODEOWNERS

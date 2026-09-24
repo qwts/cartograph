@@ -72,3 +72,13 @@ package-lock.json @qwts
 
 # Release decision: only the Version packages PR changes this.
 /CHANGELOG.md @qwts
+
+# License terms and the inputs and outputs of third-party notice generation
+# (scripts/generate-notices.mjs, run by package.yml): what ships as the
+# product's license and attribution.
+/LICENSE                                  @qwts
+/LICENSE.md                               @qwts
+/about.hbs                                @qwts
+/about.toml                               @qwts
+/THIRD-PARTY-NOTICES.md                   @qwts
+/ui/src/generated/thirdPartyNotices.ts    @qwts
