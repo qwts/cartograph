@@ -155,7 +155,7 @@ fn extract_file(
     let mut matches = cursor.matches(&q_decls, root, source);
     while let Some(m) = matches.next() {
         let (mut name, mut value) = (None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_decls.capture_names()[c.index as usize] {
                 "name" => name = Some(c.node),
                 "value" => value = Some(c.node),
@@ -182,7 +182,7 @@ fn extract_file(
     let mut matches = cursor.matches(&q_calls, root, source);
     while let Some(m) = matches.next() {
         let (mut callee, mut args, mut call) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_calls.capture_names()[c.index as usize] {
                 "callee" => callee = Some(c.node),
                 "args" => args = Some(c.node),

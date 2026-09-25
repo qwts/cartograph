@@ -215,7 +215,7 @@ fn parse_imports(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, cx.source);
     while let Some(found) = matches.next() {
-        let statement = found.captures[0].node;
+        let statement = found.captures()[0].node;
         let raw = cx.text(&statement).replace(['\n', '\\'], " ");
         let Some(rest) = raw.trim().strip_prefix("import") else {
             continue;
@@ -660,7 +660,7 @@ pub fn extract_source(
         let mut matches = cursor.matches(&query, root, source);
         let mut package = None;
         if let Some(found) = matches.next() {
-            let raw = cx.text(&found.captures[0].node).replace('\n', " ");
+            let raw = cx.text(&found.captures()[0].node).replace('\n', " ");
             package = raw
                 .trim()
                 .strip_prefix("package")
@@ -684,7 +684,7 @@ pub fn extract_source(
     let mut matches = cursor.matches(&type_query, root, source);
     while let Some(found) = matches.next() {
         let (mut decl, mut name) = (None, None);
-        for capture in found.captures {
+        for capture in found.captures() {
             match type_query.capture_names()[capture.index as usize] {
                 "decl" => decl = Some(capture.node),
                 "name" => name = Some(cx.text(&capture.node).to_string()),
@@ -735,7 +735,7 @@ pub fn extract_source(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&function_query, root, source);
     while let Some(found) = matches.next() {
-        let name_node = found.captures[0].node;
+        let name_node = found.captures()[0].node;
         let Some(function) = name_node.parent() else {
             continue;
         };
@@ -944,7 +944,7 @@ pub fn extract_source(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&call_query, root, source);
     while let Some(found) = matches.next() {
-        let call = found.captures[0].node;
+        let call = found.captures()[0].node;
         let Some(callee) = call.named_child(0) else {
             continue;
         };

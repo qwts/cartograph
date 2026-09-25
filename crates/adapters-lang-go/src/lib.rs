@@ -206,7 +206,7 @@ fn parse_imports(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, cx.source);
     while let Some(found) = matches.next() {
-        let spec = found.captures[0].node;
+        let spec = found.captures()[0].node;
         let Some(path_node) = spec.child_by_field_name("path") else {
             continue;
         };
@@ -334,7 +334,7 @@ fn assignment_receivers(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, cx.source);
     while let Some(found) = matches.next() {
-        let assignment = found.captures[0].node;
+        let assignment = found.captures()[0].node;
         let raw = cx.text(&assignment);
         let Some((left, right)) = raw.split_once(":=") else {
             continue;
@@ -642,7 +642,7 @@ fn extract_source_with_module(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&function_query, root, source);
     while let Some(found) = matches.next() {
-        let function = found.captures[0].node;
+        let function = found.captures()[0].node;
         let Some((simple, qualified)) = function_name(&cx, function) else {
             continue;
         };
@@ -677,7 +677,7 @@ fn extract_source_with_module(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&call_query, root, source);
     while let Some(found) = matches.next() {
-        let call = found.captures[0].node;
+        let call = found.captures()[0].node;
         let Some(function) = call.child_by_field_name("function") else {
             continue;
         };

@@ -1368,7 +1368,7 @@ fn extract_source_recording(
         let mut spec = None;
         let mut stmt = None;
         let mut clause = None;
-        for c in m.captures {
+        for c in m.captures() {
             match q_imports.capture_names()[c.index as usize] {
                 "source" => spec = Some(cx.text(&c.node).to_string()),
                 "stmt" => stmt = Some(c.node),
@@ -1478,7 +1478,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_pulumi, root, source);
     while let Some(m) = matches.next() {
         let (mut constructor, mut site, mut args) = (None, None, None);
-        for capture in m.captures {
+        for capture in m.captures() {
             match q_pulumi.capture_names()[capture.index as usize] {
                 "ctor" => constructor = Some(cx.text(&capture.node).to_string()),
                 "new" => site = Some(capture.node),
@@ -1677,7 +1677,7 @@ fn extract_source_recording(
     while let Some(m) = matches.next() {
         let mut var = None;
         let mut callee = None;
-        for c in m.captures {
+        for c in m.captures() {
             match q_factories.capture_names()[c.index as usize] {
                 "var" => var = Some(cx.text(&c.node).to_string()),
                 "callee" => callee = Some(cx.text(&c.node).to_string()),
@@ -1716,7 +1716,7 @@ fn extract_source_recording(
         let mut method = None;
         let mut route = None;
         let mut call = None;
-        for c in m.captures {
+        for c in m.captures() {
             match q_endpoints.capture_names()[c.index as usize] {
                 "recv" => recv = Some(cx.text(&c.node).to_string()),
                 "method" => method = Some(cx.text(&c.node).to_string()),
@@ -1785,7 +1785,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_classes, root, source);
     while let Some(m) = matches.next() {
         let (mut class_node, mut body) = (None, None);
-        for capture in m.captures {
+        for capture in m.captures() {
             match q_classes.capture_names()[capture.index as usize] {
                 "class" => class_node = Some(capture.node),
                 "body" => body = Some(capture.node),
@@ -1880,7 +1880,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_consts, root, source);
     while let Some(m) = matches.next() {
         let (mut name, mut lit, mut decl) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_consts.capture_names()[c.index as usize] {
                 "name" => name = Some(cx.text(&c.node).to_string()),
                 "lit" => lit = Some(cx.text(&c.node).to_string()),
@@ -1950,7 +1950,7 @@ fn extract_source_recording(
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&q_shadow_bindings, root, source);
         while let Some(m) = matches.next() {
-            for c in m.captures {
+            for c in m.captures() {
                 match cx.text(&c.node) {
                     "eval" => eval_shadowed = true,
                     "Function" => function_shadowed = true,
@@ -1968,7 +1968,7 @@ fn extract_source_recording(
         let mut matches = cursor.matches(&q_eval, root, source);
         while let Some(m) = matches.next() {
             let (mut fn_name, mut args, mut call) = (None, None, None);
-            for c in m.captures {
+            for c in m.captures() {
                 match q_eval.capture_names()[c.index as usize] {
                     "fn" => fn_name = Some(cx.text(&c.node).to_string()),
                     "args" => args = Some(c.node),
@@ -2021,7 +2021,7 @@ fn extract_source_recording(
         let mut matches = cursor.matches(&q_new_function, root, source);
         while let Some(m) = matches.next() {
             let (mut ctor, mut args, mut site) = (None, None, None);
-            for c in m.captures {
+            for c in m.captures() {
                 match q_new_function.capture_names()[c.index as usize] {
                     "ctor" => ctor = Some(cx.text(&c.node).to_string()),
                     "args" => args = Some(c.node),
@@ -2092,7 +2092,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_news, root, source);
     while let Some(m) = matches.next() {
         let (mut var, mut ctor) = (None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_news.capture_names()[c.index as usize] {
                 "var" => var = Some(cx.text(&c.node).to_string()),
                 "ctor" => ctor = Some(cx.text(&c.node).to_string()),
@@ -2124,7 +2124,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_factory_recv, root, source);
     while let Some(m) = matches.next() {
         let (mut var, mut obj, mut factory) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_factory_recv.capture_names()[c.index as usize] {
                 "var" => var = Some(cx.text(&c.node).to_string()),
                 "obj" => obj = Some(cx.text(&c.node).to_string()),
@@ -2174,7 +2174,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_cmd, root, source);
     while let Some(m) = matches.next() {
         let (mut ctor, mut args, mut site) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_cmd.capture_names()[c.index as usize] {
                 "ctor" => ctor = Some(cx.text(&c.node).to_string()),
                 "args" => args = Some(c.node),
@@ -2214,7 +2214,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_member_calls, root, source);
     while let Some(m) = matches.next() {
         let (mut recv, mut method, mut args, mut site) = (None, None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_member_calls.capture_names()[c.index as usize] {
                 "recv" => recv = Some(cx.text(&c.node).to_string()),
                 "method" => method = Some(cx.text(&c.node).to_string()),
@@ -2278,7 +2278,7 @@ fn extract_source_recording(
         let mut matches = cursor.matches(&q_jsx, root, source);
         while let Some(m) = matches.next() {
             let (mut tag, mut el) = (None, None);
-            for c in m.captures {
+            for c in m.captures() {
                 match q_jsx.capture_names()[c.index as usize] {
                     "tag" => tag = Some(c.node),
                     "el" => el = Some(c.node),
@@ -2458,7 +2458,7 @@ fn extract_source_recording(
         let mut matches = cursor.matches(&q_fetch, root, source);
         while let Some(m) = matches.next() {
             let (mut fn_name, mut args, mut call) = (None, None, None);
-            for c in m.captures {
+            for c in m.captures() {
                 match q_fetch.capture_names()[c.index as usize] {
                     "fn" => fn_name = Some(cx.text(&c.node).to_string()),
                     "args" => args = Some(c.node),
@@ -2510,7 +2510,7 @@ fn extract_source_recording(
         let mut matches = cursor.matches(&q_axios, root, source);
         while let Some(m) = matches.next() {
             let (mut obj, mut method, mut args, mut call) = (None, None, None, None);
-            for c in m.captures {
+            for c in m.captures() {
                 match q_axios.capture_names()[c.index as usize] {
                     "obj" => obj = Some(cx.text(&c.node).to_string()),
                     "method" => method = Some(cx.text(&c.node).to_string()),
@@ -2624,7 +2624,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_typed_bindings, root, source);
     while let Some(m) = matches.next() {
         let (mut name, mut type_node, mut binding) = (None, None, None);
-        for capture in m.captures {
+        for capture in m.captures() {
             match q_typed_bindings.capture_names()[capture.index as usize] {
                 "name" => name = Some(cx.text(&capture.node).to_string()),
                 "type" => type_node = Some(capture.node),
@@ -2690,7 +2690,7 @@ fn extract_source_recording(
     while let Some(m) = matches.next() {
         let mut callee_node = None;
         let mut call = None;
-        for c in m.captures {
+        for c in m.captures() {
             match q_calls.capture_names()[c.index as usize] {
                 "callee" => callee_node = Some(c.node),
                 "call" => call = Some(c.node),
@@ -2746,7 +2746,7 @@ fn extract_source_recording(
     let mut matches = cursor.matches(&q_member_calls, root, source);
     while let Some(m) = matches.next() {
         let (mut receiver, mut method, mut call) = (None, None, None);
-        for capture in m.captures {
+        for capture in m.captures() {
             match q_member_calls.capture_names()[capture.index as usize] {
                 "receiver" => receiver = Some(capture.node),
                 "method" => method = Some(cx.text(&capture.node).to_string()),

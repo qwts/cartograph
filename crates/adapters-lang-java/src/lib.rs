@@ -231,7 +231,7 @@ fn parse_imports(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, cx.source);
     while let Some(found) = matches.next() {
-        let statement = found.captures[0].node;
+        let statement = found.captures()[0].node;
         let raw = cx.text(&statement).replace(['\n', '\\'], " ");
         let Some(rest) = raw.trim().strip_prefix("import") else {
             continue;
@@ -534,7 +534,7 @@ pub fn extract_source(
         let mut matches = cursor.matches(&query, root, source);
         let mut package = None;
         if let Some(found) = matches.next() {
-            package = Some(cx.text(&found.captures[0].node).to_string());
+            package = Some(cx.text(&found.captures()[0].node).to_string());
         }
         package
     };
@@ -554,7 +554,7 @@ pub fn extract_source(
     let mut matches = cursor.matches(&type_query, root, source);
     while let Some(found) = matches.next() {
         let (mut decl, mut name) = (None, None);
-        for capture in found.captures {
+        for capture in found.captures() {
             match type_query.capture_names()[capture.index as usize] {
                 "decl" => decl = Some(capture.node),
                 "name" => name = Some(cx.text(&capture.node).to_string()),
@@ -610,7 +610,7 @@ pub fn extract_source(
     let mut matches = cursor.matches(&method_query, root, source);
     while let Some(found) = matches.next() {
         let (mut method, mut name) = (None, None);
-        for capture in found.captures {
+        for capture in found.captures() {
             match method_query.capture_names()[capture.index as usize] {
                 "method" => method = Some(capture.node),
                 "name" => name = Some(cx.text(&capture.node).to_string()),
@@ -802,7 +802,7 @@ pub fn extract_source(
     let mut matches = cursor.matches(&call_query, root, source);
     while let Some(found) = matches.next() {
         let (mut call, mut name) = (None, None);
-        for capture in found.captures {
+        for capture in found.captures() {
             match call_query.capture_names()[capture.index as usize] {
                 "call" => call = Some(capture.node),
                 "name" => name = Some(cx.text(&capture.node).to_string()),
