@@ -31,6 +31,16 @@ pub struct SpecAssertion {
     pub summary: String,
     /// Producing tier, confidence, evidence, extractor, and content hash.
     pub provenance: Provenance,
+    /// The relation an escalation of this gap would need the bounded T3
+    /// broker to propose (#238): an edge assertion's own label, a flow hop's
+    /// label, or — for a Gap node — the adjacent edge `task_evidence::plan`
+    /// (`src-tauri/src/task_evidence/planning.rs`) would resolve the same
+    /// way. `None` for a non-gap assertion, or a Gap node with no adjacent
+    /// edge (planning then falls back to `CALLS`, which is always allowed).
+    /// Lets the register compute its escalation offer from real broker
+    /// capability instead of showing it unconditionally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_label: Option<String>,
 }
 
 /// One official spec artifact in the deterministic export bundle.
@@ -133,13 +143,31 @@ fn node_name(node: &Node) -> String {
     .unwrap_or_else(|| node.id.clone())
 }
 
-fn node_assertion(node: &Node) -> SpecAssertion {
+/// The relation a Gap node's escalation would need the bounded T3 broker to
+/// propose — mirrors `task_evidence::planning::plan`'s adjacent-slot lookup
+/// exactly (dst-first, then src, then the node's own stored `edge_label`
+/// prop) so the register's offer and the broker's actual attempt never
+/// disagree about which relation is in play (#238). Not a proof of
+/// direction/cardinality, same as that lookup. Leaves the final `"CALLS"`
+/// default out (unlike planning): `None` here reads as "unknown" to the
+/// register, and stays offered rather than being pinned to a guess.
+fn gap_node_edge_label<'a>(node: &'a Node, edges: &[&'a Edge]) -> Option<&'a str> {
+    edges
+        .iter()
+        .find(|edge| edge.dst == node.id)
+        .or_else(|| edges.iter().find(|edge| edge.src == node.id))
+        .map(|edge| edge.label.as_str())
+        .or_else(|| node.props["edge_label"].as_str())
+}
+
+fn node_assertion(node: &Node, edge_label: Option<&str>) -> SpecAssertion {
     SpecAssertion {
         id: format!("node:{}", node.id),
         subject_id: node.id.clone(),
         subject_kind: node.label.clone(),
         summary: format!("{}: {}", node.label, node_name(node)),
         provenance: provenance(&node.props, &format!("node:{}", node.id)),
+        edge_label: edge_label.map(String::from),
     }
 }
 
@@ -166,6 +194,7 @@ fn edge_assertion(edge: &Edge) -> SpecAssertion {
         subject_kind: edge.label.clone(),
         summary,
         provenance,
+        edge_label: Some(edge.label.clone()),
     }
 }
 
@@ -176,6 +205,10 @@ fn hop_assertion(flow: &Flow, hop: &Hop, index: usize) -> SpecAssertion {
         subject_kind: "FlowHop".into(),
         summary: format!("{}: {} → {}", hop.label, hop.src_name, hop.dst_name),
         provenance: hop.provenance.clone(),
+        // A flow-hop row never opens the Resolution Strategy modal (App.tsx
+        // only escalates `node:`-prefixed assertions), so it carries no
+        // escalation-capability signal.
+        edge_label: None,
     }
 }
 
@@ -305,7 +338,10 @@ fn recovered_user_stories(nodes: &[&Node]) -> (String, Vec<SpecAssertion>) {
             .expect("write to string");
         }
     }
-    let assertions = capabilities.into_iter().map(node_assertion).collect();
+    let assertions = capabilities
+        .into_iter()
+        .map(|node| node_assertion(node, None))
+        .collect();
     (content, assertions)
 }
 
@@ -658,7 +694,10 @@ fn topology_artifact(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAsser
     topology_edges.retain(|edge| {
         topology_ids.contains(edge.src.as_str()) && topology_ids.contains(edge.dst.as_str())
     });
-    let mut assertions: Vec<SpecAssertion> = topology_nodes.iter().map(node_assertion).collect();
+    let mut assertions: Vec<SpecAssertion> = topology_nodes
+        .iter()
+        .map(|node| node_assertion(node, None))
+        .collect();
     assertions.extend(topology_edges.iter().map(edge_assertion));
     let diagram = topology_mermaid(&topology_nodes, &topology_edges);
     let content = format!("# Resource topology\n\n```mermaid\n{diagram}```\n");
@@ -750,7 +789,10 @@ fn data_model(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) 
             .expect("write to string");
         }
     }
-    let mut assertions: Vec<SpecAssertion> = model_nodes.into_iter().map(node_assertion).collect();
+    let mut assertions: Vec<SpecAssertion> = model_nodes
+        .into_iter()
+        .map(|node| node_assertion(node, None))
+        .collect();
     assertions.extend(mappings.into_iter().map(edge_assertion));
     (content, assertions)
 }
@@ -801,7 +843,10 @@ fn adr_set(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertion>) {
             .expect("write to string");
         }
     }
-    let mut assertions: Vec<SpecAssertion> = adrs.into_iter().map(node_assertion).collect();
+    let mut assertions: Vec<SpecAssertion> = adrs
+        .into_iter()
+        .map(|node| node_assertion(node, None))
+        .collect();
     assertions.extend(decisions.into_iter().map(edge_assertion));
     (content, assertions)
 }
@@ -989,7 +1034,7 @@ fn gap_register(
     let mut assertions: Vec<SpecAssertion> = nodes
         .iter()
         .filter(|node| is_gap_node(node))
-        .map(|node| node_assertion(node))
+        .map(|node| node_assertion(node, gap_node_edge_label(node, edges)))
         .collect();
     assertions.extend(
         edges
@@ -1177,7 +1222,7 @@ fn drift_register(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertio
     let drift_nodes: Vec<&&Node> = nodes.iter().filter(|node| is_drift_node(node)).collect();
     let mut assertions: Vec<SpecAssertion> = drift_nodes
         .iter()
-        .map(|node| node_assertion(node))
+        .map(|node| node_assertion(node, None))
         .collect();
     assertions.extend(
         edges
@@ -1225,7 +1270,7 @@ fn security_view(nodes: &[&Node]) -> (String, Vec<SpecAssertion>, usize) {
         .collect::<Vec<_>>();
     let assertions = findings
         .iter()
-        .map(|finding| node_assertion(finding))
+        .map(|finding| node_assertion(finding, None))
         .collect::<Vec<_>>();
     let mut content = String::from(
         "# Security findings\n\n| Finding | Type | Subject | Resource scope | Actions | US / AC | Confidence |\n|---|---|---|---|---|---|---|\n",
@@ -1328,6 +1373,7 @@ fn toolchain_view(nodes: &[&Node], edges: &[&Edge]) -> (String, Vec<SpecAssertio
                 defined_in.join(", ")
             ),
             provenance: tool_provenance,
+            edge_label: None,
         });
     }
     if tools.is_empty() {

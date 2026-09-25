@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GROUP_THRESHOLD, groupGapClasses, nextTier, type GapClass } from '../gapClasses';
+import { GROUP_THRESHOLD, groupGapClasses, isEscalatable, nextTier, type GapClass } from '../gapClasses';
 import { HelpTip } from './HelpTip';
 import { TierBadge } from './TierBadge';
 import { ProposalHistory, type ProposalHistoryProps } from './ProposalHistory';
@@ -35,6 +35,12 @@ export interface GapsDriftSurfaceProps {
     proposal: StagedProposal,
     decision: 'accepted' | 'rejected',
   ) => Promise<boolean>;
+  /** Edge labels the bounded T3 broker may currently propose (#238); null
+   *  while capability hasn't loaded (the offer stays optimistic). Drives
+   *  whether a gap row's tail reads as an actionable "T1 next" or an
+   *  honest "not broker-executable" — the register never invites a click
+   *  the broker is known to decline. */
+  allowedEdgeLabels?: string[] | null;
 }
 
 type Tab = 'lanes' | 'tiers' | 'drift' | 'proposals';
@@ -47,9 +53,11 @@ function gapId(index: number): string {
 function GapRows({
   gaps,
   onOpenGap,
+  allowedEdgeLabels = null,
 }: {
   gaps: SpecAssertion[];
   onOpenGap: (assertion: SpecAssertion) => void;
+  allowedEdgeLabels?: string[] | null;
 }) {
   return (
     <ul className="register-rows">
@@ -58,7 +66,11 @@ function GapRows({
           <button type="button" className="register-row gap-row" onClick={() => onOpenGap(gap)}>
             <code className="register-id">{gapId(index)}</code>
             <span className="register-text">{gap.summary}</span>
-            <span className="register-tail">{nextTier(gap)} next</span>
+            {isEscalatable(gap, allowedEdgeLabels) ? (
+              <span className="register-tail">{nextTier(gap)} next</span>
+            ) : (
+              <span className="register-tail muted">not broker-executable</span>
+            )}
             <span className="material-symbols-outlined" aria-hidden="true">
               chevron_right
             </span>
@@ -77,6 +89,7 @@ function GapClassRow({
   onOpenGap,
   onEscalateClass,
   onDecideProposal,
+  allowedEdgeLabels = null,
 }: {
   gapClass: GapClass;
   onOpenGap: (assertion: SpecAssertion) => void;
@@ -85,6 +98,7 @@ function GapClassRow({
     proposal: StagedProposal,
     decision: 'accepted' | 'rejected',
   ) => Promise<boolean>;
+  allowedEdgeLabels?: string[] | null;
 }) {
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState(CLASS_PAGE);
@@ -131,6 +145,12 @@ function GapClassRow({
   // from real Gap nodes, while an edge gap resolves per instance from its
   // own evidence (#194 review).
   const escalatable = gapClass.members.every((member) => member.subject_kind === 'Gap');
+  // Mirrors `escalatable` above: check every member rather than assume
+  // homogeneity, even though one cause class is normally all-or-nothing
+  // for broker capability (#238).
+  const classOfferable = gapClass.members.every((member) =>
+    isEscalatable(member, allowedEdgeLabels),
+  );
 
   return (
     <li className="register-class">
@@ -148,7 +168,11 @@ function GapClassRow({
           </span>
         )}
         <code className="register-tail">{gapClass.extractor}</code>
-        <span className="register-tail">{gapClass.tier} next</span>
+        {classOfferable ? (
+          <span className="register-tail">{gapClass.tier} next</span>
+        ) : (
+          <span className="register-tail muted">not broker-executable</span>
+        )}
         <span className="material-symbols-outlined" aria-hidden="true">
           {open ? 'expand_less' : 'expand_more'}
         </span>
@@ -206,7 +230,11 @@ function GapClassRow({
               )}
             </div>
           )}
-          <GapRows gaps={gapClass.members.slice(0, shown)} onOpenGap={onOpenGap} />
+          <GapRows
+            gaps={gapClass.members.slice(0, shown)}
+            onOpenGap={onOpenGap}
+            allowedEdgeLabels={allowedEdgeLabels}
+          />
           {gapClass.members.length > shown && (
             <button
               type="button"
@@ -230,6 +258,7 @@ function GapClassRows({
   onOpenGap,
   onEscalateClass,
   onDecideProposal,
+  allowedEdgeLabels = null,
 }: {
   classes: GapClass[];
   onOpenGap: (assertion: SpecAssertion) => void;
@@ -238,6 +267,7 @@ function GapClassRows({
     proposal: StagedProposal,
     decision: 'accepted' | 'rejected',
   ) => Promise<boolean>;
+  allowedEdgeLabels?: string[] | null;
 }) {
   return (
     <ul className="register-rows" aria-label="Gap classes">
@@ -248,6 +278,7 @@ function GapClassRows({
           onOpenGap={onOpenGap}
           onEscalateClass={onEscalateClass}
           onDecideProposal={onDecideProposal}
+          allowedEdgeLabels={allowedEdgeLabels}
         />
       ))}
     </ul>
@@ -268,6 +299,7 @@ export function GapsDriftSurface({
   proposalHistory,
   onEscalateClass,
   onDecideProposal,
+  allowedEdgeLabels = null,
 }: GapsDriftSurfaceProps) {
   const [tab, setTab] = useState<Tab>('lanes');
   // Reconcile with findings_summary's own definition (#241): a gap edge
@@ -365,9 +397,10 @@ export function GapsDriftSurface({
               onOpenGap={onOpenGap}
               onEscalateClass={onEscalateClass}
               onDecideProposal={onDecideProposal}
+              allowedEdgeLabels={allowedEdgeLabels}
             />
           ) : (
-            <GapRows gaps={gapFindings} onOpenGap={onOpenGap} />
+            <GapRows gaps={gapFindings} onOpenGap={onOpenGap} allowedEdgeLabels={allowedEdgeLabels} />
           )}
 
           <div className="register-lane unsupported-lane">
@@ -448,9 +481,10 @@ export function GapsDriftSurface({
                     onOpenGap={onOpenGap}
                     onEscalateClass={onEscalateClass}
                     onDecideProposal={onDecideProposal}
+                    allowedEdgeLabels={allowedEdgeLabels}
                   />
                 ) : (
-                  <GapRows gaps={tierGaps} onOpenGap={onOpenGap} />
+                  <GapRows gaps={tierGaps} onOpenGap={onOpenGap} allowedEdgeLabels={allowedEdgeLabels} />
                 )}
               </div>
             );
