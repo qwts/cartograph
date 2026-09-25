@@ -79,8 +79,32 @@ export function excludeBoundaryPlaceholders(snapshot: AtlasSnapshot): AtlasSnaps
   };
 }
 
+/**
+ * File node ids that are the target of a `Tool --DEFINED_IN--> File` edge
+ * (`crates/ingest/src/toolchain.rs`) — the toolchain's unconditional proof
+ * that a File is config evidence for some Tool, independent of which File
+ * node ultimately won the id (`src-tauri/src/main.rs`: "Config files an
+ * adapter already owns … keep the adapter's richer File node; the
+ * DEFINED_IN edge targets the same id either way"). A `.ts`-authored
+ * config (`vite.config.ts`, …) is re-parsed by the TS adapter, whose own
+ * File node carries only `path`/`prov` — never `props.config` — so that
+ * prop alone under-detects adapter-owned configs (#244 review). Scoped to
+ * Tool sources only: Symbol/Component nodes also emit `DEFINED_IN` edges
+ * to their declaring File for unrelated reasons.
+ */
+function toolConfigFileIds(snapshot: AtlasSnapshot): Set<string> {
+  const toolIds = new Set(
+    snapshot.nodes.filter((node) => node.label === 'Tool').map((node) => node.id),
+  );
+  const ids = new Set<string>();
+  for (const edge of snapshot.edges) {
+    if (edge.label === 'DEFINED_IN' && toolIds.has(edge.src)) ids.add(edge.dst);
+  }
+  return ids;
+}
+
 /** The primary band a node kind belongs to; Gaps inherit from neighbors. */
-function kindBand(node: GraphNode): Band | null {
+function kindBand(node: GraphNode, configFileIds: ReadonlySet<string>): Band | null {
   switch (node.label) {
     case 'Resource':
       return 'infra';
@@ -105,8 +129,12 @@ function kindBand(node: GraphNode): Band | null {
       return 'server';
     case 'File':
       // Config-file evidence (#215): a File proving a Tool node belongs
-      // with it in Tools/Build, not scattered into Server (#244).
-      return node.props.config === true ? 'tools' : 'server';
+      // with it in Tools/Build, not scattered into Server (#244). Either
+      // the winning File node itself carries `props.config` (the toolchain
+      // emitted it directly), or it's the DEFINED_IN target of a Tool node
+      // (an adapter's own richer File node superseded the toolchain's,
+      // #244 review).
+      return node.props.config === true || configFileIds.has(node.id) ? 'tools' : 'server';
     case 'Gap':
       return null; // resolved from neighbors below
     default:
@@ -121,12 +149,13 @@ function kindBand(node: GraphNode): Band | null {
  */
 export function assignBands(snapshot: AtlasSnapshot): Map<string, Band> {
   const bands = new Map<string, Band>();
+  const configFileIds = toolConfigFileIds(snapshot);
   const nodes = [...snapshot.nodes]
     .filter((node) => !isBoundaryPlaceholder(node))
     .sort((a, b) => a.id.localeCompare(b.id));
   const pending: GraphNode[] = [];
   for (const node of nodes) {
-    const band = kindBand(node);
+    const band = kindBand(node, configFileIds);
     if (band) bands.set(node.id, band);
     else pending.push(node);
   }
