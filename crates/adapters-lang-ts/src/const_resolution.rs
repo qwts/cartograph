@@ -166,7 +166,7 @@ pub(crate) fn collect_imports(
     while let Some(m) = matches.next() {
         let (mut default, mut name, mut alias, mut namespace, mut source) =
             (None, None, None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             let text = cx.text(&c.node).to_string();
             match query.capture_names()[c.index as usize] {
                 "default" => default = Some(text),
@@ -208,7 +208,7 @@ pub(crate) fn collect_const_objects(
     let mut matches = cursor.matches(&query, root, cx.source);
     while let Some(m) = matches.next() {
         let (mut name, mut value, mut decl) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match query.capture_names()[c.index as usize] {
                 "name" => name = Some(c.node),
                 "value" => value = Some(c.node),

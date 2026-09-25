@@ -7681,8 +7681,8 @@ THE SOFTWARE.
 ## MIT License
 
 Used by:
-- tree-sitter-language 0.1.7 — https://github.com/tree-sitter/tree-sitter
-- tree-sitter 0.26.12 — https://github.com/tree-sitter/tree-sitter
+- tree-sitter-language 0.1.8 — https://github.com/tree-sitter/tree-sitter
+- tree-sitter 0.27.0 — https://github.com/tree-sitter/tree-sitter
 
 ```
 The MIT License (MIT)

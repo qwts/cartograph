@@ -16,7 +16,7 @@ core-prov = { workspace = true }
 source-walk = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-kotlin-ng = "1.1"
 streaming-iterator = "0.1"
 

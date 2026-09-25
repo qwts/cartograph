@@ -164,6 +164,9 @@ fn legacy_guarded_exit_receipt_keeps_all_v1_roles_and_rejects_v2_rules() {
     let mut content = new_receipt.content.clone();
     content.schema_version = 1;
     content.producer_contract = "t0.adapter-ts/direct-lexical-v1".into();
+    // v1's contract keeps its own frozen parser pin, independent of the
+    // current v2 mint value.
+    content.parser_package = "tree-sitter@0.26.12".into();
     content.fact_digest = node_digest(&legacy_node).unwrap();
     let file = capture.file("source.ts").unwrap();
     content.ranges = expected
@@ -211,6 +214,11 @@ fn captured_definition_receipt_v2_covers_every_source_occurrence() {
         "t0.adapter-ts/direct-lexical-v2"
     );
     assert!(receipt.id().starts_with("ts-primary-v2:"));
+    // AC-0169: newly minted receipts must record the actual current parser
+    // pin, not a stale frozen value, so 0.26- and 0.27-produced receipts are
+    // genuinely distinguishable in hashed content.
+    assert_eq!(receipt.content.parser_package, PARSER_PACKAGE);
+    assert_eq!(PARSER_PACKAGE, "tree-sitter@0.27.0");
     assert!(receipt.matches_node(node));
     let rule = GuardedExitEvidence::from_value(node.props["rule"].clone()).unwrap();
     let definitions = rule.local_definitions.as_ref().unwrap();
@@ -303,6 +311,29 @@ fn captured_definition_receipt_v2_covers_every_source_occurrence() {
             CODE[range.evidence.byte_start as usize..range.evidence.byte_end as usize]
         );
     }
+}
+
+#[test]
+fn receipt_v2_accepts_frozen_pre_upgrade_parser_pin_but_rejects_arbitrary_value() {
+    // Codex P1 (PR #521): a v2 receipt minted before the tree-sitter 0.27
+    // upgrade recorded parser_package "tree-sitter@0.26.12"; it must still
+    // validate under the same v2 contract. An arbitrary/unrecognized pin
+    // must not.
+    let (_dir, _capture, facts, receipts) = captured(CODE);
+    let (_, original) = rule_receipt(&facts, &receipts);
+    assert_eq!(original.content.parser_package, "tree-sitter@0.27.0");
+
+    let mut legacy = original.clone();
+    legacy.content.parser_package = "tree-sitter@0.26.12".into();
+    legacy.receipt_id = content_id(&legacy.content).unwrap();
+    legacy.validate().unwrap();
+    assert!(Receipt::from_json(&serde_json::to_string(&legacy).unwrap()).is_ok());
+
+    let mut arbitrary = original.clone();
+    arbitrary.content.parser_package = "tree-sitter@9.9.9".into();
+    arbitrary.receipt_id = content_id(&arbitrary.content).unwrap();
+    assert!(arbitrary.validate().is_err());
+    assert!(Receipt::from_json(&serde_json::to_string(&arbitrary).unwrap()).is_err());
 }
 
 #[test]
