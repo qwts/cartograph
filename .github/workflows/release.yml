@@ -51,11 +51,17 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
+          # This tag-push/release workflow is the highest-consequence context
+          # for a poisoned dependency cache; v7's automatic packageManager-based
+          # cache has no benefit here (no npm install runs in this job) so it's
+          # disabled outright rather than left on the implicit default (#261).
+          package-manager-cache: false
 
       - name: Validate tag, version, and reviewed cut
         id: release
@@ -173,6 +179,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.tag }}
+          persist-credentials: false
 
       - name: Download this run's exact package artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

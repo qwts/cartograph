@@ -1,0 +1,10 @@
+rules:
+  secrets-inherit:
+    ignore:
+      # release.yml's `build` job calls package.yml, the reusable macOS
+      # packaging workflow. Signing is all-or-nothing across five repository
+      # secrets (AGENTS.md "Signing is all-or-nothing..."), so passing them
+      # individually would need to name and maintain all five here instead of
+      # in package.yml's own `secrets:` block — `inherit` is the intended
+      # shape for this internal, same-repo call, not an oversight.
+      - release.yml:161
