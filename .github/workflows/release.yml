@@ -223,6 +223,7 @@ jobs:
         with:
           client-id: ${{ secrets.CHORES_DUMB_CLIENT_ID }}
           private-key: ${{ secrets.CHORES_DUMB_PRIVATE_KEY }}
+          permission-contents: write
 
       - name: Create or update release without duplicate assets
         env:

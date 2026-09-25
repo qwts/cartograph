@@ -101,6 +101,8 @@ jobs:
         with:
           client-id: ${{ secrets.CHORES_DUMB_CLIENT_ID }}
           private-key: ${{ secrets.CHORES_DUMB_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Push and refresh the Version packages PR
         if: steps.version.outputs.ready == 'true'
@@ -272,6 +274,8 @@ jobs:
         with:
           client-id: ${{ secrets.CHORES_DUMB_CLIENT_ID }}
           private-key: ${{ secrets.CHORES_DUMB_PRIVATE_KEY }}
+          permission-contents: write
+          permission-actions: write
 
       - name: Publish tag or recover release
         if: steps.tag.outputs.kind != 'none'
