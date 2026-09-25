@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { assignBands, buildAtlasScene, clusterKeyFor } from '../atlasLayout';
 import type { AtlasSnapshot, GraphNode, Provenance, Tier } from '../store';
-import { AtlasCanvas, focusAtlasGraph, nodeShapeClass } from './AtlasCanvas';
+import { AtlasCanvas, CY_STYLE, focusAtlasGraph, nodeShapeClass } from './AtlasCanvas';
 
 function prov(confidence_tier: Tier, path: string): Provenance {
   return {
@@ -263,6 +263,9 @@ export const BandedLayoutIsDeterministic: Story = {
 
     await expect(clusterKeyFor(atlasNodes[0])).toBe('local/shop · aws_sqs_queue');
     await expect(clusterKeyFor(atlasNodes[1])).toBe('sqs-queue');
+    // Endpoint cluster keys are method + route segment, not the trailing-
+    // colon id-parse artifact (`local/shop · GET:`) (AC-0081, #244).
+    await expect(clusterKeyFor(atlasNodes[2])).toBe('local/shop · POST /orders');
     // Routed screen ids carry a leading slash — the first real segment
     // names the cluster, and the root route stays legible (#173 review).
     await expect(
@@ -287,6 +290,105 @@ export const BandedLayoutIsDeterministic: Story = {
       'Events',
       'Client',
     ]);
+  },
+};
+
+const toolNode: GraphNode = {
+  id: 'tool:local/spring-petclinic@docker-compose',
+  label: 'Tool',
+  props: {
+    name: 'docker-compose',
+    display: 'Docker Compose',
+    category: 'container',
+    prov: prov('Confirmed', 'docker-compose.yml'),
+  },
+};
+
+const configFileNode: GraphNode = {
+  id: 'file:local/spring-petclinic@.github/workflows/ci.yml',
+  label: 'File',
+  props: { path: '.github/workflows/ci.yml', config: true, prov: prov('Confirmed', '.github/workflows/ci.yml') },
+};
+
+const sourceFileNode: GraphNode = {
+  id: 'file:local/spring-petclinic@src/main/App.java',
+  label: 'File',
+  props: { path: 'src/main/App.java', prov: prov('Confirmed', 'src/main/App.java') },
+};
+
+// A Confirmed external boundary placeholder (`core-graph::placeholder::mint`,
+// #237/ADR-0031): an ordinary-looking Module with `props.placeholder = true`
+// and `props.boundary = 'external'` standing in for a dependency the
+// repository provably cannot provide, e.g. spring-petclinic's ~200-node
+// `org.springframework.*` cluster (#244). Pure noise for Atlas — excluded.
+const externalPlaceholderModule: GraphNode = {
+  id: 'mod:local/spring-petclinic@org.springframework.boot',
+  label: 'Module',
+  props: {
+    placeholder: true,
+    boundary: 'external',
+    reason: 'external dependency, repository cannot provide it',
+    prov: prov('Confirmed', 'pom.xml'),
+  },
+};
+
+// An *unresolved* boundary placeholder also carries `placeholder: true`
+// (mint() sets it for every boundary kind) but is a genuine Gap
+// (`core-graph::placeholder::is_gap`, R-INT-4) even though it keeps its
+// original `Module` label rather than switching to `Gap` — it must stay
+// banded and visible like any other fact.
+const unresolvedPlaceholderModule: GraphNode = {
+  id: 'mod:local/spring-petclinic@com.example.MissingHandler',
+  label: 'Module',
+  props: {
+    placeholder: true,
+    boundary: 'unresolved',
+    reason: 'unresolved call target',
+    prov: prov('Gap', 'App.java'),
+  },
+};
+
+export const ToolsBandExcludesPlaceholders: Story = {
+  // AC-0081, #244: config/build evidence (Tool nodes, and File nodes
+  // proving them) lands in one Tools/Build band instead of splitting across
+  // Server and Unclassified under the same cluster name; a Confirmed
+  // external/internal boundary placeholder is excluded from bands entirely;
+  // an unresolved placeholder — a genuine Gap, R-INT-4 — stays banded and
+  // visible despite also carrying `placeholder: true`.
+  play: async () => {
+    const snapshot: AtlasSnapshot = {
+      nodes: [toolNode, configFileNode, sourceFileNode, externalPlaceholderModule, unresolvedPlaceholderModule],
+      edges: [
+        { src: sourceFileNode.id, dst: unresolvedPlaceholderModule.id, label: 'CALLS', props: { prov: prov('Gap', 'App.java') } },
+      ],
+    };
+    const bands = assignBands(snapshot);
+    await expect(bands.get(toolNode.id)).toBe('tools');
+    await expect(bands.get(configFileNode.id)).toBe('tools');
+    // An ordinary source File (no `config` prop) stays in Server.
+    await expect(bands.get(sourceFileNode.id)).toBe('server');
+    // The Confirmed external placeholder gets no band at all — excluded.
+    await expect(bands.has(externalPlaceholderModule.id)).toBe(false);
+    // The unresolved placeholder — a real Gap — still bands like any Module.
+    await expect(bands.get(unresolvedPlaceholderModule.id)).toBe('server');
+
+    const scene = buildAtlasScene(snapshot, new Set());
+    await expect(scene.bands.map((band) => band.label).sort()).toEqual(['Server', 'Tools/Build']);
+    await expect(scene.nodes.some((node) => node.id === externalPlaceholderModule.id)).toBe(false);
+    await expect(scene.nodes.some((node) => node.id === unresolvedPlaceholderModule.id)).toBe(true);
+  },
+};
+
+export const ClusterTileRendersNameAndCount: Story = {
+  // AC-0081, #244: the collapsed-cluster tile shows its own content (name +
+  // member count centered in the shape), not an empty box with a caption
+  // underneath it.
+  play: async () => {
+    const clusterRule = CY_STYLE.find((rule) => rule.selector === '.atlas-cluster');
+    const style = clusterRule?.style as Record<string, unknown> | undefined;
+    await expect(style?.['text-valign']).toBe('center');
+    await expect(style?.['text-halign']).toBe('center');
+    await expect(style?.['text-wrap']).toBe('wrap');
   },
 };
 

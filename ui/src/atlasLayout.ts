@@ -4,16 +4,30 @@ import type { AtlasSnapshot, GraphEdge, GraphNode } from './store';
  * Deterministic layer-banded Atlas layout (#159, AC-0081).
  *
  * Nodes are placed into labeled architecture bands (Infrastructure → Cloud →
- * Server → Events → Client), clustered within each band by repo/module, and
- * positioned purely from sorted ids — the same snapshot always yields the
- * same scene, regardless of input order. Past a size threshold the initial
- * scene renders collapsed clusters that expand on demand, so reading a
- * large graph never requires manual arrangement.
+ * Server → Events → Client → Tools/Build), clustered within each band by
+ * repo/module, and positioned purely from sorted ids — the same snapshot
+ * always yields the same scene, regardless of input order. Past a size
+ * threshold the initial scene renders collapsed clusters that expand on
+ * demand, so reading a large graph never requires manual arrangement.
+ * A Confirmed external/internal boundary placeholder
+ * (`core-graph::placeholder::mint`, `props.placeholder === true` with
+ * `props.boundary` `external`/`internal`) is excluded from bands entirely —
+ * pure noise reduction over a fact that is not itself a gap. An unresolved
+ * placeholder is a genuine Gap (R-INT-4): it keeps its band and stays
+ * visible like any other fact, confidence tier `Gap` and all (#244).
  */
 
-export type Band = 'infra' | 'cloud' | 'server' | 'events' | 'client' | 'other';
+export type Band = 'infra' | 'cloud' | 'server' | 'events' | 'client' | 'tools' | 'other';
 
-export const BAND_ORDER: readonly Band[] = ['infra', 'cloud', 'server', 'events', 'client', 'other'];
+export const BAND_ORDER: readonly Band[] = [
+  'infra',
+  'cloud',
+  'server',
+  'events',
+  'client',
+  'tools',
+  'other',
+];
 
 export const BAND_LABELS: Record<Band, string> = {
   infra: 'Infrastructure',
@@ -21,14 +35,76 @@ export const BAND_LABELS: Record<Band, string> = {
   server: 'Server',
   events: 'Events',
   client: 'Client',
+  tools: 'Tools/Build',
   other: 'Unclassified',
 };
 
 /** Collapse clusters by default above this many nodes (AC-0081). */
 export const CLUSTER_THRESHOLD = 200;
 
+/**
+ * A Confirmed external/internal boundary placeholder
+ * (`core-graph::placeholder::mint`): the repository provably cannot (or
+ * does, just not from a single declaring file) provide this fact, cited
+ * with Confirmed evidence. It is excluded from Atlas bands entirely (#244)
+ * rather than clustered under whatever label its id scheme implies — that
+ * classification is itself the finding, and clutters bands with hundreds of
+ * external-dependency tiles otherwise.
+ *
+ * An *unresolved* placeholder (`props.boundary === 'unresolved'`) is a real
+ * Gap (`is_gap` in `core-graph::placeholder`) even though it also carries
+ * `props.placeholder === true` — R-INT-4 requires it stay banded and
+ * visible like any other fact, so this predicate deliberately returns
+ * `false` for it.
+ */
+export function isBoundaryPlaceholder(node: GraphNode): boolean {
+  if (node.props.placeholder !== true) return false;
+  const boundary = node.props.boundary;
+  return boundary === 'external' || boundary === 'internal';
+}
+
+/**
+ * The snapshot with every Confirmed external/internal boundary placeholder
+ * (and the edges that only reach one) dropped — the same exclusion
+ * {@link buildAtlasScene} applies to bands, surfaced once so the node/edge
+ * counts and entity indexes a consumer renders alongside the canvas agree
+ * with what is actually on it (#244).
+ */
+export function excludeBoundaryPlaceholders(snapshot: AtlasSnapshot): AtlasSnapshot {
+  const nodes = snapshot.nodes.filter((node) => !isBoundaryPlaceholder(node));
+  const keep = new Set(nodes.map((node) => node.id));
+  return {
+    nodes,
+    edges: snapshot.edges.filter((edge) => keep.has(edge.src) && keep.has(edge.dst)),
+  };
+}
+
+/**
+ * File node ids that are the target of a `Tool --DEFINED_IN--> File` edge
+ * (`crates/ingest/src/toolchain.rs`) — the toolchain's unconditional proof
+ * that a File is config evidence for some Tool, independent of which File
+ * node ultimately won the id (`src-tauri/src/main.rs`: "Config files an
+ * adapter already owns … keep the adapter's richer File node; the
+ * DEFINED_IN edge targets the same id either way"). A `.ts`-authored
+ * config (`vite.config.ts`, …) is re-parsed by the TS adapter, whose own
+ * File node carries only `path`/`prov` — never `props.config` — so that
+ * prop alone under-detects adapter-owned configs (#244 review). Scoped to
+ * Tool sources only: Symbol/Component nodes also emit `DEFINED_IN` edges
+ * to their declaring File for unrelated reasons.
+ */
+function toolConfigFileIds(snapshot: AtlasSnapshot): Set<string> {
+  const toolIds = new Set(
+    snapshot.nodes.filter((node) => node.label === 'Tool').map((node) => node.id),
+  );
+  const ids = new Set<string>();
+  for (const edge of snapshot.edges) {
+    if (edge.label === 'DEFINED_IN' && toolIds.has(edge.src)) ids.add(edge.dst);
+  }
+  return ids;
+}
+
 /** The primary band a node kind belongs to; Gaps inherit from neighbors. */
-function kindBand(node: GraphNode): Band | null {
+function kindBand(node: GraphNode, configFileIds: ReadonlySet<string>): Band | null {
   switch (node.label) {
     case 'Resource':
       return 'infra';
@@ -43,13 +119,22 @@ function kindBand(node: GraphNode): Band | null {
     case 'Command':
     case 'Permission':
       return 'client';
+    case 'Tool':
+    case 'Config':
+      return 'tools';
     case 'Module':
-    case 'File':
     case 'Symbol':
     case 'Endpoint':
     case 'DataEntity':
-    case 'Config':
       return 'server';
+    case 'File':
+      // Config-file evidence (#215): a File proving a Tool node belongs
+      // with it in Tools/Build, not scattered into Server (#244). Either
+      // the winning File node itself carries `props.config` (the toolchain
+      // emitted it directly), or it's the DEFINED_IN target of a Tool node
+      // (an adapter's own richer File node superseded the toolchain's,
+      // #244 review).
+      return node.props.config === true || configFileIds.has(node.id) ? 'tools' : 'server';
     case 'Gap':
       return null; // resolved from neighbors below
     default:
@@ -64,10 +149,13 @@ function kindBand(node: GraphNode): Band | null {
  */
 export function assignBands(snapshot: AtlasSnapshot): Map<string, Band> {
   const bands = new Map<string, Band>();
-  const nodes = [...snapshot.nodes].sort((a, b) => a.id.localeCompare(b.id));
+  const configFileIds = toolConfigFileIds(snapshot);
+  const nodes = [...snapshot.nodes]
+    .filter((node) => !isBoundaryPlaceholder(node))
+    .sort((a, b) => a.id.localeCompare(b.id));
   const pending: GraphNode[] = [];
   for (const node of nodes) {
-    const band = kindBand(node);
+    const band = kindBand(node, configFileIds);
     if (band) bands.set(node.id, band);
     else pending.push(node);
   }
@@ -98,9 +186,20 @@ export function assignBands(snapshot: AtlasSnapshot): Map<string, Band> {
 export function clusterKeyFor(node: GraphNode): string {
   const channel = node.id.match(/^chan:([^:]+):/u);
   if (channel) return channel[1];
-  const scoped = node.id.match(/^[a-z-]+:([^@]+)@(.+)$/u);
+  const scoped = node.id.match(/^([a-z-]+):([^@]+)@(.+)$/u);
   if (scoped) {
-    const [, repo, tail] = scoped;
+    const [, scheme, repo, tail] = scoped;
+    // Endpoint ids are `ep:{repo}@{METHOD}:{route}` (crates/adapters-lang-*)
+    // — key by method + the route's first segment so `GET /owners`,
+    // `GET /owners/{id}` etc. collapse together, instead of the id-parse
+    // artifact that put everything before the route's own leading slash
+    // (the trailing-colon method fragment) into the key (#244).
+    const endpoint = scheme === 'ep' ? tail.match(/^([A-Z]+):\/?(.*)$/u) : null;
+    if (endpoint) {
+      const [, method, route] = endpoint;
+      const segment = route.includes('/') ? route.split('/')[0] : route.split('.')[0];
+      return `${repo} · ${method} /${segment}`;
+    }
     // Routed ids (screens) carry a leading slash — strip it so the first
     // real segment names the cluster, and a root route stays `/` (#173
     // review: `repo ·  · N` labels).
@@ -168,10 +267,14 @@ const BAND_GAP = 140;
  */
 export function buildAtlasScene(snapshot: AtlasSnapshot, expanded: ReadonlySet<string>): AtlasScene {
   const bands = assignBands(snapshot);
-  const autoExpanded = snapshot.nodes.length <= CLUSTER_THRESHOLD;
+  // Boundary placeholders are excluded from the scene entirely (#244) — no
+  // tile, no band membership; edges that only reach one through `endpointFor`
+  // below vanish along with it.
+  const visibleNodes = snapshot.nodes.filter((node) => !isBoundaryPlaceholder(node));
+  const autoExpanded = visibleNodes.length <= CLUSTER_THRESHOLD;
 
   const byCluster = new Map<string, AtlasCluster>();
-  for (const node of [...snapshot.nodes].sort((a, b) => a.id.localeCompare(b.id))) {
+  for (const node of [...visibleNodes].sort((a, b) => a.id.localeCompare(b.id))) {
     const band = bands.get(node.id) ?? 'other';
     const key = clusterKeyFor(node);
     const id = `cluster:${band}:${key}`;
@@ -184,7 +287,7 @@ export function buildAtlasScene(snapshot: AtlasSnapshot, expanded: ReadonlySet<s
   );
 
   const isOpen = (cluster: AtlasCluster) => autoExpanded || expanded.has(cluster.id);
-  const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+  const nodeById = new Map(visibleNodes.map((node) => [node.id, node]));
   const sceneNodes: SceneNode[] = [];
   const collapsed: AtlasCluster[] = [];
 

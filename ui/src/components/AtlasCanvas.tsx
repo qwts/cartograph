@@ -1,7 +1,7 @@
 import cytoscape from 'cytoscape';
 import { HelpTip } from './HelpTip';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BAND_LABELS, buildAtlasScene, type AtlasScene } from '../atlasLayout';
+import { BAND_LABELS, buildAtlasScene, excludeBoundaryPlaceholders, type AtlasScene } from '../atlasLayout';
 import type { AtlasSnapshot, GraphEdge, GraphNode, Tier } from '../store';
 
 export type AtlasLayer = 'all' | 'infra' | 'cloud' | 'server' | 'events' | 'client';
@@ -215,7 +215,8 @@ function elementsFor(scene: AtlasScene, overlay: boolean): cytoscape.ElementDefi
   return [...bandParents, ...nodeElements, ...edgeElements];
 }
 
-const CY_STYLE: cytoscape.StylesheetStyle[] = [
+/** Exported so its cluster-tile rules are pinned by a story test (#244). */
+export const CY_STYLE: cytoscape.StylesheetStyle[] = [
   {
     selector: 'node',
     style: {
@@ -316,16 +317,24 @@ const CY_STYLE: cytoscape.StylesheetStyle[] = [
     },
   },
   {
-    // Collapsed cluster proxy: tap to expand.
+    // Collapsed cluster proxy: tap to expand. The name + member count is
+    // the tile's own content, not a caption underneath an empty box (#244)
+    // — center it inside the shape and let it wrap within the tile width.
     selector: '.atlas-cluster',
     style: {
       shape: 'round-rectangle',
-      width: 58,
-      height: 44,
+      width: 68,
+      height: 52,
       'border-width': 3,
       'border-style': 'double',
       'border-color': '#8b919f',
       'background-color': '#20242c',
+      'text-valign': 'center',
+      'text-halign': 'center',
+      'text-wrap': 'wrap',
+      'text-max-width': '60px',
+      'text-background-opacity': 0,
+      'font-size': 8,
     },
   },
   {
@@ -363,7 +372,14 @@ export function AtlasCanvas({ snapshot, onSelect, onSelectEdge, onLayerChange }:
   // graph of its root within the level above; Esc pops one level.
   const [focusStack, setFocusStack] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const layered = useMemo(() => filterAtlasGraph(snapshot, layer), [snapshot, layer]);
+  // Confirmed external/internal boundary placeholders never reach the
+  // canvas (#244) — dropped once, up front, so the legend count and the
+  // entity/relation indexes below always agree with what the scene renders.
+  const withoutPlaceholders = useMemo(() => excludeBoundaryPlaceholders(snapshot), [snapshot]);
+  const layered = useMemo(
+    () => filterAtlasGraph(withoutPlaceholders, layer),
+    [withoutPlaceholders, layer],
+  );
   const visible = useMemo(
     () => focusStack.reduce((snap, root) => focusAtlasGraph(snap, root), layered),
     [layered, focusStack],
