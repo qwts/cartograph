@@ -180,7 +180,7 @@ jobs:
           timeout-seconds: '420'
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Enable Rust problem matcher
         run: echo "::add-matcher::.github/rust-problem-matcher.json"
@@ -268,7 +268,7 @@ jobs:
           timeout-seconds: '300'
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: windows-job-ownership
 
@@ -334,6 +334,36 @@ jobs:
 
       - name: cargo-deny
         run: cargo deny check
+
+  # Static audit of our own workflow YAML for injection and credential-scoping
+  # issues (#261). A local lane until the shared security-scan workflow
+  # (qwts/playbook-software-engineering#6) lands; replace this job with that
+  # reusable workflow once it does.
+  zizmor:
+    name: Workflow security audit
+    needs: [policy, merge-evidence, preflight-evidence]
+    if: >-
+      always() && needs.policy.result == 'success' &&
+      ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
+      (needs.policy.outputs.run_post_merge == 'true' && needs.merge-evidence.outputs.validated != 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact validation commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install zizmor
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
+        with:
+          tool: zizmor@1.30.1
+
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --persona=pedantic --min-severity=medium --config .github/zizmor.yml .github/workflows
 
   # Web UI: lint, typecheck, unit + Storybook interaction tests, production build.
   frontend:
@@ -449,7 +479,7 @@ jobs:
 
   complete:
     name: Complete suite
-    needs: [policy, merge-evidence, preflight-evidence, docs, rust, windows-job-ownership, compliance, frontend, codeql, workflow-runtime]
+    needs: [policy, merge-evidence, preflight-evidence, docs, rust, windows-job-ownership, compliance, zizmor, frontend, codeql, workflow-runtime]
     if: >-
       always() && needs.policy.result == 'success' &&
       ((needs.policy.outputs.run_full == 'true' && needs.preflight-evidence.outputs.validated != 'true') ||
@@ -463,6 +493,7 @@ jobs:
           RUST: ${{ needs.rust.result }}
           WINDOWS_JOB_OWNERSHIP: ${{ needs.windows-job-ownership.result }}
           COMPLIANCE: ${{ needs.compliance.result }}
+          ZIZMOR: ${{ needs.zizmor.result }}
           FRONTEND: ${{ needs.frontend.result }}
           CODEQL: ${{ needs.codeql.result }}
           WORKFLOW_RUNTIME: ${{ needs.workflow-runtime.result }}
@@ -471,6 +502,7 @@ jobs:
           test "$RUST" = success
           test "$WINDOWS_JOB_OWNERSHIP" = success
           test "$COMPLIANCE" = success
+          test "$ZIZMOR" = success
           test "$FRONTEND" = success
           test "$CODEQL" = success
           test "$WORKFLOW_RUNTIME" = success
