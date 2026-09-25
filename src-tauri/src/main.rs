@@ -1095,7 +1095,13 @@ fn extract_tree_with_primary(
             stats.deleted_files,
         );
         layers.tf = LayerSummary {
-            files: iac::terraform_file_count(root).map_err(|e| e.to_string())?,
+            // The file contexts this run actually parsed or reused, which
+            // already includes every local-module instantiation's files
+            // (an explicit `source` reference overrides `.gitignore`, #468,
+            // ADR-0034) — matching extraction file-for-file, unlike a
+            // separate filesystem walk that doesn't know which directories
+            // module declarations reference.
+            files: stats.recomputed_files + stats.reused_files,
             nodes: distinct_node_count(&tf.nodes),
             edges: distinct_edge_count(&tf.edges),
         };
