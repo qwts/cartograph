@@ -48,6 +48,11 @@ CLAUDE.md   @qwts
 /ui/src/components/EgressConsentDialog.tsx @qwts
 /ui/src/components/ResolutionStrategyModal.tsx @qwts
 /ui/src/components/InvestigationsSurface.tsx @qwts
+# The app shell: it holds both approval capabilities in scope
+# (consentAndRun from the store, the investigation store's approve) and wires
+# them into the modal/surface above (#479). An unreviewed edit here could
+# call either directly, past the owned consent UI.
+/ui/src/App.tsx @qwts
 
 # Build entrypoints that execute code during CI and the signed release build,
 # where signing credentials are present.
