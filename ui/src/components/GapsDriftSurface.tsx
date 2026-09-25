@@ -109,7 +109,7 @@ function GapClassRow({
   const [decided, setDecided] = useState<ReadonlyMap<string, 'accepted' | 'rejected'>>(new Map());
 
   const escalate = async () => {
-    if (!onEscalateClass || running) return;
+    if (!onEscalateClass || running || !escalatable || !classOfferable) return;
     setRunning(true);
     setOutcome(null);
     setError(null);
@@ -179,7 +179,7 @@ function GapClassRow({
       </button>
       {open && (
         <>
-          {onEscalateClass && escalatable && (
+          {onEscalateClass && escalatable && classOfferable && (
             <div className="class-escalation">
               <button type="button" disabled={running} onClick={() => void escalate()}>
                 {running
