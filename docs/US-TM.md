@@ -87,3 +87,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0030 | One shared, `.gitignore`-aware source walk |
 | ADR-0031 | Placeholder provenance and proven import boundaries |
 | ADR-0032 | Owned execution Gaps make a flow Partial |
+| ADR-0036 | TypeSafe Jev as a consented typed-decision provider (spike, deferred) |
