@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod context;
+mod egress;
 mod escalation;
 mod evidence;
 mod findings;
@@ -2305,29 +2306,6 @@ fn extractor_coverage(
     store.latest_coverage().map_err(|e| e.to_string())
 }
 
-/// The provider for one escalation mode. Local is the pinned catalog SLM;
-/// cloud is the Opus reasoning lane and needs an API key — its absence is
-/// an explicit error, never a silent local fallback.
-fn escalation_provider(mode: &str) -> Result<Box<dyn LlmProvider>, String> {
-    match mode {
-        "local" => Ok(Box::new(
-            llm::OllamaProvider::local_default().map_err(|e| e.to_string())?,
-        )),
-        "cloud" => {
-            let key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-                "no Anthropic API key configured (set ANTHROPIC_API_KEY) — cloud escalation \
-                 stays closed"
-                    .to_string()
-            })?;
-            Ok(Box::new(
-                llm::anthropic::AnthropicProvider::new(llm::anthropic::ClaudeLane::Opus, key)
-                    .map_err(|e| e.to_string())?,
-            ))
-        }
-        other => Err(format!("unknown escalation mode '{other}' (local | cloud)")),
-    }
-}
-
 /// Strategy cards for one gap (#120): attempted tiers, stop reason, required
 /// evidence, and the local/cloud options with exact egress estimates from
 /// the firewall preview. Derivation only — nothing runs, nothing egresses.
@@ -2393,7 +2371,7 @@ async fn escalation_preview(
             .map_err(|e| e.to_string())?
             .egress_policy()
             .map_err(|e| e.to_string())?;
-        let provider = escalation_provider("cloud")?;
+        let provider = egress::escalation_provider("cloud")?;
         agents::AgentBroker::bounded_default()
             .preview_prepared(provider.as_ref(), &llm::EgressFirewall::new(policy), &task)
             .map_err(|e| e.to_string())
@@ -2439,7 +2417,7 @@ async fn run_escalation(
         settings_store.egress_policy().map_err(|e| e.to_string())
     })()
     .map_err(&fail)?;
-    let provider = escalation_provider(&mode).map_err(&fail)?;
+    let provider = egress::escalation_provider(&mode).map_err(&fail)?;
     let firewall = llm::EgressFirewall::new(policy);
     let broker = agents::AgentBroker::bounded_default();
     // A cloud run re-derives the preview and only proceeds when the user's
@@ -2448,16 +2426,10 @@ async fn run_escalation(
         let preview = broker
             .preview_prepared(provider.as_ref(), &firewall, &task)
             .map_err(|e| fail(e.to_string()))?;
-        let approved = approved_payload_hash
-            .ok_or_else(|| fail("cloud escalation requires an approved payload hash".into()))?;
-        if approved != preview.payload_hash {
-            return Err(fail(
-                "approved payload hash does not match the current payload — re-review the \
-                 preview before consenting"
-                    .into(),
-            ));
-        }
-        Some(llm::ConsentGrant::from_preview(&preview))
+        Some(
+            egress::consent_grant_for_approved_payload(&preview, approved_payload_hash)
+                .map_err(&fail)?,
+        )
     } else {
         None
     };
@@ -2558,7 +2530,7 @@ async fn run_class_escalation(
         settings_store.egress_policy().map_err(|e| e.to_string())
     })()
     .map_err(&fail)?;
-    let provider = escalation_provider(&mode).map_err(&fail)?;
+    let provider = egress::escalation_provider(&mode).map_err(&fail)?;
     let firewall = llm::EgressFirewall::new(policy);
     let broker = agents::AgentBroker::bounded_default();
 
