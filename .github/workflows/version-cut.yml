@@ -110,6 +110,22 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
+          # Skip the force-push when the regenerated release patch is
+          # identical to what the open Version packages PR already carries: a
+          # force-push always mints a new head SHA, which re-runs a complete
+          # suite even though nothing about the release actually changed
+          # (#347). patch-id hashes the diff content itself, so it matches
+          # across the two commits' different parents.
+          open_sha=$(gh pr list --head "$BRANCH" --base main --state open --json headRefOid --jq '.[0].headRefOid // empty')
+          if [ -n "$open_sha" ]; then
+            new_patch_id=$(git diff-tree -p HEAD | git patch-id --stable | awk '{print $1}')
+            git fetch origin "$open_sha" --depth=2 --quiet
+            old_patch_id=$(git diff-tree -p "$open_sha" | git patch-id --stable | awk '{print $1}')
+            if [ -n "$new_patch_id" ] && [ "$new_patch_id" = "$old_patch_id" ]; then
+              echo "Regenerated release patch matches the open Version packages PR ($open_sha); skipping the force-push."
+              exit 0
+            fi
+          fi
           # The runner-authored commit is only a local staging point: the ruleset
           # requires signed commits, so the branch is written through the git
           # data API as chores-dumb, which GitHub signs and reports as verified.

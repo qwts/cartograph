@@ -1,11 +1,17 @@
 # Version updates (security updates are enabled repo-side already).
 # Weekly, grouped minor+patch so bumps arrive as one gated PR per ecosystem.
+# rebase-strategy is disabled everywhere: the governed lifecycle validates the
+# exact merge candidate (merge queue / exact-commit fallback), so an
+# auto-rebase only mints a new head SHA and re-runs a complete suite for no
+# reason — the open PR is refreshed manually (or on its own next content
+# change) instead (#347).
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    rebase-strategy: disabled
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
@@ -14,6 +20,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    rebase-strategy: disabled
     groups:
       npm-root-minor-patch:
         update-types: [minor, patch]
@@ -22,6 +29,7 @@ updates:
     directory: /ui
     schedule:
       interval: weekly
+    rebase-strategy: disabled
     groups:
       npm-ui-minor-patch:
         update-types: [minor, patch]
@@ -34,10 +42,20 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    rebase-strategy: disabled
     groups:
       codeql-action:
         patterns:
           - github/codeql-action/*
+      # Every other action bump (actions/checkout, setup-node, upload-artifact,
+      # rust-cache, create-github-app-token, ...) batches into one weekly PR
+      # instead of fanning out one PR — and one main-push complete suite per
+      # open PR — per bump (#347). codeql-action stays atomic (#327) because
+      # the group above is listed first and Dependabot assigns each update to
+      # the first matching group.
+      github-actions-minor-patch:
+        patterns:
+          - '*'
     ignore:
       # ci-policy and bounded-command are authorization boundaries, not ordinary
       # dependencies. Their immutable commit (see PLAYBOOK_RUNTIME_PIN in

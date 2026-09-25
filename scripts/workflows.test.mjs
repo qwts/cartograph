@@ -28,6 +28,13 @@ test('version-cut preserves review, evidence, and immutable-tag gates', () => {
   assert.match(workflow, /node scripts\/version-commit\.mjs publish/u);
   assert.match(workflow, /--base "\$GITHUB_SHA"/u);
   assert.doesNotMatch(workflow, /git push --force origin "\$BRANCH"/u);
+  // A no-op release regeneration must not force-push a new head SHA onto the
+  // open Version packages PR — that would re-run a full exact-SHA suite on
+  // every open PR for no content change (#347). patch-id compares the diff
+  // content itself, so it matches across commits with different parents.
+  assert.match(workflow, /git diff-tree -p HEAD \| git patch-id --stable/u);
+  assert.match(workflow, /git diff-tree -p "\$open_sha" \| git patch-id --stable/u);
+  assert.match(workflow, /skipping the force-push/u);
 });
 
 test('CI enforces the governed lifecycle without draft jobs', () => {
@@ -298,6 +305,23 @@ test('Advanced CodeQL is governed, immutable, and preserves Rust coverage', () =
   assert.match(
     dependabot,
     /codeql-action:\n\s+patterns:\n\s+- github\/codeql-action\/\*/u,
+  );
+});
+
+test('Dependabot batches minor/patch bumps and skips auto-rebase fan-out', () => {
+  const dependabot = readFileSync(path.join(root, '.github/dependabot.yml'), 'utf8');
+  // Auto-rebase mints a new head SHA per push to main, which re-runs a full
+  // exact-SHA suite on every open PR; the governed lifecycle re-validates the
+  // exact merge candidate anyway, so rebase-on-push buys nothing (#347).
+  const rebaseDisabledCount = (dependabot.match(/rebase-strategy: disabled/gu) ?? []).length;
+  assert.equal(rebaseDisabledCount, 4);
+  assert.doesNotMatch(dependabot, /rebase-strategy: auto/u);
+  // codeql-action must stay its own atomic group (#327) and be listed before
+  // the catch-all, since Dependabot assigns each update to the first
+  // matching group.
+  assert.match(
+    dependabot,
+    /codeql-action:\n\s+patterns:\n\s+- github\/codeql-action\/\*\n\s+#[^\n]*\n(?:\s+#[^\n]*\n)*\s+github-actions-minor-patch:\n\s+patterns:\n\s+- '\*'/u,
   );
 });
 
