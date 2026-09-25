@@ -182,6 +182,9 @@ Storybook itself: `npm run storybook` (from `ui/`).
 - `docs/design/` — earlier design tokens (`DESIGN.md`) + Stitch mockups per view
 - `docs/adapters/AUTHORING_GUIDE.md` — how to add language-adapter coverage
   (sandboxed WASM plugin, or extending a compiled-in `adapters-lang-*` crate)
+- `docs/agent-golden-tasks.md` — small eval set of real merged issues, for
+  scoring a change to an agent primitive/skill against ([ENG-0006](https://github.com/qwts/agent-sop/blob/main/docs/decisions/ENG-0006-agentic-primitives-governance.md)
+  item 4)
 - GitHub wiki — narrative contributor/process docs (`CONTRIBUTING.md` is a stub)
 - `docs/help/` — the single authored copy of in-app Help. The wiki's `Help-*`
   pages are generated from main after merge by `help-wiki-sync.yml`; never
