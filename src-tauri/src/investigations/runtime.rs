@@ -25,7 +25,7 @@ impl InvestigationRuntime {
         // Constructors make no HTTP/model calls. Reuse their blocking runtimes
         // for the application lifetime, including after a bounded request ends.
         let provider: Arc<dyn LlmProvider> = Arc::from(
-            crate::escalation_provider(match mode {
+            crate::egress::escalation_provider(match mode {
                 InvestigationProviderMode::Local => "local",
                 InvestigationProviderMode::Cloud => "cloud",
             })
