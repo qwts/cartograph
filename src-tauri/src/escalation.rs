@@ -236,13 +236,25 @@ fn est_usd(payload_bytes: u64, input_per_mtok: f64, output_per_mtok: f64) -> f64
 
 /// Derive the strategy cards for one assembled task. `cloud_allowed` comes
 /// from the persisted settings policy (fail closed); `payload_bytes` is the
-/// exact redacted payload size from the firewall preview.
+/// exact redacted payload size from the firewall preview. `edge_label_supported`
+/// is the broker's own allowlist check (#238): a gap whose edge label the
+/// broker cannot propose (e.g. `IMPORTS`) is offered no runnable strategy —
+/// both cards fail closed with a stated reason instead of letting the run
+/// fail later with the broker's internal validation error.
 pub fn strategies(
     task: &AgentTask,
     gap: &Node,
     cloud_allowed: bool,
     payload_bytes: u64,
+    edge_label_supported: bool,
 ) -> GapStrategyReport {
+    let unsupported_reason = (!edge_label_supported).then(|| {
+        format!(
+            "T3 escalation isn't offered for '{}' relations yet — this gap's edge label \
+             isn't in the bounded broker's allowlist.",
+            task.edge_label
+        )
+    });
     let export_impact = "Review decisions are saved with the staged proposal. Accepted proposals \
                          await shared-context reconciliation; they do not yet change exports. \
                          Evidence origins are recorded per supplied item; retained parser input still has incomplete input coverage. \
@@ -263,8 +275,8 @@ pub fn strategies(
             latency: "seconds to a minute on-device".into(),
             privacy: "payload never leaves the device".into(),
             export_impact: export_impact.clone(),
-            available: true,
-            unavailable_reason: None,
+            available: edge_label_supported,
+            unavailable_reason: unsupported_reason.clone(),
         },
         StrategyCard {
             id: "cloud-opus".into(),
@@ -280,11 +292,13 @@ pub fn strategies(
             latency: "a few seconds via API".into(),
             privacy: "redacted payload leaves the device after a per-payload grant".into(),
             export_impact,
-            available: cloud_allowed,
-            unavailable_reason: (!cloud_allowed).then(|| {
-                "T3 is not consented to cloud — enable the provider and grant consent in \
-                 Settings (cloud fails closed)"
-                    .to_string()
+            available: edge_label_supported && cloud_allowed,
+            unavailable_reason: unsupported_reason.or_else(|| {
+                (!cloud_allowed).then(|| {
+                    "T3 is not consented to cloud — enable the provider and grant consent in \
+                     Settings (cloud fails closed)"
+                        .to_string()
+                })
             }),
         },
     ];
@@ -408,7 +422,7 @@ mod tests {
         let task = assemble_task(&nodes, &edges, "gap:sync", "escalate:test", &read_span).unwrap();
         let gap = nodes.iter().find(|n| n.id == "gap:sync").unwrap();
 
-        let report = strategies(&task, gap, false, 2048);
+        let report = strategies(&task, gap, false, 2048, true);
         assert_eq!(
             report.stop_reason,
             "endpoint host computed from config at runtime"
@@ -436,7 +450,7 @@ mod tests {
         assert_eq!(local.egress_bytes, 0);
 
         // With standing consent the cloud card opens and carries estimates.
-        let open = strategies(&task, gap, true, 2048);
+        let open = strategies(&task, gap, true, 2048, true);
         let cloud = open
             .strategies
             .iter()
@@ -445,6 +459,33 @@ mod tests {
         assert!(cloud.available);
         assert_eq!(cloud.egress_bytes, 2048);
         assert!(cloud.est_usd.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn strategy_cards_fail_closed_for_unsupported_edge_label() {
+        // #238: a gap whose edge label the broker's allowlist doesn't cover
+        // (e.g. IMPORTS) offers no runnable strategy, with a stated reason —
+        // never a run that fails later with the broker's internal error.
+        let (nodes, edges) = fixture();
+        let task = assemble_task(&nodes, &edges, "gap:sync", "escalate:test", &read_span).unwrap();
+        let gap = nodes.iter().find(|n| n.id == "gap:sync").unwrap();
+        assert!(
+            agents::AgentBroker::bounded_default().supports_edge_label(&task.edge_label),
+            "fixture task must use a supported label so this test exercises the unsupported path"
+        );
+
+        // cloud_allowed=true still fails closed: an unsupported edge label
+        // blocks every strategy, not just the cloud one.
+        let report = strategies(&task, gap, true, 2048, false);
+        for strategy in &report.strategies {
+            assert!(
+                !strategy.available,
+                "{} should not be available",
+                strategy.id
+            );
+            let reason = strategy.unavailable_reason.as_deref().unwrap();
+            assert!(reason.contains("isn't offered"), "{reason}");
+        }
     }
 
     /// Minimal local provider so broker validation can run without a model.

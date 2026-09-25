@@ -137,6 +137,38 @@ export const StrategyCardsFromProvenance: Story = {
   },
 };
 
+export const EdgeLabelOutsideAllowlistFailsClosed: Story = {
+  // #238: a gap whose edge label the broker isn't bounded to propose (e.g.
+  // IMPORTS) offers no runnable strategy — both cards state why and show no
+  // run button, and no raw internal error string ever reaches the modal.
+  args: {
+    state: state({
+      report: {
+        ...REPORT,
+        strategies: REPORT.strategies.map((strategy) => ({
+          ...strategy,
+          egress_bytes: 0,
+          est_usd: strategy.id === 'cloud-opus' ? 0 : strategy.est_usd,
+          available: false,
+          unavailable_reason:
+            "T3 escalation isn't offered for 'IMPORTS' relations yet — this gap's edge label isn't in the bounded broker's allowlist.",
+        })),
+      },
+    }),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const local = within(canvas.getByTestId('strategy-local-slm'));
+    await expect(local.getByText(/isn't in the bounded broker's allowlist/)).toBeInTheDocument();
+    await expect(local.queryByRole('button')).not.toBeInTheDocument();
+    const cloud = within(canvas.getByTestId('strategy-cloud-opus'));
+    await expect(cloud.getByText(/isn't in the bounded broker's allowlist/)).toBeInTheDocument();
+    await expect(cloud.queryByRole('button')).not.toBeInTheDocument();
+    await expect(canvas.queryByText(/invalid bounded task/)).not.toBeInTheDocument();
+    await expect(canvas.queryByText(/outside the broker allowlist/, { exact: false })).not.toBeInTheDocument();
+  },
+};
+
 export const CloudGoesThroughExactPayloadReview: Story = {
   args: {
     state: state({

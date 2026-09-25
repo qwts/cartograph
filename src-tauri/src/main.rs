@@ -2541,15 +2541,31 @@ async fn gap_strategies(
             .egress_policy()
             .map_err(|e| e.to_string())?
             .cloud_allowed(llm::AnalysisTier::Agentic);
-        let firewall = llm::EgressFirewall::new(llm::EgressPolicy::default());
-        let local = llm::OllamaProvider::local_default().map_err(|e| e.to_string())?;
-        let preview = agents::AgentBroker::bounded_default()
-            .preview_prepared(&local, &firewall, &task)
-            .map_err(|e| e.to_string())?;
-        let payload_bytes = serde_json::to_vec(&preview.payload)
-            .map_err(|e| e.to_string())?
-            .len() as u64;
-        let mut report = escalation::strategies(task.task(), gap, cloud_allowed, payload_bytes);
+        // #238: check the broker's edge-label allowlist before previewing —
+        // an unsupported label always fails `validate_task`, so previewing
+        // anyway would only surface that internal error to the UI instead of
+        // a fail-closed, capability-computed offer.
+        let broker = agents::AgentBroker::bounded_default();
+        let edge_label_supported = broker.supports_edge_label(&task.task().edge_label);
+        let payload_bytes = if edge_label_supported {
+            let firewall = llm::EgressFirewall::new(llm::EgressPolicy::default());
+            let local = llm::OllamaProvider::local_default().map_err(|e| e.to_string())?;
+            let preview = broker
+                .preview_prepared(&local, &firewall, &task)
+                .map_err(|e| e.to_string())?;
+            serde_json::to_vec(&preview.payload)
+                .map_err(|e| e.to_string())?
+                .len() as u64
+        } else {
+            0
+        };
+        let mut report = escalation::strategies(
+            task.task(),
+            gap,
+            cloud_allowed,
+            payload_bytes,
+            edge_label_supported,
+        );
         report.source_basis = Some(task.source_basis().clone());
         Ok(report)
     })

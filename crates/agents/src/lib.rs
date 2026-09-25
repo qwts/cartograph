@@ -197,6 +197,14 @@ impl AgentBroker {
         Self::new(BrokerLimits::default())
     }
 
+    /// Whether this broker's allowlist covers the given edge label (#238).
+    /// Callers use this to decide whether to offer escalation for a gap
+    /// before assembling and previewing a task that would only fail
+    /// `validate_task`'s allowlist check.
+    pub fn supports_edge_label(&self, edge_label: &str) -> bool {
+        self.limits.allowed_edge_labels.contains(edge_label)
+    }
+
     /// Return the exact egress preview for an action without invoking a model.
     pub fn preview(
         &self,
@@ -1109,6 +1117,35 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, AgentError::Integrity(_)));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn broker_rejects_edge_labels_outside_the_allowlist() {
+        // #238: an edge label the broker isn't bounded to propose (e.g. an
+        // IMPORTS gap) is rejected before any model call, with a specific
+        // error variant a caller can distinguish from other validation
+        // failures — this is what `AgentBroker::supports_edge_label` lets
+        // callers check ahead of time instead of hitting this error.
+        let provider = FixedProvider {
+            calls: AtomicUsize::new(0),
+            response: "{}",
+        };
+        let broker = AgentBroker::bounded_default();
+        assert!(!broker.supports_edge_label("IMPORTS"));
+        assert!(broker.supports_edge_label("PUBLISHES"));
+
+        let mut unsupported = task(ConfidenceTier::Gap);
+        unsupported.edge_label = "IMPORTS".into();
+        let error = broker
+            .propose(
+                &provider,
+                &EgressFirewall::new(EgressPolicy::local_only()),
+                &unsupported,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(error, AgentError::InvalidTask(_)));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     }
 
