@@ -183,9 +183,33 @@ jobs:
       # `cargo metadata`). The App Store Connect key is decoded only after this
       # step and is passed as a step output, never through $GITHUB_ENV, so the
       # key file does not exist and no APPLE_* variable is set while compiling.
+      #
+      # dSYM archival (#249): rustc's `-C strip=symbols` (from the workspace
+      # release profile) strips at link time — on Apple targets rustc does
+      # this by shelling out to the platform `strip` tool after linking, not
+      # by passing a linker flag. There is only ONE link here: this compiles
+      # the universal binary once with debug info and no cargo-level
+      # stripping (profile overrides via env, no Cargo.toml change, so every
+      # other release build of this workspace keeps #221's stripped-by-default
+      # hardening), runs `dsymutil` against it to capture the `.dSYM` from its
+      # debug map, then strips that SAME binary in place with `strip` —
+      # exactly what `-C strip=symbols` would have done at link time, and
+      # exactly Xcode's own "Generate dSYM / Strip Linked Product" pipeline.
+      #
+      # This must NOT be a second `cargo`/`tauri` compile: symbolication
+      # matches each architecture slice's dSYM to the shipped binary by
+      # Mach-O LC_UUID, and a second link generates a new UUID per slice,
+      # silently breaking that match even though the artifact name and
+      # contents look right (PR #523 review). `strip`, unlike a relink, only
+      # removes the symbol table — it does not touch LC_UUID — so the
+      # in-place strip below keeps the shipped binary's UUID identical to the
+      # one dsymutil already captured. That match is asserted explicitly
+      # with `dwarfdump --uuid` before bundling continues.
       - name: Compile universal binary without signing secrets
         run: |
           set -euo pipefail
+          export CARGO_PROFILE_RELEASE_STRIP=none
+          export CARGO_PROFILE_RELEASE_DEBUG=true
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY \
             APPLE_API_KEY_PATH APPLE_API_ISSUER APPLE_SIGNING_IDENTITY \
             CSC_LINK CSC_KEY_PASSWORD; do
@@ -195,6 +219,40 @@ jobs:
             fi
           done
           npm run package:macos:compile
+
+      - name: Extract dSYM from the debug build
+        id: dsym
+        run: |
+          set -euo pipefail
+          bin="target/universal-apple-darwin/release/app"
+          test -f "$bin"
+          mkdir -p dsyms
+          dsymutil "$bin" -o "dsyms/Cartograph.dSYM"
+          test -d "dsyms/Cartograph.dSYM"
+          echo "path=dsyms/Cartograph.dSYM" >> "$GITHUB_OUTPUT"
+
+      - name: Strip debug info from binary (preserving dSYM UUID)
+        run: |
+          set -euo pipefail
+          bin="target/universal-apple-darwin/release/app"
+          test -f "$bin"
+          strip "$bin"
+
+      - name: Verify dSYM UUID matches the binary to be bundled
+        run: |
+          set -euo pipefail
+          bin="target/universal-apple-darwin/release/app"
+          dsym="${{ steps.dsym.outputs.path }}"
+          bin_uuids=$(dwarfdump --uuid "$bin" | awk '{print $2, $3}' | sort)
+          dsym_uuids=$(dwarfdump --uuid "$dsym" | awk '{print $2, $3}' | sort)
+          echo "binary UUID(s):"
+          printf '%s\n' "$bin_uuids"
+          echo "dSYM UUID(s):"
+          printf '%s\n' "$dsym_uuids"
+          if [ -z "$bin_uuids" ] || [ "$bin_uuids" != "$dsym_uuids" ]; then
+            echo "::error::dSYM UUID(s) do not match the binary that will be bundled; crash report symbolication would fail"
+            exit 1
+          fi
 
       - name: Decode App Store Connect key
         id: apple_key
@@ -307,3 +365,16 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+      # Internal artifact (#249), not a release asset: kept separate from
+      # dist/ so it never affects the release-publish job's "dist/ holds
+      # exactly the .app.zip + .dmg" assertion above. Symbolicates crash
+      # reports (.ips) and `sample`/`atos` profiles against this exact build
+      # with `dsymutil -s Cartograph.dSYM` / `atos -o Cartograph.dSYM ...`.
+      - name: Upload dSYM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}-dSYM
+          path: ${{ steps.dsym.outputs.path }}
+          if-no-files-found: error
+          retention-days: 90
