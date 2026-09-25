@@ -32,6 +32,7 @@ import { InvestigationsSurface } from './components/InvestigationsSurface';
 import { investigationIsActive, useInvestigationStore } from './investigationStore';
 import type { InvestigationChanged } from './investigationTypes';
 import type { Job, PreflightProgress, SpecArtifact, SpecAssertion, SpecBundle } from './store';
+import { resolveArtifactForCopy, withFullArtifacts, type ReadSpecArtifact } from './specExport';
 
 const AtlasCanvas = lazy(() =>
   import('./components/AtlasCanvas').then(({ AtlasCanvas: Component }) => ({
@@ -49,25 +50,13 @@ const SpecWorkbench = lazy(() =>
   })),
 );
 
-type ReadSpecArtifact = (artifactId: string) => Promise<SpecArtifact | null>;
-
-/** Fills in any artifact whose `export_spec` preview was capped (#488) with
- *  its full content/assertions before it leaves the app (export or copy). */
-async function withFullArtifacts(
-  artifacts: SpecArtifact[],
-  readSpecArtifact: ReadSpecArtifact,
-): Promise<SpecArtifact[]> {
-  return Promise.all(
-    artifacts.map(async (artifact) => {
-      if (!artifact.content_truncated && !artifact.assertions_truncated) return artifact;
-      const full = await readSpecArtifact(artifact.id);
-      return full ?? artifact;
-    }),
-  );
-}
-
+/** Exports the bundle, or aborts (leaving `specError` for the Workbench to
+ *  show) if any truncated artifact's full content couldn't be fetched — see
+ *  `withFullArtifacts` in `specExport.ts`. Never downloads a file built from
+ *  capped previews. */
 async function exportSpecBundle(bundle: SpecBundle, readSpecArtifact: ReadSpecArtifact) {
   const artifacts = await withFullArtifacts(bundle.artifacts, readSpecArtifact);
+  if (artifacts === null) return;
   const files = Object.fromEntries(artifacts.map((artifact) => [artifact.file_name, artifact.content]));
   const blob = new Blob([JSON.stringify({ ...bundle, artifacts, files }, null, 2)], {
     type: 'application/json',
@@ -80,9 +69,14 @@ async function exportSpecBundle(bundle: SpecBundle, readSpecArtifact: ReadSpecAr
   URL.revokeObjectURL(url);
 }
 
+/** Copies the artifact's content, or aborts (leaving `specError` for the
+ *  Workbench to show) if the on-demand full fetch failed — see
+ *  `resolveArtifactForCopy` in `specExport.ts`. Never copies the capped
+ *  preview in its place. */
 async function copySpecArtifact(artifact: SpecArtifact, readSpecArtifact: ReadSpecArtifact) {
-  const full = artifact.content_truncated ? await readSpecArtifact(artifact.id) : artifact;
-  void navigator.clipboard?.writeText((full ?? artifact).content);
+  const full = await resolveArtifactForCopy(artifact, readSpecArtifact);
+  if (full === null) return;
+  void navigator.clipboard?.writeText(full.content);
 }
 
 export default function App() {
