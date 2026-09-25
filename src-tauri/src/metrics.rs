@@ -72,6 +72,15 @@ pub struct GraphMetrics {
 /// scope this ingest; extractors it omits (including layers with zero
 /// files) report a null coverage_pct. Counts use the spec register's own
 /// provenance definition — one definition, every surface.
+///
+/// `load_into_graph_with_bindings` always publishes the registration's own
+/// `repo:<key>` node, whose provenance hashes the commit it was recorded at
+/// but carries no evidence spans (it is not itself a piece of extracted
+/// evidence). Since that node can never satisfy the evidence-based scope
+/// check, it is admitted into the hash by id whenever its key is in
+/// `coverage_repos` — otherwise a managed repo with no extracted facts (or
+/// whose new commit only touches unextracted files) would record the same
+/// scoped hash across different commits (#466 follow-up).
 pub fn compute(
     nodes: &[Node],
     edges: &[Edge],
@@ -108,6 +117,14 @@ pub fn compute(
                 .iter()
                 .any(|evidence| coverage_repos.contains(&evidence.repo))
     };
+    // The registration's own `repo:<key>` node (see doc comment above): no
+    // evidence spans, but its content hash is bound to the commit it was
+    // recorded at, so it must stay in the scoped hash by id.
+    let is_own_registration_node = |node: &Node| -> bool {
+        node.id
+            .strip_prefix("repo:")
+            .is_some_and(|key| coverage_repos.contains(key))
+    };
     let mut cover = |provenance: &core_prov::Provenance| {
         if !in_recorded_scope(provenance) {
             return;
@@ -129,7 +146,7 @@ pub fn compute(
         let provenance = spec::provenance(&node.props, &node.id);
         tally(&provenance);
         cover(&provenance);
-        if in_recorded_scope(&provenance) {
+        if in_recorded_scope(&provenance) || is_own_registration_node(node) {
             lines.push(format!(
                 "n {} {} {}",
                 node.id, node.label, provenance.content_hash
@@ -471,6 +488,71 @@ mod tests {
         // Tallies still reconcile with findings_summary over the whole graph.
         assert_eq!(before.graph_facts, 2);
         assert_eq!(after.graph_facts, 2);
+    }
+
+    // Mirrors `load_into_graph_with_bindings`'s registration node: no
+    // evidence spans, but a content hash bound to `commit`.
+    fn registration_node(repo: &str, commit: &str) -> Node {
+        let hash = core_prov::content_hash(
+            &serde_json::to_vec(&("registered-repo-v1", repo, commit)).unwrap(),
+        );
+        Node {
+            id: format!("repo:{repo}"),
+            label: "Repo".into(),
+            props: json!({
+                "commit": commit,
+                "prov": {
+                    "tier": "Deterministic",
+                    "confidence_tier": "Confirmed",
+                    "evidence": [],
+                    "extractor_id": "app.ingest",
+                    "content_hash": hash,
+                }
+            }),
+        }
+    }
+
+    #[test]
+    // Codex review on #518: the registration's own `repo:<key>` node has no
+    // evidence, so it used to be silently dropped from the scoped hash — a
+    // managed repo with zero extracted facts recorded the same hash across
+    // different commits. The node must move the hash even with no other
+    // facts in scope.
+    fn zero_evidence_registration_node_moves_the_scoped_hash() {
+        let before = compute(
+            &[registration_node("local/fixture", "c1")],
+            &[],
+            &BTreeMap::new(),
+            &fixture_repos(),
+        );
+        let after = compute(
+            &[registration_node("local/fixture", "c2")],
+            &[],
+            &BTreeMap::new(),
+            &fixture_repos(),
+        );
+        assert_ne!(before.content_hash, after.content_hash);
+
+        // A foreign registration's commit must not move it (no #466 regression).
+        let with_foreign_c1 = compute(
+            &[
+                registration_node("local/fixture", "c1"),
+                registration_node("local/other", "x1"),
+            ],
+            &[],
+            &BTreeMap::new(),
+            &fixture_repos(),
+        );
+        let with_foreign_c2 = compute(
+            &[
+                registration_node("local/fixture", "c1"),
+                registration_node("local/other", "x2"),
+            ],
+            &[],
+            &BTreeMap::new(),
+            &fixture_repos(),
+        );
+        assert_eq!(with_foreign_c1.content_hash, with_foreign_c2.content_hash);
     }
 
     #[test]
