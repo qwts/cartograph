@@ -205,12 +205,11 @@ jobs:
       # in-place strip below keeps the shipped binary's UUID identical to the
       # one dsymutil already captured. That match is asserted explicitly
       # with `dwarfdump --uuid` before bundling continues.
-      - name: Compile universal binary with debug info
-        env:
-          CARGO_PROFILE_RELEASE_STRIP: none
-          CARGO_PROFILE_RELEASE_DEBUG: 'true'
+      - name: Compile universal binary without signing secrets
         run: |
           set -euo pipefail
+          export CARGO_PROFILE_RELEASE_STRIP=none
+          export CARGO_PROFILE_RELEASE_DEBUG=true
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY \
             APPLE_API_KEY_PATH APPLE_API_ISSUER APPLE_SIGNING_IDENTITY \
             CSC_LINK CSC_KEY_PASSWORD; do
