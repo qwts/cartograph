@@ -293,8 +293,19 @@ export interface SpecArtifact {
   file_name: string;
   title: string;
   format: 'markdown' | 'mermaid' | 'json';
+  /** Capped to a preview when it crosses IPC via `export_spec` (#488); see
+   *  `content_truncated`/`content_byte_len`. `read_spec_artifact` returns the
+   *  untruncated artifact for copy/export. */
   content: string;
+  content_truncated: boolean;
+  /** Full content length in bytes, regardless of `content_truncated`. */
+  content_byte_len: number;
+  /** Capped to a preview when it crosses IPC via `export_spec` (#488); see
+   *  `assertions_truncated`/`assertions_total`. */
   assertions: SpecAssertion[];
+  assertions_truncated: boolean;
+  /** Full assertion count, regardless of `assertions_truncated`. */
+  assertions_total: number;
 }
 
 export interface SpecBundle {
@@ -785,6 +796,10 @@ export interface AppStore {
   ingest: (path: string, source?: IngestSource) => Promise<void>;
   clearGraph: () => Promise<void>;
   setSpecMode: (mode: SpecExportMode) => Promise<void>;
+  /** Full artifact (untruncated content and assertions) for copy/export,
+   *  after `export_spec`'s IPC-capped preview (#488). `null` on failure —
+   *  callers fall back to the already-fetched preview. */
+  readSpecArtifact: (artifactId: string) => Promise<SpecArtifact | null>;
   curateAssertion: (
     assertion: SpecAssertion,
     decision: AssertionDecision,
@@ -1131,6 +1146,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ specError: String(error) });
     } finally {
       set({ specBusy: false });
+    }
+  },
+
+  readSpecArtifact: async (artifactId: string) => {
+    try {
+      return await invokeOr<SpecArtifact | null>('read_spec_artifact', null, {
+        mode: get().specMode,
+        artifactId,
+      });
+    } catch (error) {
+      set({ specError: String(error) });
+      return null;
     }
   },
 

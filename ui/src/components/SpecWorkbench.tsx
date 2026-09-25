@@ -48,7 +48,9 @@ function producerLabel(tier: string): string {
  * matrix's are relation links and the dossier's are hops — never relabeled
  * as ACs or flows the compiler did not count. */
 export function docChip(artifact: SpecArtifact): { text: string; tone: 'default' | 'alert' } {
-  const count = artifact.assertions.length;
+  // The true total (#488) — `artifact.assertions` may be capped to a preview
+  // when it crossed IPC, but the chip always counts every instance.
+  const count = artifact.assertions_total;
   // Structured indexes (#240, #487) list the instances of their Markdown
   // artifact, where those instances are counted once.
   if (artifact.format === 'json') return { text: 'index', tone: 'default' };
@@ -222,12 +224,26 @@ export function SpecWorkbench({
                 <pre className="spec-artifact-source" data-testid="spec-artifact-source">
                   {selected.content}
                 </pre>
+                {selected.content_truncated && (
+                  <p className="muted spec-artifact-truncated-note" data-testid="spec-artifact-truncated-note">
+                    Showing a preview — the complete artifact is{' '}
+                    {selected.content_byte_len.toLocaleString()} bytes. Use Copy artifact or Export
+                    bundle for the complete text.
+                  </p>
+                )}
 
                 <section className="spec-assertions" aria-labelledby="spec-assertions-title">
                   <header>
                     <h3 id="spec-assertions-title">Assertions and inline provenance</h3>
-                    <span className="muted">{selected.assertions.length} in this artifact</span>
+                    <span className="muted">{selected.assertions_total} in this artifact</span>
                   </header>
+                  {selected.assertions_truncated && (
+                    <p className="muted spec-assertions-truncated-note" data-testid="spec-assertions-truncated-note">
+                      Showing the first {selected.assertions.length.toLocaleString()} of{' '}
+                      {selected.assertions_total.toLocaleString()} assertions. Export the bundle for
+                      the complete list.
+                    </p>
+                  )}
                   {selected.assertions.length === 0 ? (
                     <p className="muted">No graph-backed assertions were recovered for this artifact.</p>
                   ) : (
