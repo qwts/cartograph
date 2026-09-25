@@ -251,6 +251,15 @@ pub fn extract_file(
 /// is used by that separate live configuration pass, not to read primary files.
 /// The host persists this capture and receipts before graph publication, and
 /// must repeat complete-fact matching after its own cross-layer enrichments.
+///
+/// Per-file parsing runs on the same ordered worker pool as the uncaptured
+/// lane (#236, #482): files parse concurrently on up to [`workers`] threads,
+/// but every result is merged back on the calling thread strictly in
+/// manifest order (the manifest is itself sorted by path, #248), so receipts
+/// and facts are byte-identical to a serial run for any worker count
+/// (AC-0217) — parallelism changes only wall-clock time.
+///
+/// [`workers`]: source_walk::parallel::workers
 pub fn extract_captured_dir(
     root: &Path,
     id: &SourceId,
@@ -258,25 +267,35 @@ pub fn extract_captured_dir(
     on_file: &mut dyn FnMut(&str),
 ) -> Result<(Extraction, Vec<Receipt>, IncrementalStats), CapturedError> {
     receipt::validate_source_repo(&capture.manifest().source_id, id.repo)?;
+    let paths: Vec<String> = capture
+        .manifest()
+        .files
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
     let mut extraction = Extraction::default();
     let mut receipts = Vec::new();
     let mut receipt_bytes = 0;
     let mut stats = IncrementalStats::default();
-    for entry in &capture.manifest().files {
-        on_file(&entry.path);
-        let (facts, file_receipts) = extract_file(capture.file(&entry.path)?, id)?;
-        for receipt in &file_receipts {
-            receipt_bytes += receipt.to_json()?.len();
-        }
-        if receipt_bytes > MAX_EXTRACTION_RECEIPT_BYTES
-            || receipts.len() + file_receipts.len() > MAX_EXTRACTION_RECEIPTS
-        {
-            return Err(CapturedError::Limit("extraction receipt metadata"));
-        }
-        super::append_extraction(&mut extraction, facts);
-        receipts.extend(file_receipts);
-        stats.recomputed_files += 1;
-    }
+    source_walk::parallel::map_ordered(
+        &paths,
+        |path| extract_file(capture.file(path)?, id),
+        |path, (facts, file_receipts)| {
+            on_file(path);
+            for receipt in &file_receipts {
+                receipt_bytes += receipt.to_json()?.len();
+            }
+            if receipt_bytes > MAX_EXTRACTION_RECEIPT_BYTES
+                || receipts.len() + file_receipts.len() > MAX_EXTRACTION_RECEIPTS
+            {
+                return Err(CapturedError::Limit("extraction receipt metadata"));
+            }
+            super::append_extraction(&mut extraction, facts);
+            receipts.extend(file_receipts);
+            stats.recomputed_files += 1;
+            Ok(())
+        },
+    )?;
     super::complete_directory(&mut extraction, root, id)?;
     retain_matching(&mut receipts, &extraction);
     Ok((extraction, receipts, stats))
