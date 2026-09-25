@@ -2530,19 +2530,50 @@ async fn gap_strategies(
             .egress_policy()
             .map_err(|e| e.to_string())?
             .cloud_allowed(llm::AnalysisTier::Agentic);
-        let firewall = llm::EgressFirewall::new(llm::EgressPolicy::default());
-        let local = llm::OllamaProvider::local_default().map_err(|e| e.to_string())?;
-        let preview = agents::AgentBroker::bounded_default()
-            .preview_prepared(&local, &firewall, &task)
-            .map_err(|e| e.to_string())?;
-        let payload_bytes = serde_json::to_vec(&preview.payload)
-            .map_err(|e| e.to_string())?
-            .len() as u64;
-        let mut report = escalation::strategies(task.task(), gap, cloud_allowed, payload_bytes);
+        let broker = agents::AgentBroker::bounded_default();
+        // Check broker capability before ever previewing a payload (#238):
+        // a gap whose edge label the broker cannot propose (e.g. IMPORTS)
+        // would otherwise only be discovered by `preview_prepared` failing
+        // validation, surfacing its internal error text to the UI.
+        let edge_label_allowed = broker
+            .allowed_edge_labels()
+            .contains(&task.task().edge_label);
+        let payload_bytes = if edge_label_allowed {
+            let firewall = llm::EgressFirewall::new(llm::EgressPolicy::default());
+            let local = llm::OllamaProvider::local_default().map_err(|e| e.to_string())?;
+            let preview = broker
+                .preview_prepared(&local, &firewall, &task)
+                .map_err(|e| e.to_string())?;
+            serde_json::to_vec(&preview.payload)
+                .map_err(|e| e.to_string())?
+                .len() as u64
+        } else {
+            0
+        };
+        let mut report = escalation::strategies(
+            task.task(),
+            gap,
+            cloud_allowed,
+            payload_bytes,
+            edge_label_allowed,
+        );
         report.source_basis = Some(task.source_basis().clone());
         Ok(report)
     })
     .await
+}
+
+/// Edge labels the bounded T3 broker may currently propose (#238): lets the
+/// gap register compute its escalation offer from real broker capability
+/// instead of showing it unconditionally for gap classes the broker cannot
+/// execute.
+#[tauri::command]
+fn escalation_capabilities() -> Vec<String> {
+    agents::AgentBroker::bounded_default()
+        .allowed_edge_labels()
+        .iter()
+        .cloned()
+        .collect()
 }
 
 /// Exact redacted disclosure, including the receipt-bound input identity.
@@ -4445,6 +4476,7 @@ fn main() {
             ingest_history,
             extractor_coverage,
             gap_strategies,
+            escalation_capabilities,
             escalation_preview,
             run_escalation,
             run_class_escalation,

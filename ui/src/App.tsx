@@ -119,6 +119,7 @@ export default function App() {
     clearError,
     findings,
     registerFindings,
+    escalationEdgeLabels,
     ingestHistory,
     coverage,
     evals,
@@ -543,6 +544,7 @@ export default function App() {
             gaps={registerArtifact('gap_register.md')}
             drift={registerArtifact('drift_register.md')}
             registerFindings={registerFindings}
+            allowedEdgeLabels={escalationEdgeLabels}
             proposalHistory={{
               proposals: stagedProposals,
               loading: stagedLoading,

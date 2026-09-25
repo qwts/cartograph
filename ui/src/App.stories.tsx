@@ -635,6 +635,9 @@ function installFakeCore(options: {
           notes: ['payload is the exact redacted span set shown by the egress firewall'],
         };
       }
+      // Broker edge-label allowlist (#238), prefetched like the disclosures.
+      case 'escalation_capabilities':
+        return ['CALLS', 'PUBLISHES', 'READS', 'WRITES', 'HANDLES'];
       case 'set_tier_enabled': {
         const input = args as { tier: string; enabled: boolean };
         tiers = tiers.map((t) => (t.tier === input.tier ? { ...t, enabled: input.enabled } : t));
