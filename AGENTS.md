@@ -182,6 +182,9 @@ Storybook itself: `npm run storybook` (from `ui/`).
 - `docs/design/` — earlier design tokens (`DESIGN.md`) + Stitch mockups per view
 - `docs/adapters/AUTHORING_GUIDE.md` — how to add language-adapter coverage
   (sandboxed WASM plugin, or extending a compiled-in `adapters-lang-*` crate)
+- `docs/agent-golden-tasks.md` — the eval set for this repo's agent
+  primitives (ENG-0006 item 4); added by #262, growth reason: a new doc, not
+  a length increase to an existing one
 - GitHub wiki — narrative contributor/process docs (`CONTRIBUTING.md` is a stub)
 - `docs/help/` — the single authored copy of in-app Help. The wiki's `Help-*`
   pages are generated from main after merge by `help-wiki-sync.yml`; never
