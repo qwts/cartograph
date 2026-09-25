@@ -1,12 +1,4 @@
 # governed:agent-harness-format:start
-# These paths are synchronized by agent-sop. Their lint and syntax
-# contract runs at the governance source; consumer formatters must not rewrite
-# the managed bytes and start a format-versus-sync loop.
-.codex/config.toml
-.codex/environments/environment.toml
-.codex/rules/environment.rules
-.codex/hooks.json
-.claude/settings.json
-.cursor/hooks.json
-.windsurf/hooks.json
+# Harness adapters live in the user directory (ENG-0384). This repository
+# has no managed harness files for a formatter to skip.
 # governed:agent-harness-format:end
