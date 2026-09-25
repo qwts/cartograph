@@ -31,7 +31,7 @@ import { TopologyCard } from './components/TopologyCard';
 import { InvestigationsSurface } from './components/InvestigationsSurface';
 import { investigationIsActive, useInvestigationStore } from './investigationStore';
 import type { InvestigationChanged } from './investigationTypes';
-import type { Job, PreflightProgress, SpecArtifact, SpecBundle } from './store';
+import type { Job, PreflightProgress, SpecArtifact, SpecAssertion, SpecBundle } from './store';
 
 const AtlasCanvas = lazy(() =>
   import('./components/AtlasCanvas').then(({ AtlasCanvas: Component }) => ({
@@ -49,11 +49,27 @@ const SpecWorkbench = lazy(() =>
   })),
 );
 
-function exportSpecBundle(bundle: SpecBundle) {
-  const files = Object.fromEntries(
-    bundle.artifacts.map((artifact) => [artifact.file_name, artifact.content]),
+type ReadSpecArtifact = (artifactId: string) => Promise<SpecArtifact | null>;
+
+/** Fills in any artifact whose `export_spec` preview was capped (#488) with
+ *  its full content/assertions before it leaves the app (export or copy). */
+async function withFullArtifacts(
+  artifacts: SpecArtifact[],
+  readSpecArtifact: ReadSpecArtifact,
+): Promise<SpecArtifact[]> {
+  return Promise.all(
+    artifacts.map(async (artifact) => {
+      if (!artifact.content_truncated && !artifact.assertions_truncated) return artifact;
+      const full = await readSpecArtifact(artifact.id);
+      return full ?? artifact;
+    }),
   );
-  const blob = new Blob([JSON.stringify({ ...bundle, files }, null, 2)], {
+}
+
+async function exportSpecBundle(bundle: SpecBundle, readSpecArtifact: ReadSpecArtifact) {
+  const artifacts = await withFullArtifacts(bundle.artifacts, readSpecArtifact);
+  const files = Object.fromEntries(artifacts.map((artifact) => [artifact.file_name, artifact.content]));
+  const blob = new Blob([JSON.stringify({ ...bundle, artifacts, files }, null, 2)], {
     type: 'application/json',
   });
   const url = URL.createObjectURL(blob);
@@ -64,8 +80,9 @@ function exportSpecBundle(bundle: SpecBundle) {
   URL.revokeObjectURL(url);
 }
 
-function copySpecArtifact(artifact: SpecArtifact) {
-  void navigator.clipboard?.writeText(artifact.content);
+async function copySpecArtifact(artifact: SpecArtifact, readSpecArtifact: ReadSpecArtifact) {
+  const full = artifact.content_truncated ? await readSpecArtifact(artifact.id) : artifact;
+  void navigator.clipboard?.writeText((full ?? artifact).content);
 }
 
 export default function App() {
@@ -121,6 +138,7 @@ export default function App() {
     clearFinishedJobs,
     clearGraph,
     setSpecMode,
+    readSpecArtifact,
     curateAssertion,
     select,
     clearSelection,
@@ -356,6 +374,46 @@ export default function App() {
     };
   }, [navigate, view]);
 
+  // Gaps/Drift is a resolution surface, not a preview: it must never lose
+  // sight of a real gap because export_spec's IPC preview capped the
+  // register's assertion list (#488). Backfill the full list on demand —
+  // only while the surface is actually open, so a truncated 157 MB register
+  // never crosses IPC a second time just because a refresh happened.
+  // Tagging the backfill with the exact `specBundle` it was fetched for
+  // (rather than clearing eagerly) means a new bundle is never served a
+  // stale full list: once `specBundle` changes, the tag no longer matches
+  // and `registerArtifact` falls back to that new bundle's own (correctly
+  // truncated) list until the fresh fetch resolves.
+  const [fullRegisterAssertions, setFullRegisterAssertions] = useState<{
+    bundle: SpecBundle | null;
+    data: Record<string, SpecAssertion[]>;
+  }>({ bundle: null, data: {} });
+  useEffect(() => {
+    if (view !== 'gaps' || !specBundle) return;
+    const truncated = specBundle.artifacts.filter(
+      (artifact) =>
+        (artifact.id === 'gap-register' || artifact.id === 'drift-register') &&
+        artifact.assertions_truncated,
+    );
+    if (truncated.length === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      truncated.map(async (artifact) => [artifact.id, await readSpecArtifact(artifact.id)] as const),
+    ).then((results) => {
+      if (cancelled) return;
+      setFullRegisterAssertions((current) => {
+        const data = { ...(current.bundle === specBundle ? current.data : {}) };
+        for (const [id, full] of results) {
+          if (full) data[id] = full.assertions;
+        }
+        return { bundle: specBundle, data };
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [specBundle, view, readSpecArtifact]);
+
   const busy =
     ingestBusy || specBusy || clearBusy || investigations.history.some((item) => item.invocation_pending) ||
     jobs.some((job) => hasRecordedExecution(job) && job.status === 'running');
@@ -472,15 +530,19 @@ export default function App() {
               onCurate={(assertion, decision, note) =>
                 void curateAssertion(assertion, decision, note)
               }
-              onCopyArtifact={copySpecArtifact}
-              onExportBundle={exportSpecBundle}
+              onCopyArtifact={(artifact) => void copySpecArtifact(artifact, readSpecArtifact)}
+              onExportBundle={(bundle) => void exportSpecBundle(bundle, readSpecArtifact)}
             />
           </Suspense>
         );
       case 'gaps': {
-        const registerArtifact = (file: string) =>
-          specBundle?.artifacts.find((artifact) => artifact.file_name === file)?.assertions ??
-          [];
+        const registerArtifact = (file: string) => {
+          const artifact = specBundle?.artifacts.find((item) => item.file_name === file);
+          if (!artifact) return [];
+          if (!artifact.assertions_truncated) return artifact.assertions;
+          if (fullRegisterAssertions.bundle !== specBundle) return artifact.assertions;
+          return fullRegisterAssertions.data[artifact.id] ?? artifact.assertions;
+        };
         return (
           <GapsDriftSurface
             summary={findings}

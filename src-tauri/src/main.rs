@@ -4067,15 +4067,149 @@ fn build_spec_bundle(
     ))
 }
 
-/// Compile the full official spec set under one R-INT-5 export policy.
+/// Per-artifact content cap applied before a spec bundle crosses IPC (#488):
+/// full artifacts were seen up to 605 MB serialized. The complete text stays
+/// reachable one artifact at a time via `read_spec_artifact`.
+const SPEC_ARTIFACT_CONTENT_PREVIEW_BYTES: usize = 512 * 1024;
+/// Per-artifact assertion-count cap applied before a spec bundle crosses IPC
+/// (#488) — structured `assertions` (with full inline provenance/evidence)
+/// made up most of the oversized payload. The complete list stays reachable
+/// via `read_spec_artifact`.
+const SPEC_ARTIFACT_ASSERTIONS_PREVIEW_COUNT: usize = 200;
+
+/// Truncates `content` in place to at most `max_bytes`, respecting UTF-8
+/// char boundaries, and reports whether truncation happened (#488).
+fn truncate_utf8_in_place(content: &mut String, max_bytes: usize) -> bool {
+    if content.len() <= max_bytes {
+        return false;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    content.truncate(end);
+    true
+}
+
+/// One official spec artifact capped to `SPEC_ARTIFACT_CONTENT_PREVIEW_BYTES`
+/// / `SPEC_ARTIFACT_ASSERTIONS_PREVIEW_COUNT` for the IPC boundary (#488).
+/// The Workbench renders this preview and fetches the full artifact (content
+/// and assertions) via `read_spec_artifact` for copy/export.
+#[derive(Debug, Serialize)]
+struct SpecArtifactPreview {
+    id: String,
+    file_name: String,
+    title: String,
+    format: String,
+    content: String,
+    content_truncated: bool,
+    content_byte_len: usize,
+    assertions: Vec<spec::SpecAssertion>,
+    assertions_truncated: bool,
+    assertions_total: usize,
+}
+
+/// `spec::SpecBundle` with every artifact capped for IPC (#488).
+#[derive(Debug, Serialize)]
+struct SpecBundlePreview {
+    mode: spec::ExportMode,
+    artifacts: Vec<SpecArtifactPreview>,
+    assertion_count: usize,
+    gap_count: usize,
+    drift_count: usize,
+    security_count: usize,
+}
+
+fn preview_spec_bundle(bundle: spec::SpecBundle) -> SpecBundlePreview {
+    let artifacts = bundle
+        .artifacts
+        .into_iter()
+        .map(|artifact| {
+            let content_byte_len = artifact.content.len();
+            let mut content = artifact.content;
+            let content_truncated =
+                truncate_utf8_in_place(&mut content, SPEC_ARTIFACT_CONTENT_PREVIEW_BYTES);
+            let assertions_total = artifact.assertions.len();
+            let assertions_truncated = assertions_total > SPEC_ARTIFACT_ASSERTIONS_PREVIEW_COUNT;
+            let assertions = artifact
+                .assertions
+                .into_iter()
+                .take(SPEC_ARTIFACT_ASSERTIONS_PREVIEW_COUNT)
+                .collect();
+            SpecArtifactPreview {
+                id: artifact.id,
+                file_name: artifact.file_name,
+                title: artifact.title,
+                format: artifact.format,
+                content,
+                content_truncated,
+                content_byte_len,
+                assertions,
+                assertions_truncated,
+                assertions_total,
+            }
+        })
+        .collect();
+    SpecBundlePreview {
+        mode: bundle.mode,
+        artifacts,
+        assertion_count: bundle.assertion_count,
+        gap_count: bundle.gap_count,
+        drift_count: bundle.drift_count,
+        security_count: bundle.security_count,
+    }
+}
+
+/// Compile the full official spec set under one R-INT-5 export policy,
+/// capped per artifact before it crosses IPC (#488).
 #[tauri::command]
 fn export_spec(
     mode: spec::ExportMode,
     state: State<'_, AppState>,
-) -> Result<spec::SpecBundle, String> {
+) -> Result<SpecBundlePreview, String> {
     let graph = state.graph.lock().map_err(|error| error.to_string())?;
     let decisions = state.decisions.lock().map_err(|error| error.to_string())?;
-    build_spec_bundle(&*graph, &decisions, mode)
+    let bundle = build_spec_bundle(&*graph, &decisions, mode)?;
+    Ok(preview_spec_bundle(bundle))
+}
+
+/// `spec::SpecArtifact` reported as never truncated, so `read_spec_artifact`
+/// returns the exact same wire shape `export_spec` does (#488) — callers
+/// never have to special-case a "full" artifact missing these fields.
+fn full_artifact_preview(artifact: spec::SpecArtifact) -> SpecArtifactPreview {
+    let content_byte_len = artifact.content.len();
+    let assertions_total = artifact.assertions.len();
+    SpecArtifactPreview {
+        id: artifact.id,
+        file_name: artifact.file_name,
+        title: artifact.title,
+        format: artifact.format,
+        content: artifact.content,
+        content_truncated: false,
+        content_byte_len,
+        assertions: artifact.assertions,
+        assertions_truncated: false,
+        assertions_total,
+    }
+}
+
+/// One official spec artifact's complete content and assertions, fetched on
+/// demand for copy/export after `export_spec`'s IPC-capped preview (#488).
+#[tauri::command]
+fn read_spec_artifact(
+    mode: spec::ExportMode,
+    artifact_id: String,
+    state: State<'_, AppState>,
+) -> Result<SpecArtifactPreview, String> {
+    let graph = state.graph.lock().map_err(|error| error.to_string())?;
+    let decisions = state.decisions.lock().map_err(|error| error.to_string())?;
+    let bundle = build_spec_bundle(&*graph, &decisions, mode)?;
+    bundle
+        .artifacts
+        .into_iter()
+        .find(|artifact| artifact.id == artifact_id)
+        .map(full_artifact_preview)
+        .ok_or_else(|| format!("unknown spec artifact id: {artifact_id}"))
 }
 
 /// Nodes carrying `label` (e.g. `Endpoint`, `Repo`), ordered by id.
@@ -4345,6 +4479,7 @@ fn main() {
             list_flows,
             list_flow_anchors,
             export_spec,
+            read_spec_artifact,
             semantic_preview,
             add_repo,
             add_system
@@ -4396,6 +4531,78 @@ mod tests {
         );
         assert_eq!(super::url_launcher("ios", url), None);
         assert_eq!(super::url_launcher("android", url), None);
+    }
+
+    #[test]
+    fn truncate_utf8_in_place_respects_char_boundaries() {
+        // A byte cap landing mid-character must back off rather than split a
+        // multi-byte UTF-8 scalar (#488).
+        let mut content = "a".repeat(9) + "€"; // '€' is 3 bytes.
+        let truncated = super::truncate_utf8_in_place(&mut content, 10);
+        assert!(truncated);
+        assert_eq!(content, "a".repeat(9));
+        assert!(content.len() <= 10);
+
+        let mut short = String::from("hello");
+        assert!(!super::truncate_utf8_in_place(&mut short, 10));
+        assert_eq!(short, "hello");
+    }
+
+    #[test]
+    fn preview_spec_bundle_caps_content_and_assertions_but_keeps_totals() {
+        // AC-0218 (#488): the export_spec IPC payload stays bounded per
+        // artifact regardless of the underlying content size or assertion
+        // count, while still reporting true totals so the Workbench can show
+        // a counted truncation note and doc-chip counts stay accurate.
+        let provenance = core_prov::Provenance::new(
+            core_prov::Tier::Deterministic,
+            core_prov::ConfidenceTier::Confirmed,
+            vec![],
+            "t0.fixture",
+            b"fixture",
+        )
+        .expect("within ceiling");
+        let big_content = "x".repeat(super::SPEC_ARTIFACT_CONTENT_PREVIEW_BYTES + 10);
+        let assertion_total = super::SPEC_ARTIFACT_ASSERTIONS_PREVIEW_COUNT + 5;
+        let assertions: Vec<spec::SpecAssertion> = (0..assertion_total)
+            .map(|i| spec::SpecAssertion {
+                id: format!("a{i}"),
+                subject_id: format!("s{i}"),
+                subject_kind: "Node".into(),
+                summary: "fixture assertion".into(),
+                provenance: provenance.clone(),
+            })
+            .collect();
+        let bundle = spec::SpecBundle {
+            mode: spec::ExportMode::VerifiedOnly,
+            artifacts: vec![spec::SpecArtifact {
+                id: "artifact-1".into(),
+                file_name: "big.md".into(),
+                title: "Big artifact".into(),
+                format: "markdown".into(),
+                content: big_content,
+                assertions,
+            }],
+            assertion_count: assertion_total,
+            gap_count: 0,
+            drift_count: 0,
+            security_count: 0,
+        };
+
+        let preview = super::preview_spec_bundle(bundle);
+        let artifact = &preview.artifacts[0];
+        assert!(artifact.content_truncated);
+        assert!(artifact.content.len() <= super::SPEC_ARTIFACT_CONTENT_PREVIEW_BYTES);
+        assert_eq!(
+            artifact.content_byte_len,
+            super::SPEC_ARTIFACT_CONTENT_PREVIEW_BYTES + 10
+        );
+        assert!(artifact.assertions_truncated);
+        assert_eq!(
+            artifact.assertions.len(),
+            super::SPEC_ARTIFACT_ASSERTIONS_PREVIEW_COUNT
+        );
+        assert_eq!(artifact.assertions_total, assertion_total);
     }
 
     #[test]

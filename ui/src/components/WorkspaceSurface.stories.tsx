@@ -42,7 +42,11 @@ const BUNDLE = {
     title: fileName,
     format: 'markdown' as const,
     content: `# ${fileName}`,
+    content_truncated: false,
+    content_byte_len: `# ${fileName}`.length,
     assertions: [],
+    assertions_truncated: false,
+    assertions_total: 0,
   })),
 } satisfies SpecBundle;
 

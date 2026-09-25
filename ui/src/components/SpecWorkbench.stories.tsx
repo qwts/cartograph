@@ -161,22 +161,31 @@ function artifact(
   title: string,
   assertions: SpecAssertion[] = [],
 ): SpecArtifact {
+  const content = `# ${title}\n\n## Assertions and inline provenance\n`;
   return {
     id,
     file_name: fileName,
     title,
     format: 'markdown',
-    content: `# ${title}\n\n## Assertions and inline provenance\n`,
+    content,
+    content_truncated: false,
+    content_byte_len: content.length,
     assertions,
+    assertions_truncated: false,
+    assertions_total: assertions.length,
   };
 }
+
+const SOURCE_RULE_CONTENT =
+  '# Source rule evidence\n\nGuarded local exit observations.\n\nComplete execution predicate: not established.\n\nConsumer effect: not established.\n\nLocal effect: Return(false).\n';
 
 const SOURCE_RULE_ARTIFACT: SpecArtifact = {
   ...artifact('rule-evidence', 'rule-evidence.md', 'Source rule evidence', [
     SOURCE_RULE,
     RULE_DEPENDENCY,
   ]),
-  content: '# Source rule evidence\n\nGuarded local exit observations.\n\nComplete execution predicate: not established.\n\nConsumer effect: not established.\n\nLocal effect: Return(false).\n',
+  content: SOURCE_RULE_CONTENT,
+  content_byte_len: SOURCE_RULE_CONTENT.length,
 };
 
 const BUNDLE: SpecBundle = {
@@ -472,6 +481,51 @@ export const FoundRecoveredAndDrift: Story = {
       'sym:handler CALLS sym:remote',
     );
     await expect(canvas.getByTestId('spec-artifact-source')).toHaveTextContent('ep:orders');
+  },
+};
+
+export const TruncatedArtifactShowsCountedNote: Story = {
+  // AC-0218 (#488): export_spec caps content/assertions per artifact before
+  // they cross IPC. The Workbench must show a truncated preview with an
+  // explicit counted note rather than rendering (or silently dropping) the
+  // full multi-MB artifact, and the nav chip must still count every real
+  // instance, not just the ones sent over IPC.
+  args: {
+    bundle: {
+      ...BUNDLE,
+      artifacts: [
+        {
+          ...artifact('gap-register', 'gap_register.md', 'Gap register', [GAP]),
+          content: 'first '.repeat(20),
+          content_truncated: true,
+          content_byte_len: 32_000_000,
+          assertions_truncated: true,
+          assertions_total: 4_200,
+        },
+        ...BUNDLE.artifacts.filter((item) => item.id !== 'gap-register'),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const nav = canvas.getByRole('navigation', { name: 'Official spec artifacts' });
+    // The chip counts the true total (#488), not the one assertion the IPC
+    // preview actually carried.
+    const gapChip = within(nav).getByRole('button', { name: /Gap register/ });
+    await expect(within(gapChip).getByText('4200')).toBeInTheDocument();
+
+    await userEvent.click(within(nav).getByRole('button', { name: /Gap register/ }));
+    await expect(canvas.getByTestId('spec-artifact-source')).toHaveTextContent(
+      'first first first',
+    );
+    const contentNote = canvas.getByTestId('spec-artifact-truncated-note');
+    await expect(contentNote).toHaveTextContent('32,000,000');
+    await expect(contentNote).toHaveTextContent('Copy artifact or Export bundle');
+
+    const assertionsNote = canvas.getByTestId('spec-assertions-truncated-note');
+    await expect(assertionsNote).toHaveTextContent('1');
+    await expect(assertionsNote).toHaveTextContent('4,200');
+    await expect(canvas.getByText('4200 in this artifact')).toBeInTheDocument();
   },
 };
 
