@@ -1095,13 +1095,18 @@ fn extract_tree_with_primary(
             stats.deleted_files,
         );
         layers.tf = LayerSummary {
-            // The file contexts this run actually parsed or reused, which
-            // already includes every local-module instantiation's files
-            // (an explicit `source` reference overrides `.gitignore`, #468,
-            // ADR-0034) — matching extraction file-for-file, unlike a
+            // Distinct physical files this run actually parsed or reused,
+            // which already includes every local-module instantiation's
+            // files (an explicit `source` reference overrides `.gitignore`,
+            // #468, ADR-0034) — matching extraction file-for-file, unlike a
             // separate filesystem walk that doesn't know which directories
-            // module declarations reference.
-            files: stats.recomputed_files + stats.reused_files,
+            // module declarations reference. Deduplicated across module
+            // contexts (`distinct_files`, not `recomputed_files +
+            // reused_files`), so a local directory instantiated by two
+            // module blocks doesn't inflate this denominator relative to
+            // `metrics::compute`'s `files_with_facts`, which dedups the same
+            // way by provenance `repo:path`.
+            files: stats.distinct_files,
             nodes: distinct_node_count(&tf.nodes),
             edges: distinct_edge_count(&tf.edges),
         };
