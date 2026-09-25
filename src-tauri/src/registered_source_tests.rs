@@ -1666,3 +1666,49 @@ fn managed_clone_root_uses_the_same_canonical_form_as_a_local_root() {
         managed.root()
     );
 }
+
+#[test]
+fn terraform_file_count_includes_explicitly_referenced_module_files() {
+    // AC-0225/T-0225 (#468, ADR-0034): a local module's explicit `source`
+    // overrides `.gitignore` for expansion (unchanged), and the reported
+    // Terraform layer file count now comes from the same incremental-cache
+    // file contexts extraction itself parsed, so it counts those module
+    // files instead of undercounting them the way a separate,
+    // module-unaware filesystem walk did.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "vendor/\n").unwrap();
+    std::fs::write(
+        dir.path().join("main.tf"),
+        "resource \"aws_sqs_queue\" \"q\" { name = \"orders\" }\nmodule \"m\" { source = \"./vendor/mod\" }\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("vendor/mod")).unwrap();
+    std::fs::write(
+        dir.path().join("vendor/mod/main.tf"),
+        "resource \"aws_sns_topic\" \"t\" { name = \"t\" }\n",
+    )
+    .unwrap();
+    let repo = "local/tf_22222222222222222222222222222222";
+    let mut cache = RepoExtractionCache::default();
+    let (extraction, layers, _delta) = extract_tree_incremental(
+        dir.path(),
+        repo,
+        "workdir",
+        &[],
+        &BTreeMap::new(),
+        None,
+        None,
+        &[],
+        &mut cache,
+        &[],
+        &mut |_| {},
+    )
+    .unwrap();
+    // Sanity: the module really did expand (matches the existing
+    // cross-checkout test's assertion style).
+    let child = format!("res:{repo}@module.m.aws_sns_topic.t");
+    assert!(extraction.nodes.iter().any(|node| node.id == child));
+    // Two files parsed: the root main.tf and the gitignored module's file,
+    // both explicitly referenced by the module block.
+    assert_eq!(layers.tf.files, 2);
+}

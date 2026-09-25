@@ -6,7 +6,7 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 |----|----------|----------|-----------|------|-----|-------|
 | US-0001 | AC-0001..0003, AC-0049..0050, AC-0076..0078, AC-0085, AC-0094, AC-0195..0198, AC-0202..0203, AC-0224, AC-0215 | ingest, source-walk, core-graph, app, ui | M0–M3 | — | ADR-0001, ADR-0005 | T-0001..0003, T-0049..0050, T-0076..0078, T-0085, T-0094, T-0195..0198, T-0202..0203, T-0224, T-0215 |
 | US-0002 | AC-0004..0006, AC-0053..0054, AC-0079..0080, AC-0095, AC-0098..0100, AC-0192, AC-0199..0201, AC-0206, AC-0207, AC-0209, AC-0214, AC-0216, AC-0212, AC-0220, AC-0213 | adapters-lang-ts, adapters-lang-python, adapters-lang-go, adapters-lang-java, adapters-lang-kotlin, adapters-fw, core-prov, ingest, app, ui | M1, M10 | — | ADR-0003, ADR-0006 | T-0004..0006, T-0053..0054, T-0079..0080, T-0095, T-0098..0100, T-0192, T-0199..0201, T-0206, T-0207, T-0209, T-0214, T-0216, T-0212, T-0220, T-0213 |
-| US-0003 | AC-0007..0009, AC-0043..0048, AC-0051..0052 | adapters-lang-ts, iac, dynamic, spec, app | M2, M6 | — | ADR-0003 | T-0007..0009, T-0043..0048, T-0051..0052 |
+| US-0003 | AC-0007..0009, AC-0043..0048, AC-0051..0052, AC-0225 | adapters-lang-ts, iac, adapters-lang-go, dynamic, spec, app | M2, M6 | — | ADR-0003, ADR-0034 | T-0007..0009, T-0043..0048, T-0051..0052, T-0225 |
 | US-0004 | AC-0010..0012 | events, dynamic, flowtracer, app | M3, M5–M6 | F-* | ADR-0002 | T-0010..0012 |
 | US-0005 | AC-0013..0014 | adapters-lang-ts(tsx), adapters-fw | M4 | F-* | ADR-0003 | T-0013..0014 |
 | US-0006 | AC-0015..0017,AC-0083,AC-0219 | flowtracer | M3–M5 | F-* | ADR-0002, ADR-0032 | T-0015..0017,T-0083,T-0219 |
@@ -87,3 +87,4 @@ Binds: **US ↔ AC ↔ Crate(module) ↔ Milestone ↔ Flow ↔ ADR ↔ Test**.
 | ADR-0030 | One shared, `.gitignore`-aware source walk |
 | ADR-0031 | Placeholder provenance and proven import boundaries |
 | ADR-0032 | Owned execution Gaps make a flow Partial |
+| ADR-0034 | Explicit references override `.gitignore`; direct reads honor it |

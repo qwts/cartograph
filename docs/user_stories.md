@@ -86,9 +86,10 @@
 - **AC-0048** Given a Terraform module with a literal local source confined to the ingest root, when extracted, then its resources and internal edges are instantiated under the `module.<name>.` address prefix recursively and deterministically; remote, escaping, symlink-escaping, or cyclic sources remain explicit leaf modules.
 - **AC-0051** Given TypeScript that import-proves an AWS Pulumi constructor, when a resource with a literal logical name is parsed, then a Confirmed T0 Resource plus REFERENCES/DEPENDS_ON (including `parent`/`dependsOn`) and applicable shared Capability Registry edges are emitted; lookalike constructors without a Pulumi import produce no IaC facts.
 - **AC-0052** Given a Pulumi stack export or preview JSON artifact declared as `pulumi_json`, when it is ingested, then matching T0 Pulumi resources gain separate Dynamic/Confirmed observed inputs, outputs, URN, and evidence while Pulumi secret wrappers are redacted and unmatched observations never fabricate T0 resources.
+- **AC-0225** Given a Terraform module referenced by an explicit literal `source` (AC-0048) under a directory the ingest root's own `.gitignore` excludes, when it is extracted, then its files are still expanded (an explicit reference overrides `.gitignore`, ADR-0034) and the reported Terraform layer file count includes them — derived from the same incremental-cache file contexts extraction parsed or reused, so it matches file-for-file rather than undercounting from a separate walk; given a Go module root whose own `.gitignore` excludes `go.mod`, when the module path is resolved, then `go.mod` is treated as absent (an ambient direct read honors `.gitignore`, unlike an explicit reference) and internal-import proof that depends on it falls back to Gap exactly as it does with no `go.mod` at all.
 - **Security:** IAM GRANTS feed the security view; secrets in state are redacted.
 - **Performance:** Registry lookups O(1) per resource type.
-- **Trace:** M2,M6 · `adapters-lang-ts`, `iac`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0048,T-0051..0052
+- **Trace:** M2,M6 · `adapters-lang-ts`, `iac`, `adapters-lang-go`, `dynamic`, `spec`, `app` · — · T-0007..0009,T-0043..0048,T-0051..0052,T-0225
 
 ### US-0004 — Event graph with channel-identity stitching
 - **Actor:** Engine

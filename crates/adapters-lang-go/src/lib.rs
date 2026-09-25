@@ -874,7 +874,33 @@ fn directive(line: &str) -> &str {
     line.split("//").next().unwrap_or(line).trim()
 }
 
+/// The ignore rules from `root`'s own `.gitignore`, matching the shared walk
+/// (ADR-0030): only the root's own file counts, never an ancestor's.
+fn root_gitignore(root: &Path) -> Result<source_walk::IgnoreRules, ExtractError> {
+    let path = root.join(source_walk::GITIGNORE);
+    // Match source_walk::files: only a regular-file .gitignore is loaded. A
+    // symlinked .gitignore is skipped without following it, so retargeting
+    // the symlink can't change which facts this recovers for a given commit.
+    let bytes = match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() => match std::fs::File::open(&path) {
+            Ok(file) => Some(source_walk::read_gitignore(file)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        },
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    Ok(source_walk::IgnoreRules::default().descend("", bytes.as_deref()))
+}
+
 fn module_path(root: &Path) -> Result<Option<String>, ExtractError> {
+    // An ignored `go.mod` is treated as absent, not read: a direct read is
+    // otherwise the one thing in this adapter that bypasses the shared walk's
+    // `.gitignore` rules (#468, ADR-0034).
+    if root_gitignore(root)?.is_ignored("go.mod", false) {
+        return Ok(None);
+    }
     let path = root.join("go.mod");
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,

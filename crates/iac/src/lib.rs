@@ -94,11 +94,19 @@ pub struct IncrementalStats {
     pub reused_files: u64,
     /// Cached contexts no longer reachable from the ingest root/module DAG.
     pub deleted_files: u64,
+    /// Distinct physical `.tf` files parsed or reused this run, deduplicated
+    /// across module contexts: a local directory instantiated by two module
+    /// blocks counts once here (unlike `recomputed_files + reused_files`,
+    /// which counts one context per instantiation). This matches how
+    /// `metrics::compute` dedups `files_with_facts` by provenance
+    /// `repo:path`, so scope and coverage agree file-for-file (#468).
+    pub distinct_files: u64,
 }
 
 struct CacheRun<'a> {
     cache: &'a mut IncrementalCache,
     active: BTreeSet<String>,
+    paths: BTreeSet<String>,
     stats: IncrementalStats,
 }
 
@@ -145,6 +153,7 @@ fn extract_file_incremental(
     let source_hash = core_prov::content_hash(source.as_bytes());
     let key = cached_file_key(path, address_prefix);
     run.active.insert(key.clone());
+    run.paths.insert(path.to_string());
     let extraction = if let Some(cached) = run
         .cache
         .files
@@ -812,6 +821,7 @@ pub fn extract_dir_incremental_with_progress(
     let mut run = CacheRun {
         cache,
         active: BTreeSet::new(),
+        paths: BTreeSet::new(),
         stats: IncrementalStats::default(),
     };
     let mut out = Extraction::default();
@@ -830,6 +840,7 @@ pub fn extract_dir_incremental_with_progress(
     out.resolve_policy_document_grants();
     out.close_over_endpoints();
     run.stats.deleted_files = old_keys.difference(&run.active).count() as u64;
+    run.stats.distinct_files = run.paths.len() as u64;
     run.cache.files.retain(|key, _| run.active.contains(key));
     Ok((out, run.stats))
 }
