@@ -51,7 +51,9 @@
   "overrides": {
     "@storybook/addon-vitest": {
       "vitest": "$vitest",
-      "@vitest/browser-playwright": "$@vitest/browser-playwright"
+      "@vitest/browser-playwright": "$@vitest/browser-playwright",
+      "@vitest/browser": "^5.0.1",
+      "@vitest/runner": "^4.1.11"
     }
   }
 }
