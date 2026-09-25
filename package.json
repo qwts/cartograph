@@ -17,6 +17,6 @@
   },
   "devDependencies": {
     "@changesets/cli": "3.0.3",
-    "@tauri-apps/cli": "^2.11.4"
+    "@tauri-apps/cli": "^2.11.5"
   }
 }
