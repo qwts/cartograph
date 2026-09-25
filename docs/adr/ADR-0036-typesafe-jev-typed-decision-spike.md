@@ -137,11 +137,13 @@ explicit gate before Jev touches any real path:
    `EgressFirewall`/`EgressPolicy`/`ConsentGrant`/`EgressPreview`/
    `CloudDisclosure` behind a new payload variant, per the architecture
    analysis above.
-3. This ADR takes no position on whether an adopted Jev counts as
-   `InferredStrong` (T2/`Semantic`) or needs its own bounded lane under the
-   T3 ceiling (`InferredWeak`) — SPEC-00 defines T2 as *local*, and Jev is
-   cloud-only, so folding it into the existing `Semantic` tier without
-   change is not obviously correct either. That classification is exactly
+3. This ADR does not fold Jev into the existing `Semantic` tier without
+   change: SPEC-00 defines T2 as "local embeddings + similarity"
+   (`docs/SPEC-00_master.md:58`), and Jev is cloud-only, so that reuse is
+   not obviously correct. Pending the eval, the default is that an adopted
+   Jev needs its own bounded lane under the T3 ceiling (`InferredWeak`)
+   rather than `Semantic`/`InferredStrong` — the higher bar, not the lower
+   one, until data justifies otherwise. That default is exactly
    what the eval's calibration curve should settle: if Jev's confidence
    tracks observed accuracy as tightly as the local resolver's does on the
    same pairs, `Semantic` is defensible; if it doesn't, it needs
