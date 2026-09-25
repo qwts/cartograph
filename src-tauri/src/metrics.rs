@@ -56,15 +56,22 @@ pub struct GraphMetrics {
     pub coverage: Vec<ExtractorCoverage>,
 }
 
-/// Compute tallies, coverage, and the canonical graph content hash from a
-/// whole-graph projection. Tallies and the hash describe the whole graph
-/// (they must reconcile with findings_summary), while coverage attributes
-/// only facts whose evidence lives in `coverage_repos` — the repos this
-/// ingest actually processed — so a multi-repo graph never inflates one
-/// run's coverage with another run's facts. `scope` maps extractor id →
-/// source files in scope this ingest; extractors it omits (including
-/// layers with zero files) report a null coverage_pct. Counts use the spec
-/// register's own provenance definition — one definition, every surface.
+/// Compute tallies, coverage, and the recorded content hash from a
+/// whole-graph projection. Tallies describe the whole graph (they must
+/// reconcile with findings_summary), while the content hash and coverage
+/// both scope to facts whose evidence lives in `coverage_repos` — the repos
+/// this ingest actually processed (AC-0060: same commit under the same
+/// source registration) — so a multi-repo workspace never changes one
+/// registration's recorded hash when a different repo in the workspace
+/// changes (#466). A whole-system ingest passes every repo it loaded as
+/// `coverage_repos`, so its hash still spans the system it recorded. An
+/// empty `coverage_repos` scopes to nothing for coverage (no registration
+/// declared) but leaves the hash unscoped, spanning every node/edge given —
+/// the whole-graph-hash contract earlier callers with no registration of
+/// their own still rely on. `scope` maps extractor id → source files in
+/// scope this ingest; extractors it omits (including layers with zero
+/// files) report a null coverage_pct. Counts use the spec register's own
+/// provenance definition — one definition, every surface.
 pub fn compute(
     nodes: &[Node],
     edges: &[Edge],
@@ -90,12 +97,19 @@ pub fn compute(
             Gap => gap += 1,
         }
     };
+    // An empty `coverage_repos` means "no registration to scope to" (every
+    // production call site passes at least one repo; only whole-graph-hash
+    // callers with no registration of their own pass the empty set) — the
+    // hash then spans everything given, same as before #466.
+    let in_recorded_scope = |provenance: &core_prov::Provenance| -> bool {
+        coverage_repos.is_empty()
+            || provenance
+                .evidence
+                .iter()
+                .any(|evidence| coverage_repos.contains(&evidence.repo))
+    };
     let mut cover = |provenance: &core_prov::Provenance| {
-        if !provenance
-            .evidence
-            .iter()
-            .any(|evidence| coverage_repos.contains(&evidence.repo))
-        {
+        if !in_recorded_scope(provenance) {
             return;
         }
         *facts_by_extractor
@@ -115,17 +129,21 @@ pub fn compute(
         let provenance = spec::provenance(&node.props, &node.id);
         tally(&provenance);
         cover(&provenance);
-        lines.push(format!(
-            "n {} {} {}",
-            node.id, node.label, provenance.content_hash
-        ));
+        if in_recorded_scope(&provenance) {
+            lines.push(format!(
+                "n {} {} {}",
+                node.id, node.label, provenance.content_hash
+            ));
+        }
     }
     for edge in edges {
         let identity = format!("{} {} {}", edge.src, edge.label, edge.dst);
         let provenance = spec::provenance(&edge.props, &identity);
         tally(&provenance);
         cover(&provenance);
-        lines.push(format!("e {} {}", identity, provenance.content_hash));
+        if in_recorded_scope(&provenance) {
+            lines.push(format!("e {} {}", identity, provenance.content_hash));
+        }
     }
     lines.sort();
 
@@ -406,10 +424,10 @@ mod tests {
 
     #[test]
     fn coverage_attributes_only_the_current_ingests_repos() {
-        // A prior ingest's facts stay in the graph — tallies and the hash
-        // describe the whole graph, but coverage must not mix runs (#138
-        // review): otherwise a 1-file re-ingest against a 100-file graph
-        // reports >100% coverage.
+        // A prior ingest's facts stay in the graph — tallies describe the
+        // whole graph, but coverage and the content hash must not mix runs
+        // (#138 review, #466): otherwise a 1-file re-ingest against a
+        // 100-file graph reports >100% coverage.
         let mut foreign = node("z", "t0.adapter-ts", "Confirmed", "src/old.ts");
         foreign.props["prov"]["evidence"][0]["repo"] = json!("local/previous");
         let nodes = vec![node("a", "t0.adapter-ts", "Confirmed", "src/a.ts"), foreign];
@@ -419,9 +437,40 @@ mod tests {
         assert_eq!(ts.facts, 1);
         assert_eq!(ts.files_with_facts, 1);
         assert_eq!(ts.coverage_pct, Some(100.0));
-        // The whole-graph views still see both facts.
+        // The whole-graph tallies still see both facts...
         assert_eq!(metrics.graph_facts, 2);
         assert_eq!(metrics.confirmed, 2);
+    }
+
+    #[test]
+    // AC-0060/T-0060: a registration's recorded hash does not change when an
+    // unrelated repo in the same multi-repo workspace changes (#466) — only
+    // the tallies span the whole graph; the recorded hash scopes to
+    // `coverage_repos`, matching AC-0060's "same commit under the same
+    // source registration".
+    fn content_hash_is_scoped_to_the_recorded_repos_not_the_whole_graph() {
+        let own = node("a", "t0.adapter-ts", "Confirmed", "src/a.ts");
+        let mut other_repo = node("z", "t0.adapter-ts", "Confirmed", "src/z.ts");
+        other_repo.props["prov"]["evidence"][0]["repo"] = json!("local/other");
+        let scope = ts_scope(1);
+
+        let before = compute(
+            &[own.clone(), other_repo.clone()],
+            &[],
+            &scope,
+            &fixture_repos(),
+        );
+
+        // The other repo's facts change (a different commit of `local/other`)
+        // while `local/fixture`'s own facts are untouched.
+        let mut other_repo_changed = other_repo.clone();
+        other_repo_changed.props["prov"]["content_hash"] = json!("c".repeat(64));
+        let after = compute(&[own, other_repo_changed], &[], &scope, &fixture_repos());
+
+        assert_eq!(before.content_hash, after.content_hash);
+        // Tallies still reconcile with findings_summary over the whole graph.
+        assert_eq!(before.graph_facts, 2);
+        assert_eq!(after.graph_facts, 2);
     }
 
     #[test]
