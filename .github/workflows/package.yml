@@ -183,6 +183,45 @@ jobs:
       # `cargo metadata`). The App Store Connect key is decoded only after this
       # step and is passed as a step output, never through $GITHUB_ENV, so the
       # key file does not exist and no APPLE_* variable is set while compiling.
+      #
+      # dSYM archival (#249): rustc's `-C strip=symbols` (from the workspace
+      # release profile) strips at link time with no separate `strip` pass to
+      # intercept, so there is no unstripped intermediate to extract debug
+      # info from afterward. Instead this compiles the universal binary TWICE
+      # — once with debug info and no stripping (Cargo profile overrides via
+      # env, no Cargo.toml change, so every other release build of this
+      # workspace keeps #221's stripped-by-default hardening), run `dsymutil`
+      # against that build to capture the `.dSYM`, then discard it and
+      # recompile normally. The unmodified "Compile universal binary without
+      # signing secrets" step below always runs last and is byte-for-byte
+      # what shipped before this change — the dSYM pass is purely additive.
+      - name: Compile universal binary with debug info (for dSYM extraction)
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
+          CARGO_PROFILE_RELEASE_DEBUG: 'true'
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY \
+            APPLE_API_KEY_PATH APPLE_API_ISSUER APPLE_SIGNING_IDENTITY \
+            CSC_LINK CSC_KEY_PASSWORD; do
+            if [ -n "${!name:-}" ]; then
+              echo "::error::$name must not be set while compiling"
+              exit 1
+            fi
+          done
+          npm run package:macos:compile
+
+      - name: Extract dSYM from the debug build
+        id: dsym
+        run: |
+          set -euo pipefail
+          bin="target/universal-apple-darwin/release/app"
+          test -f "$bin"
+          mkdir -p dsyms
+          dsymutil "$bin" -o "dsyms/Cartograph.dSYM"
+          test -d "dsyms/Cartograph.dSYM"
+          echo "path=dsyms/Cartograph.dSYM" >> "$GITHUB_OUTPUT"
+
       - name: Compile universal binary without signing secrets
         run: |
           set -euo pipefail
@@ -307,3 +346,16 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+      # Internal artifact (#249), not a release asset: kept separate from
+      # dist/ so it never affects the release-publish job's "dist/ holds
+      # exactly the .app.zip + .dmg" assertion above. Symbolicates crash
+      # reports (.ips) and `sample`/`atos` profiles against this exact build
+      # with `dsymutil -s Cartograph.dSYM` / `atos -o Cartograph.dSYM ...`.
+      - name: Upload dSYM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}-dSYM
+          path: ${{ steps.dsym.outputs.path }}
+          if-no-files-found: error
+          retention-days: 90
