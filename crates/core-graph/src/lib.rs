@@ -129,10 +129,14 @@ pub trait GraphStore {
 /// v4: registered source namespaces and root-free Repo facts, AC-0144/0146;
 /// v5: proven-external JVM `mod:` ids key on the package, not the imported
 /// type/member, AC-0226/ADR-0033).
+/// v6: erasure-level parameter signatures in JVM method/constructor symbol
+/// ids, AC-0230, ADR-0035 — sequenced after v5 since both #527 and this PR
+/// (#435) independently needed a bump; #527 lands first and claims v5, so
+/// this one claims v6 rather than reusing v5.
 /// A mismatched db is cleared on open: the graph is a
 /// disposable ingest artifact (ADR-0008), and stale-scheme rows can never
 /// be upserted again — they would shadow every re-ingest as zombies (#50).
-pub const GRAPH_SCHEMA_VERSION: u32 = 5;
+pub const GRAPH_SCHEMA_VERSION: u32 = 6;
 
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
 pub struct SqliteGraphStore {

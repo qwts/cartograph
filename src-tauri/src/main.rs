@@ -5301,8 +5301,12 @@ resource "aws_sqs_queue" "orders" {
         .unwrap();
         std::fs::write(
             dir.path().join("Owner.java"),
+            // Two declarations with the SAME signature (a duplicate, not a
+            // real overload — #435 gives distinct overloads distinct ids,
+            // so this fixture keeps testing the store's own collision
+            // handling with an actual id collision instead).
             "package demo;\nclass Owner {\n  Pet getPet(String name) { return null; }\n  \
-             Pet getPet(int id) { return null; }\n}\nclass Pet {}\n",
+             Pet getPet(String other) { return null; }\n}\nclass Pet {}\n",
         )
         .unwrap();
         let (extraction, layers) = crate::extract_tree_with_summary(
@@ -5355,7 +5359,8 @@ resource "aws_sqs_queue" "orders" {
             .count();
         assert_eq!(calls_helper, 2, "fixture must emit repeated call sites");
         assert!(published.merged.edges >= 2);
-        // The two `getPet` overloads share one symbol id with differing spans.
+        // The two identical-signature `getPet` declarations share one symbol
+        // id with differing spans (a real duplicate, not an overload — #435).
         assert_eq!(published.merged.node_collisions, 1);
         assert!(published.merged.nodes >= 1);
         // Per-layer rows count distinct facts, so they never exceed the store.
@@ -6341,7 +6346,7 @@ export function queueOrder() {
             edge.label == "HANDLES"
                 && edge.src == endpoint.id
                 && edge.dst
-                    == "sym:local/java-app@src/com/demo/UserController.java#UserController.users"
+                    == "sym:local/java-app@src/com/demo/UserController.java#UserController.users()"
         }));
 
         let (client_only, client_summary) = crate::extract_tree_with_summary(
