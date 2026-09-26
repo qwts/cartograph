@@ -4178,7 +4178,7 @@ Used by:
 - postcard 1.1.3 — https://github.com/jamesmunns/postcard
 - rayon-core 1.13.0 — https://github.com/rayon-rs/rayon
 - rayon 1.12.0 — https://github.com/rayon-rs/rayon
-- regex-automata 0.4.16 — https://github.com/rust-lang/regex
+- regex-automata 0.4.18 — https://github.com/rust-lang/regex
 - regex-syntax 0.8.11 — https://github.com/rust-lang/regex
 - regex 1.13.1 — https://github.com/rust-lang/regex
 - rustc-demangle 0.1.28 — https://github.com/rust-lang/rustc-demangle
@@ -6157,7 +6157,7 @@ Used by:
 - tauri-runtime-wry 2.11.4 — https://github.com/tauri-apps/tauri
 - tauri-runtime 2.11.3 — https://github.com/tauri-apps/tauri
 - tauri-utils 2.9.3 — https://github.com/tauri-apps/tauri
-- tauri 2.11.5 — https://github.com/tauri-apps/tauri
+- tauri 2.11.6 — https://github.com/tauri-apps/tauri
 - thiserror-impl 1.0.69 — https://github.com/dtolnay/thiserror
 - thiserror-impl 2.0.20 — https://github.com/dtolnay/thiserror
 - thiserror 1.0.69 — https://github.com/dtolnay/thiserror
@@ -7494,7 +7494,7 @@ Used by:
 - aho-corasick 1.1.4 — https://github.com/BurntSushi/aho-corasick
 - byteorder 1.5.0 — https://github.com/BurntSushi/byteorder
 - globset 0.4.19 — https://github.com/BurntSushi/ripgrep/tree/master/crates/globset
-- ignore 0.4.32 — https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore
+- ignore 0.4.33 — https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore
 - memchr 2.8.2 — https://github.com/BurntSushi/memchr
 - termcolor 1.4.1 — https://github.com/BurntSushi/termcolor
 - walkdir 2.5.0 — https://github.com/BurntSushi/walkdir
