@@ -735,6 +735,11 @@ fn import_targets_carry_provenance_and_only_proven_externals_confirm() {
             statement
         );
     };
+    // #464 (ADR-0033): a proven-external import keys on its package, not the
+    // imported name — but only when the JVM capitalization convention can
+    // find the package/type boundary. A Kotlin top-level function import
+    // (`launch`) has no capitalized segment at all, so there is nothing to
+    // split on and the id keeps the full imported path unchanged.
     check(
         "mod:kotlinx.coroutines.launch",
         ConfidenceTier::Confirmed,

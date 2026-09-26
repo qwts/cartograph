@@ -37,17 +37,21 @@ CLAUDE.md   @qwts
 /src-tauri/capabilities/ @qwts
 /src-tauri/tauri.conf.json @qwts
 /src-tauri/tauri.macos.conf.json @qwts
-# Host-side egress and consent. Any host module can reach the crate-private
-# cloud provider and the public grant APIs, so the whole host tree stays
-# protected until #457 seals provider and grant construction into one module;
-# then this narrows to that module.
-/src-tauri/src/ @qwts
+# Host-side egress and consent: cloud-provider construction and consent-grant
+# conversion, sealed into their own module by #457 so the rest of the host
+# tree (most app-shell changes) is not gated behind owner review.
+/src-tauri/src/egress.rs @qwts
 # Every UI surface that asks for or submits a consent grant (both cloud flows).
 /ui/src/investigationStore.ts @qwts
 /ui/src/store.ts @qwts
 /ui/src/components/EgressConsentDialog.tsx @qwts
 /ui/src/components/ResolutionStrategyModal.tsx @qwts
 /ui/src/components/InvestigationsSurface.tsx @qwts
+# The app shell: it holds both approval capabilities in scope
+# (consentAndRun from the store, the investigation store's approve) and wires
+# them into the modal/surface above (#479). An unreviewed edit here could
+# call either directly, past the owned consent UI.
+/ui/src/App.tsx @qwts
 
 # Build entrypoints that execute code during CI and the signed release build,
 # where signing credentials are present.

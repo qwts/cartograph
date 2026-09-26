@@ -675,6 +675,38 @@ fn delta_reingest_reuses_unchanged_terraform_contexts() {
 }
 
 #[test]
+fn distinct_files_dedups_a_module_instantiated_twice() {
+    // A local module directory instantiated by two module blocks is parsed
+    // as two contexts (one per module address), but it is one physical
+    // file: `distinct_files` must count it once so it lines up with
+    // `metrics::compute`'s `files_with_facts`, which dedups by provenance
+    // `repo:path` (#468).
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("modules/queue")).unwrap();
+    std::fs::write(
+        dir.path().join("main.tf"),
+        r#"
+module "orders" { source = "./modules/queue" }
+module "alerts" { source = "./modules/queue" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("modules/queue/main.tf"),
+        r#"resource "aws_sqs_queue" "q" {}"#,
+    )
+    .unwrap();
+
+    let mut cache = IncrementalCache::default();
+    let (_, stats) = extract_dir_incremental(dir.path(), &id(), &mut cache).unwrap();
+    // Four contexts (the plain tree walk finds modules/queue/main.tf once,
+    // plus once more per module address that instantiates it, plus root)...
+    assert_eq!(stats.recomputed_files, 4);
+    // ...but only two physical files.
+    assert_eq!(stats.distinct_files, 2);
+}
+
+#[test]
 fn pulumi_constructor_names_share_terraform_registry_types() {
     // AC-0051/T-0051: provider naming differences are explicit deterministic
     // normalization before both IaC sources consult one registry.

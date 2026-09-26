@@ -720,14 +720,16 @@ public class App {}
             "{id}"
         );
     };
+    // #464 (ADR-0033): a proven-external import keys on its package, not the
+    // imported type/member.
     expect(
-        "mod:jakarta.persistence.Entity",
+        "mod:jakarta.persistence",
         "external",
         ConfidenceTier::Confirmed,
         "import jakarta.persistence.Entity;",
     );
     expect(
-        "mod:org.junit.Assert.assertEquals",
+        "mod:org.junit",
         "external",
         ConfidenceTier::Confirmed,
         "import static org.junit.Assert.assertEquals;",
@@ -794,7 +796,7 @@ fn foreign_headers_the_scan_cannot_read_never_confirm_externals() {
         ("unresolved".into(), ConfidenceTier::Gap)
     );
     assert_eq!(
-        boundary(&out, "mod:jakarta.persistence.Entity"),
+        boundary(&out, "mod:jakarta.persistence"),
         ("external".into(), ConfidenceTier::Confirmed)
     );
 
@@ -838,4 +840,47 @@ fn only_a_complete_import_target_retargets_to_its_file() {
         assert_eq!(node.props["boundary"], "unresolved", "{unproven}");
         assert_eq!(prov_of(node).confidence_tier, ConfidenceTier::Gap);
     }
+}
+
+#[test]
+fn external_imports_from_one_package_share_its_module_id_and_keep_their_specifier() {
+    // AC-0226 (#464, ADR-0033): two types proven external from the same
+    // package key their `IMPORTS` edge on that shared package id rather than
+    // the imported type, and each edge still names exactly what it imported.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/main/java/com/demo/App.java",
+        "package com.demo;\n\nimport jakarta.persistence.Entity;\nimport jakarta.persistence.Table;\n\npublic class App {}\n",
+    );
+    let out = extract_dir(dir.path(), &id()).unwrap();
+    let app_file = "file:local/demo@src/main/java/com/demo/App.java";
+    let module_edges: Vec<&Edge> = out
+        .edges
+        .iter()
+        .filter(|edge| edge.label == "IMPORTS" && edge.src == app_file)
+        .collect();
+    assert_eq!(module_edges.len(), 2);
+    assert!(
+        module_edges
+            .iter()
+            .all(|edge| edge.dst == "mod:jakarta.persistence"),
+        "{module_edges:?}"
+    );
+    let specifiers: BTreeSet<&str> = module_edges
+        .iter()
+        .map(|edge| edge.props["specifier"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        specifiers,
+        BTreeSet::from(["jakarta.persistence.Entity", "jakarta.persistence.Table"])
+    );
+    assert_eq!(
+        out.nodes
+            .iter()
+            .filter(|node| node.id == "mod:jakarta.persistence")
+            .count(),
+        1,
+        "one shared Module node, not one per imported type"
+    );
 }

@@ -196,7 +196,7 @@ fn extract_file(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&q_bindings, root, source);
     while let Some(m) = matches.next() {
-        for c in m.captures {
+        for c in m.captures() {
             if cx.text(&c.node) == "chrome" {
                 chrome_shadowed = true;
             }
@@ -213,7 +213,7 @@ fn extract_file(
     let mut matches = cursor.matches(&q_arrow_creators, root, source);
     while let Some(m) = matches.next() {
         let (mut name, mut arrow, mut decl) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_arrow_creators.capture_names()[c.index as usize] {
                 "name" => name = Some(cx.text(&c.node).to_string()),
                 "arrow" => arrow = Some(c.node),
@@ -250,7 +250,7 @@ fn extract_file(
     let mut matches = cursor.matches(&q_funcs, root, source);
     while let Some(m) = matches.next() {
         let (mut name, mut body, mut decl) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_funcs.capture_names()[c.index as usize] {
                 "name" => name = Some(cx.text(&c.node).to_string()),
                 "body" => body = Some(c.node),
@@ -292,7 +292,7 @@ fn extract_file(
     let mut matches = cursor.matches(&q_calls, root, source);
     while let Some(m) = matches.next() {
         let (mut callee, mut args, mut call) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_calls.capture_names()[c.index as usize] {
                 "callee" => callee = Some(c.node),
                 "args" => args = Some(c.node),
@@ -354,7 +354,7 @@ fn extract_file(
     let mut matches = cursor.matches(&q_keys, root, source);
     while let Some(m) = matches.next() {
         let (mut member, mut handler, mut pair) = (None, None, None);
-        for c in m.captures {
+        for c in m.captures() {
             match q_keys.capture_names()[c.index as usize] {
                 "member" => member = Some(c.node),
                 "handler" => handler = Some(c.node),

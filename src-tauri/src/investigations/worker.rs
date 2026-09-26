@@ -438,7 +438,9 @@ impl<R: tauri::Runtime> Worker<'_, R> {
             }
             if approved {
                 self.detail.summary.revision = revision;
-                return Ok(ConsentGrant::from_preview(&prepared.preview().egress));
+                return Ok(crate::egress::consent_grant_for_approved_step(
+                    &prepared.preview().egress,
+                ));
             }
             self.live
                 .wait(remaining.saturating_sub(waiting.elapsed()))?;

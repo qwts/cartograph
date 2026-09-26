@@ -10,7 +10,7 @@
 //! anything it cannot prove is simply not asserted. This tier never calls an
 //! LLM and every emitted fact carries exact source-span provenance.
 
-use adapters_lang_java::jvm::{classify_import, foreign_packages, in_system};
+use adapters_lang_java::jvm::{classify_import, external_module_id, foreign_packages, in_system};
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -215,7 +215,7 @@ fn parse_imports(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, cx.source);
     while let Some(found) = matches.next() {
-        let statement = found.captures[0].node;
+        let statement = found.captures()[0].node;
         let raw = cx.text(&statement).replace(['\n', '\\'], " ");
         let Some(rest) = raw.trim().strip_prefix("import") else {
             continue;
@@ -660,7 +660,7 @@ pub fn extract_source(
         let mut matches = cursor.matches(&query, root, source);
         let mut package = None;
         if let Some(found) = matches.next() {
-            let raw = cx.text(&found.captures[0].node).replace('\n', " ");
+            let raw = cx.text(&found.captures()[0].node).replace('\n', " ");
             package = raw
                 .trim()
                 .strip_prefix("package")
@@ -684,7 +684,7 @@ pub fn extract_source(
     let mut matches = cursor.matches(&type_query, root, source);
     while let Some(found) = matches.next() {
         let (mut decl, mut name) = (None, None);
-        for capture in found.captures {
+        for capture in found.captures() {
             match type_query.capture_names()[capture.index as usize] {
                 "decl" => decl = Some(capture.node),
                 "name" => name = Some(cx.text(&capture.node).to_string()),
@@ -735,7 +735,7 @@ pub fn extract_source(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&function_query, root, source);
     while let Some(found) = matches.next() {
-        let name_node = found.captures[0].node;
+        let name_node = found.captures()[0].node;
         let Some(function) = name_node.parent() else {
             continue;
         };
@@ -944,7 +944,7 @@ pub fn extract_source(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&call_query, root, source);
     while let Some(found) = matches.next() {
-        let call = found.captures[0].node;
+        let call = found.captures()[0].node;
         let Some(callee) = call.named_child(0) else {
             continue;
         };
@@ -1275,6 +1275,26 @@ pub fn extract_dir_incremental_with_progress(
         &functions_by_fqn,
         &known,
     );
+    // #464 (ADR-0033): an import proven external is re-keyed on its package
+    // id rather than the imported type/member — `mod:kotlinx.coroutines`,
+    // not `mod:kotlinx.coroutines.launch` — with the original target kept
+    // verbatim on the edge's `specifier`. Classification must use the full
+    // path first: the capitalization split alone cannot tell an in-system
+    // prefix from a proven-external one.
+    for edge in &mut out.edges {
+        if edge.label != "IMPORTS" {
+            continue;
+        }
+        let Some(module) = edge.dst.strip_prefix("mod:") else {
+            continue;
+        };
+        if matches!(
+            classify_import(module, &repo_packages, foreign.complete),
+            core_graph::placeholder::Boundary::External { .. }
+        ) {
+            edge.dst = external_module_id(module);
+        }
+    }
     let Extraction { nodes, edges, .. } = &mut out;
     core_graph::placeholder::close_over_endpoints(
         nodes,

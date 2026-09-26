@@ -225,7 +225,7 @@ fn parse_imports(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, cx.source);
     while let Some(found) = matches.next() {
-        let statement = found.captures[0].node;
+        let statement = found.captures()[0].node;
         let raw = cx.text(&statement).replace(['\n', '\\'], " ");
         let mut modules = BTreeSet::new();
         if let Some(rest) = raw.trim().strip_prefix("import ") {
@@ -365,7 +365,7 @@ fn assignment_receivers(
     while let Some(found) = matches.next() {
         let mut variable = None;
         let mut call = None;
-        for capture in found.captures {
+        for capture in found.captures() {
             match query.capture_names()[capture.index as usize] {
                 "variable" => variable = Some(cx.text(&capture.node).to_string()),
                 "call" => call = Some(capture.node),
@@ -580,7 +580,7 @@ pub fn extract_source(
     while let Some(found) = matches.next() {
         let mut function = None;
         let mut simple_name = None;
-        for capture in found.captures {
+        for capture in found.captures() {
             match function_query.capture_names()[capture.index as usize] {
                 "function" => function = Some(capture.node),
                 "name" => simple_name = Some(cx.text(&capture.node).to_string()),
@@ -672,7 +672,7 @@ pub fn extract_source(
     while let Some(found) = matches.next() {
         let mut call = None;
         let mut callee = None;
-        for capture in found.captures {
+        for capture in found.captures() {
             match call_query.capture_names()[capture.index as usize] {
                 "call" => call = Some(capture.node),
                 "callee" => callee = Some(cx.text(&capture.node).to_string()),

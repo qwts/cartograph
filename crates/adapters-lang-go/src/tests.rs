@@ -132,6 +132,72 @@ func handler() {
 }
 
 #[test]
+fn ignored_go_mod_yields_no_module_path() {
+    // AC-0225/T-0225 (#468, ADR-0034): a `go.mod` the root's own `.gitignore`
+    // excludes is treated as absent — same as no module declaration at all —
+    // rather than read anyway, matching the shared walk's ignore rules for
+    // this one direct read outside it.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("pkg/helper")).unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "go.mod\n").unwrap();
+    std::fs::write(dir.path().join("go.mod"), "module example.com/service\n").unwrap();
+    std::fs::write(
+        dir.path().join("pkg/helper/helper.go"),
+        "package helper\n\nfunc Imported() int { return 1 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("main.go"),
+        r#"package main
+
+import "example.com/service/pkg/helper"
+
+func handler() { helper.Imported() }
+"#,
+    )
+    .unwrap();
+    let extraction = extract_dir(dir.path(), &id()).unwrap();
+    // With no proven module path, the import cannot resolve to an internal
+    // package, so the cross-file CALLS edge into helper.Imported never forms.
+    assert!(
+        !edge_pairs(&extraction, "CALLS")
+            .iter()
+            .any(|(_, dst)| dst.contains("pkg/helper/helper.go#Imported"))
+    );
+}
+
+#[test]
+fn unignored_go_mod_still_proves_module_internal_imports() {
+    // Control for the above: an untouched `.gitignore` that doesn't name
+    // `go.mod` leaves module resolution exactly as it was before #468.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("pkg/helper")).unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "build/\n").unwrap();
+    std::fs::write(dir.path().join("go.mod"), "module example.com/service\n").unwrap();
+    std::fs::write(
+        dir.path().join("pkg/helper/helper.go"),
+        "package helper\n\nfunc Imported() int { return 1 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("main.go"),
+        r#"package main
+
+import "example.com/service/pkg/helper"
+
+func handler() { helper.Imported() }
+"#,
+    )
+    .unwrap();
+    let extraction = extract_dir(dir.path(), &id()).unwrap();
+    assert!(
+        edge_pairs(&extraction, "CALLS")
+            .iter()
+            .any(|(_, dst)| dst.contains("pkg/helper/helper.go#Imported"))
+    );
+}
+
+#[test]
 fn every_fact_has_confirmed_provenance_and_spans() {
     // AC-0054/T-0054: exact Go source spans are first-class T0 evidence.
     let source = b"package main\n\nimport \"net/http\"\n\nfunc h(w http.ResponseWriter, r *http.Request) {}\nfunc routes() { http.HandleFunc(\"/x\", h) }\n";

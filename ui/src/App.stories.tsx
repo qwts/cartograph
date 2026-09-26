@@ -108,13 +108,9 @@ const FAKE_SPEC: SpecBundle = {
     'gap_register.md',
     'drift_register.md',
     'security.md',
-  ].map((fileName, index) => ({
-    id: `artifact-${index}`,
-    file_name: fileName,
-    title: index === 0 ? 'User stories' : index === 5 ? 'Architecture decisions' : fileName,
-    format: fileName.endsWith('.mmd') ? 'mermaid' : 'markdown',
-    content: `# ${fileName}\n\n## Assertions and inline provenance\n`,
-    assertions: index === 0 ? [{
+  ].map((fileName, index) => {
+    const content = `# ${fileName}\n\n## Assertions and inline provenance\n`;
+    const assertions = index === 0 ? [{
         id: 'node:ep:GET:/users',
         subject_id: FAKE_ENDPOINT.id,
         subject_kind: 'Endpoint',
@@ -135,8 +131,20 @@ const FAKE_SPEC: SpecBundle = {
         subject_kind: 'Gap',
         summary: 'Gap: remote sync target computed at runtime',
         provenance: { ...FAKE_PROVENANCE, confidence_tier: 'Gap' as const },
-      }] : [],
-  })),
+      }] : [];
+    return {
+      id: `artifact-${index}`,
+      file_name: fileName,
+      title: index === 0 ? 'User stories' : index === 5 ? 'Architecture decisions' : fileName,
+      format: fileName.endsWith('.mmd') ? 'mermaid' : 'markdown',
+      content,
+      content_truncated: false,
+      content_byte_len: content.length,
+      assertions,
+      assertions_truncated: false,
+      assertions_total: assertions.length,
+    };
+  }),
   assertion_count: 2,
   gap_count: 0,
   drift_count: 0,
@@ -469,6 +477,12 @@ function installFakeCore(options: {
         return 'flowchart LR\n    res_aws_sqs_queue_orders["aws_sqs_queue.orders"]\n';
       case 'export_spec':
         return { ...FAKE_SPEC, mode: (args as { mode: SpecBundle['mode'] }).mode };
+      case 'read_spec_artifact':
+        return (
+          FAKE_SPEC.artifacts.find(
+            (artifact) => artifact.id === (args as { artifactId: string }).artifactId,
+          ) ?? null
+        );
       case 'list_assertion_decisions':
         return curation;
       case 'record_assertion_decision': {
@@ -621,6 +635,9 @@ function installFakeCore(options: {
           notes: ['payload is the exact redacted span set shown by the egress firewall'],
         };
       }
+      // Broker edge-label allowlist (#238), prefetched like the disclosures.
+      case 'escalation_capabilities':
+        return ['CALLS', 'PUBLISHES', 'READS', 'WRITES', 'HANDLES'];
       case 'set_tier_enabled': {
         const input = args as { tier: string; enabled: boolean };
         tiers = tiers.map((t) => (t.tier === input.tier ? { ...t, enabled: input.enabled } : t));

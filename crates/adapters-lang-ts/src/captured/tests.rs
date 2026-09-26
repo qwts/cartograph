@@ -527,6 +527,67 @@ fn captured_enumeration_rejects_symlinks_and_non_utf8_paths() {
 }
 
 #[test]
+fn captured_extraction_is_byte_identical_to_serial() {
+    // AC-0217/T-0217 (#482): captured-file parsing runs on the same ordered
+    // worker pool as the uncaptured lane (#236) — serial and many-worker runs
+    // over the same capture yield byte-identical facts and receipts, and
+    // progress still fires in manifest (sorted walk) order.
+    let directory = tempfile::tempdir().unwrap();
+    let mut paths = Vec::new();
+    for i in 0..24 {
+        let next = (i + 1) % 24;
+        let rel = format!("src/m{i:02}.ts");
+        let file = directory.path().join(&rel);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(
+            &file,
+            format!(
+                "import {{ f{next} }} from './m{next:02}';\n\
+                 export function f{i}(enabled: boolean) {{ if (enabled) return false; return f{next}(); }}\n"
+            ),
+        )
+        .unwrap();
+        paths.push(rel);
+    }
+    paths.sort();
+    let capture = capture(directory.path(), &paths);
+    let run = |workers: usize| {
+        source_walk::parallel::with_workers(workers, || {
+            let mut visited = Vec::new();
+            let (extraction, receipts, stats) =
+                extract_captured_dir(directory.path(), &parser_id(), &capture, &mut |path| {
+                    visited.push(path.to_string())
+                })
+                .unwrap();
+            (
+                extraction.nodes,
+                extraction.edges,
+                receipts,
+                stats.recomputed_files,
+                visited,
+            )
+        })
+    };
+    let serial = run(1);
+    assert_eq!(serial.3, 24, "every fixture file is parsed");
+    assert_eq!(serial.4, paths, "progress fires in manifest order");
+    for workers in [2, 8] {
+        let parallel = run(workers);
+        assert_eq!(parallel.0, serial.0, "nodes differ with {workers} workers");
+        assert_eq!(parallel.1, serial.1, "edges differ with {workers} workers");
+        assert_eq!(
+            parallel.2, serial.2,
+            "receipts differ with {workers} workers"
+        );
+        assert_eq!(parallel.3, serial.3);
+        assert_eq!(
+            parallel.4, serial.4,
+            "progress order differs with {workers} workers"
+        );
+    }
+}
+
+#[test]
 fn captured_parser_emits_the_same_const_unproven_eval_gap() {
     // AC-0201: the captured production lane parses the retained bytes with the
     // same extractor, so the explicit eval Gap and its owner edge are emitted

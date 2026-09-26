@@ -22,6 +22,11 @@ struct Contract {
     domain: &'static [u8],
     grammar_package: &'static str,
     parser_package: &'static str,
+    /// `parser_package` values already-persisted receipts under this contract
+    /// may still carry, frozen from before a parser dependency bump changed
+    /// the current pin. Newly minted receipts always record `parser_package`;
+    /// this list only widens what `validate` still accepts.
+    parser_package_legacy: &'static [&'static str],
 }
 
 fn contract(version: u32) -> Result<Contract, CapturedError> {
@@ -33,6 +38,7 @@ fn contract(version: u32) -> Result<Contract, CapturedError> {
             // Historical pins are frozen independently of the current producer.
             grammar_package: "tree-sitter-typescript@0.23.2",
             parser_package: "tree-sitter@0.26.12",
+            parser_package_legacy: &[],
         }),
         2 => Ok(Contract {
             prefix: "ts-primary-v2:",
@@ -40,13 +46,16 @@ fn contract(version: u32) -> Result<Contract, CapturedError> {
             domain: b"cartograph:ts-primary-receipt:v2\0",
             grammar_package: GRAMMAR_PACKAGE,
             parser_package: PARSER_PACKAGE,
+            // Receipts minted before the tree-sitter 0.27 upgrade recorded
+            // this pin under the same v2 contract; they must keep validating.
+            parser_package_legacy: &["tree-sitter@0.26.12"],
         }),
         _ => Err(CapturedError::Invalid("receipt contract version")),
     }
 }
 // Exact dependency pins in Cargo.toml keep these producer inputs truthful.
 const GRAMMAR_PACKAGE: &str = "tree-sitter-typescript@0.23.2";
-const PARSER_PACKAGE: &str = "tree-sitter@0.26.12";
+const PARSER_PACKAGE: &str = "tree-sitter@0.27.0";
 
 /// Actual grammar selected by the ordinary parser for the retained path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -603,7 +612,10 @@ impl Receipt {
         if content.source_id != content.file.source_id
             || content.producer_contract != contract.producer
             || content.grammar_package != contract.grammar_package
-            || content.parser_package != contract.parser_package
+            || (content.parser_package != contract.parser_package
+                && !contract
+                    .parser_package_legacy
+                    .contains(&content.parser_package.as_str()))
             || content.grammar != Grammar::for_path(&content.file.path)
         {
             return Err(CapturedError::Invalid("receipt contract"));

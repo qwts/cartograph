@@ -286,6 +286,12 @@ export interface SpecAssertion {
   subject_kind: string;
   summary: string;
   provenance: Provenance;
+  /** The relation an escalation of this assertion would need the bounded T3
+   *  broker to propose (#238): an edge/hop's own label, or — for a Gap node
+   *  — its adjacent edge's label once one is known server-side. Absent (not
+   *  just null) on artifacts that predate this field. `null`/undefined both
+   *  read as "unknown"; see `isEscalatable` in `gapClasses.ts`. */
+  edge_label?: string | null;
 }
 
 export interface SpecArtifact {
@@ -293,8 +299,19 @@ export interface SpecArtifact {
   file_name: string;
   title: string;
   format: 'markdown' | 'mermaid' | 'json';
+  /** Capped to a preview when it crosses IPC via `export_spec` (#488); see
+   *  `content_truncated`/`content_byte_len`. `read_spec_artifact` returns the
+   *  untruncated artifact for copy/export. */
   content: string;
+  content_truncated: boolean;
+  /** Full content length in bytes, regardless of `content_truncated`. */
+  content_byte_len: number;
+  /** Capped to a preview when it crosses IPC via `export_spec` (#488); see
+   *  `assertions_truncated`/`assertions_total`. */
   assertions: SpecAssertion[];
+  assertions_truncated: boolean;
+  /** Full assertion count, regardless of `assertions_truncated`. */
+  assertions_total: number;
 }
 
 export interface SpecBundle {
@@ -757,6 +774,11 @@ export interface AppStore {
   evals: EvalResult[];
   /** Resolution Strategy modal state; null while closed (#113). */
   escalation: EscalationState | null;
+  /** Edge labels the bounded T3 broker may currently propose (#238),
+   *  prefetched like the cloud disclosures. Null until loaded — the
+   *  register stays optimistic (offers escalation) rather than
+   *  withholding it before capability is known. */
+  escalationEdgeLabels: string[] | null;
   /** Bounded host history, restored independently of jobs and graph content. */
   stagedProposals: StagedProposal[];
   stagedNextCursor: string | null;
@@ -785,6 +807,10 @@ export interface AppStore {
   ingest: (path: string, source?: IngestSource) => Promise<void>;
   clearGraph: () => Promise<void>;
   setSpecMode: (mode: SpecExportMode) => Promise<void>;
+  /** Full artifact (untruncated content and assertions) for copy/export,
+   *  after `export_spec`'s IPC-capped preview (#488). `null` on failure —
+   *  callers fall back to the already-fetched preview. */
+  readSpecArtifact: (artifactId: string) => Promise<SpecArtifact | null>;
   curateAssertion: (
     assertion: SpecAssertion,
     decision: AssertionDecision,
@@ -944,6 +970,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   coverage: [],
   evals: [],
   escalation: null,
+  escalationEdgeLabels: null,
   stagedProposals: [],
   stagedNextCursor: null,
   stagedLoading: false,
@@ -976,6 +1003,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         curation: [],
         findings: null,
         registerFindings: [],
+        escalationEdgeLabels: null,
         ingestHistory: [],
         coverage: [],
         evals: [],
@@ -989,7 +1017,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       return;
     }
-    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, adapters, plugins, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, ingestParallelism, disclosureT2, disclosureT3] = await Promise.all([
+    const [stats, jobs, endpoints, atlas, topology, flows, flowList, flowAnchors, systemContents, adapters, plugins, specBundle, curation, findings, registerFindings, ingestHistory, coverage, evals, tierSettings, egress, ingestParallelism, disclosureT2, disclosureT3, escalationEdgeLabels] = await Promise.all([
       invokeOr<GraphStats>('graph_stats', { nodes: 0, edges: 0 }),
       invokeOr<Job[]>('list_jobs', []),
       loadEndpoints(),
@@ -1015,6 +1043,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // can always show them before consent is recordable (fail closed).
       invokeOr<CloudDisclosure | null>('cloud_disclosure', null, { tier: 'T2' }),
       invokeOr<CloudDisclosure | null>('cloud_disclosure', null, { tier: 'T3' }),
+      // The broker's edge-label allowlist is effectively static — prefetched
+      // so the register can compute its escalation offer from real broker
+      // capability (#238) instead of showing it unconditionally.
+      invokeOr<string[] | null>('escalation_capabilities', null),
     ]);
     set({
       backend: 'up',
@@ -1041,6 +1073,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       egress,
       ingestParallelism,
       disclosures: { T2: disclosureT2 ?? undefined, T3: disclosureT3 ?? undefined },
+      escalationEdgeLabels,
     });
     await get().loadStagedProposals();
   },
@@ -1131,6 +1164,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ specError: String(error) });
     } finally {
       set({ specBusy: false });
+    }
+  },
+
+  readSpecArtifact: async (artifactId: string) => {
+    try {
+      return await invokeOr<SpecArtifact | null>('read_spec_artifact', null, {
+        mode: get().specMode,
+        artifactId,
+      });
+    } catch (error) {
+      set({ specError: String(error) });
+      return null;
     }
   },
 

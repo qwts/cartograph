@@ -192,6 +192,13 @@ impl AgentBroker {
         Self { limits }
     }
 
+    /// Edge labels this broker may currently propose (#238). Callers use
+    /// this to compute an escalation offer from real broker capability
+    /// instead of discovering it only by hitting `validate_task`'s error.
+    pub fn allowed_edge_labels(&self) -> &BTreeSet<String> {
+        &self.limits.allowed_edge_labels
+    }
+
     /// Construct the default bounded broker.
     pub fn bounded_default() -> Self {
         Self::new(BrokerLimits::default())
@@ -1127,6 +1134,34 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, AgentError::InvalidResponse(_)));
+    }
+
+    #[test]
+    fn broker_rejects_edge_labels_outside_the_allowlist() {
+        // AC-0231 (#238): a gap whose unresolved relation (e.g. IMPORTS) is
+        // not in the broker's allowlist is rejected before any model call,
+        // and `allowed_edge_labels` is the same set `validate_task` checks —
+        // callers use it to compute an escalation offer from real broker
+        // capability instead of discovering it only via this error.
+        let provider = FixedProvider {
+            calls: AtomicUsize::new(0),
+            response: "{}",
+        };
+        let mut unsupported = task(ConfidenceTier::Gap);
+        unsupported.edge_label = "IMPORTS".into();
+        let broker = AgentBroker::bounded_default();
+        assert!(!broker.allowed_edge_labels().contains("IMPORTS"));
+        assert!(broker.allowed_edge_labels().contains("PUBLISHES"));
+        let error = broker
+            .propose(
+                &provider,
+                &EgressFirewall::new(EgressPolicy::local_only()),
+                &unsupported,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(error, AgentError::InvalidTask(_)));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

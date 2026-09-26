@@ -19,6 +19,25 @@ pub fn in_system(path: &str, repo_packages: &BTreeSet<String>) -> bool {
     dotted_prefixes(path).any(|prefix| repo_packages.contains(prefix))
 }
 
+/// Splits a proven-external JVM import target into its `mod:` package id
+/// and the type or member name imported from it (#464, ADR-0033), using the
+/// platform capitalization convention (a package segment starts lowercase,
+/// a type starts uppercase) to find the package/type boundary. Only call
+/// this once [`classify_import`] has proven `module` external — the same
+/// heuristic misclassifies an in-system prefix, so an unresolved or internal
+/// target must keep its full path as its id. A path with no capitalized
+/// segment (a plain package, e.g. a wildcard import) keeps the whole path.
+pub fn external_module_id(module: &str) -> String {
+    let segments: Vec<&str> = module.split('.').collect();
+    match segments
+        .iter()
+        .position(|segment| segment.chars().next().is_some_and(char::is_uppercase))
+    {
+        Some(0) | None => format!("mod:{module}"),
+        Some(boundary) => format!("mod:{}", segments[..boundary].join(".")),
+    }
+}
+
 /// Classify an import target no declaration resolved (#237, ADR-0031): a
 /// declared package is an internal boundary, anything else in the system is
 /// an explicit Gap, and only a package the repository provably does not
@@ -260,6 +279,29 @@ fn balanced_end(bytes: &[u8], open: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_module_id_splits_on_the_capitalization_boundary() {
+        // AC-0226 (#464, ADR-0033): a proven-external import id keys on its
+        // package, found via the JVM package/type capitalization convention.
+        assert_eq!(
+            external_module_id("jakarta.persistence.Entity"),
+            "mod:jakarta.persistence"
+        );
+        assert_eq!(
+            external_module_id("org.junit.Assert.assertEquals"),
+            "mod:org.junit"
+        );
+        // A plain package path (no capitalized segment, e.g. a wildcard
+        // import already stripped of `.*`) keeps the whole path.
+        assert_eq!(
+            external_module_id("kotlinx.coroutines"),
+            "mod:kotlinx.coroutines"
+        );
+        // A capitalized first segment (an unconventional top-level package)
+        // has no boundary to split on and keeps the whole path too.
+        assert_eq!(external_module_id("Foo.bar"), "mod:Foo.bar");
+    }
 
     #[test]
     fn multiline_file_annotations_do_not_hide_the_package() {

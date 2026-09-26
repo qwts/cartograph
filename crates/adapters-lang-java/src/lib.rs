@@ -18,7 +18,7 @@ use tree_sitter::{Node as TsNode, Parser, Query, QueryCursor};
 
 pub mod jvm;
 
-use jvm::{classify_import, foreign_packages, in_system};
+use jvm::{classify_import, external_module_id, foreign_packages, in_system};
 
 const EXTRACTOR_ID: &str = "t0.adapter-java";
 
@@ -231,7 +231,7 @@ fn parse_imports(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, root, cx.source);
     while let Some(found) = matches.next() {
-        let statement = found.captures[0].node;
+        let statement = found.captures()[0].node;
         let raw = cx.text(&statement).replace(['\n', '\\'], " ");
         let Some(rest) = raw.trim().strip_prefix("import") else {
             continue;
@@ -534,7 +534,7 @@ pub fn extract_source(
         let mut matches = cursor.matches(&query, root, source);
         let mut package = None;
         if let Some(found) = matches.next() {
-            package = Some(cx.text(&found.captures[0].node).to_string());
+            package = Some(cx.text(&found.captures()[0].node).to_string());
         }
         package
     };
@@ -554,7 +554,7 @@ pub fn extract_source(
     let mut matches = cursor.matches(&type_query, root, source);
     while let Some(found) = matches.next() {
         let (mut decl, mut name) = (None, None);
-        for capture in found.captures {
+        for capture in found.captures() {
             match type_query.capture_names()[capture.index as usize] {
                 "decl" => decl = Some(capture.node),
                 "name" => name = Some(cx.text(&capture.node).to_string()),
@@ -610,7 +610,7 @@ pub fn extract_source(
     let mut matches = cursor.matches(&method_query, root, source);
     while let Some(found) = matches.next() {
         let (mut method, mut name) = (None, None);
-        for capture in found.captures {
+        for capture in found.captures() {
             match method_query.capture_names()[capture.index as usize] {
                 "method" => method = Some(capture.node),
                 "name" => name = Some(cx.text(&capture.node).to_string()),
@@ -802,7 +802,7 @@ pub fn extract_source(
     let mut matches = cursor.matches(&call_query, root, source);
     while let Some(found) = matches.next() {
         let (mut call, mut name) = (None, None);
-        for capture in found.captures {
+        for capture in found.captures() {
             match call_query.capture_names()[capture.index as usize] {
                 "call" => call = Some(capture.node),
                 "name" => name = Some(cx.text(&capture.node).to_string()),
@@ -1067,6 +1067,26 @@ pub fn extract_dir_incremental_with_progress(
         }
     }
     resolve_repo_imports(&mut out.edges, id.repo, &types_by_fqn, &known);
+    // #464 (ADR-0033): an import proven external is re-keyed on its package
+    // id rather than the imported type/member — `mod:jakarta.persistence`,
+    // not `mod:jakarta.persistence.Entity` — with the original target kept
+    // verbatim on the edge's `specifier`. Classification must use the full
+    // path first: the capitalization split alone cannot tell an in-system
+    // prefix from a proven-external one.
+    for edge in &mut out.edges {
+        if edge.label != "IMPORTS" {
+            continue;
+        }
+        let Some(module) = edge.dst.strip_prefix("mod:") else {
+            continue;
+        };
+        if matches!(
+            classify_import(module, &repo_packages, foreign.complete),
+            core_graph::placeholder::Boundary::External { .. }
+        ) {
+            edge.dst = external_module_id(module);
+        }
+    }
     let Extraction { nodes, edges, .. } = &mut out;
     core_graph::placeholder::close_over_endpoints(
         nodes,

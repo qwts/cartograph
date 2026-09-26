@@ -422,6 +422,7 @@ fn observations<'a>(
                 }
                 .into(),
                 provenance: provenance(&node.props, &node.id),
+                edge_label: None,
             }];
             // A malformed payload renders no relationships, so it asserts none.
             if parsed.is_some() {
@@ -434,6 +435,7 @@ fn observations<'a>(
                             subject_kind: edge.label.clone(),
                             summary: format!("Source-rule {} relationship", edge.label),
                             provenance: provenance(&edge.props, &identity),
+                            edge_label: Some(edge.label.clone()),
                         });
                     }
                 }
