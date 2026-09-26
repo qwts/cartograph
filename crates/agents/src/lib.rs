@@ -1138,7 +1138,7 @@ mod tests {
 
     #[test]
     fn broker_rejects_edge_labels_outside_the_allowlist() {
-        // AC-0225 (#238): a gap whose unresolved relation (e.g. IMPORTS) is
+        // AC-0231 (#238): a gap whose unresolved relation (e.g. IMPORTS) is
         // not in the broker's allowlist is rejected before any model call,
         // and `allowed_edge_labels` is the same set `validate_task` checks —
         // callers use it to compute an escalation offer from real broker
