@@ -1,5 +1,16 @@
 # cartograph
 
+## 0.15.4
+
+### Patch Changes
+
+- 6aef53c: Fix Atlas band assignment: config/build evidence lands in a dedicated Tools/Build band instead of splitting between Server and Unclassified under duplicated cluster names, boundary placeholders are excluded from bands entirely, endpoint clusters are labeled by method and route instead of a trailing-colon id fragment, and collapsed-cluster tiles render their name and count as the tile's own content.
+- ccb2a60: Gap register offers escalation only for relations the bounded broker can currently propose, and the Resolution Strategy modal reports an unavailable relation with a user-level reason instead of the broker's raw internal validation error.
+- fcc4c4d: Preflight and recovery now report the correct Terraform file count when a module is explicitly referenced from an otherwise-gitignored directory — it's counted, matching what extraction actually reads. A `go.mod` the repository's own `.gitignore` excludes is now treated as absent rather than read anyway; internal Go imports that depend on it fall back to an explicit Gap instead of resolving through an ignored file.
+- 66ecb25: Captured TS/JS extraction (the normal recovery path) now honors the "Ingest parallelism" setting instead of always running serially.
+- 199a03d: Cap the Spec Workbench's export_spec IPC payload per artifact (content and assertions), truncate the Workbench's artifact preview with a counted note instead of rendering the whole text, and fetch the complete artifact on demand for Copy artifact, Export bundle, and the Gaps & Drift surface.
+- 6291bab: Fixed: in a multi-repo workspace, a repo's recorded ingest-history content hash no longer changes when a different repo in the same workspace changes. The recorded hash now scopes to the ingested registration's own facts (a whole-system ingest still hashes every repo it loaded), matching the "same commit under the same source registration" determinism guarantee.
+
 ## 0.15.3
 
 ### Patch Changes
