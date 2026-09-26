@@ -17,7 +17,7 @@ const assertion = (overrides: Partial<SpecAssertion> = {}): SpecAssertion => ({
   ...overrides,
 });
 
-describe('isEscalatable (AC-0225, #238)', () => {
+describe('isEscalatable (AC-0231, #238)', () => {
   it('offers escalation for a relation the broker allows', () => {
     const gap = assertion({ edge_label: 'PUBLISHES' });
     expect(isEscalatable(gap, ['PUBLISHES', 'CALLS'])).toBe(true);

@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn strategies_report_a_broker_capability_gap_without_the_raw_broker_error() {
-        // AC-0225 (#238): a gap whose relation the broker cannot propose
+        // AC-0231 (#238): a gap whose relation the broker cannot propose
         // (e.g. an unresolved IMPORTS edge) reports every strategy
         // unavailable with a user-level reason — never the raw
         // `AgentError::InvalidTask` text ("invalid bounded task", "broker
