@@ -742,7 +742,7 @@ fn source_identity_migration_preserves_historical_stages() {
     assert_eq!(reviewed.review_revision, 2);
     drop((findings, jobs, metrics_store, decisions, proposals));
     let state = app_state(&app_data);
-    assert_eq!(core_graph::GRAPH_SCHEMA_VERSION, 4);
+    assert_eq!(core_graph::GRAPH_SCHEMA_VERSION, 5);
     assert_eq!(state.graph.lock().unwrap().fact_counts().unwrap(), (0, 0));
     assert_eq!(
         serialized(&state.findings.lock().unwrap().list().unwrap()),

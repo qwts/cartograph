@@ -10,7 +10,7 @@
 //! anything it cannot prove is simply not asserted. This tier never calls an
 //! LLM and every emitted fact carries exact source-span provenance.
 
-use adapters_lang_java::jvm::{classify_import, foreign_packages, in_system};
+use adapters_lang_java::jvm::{classify_import, external_module_id, foreign_packages, in_system};
 use core_graph::{Edge, Node};
 use core_prov::{ConfidenceTier, EvidenceRef, Provenance, Tier};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -1275,6 +1275,26 @@ pub fn extract_dir_incremental_with_progress(
         &functions_by_fqn,
         &known,
     );
+    // #464 (ADR-0033): an import proven external is re-keyed on its package
+    // id rather than the imported type/member — `mod:kotlinx.coroutines`,
+    // not `mod:kotlinx.coroutines.launch` — with the original target kept
+    // verbatim on the edge's `specifier`. Classification must use the full
+    // path first: the capitalization split alone cannot tell an in-system
+    // prefix from a proven-external one.
+    for edge in &mut out.edges {
+        if edge.label != "IMPORTS" {
+            continue;
+        }
+        let Some(module) = edge.dst.strip_prefix("mod:") else {
+            continue;
+        };
+        if matches!(
+            classify_import(module, &repo_packages, foreign.complete),
+            core_graph::placeholder::Boundary::External { .. }
+        ) {
+            edge.dst = external_module_id(module);
+        }
+    }
     let Extraction { nodes, edges, .. } = &mut out;
     core_graph::placeholder::close_over_endpoints(
         nodes,
