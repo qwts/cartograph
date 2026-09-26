@@ -1,5 +1,12 @@
 # cartograph
 
+## 0.15.5
+
+### Patch Changes
+
+- 8a89f16: A Java or Kotlin import proven external now keys its `Module` node and `IMPORTS` edge on the imported package (`mod:jakarta.persistence`) instead of the imported type or static member (`mod:jakarta.persistence.Entity`), so multiple types imported from the same external package share one node instead of one each. The edge still records exactly what was imported. A Kotlin top-level function import with no capitalized package/type boundary (for example `kotlinx.coroutines.launch`) is unaffected and keeps its full path, since there is no boundary to split on. This is a graph-contract change; existing graphs are cleared and rebuilt on the next recovery.
+- 3ea5fb6: Java overloaded methods and constructors now get distinct symbol identity (a parameter-signature suffix) instead of collapsing onto one fact, and calls resolve to the matching overload by argument count — scoped to the owning type's fully qualified (package-prefixed) name so two packages' same-named types never share an overload set — failing closed to an explicit Gap when arity alone can't decide. Existing graphs re-key these facts on their next re-ingest (`GRAPH_SCHEMA_VERSION` 5 → 6, sequenced after #527's 4 → 5 bump).
+
 ## 0.15.4
 
 ### Patch Changes
