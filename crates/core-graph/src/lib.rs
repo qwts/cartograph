@@ -126,11 +126,13 @@ pub trait GraphStore {
 /// Version of the graph's fact schema — the node/edge *id scheme*, not the
 /// SQL shape. Bumped when ids change meaning (v2: repo-namespaced ids,
 /// US-0001 slice 2; v3: scope-qualified callable identities, AC-0120;
-/// v4: registered source namespaces and root-free Repo facts, AC-0144/0146).
+/// v4: registered source namespaces and root-free Repo facts, AC-0144/0146;
+/// v5: proven-external JVM `mod:` ids key on the package, not the imported
+/// type/member, AC-0226/ADR-0033).
 /// A mismatched db is cleared on open: the graph is a
 /// disposable ingest artifact (ADR-0008), and stale-scheme rows can never
 /// be upserted again — they would shadow every re-ingest as zombies (#50).
-pub const GRAPH_SCHEMA_VERSION: u32 = 4;
+pub const GRAPH_SCHEMA_VERSION: u32 = 5;
 
 /// SQLite/WAL implementation — node/edge tables + recursive-CTE traversal.
 pub struct SqliteGraphStore {
