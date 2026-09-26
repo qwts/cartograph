@@ -50,9 +50,9 @@ public class Greeter {
     let out = extract_source(source, path, &id()).unwrap();
 
     let class_sym = format!("sym:local/demo@{path}#Greeter");
-    let hello = format!("sym:local/demo@{path}#Greeter.hello");
-    let greet = format!("sym:local/demo@{path}#Greeter.greet");
-    let suffix = format!("sym:local/demo@{path}#Greeter.suffix");
+    let hello = format!("sym:local/demo@{path}#Greeter.hello()");
+    let greet = format!("sym:local/demo@{path}#Greeter.greet()");
+    let suffix = format!("sym:local/demo@{path}#Greeter.suffix()");
     assert_eq!(node(&out.nodes, &class_sym).props["kind"], "class");
     assert_eq!(node(&out.nodes, &hello).props["kind"], "method");
 
@@ -80,6 +80,76 @@ public class Greeter {
         let end = prov["evidence"][0]["byte_end"].as_u64().unwrap();
         assert!(end <= source.len() as u64 && end > 0);
     }
+}
+
+#[test]
+fn same_class_overloads_get_distinct_ids_and_calls_resolve_by_arity() {
+    let source = br#"package com.demo;
+
+public class Store {
+    public void save() {}
+    public void save(String name) {}
+    public void save(int id) {}
+    public void save(String name, int retries) {}
+
+    void run() {
+        save();
+        save("a");
+        save("a", 1);
+        save(9, 9, 9);
+    }
+}
+"#;
+    let path = "src/main/java/com/demo/Store.java";
+    let out = extract_source(source, path, &id()).unwrap();
+
+    let run = format!("sym:local/demo@{path}#Store.run()");
+    let no_arg = format!("sym:local/demo@{path}#Store.save()");
+    let one_string = format!("sym:local/demo@{path}#Store.save(String)");
+    let one_int = format!("sym:local/demo@{path}#Store.save(int)");
+    let two = format!("sym:local/demo@{path}#Store.save(String,int)");
+
+    // Each overload is its own Confirmed Symbol, not one collapsed fact.
+    for overload in [&no_arg, &one_string, &one_int, &two] {
+        assert_eq!(node(&out.nodes, overload).props["kind"], "method");
+    }
+
+    // A call whose arity matches exactly one overload resolves to it.
+    edge(&out.edges, &run, &no_arg, "CALLS");
+    edge(&out.edges, &run, &two, "CALLS");
+
+    // `save("a")` (arity 1) matches both `save(String)` and `save(int)`:
+    // T0 proves arity only, so this is ambiguous, not a guess.
+    let gaps: Vec<&Node> = out.nodes.iter().filter(|n| n.label == "Gap").collect();
+    assert_eq!(gaps.len(), 2);
+    let ambiguous = gaps
+        .iter()
+        .find(|g| {
+            g.props["reason"]
+                == "ambiguous overload: multiple local methods accept this argument count"
+        })
+        .expect("ambiguous-arity call gaps");
+    edge(&out.edges, &run, &ambiguous.id, "CALLS");
+
+    // `save(9, 9, 9)` (arity 3) matches no local overload.
+    let unmatched = gaps
+        .iter()
+        .find(|g| g.props["reason"] == "no local overload accepts this call's argument count")
+        .expect("unmatched-arity call gaps");
+    edge(&out.edges, &run, &unmatched.id, "CALLS");
+
+    // No CALLS edge lands on `save(String)` or `save(int)` directly — the
+    // ambiguous call never silently guesses one.
+    assert!(
+        !out.edges
+            .iter()
+            .any(|e| e.dst == one_string && e.label == "CALLS")
+    );
+    assert!(
+        !out.edges
+            .iter()
+            .any(|e| e.dst == one_int && e.label == "CALLS")
+    );
 }
 
 #[test]
@@ -117,8 +187,8 @@ public class Store {
         extract_dir_incremental(dir.path(), &id(), &mut IncrementalCache::default()).unwrap();
     assert_eq!(stats.recomputed_files, 2);
 
-    let src = "sym:local/demo@app/src/main/java/com/demo/App.java#App.run";
-    let store_save = "sym:local/demo@app/src/main/java/com/demo/util/Store.java#Store.save";
+    let src = "sym:local/demo@app/src/main/java/com/demo/App.java#App.run()";
+    let store_save = "sym:local/demo@app/src/main/java/com/demo/util/Store.java#Store.save()";
     // Import-proven cross-file call resolves to the declaring file's symbol.
     let resolved = edge(&out.edges, src, store_save, "CALLS");
     assert_eq!(resolved.props["resolution"], "import-proven");
@@ -138,6 +208,141 @@ public class Store {
     assert_eq!(
         out.nodes.iter().filter(|node| node.label == "Gap").count(),
         1
+    );
+}
+
+#[test]
+fn imported_class_overloads_resolve_cross_file_by_arity() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "app/src/main/java/com/demo/App.java",
+        r#"package com.demo;
+
+import com.demo.util.Store;
+
+public class App {
+    void run() {
+        Store.save();
+        Store.save("a", 1);
+        Store.save(9, 9, 9);
+    }
+}
+"#,
+    );
+    write(
+        dir.path(),
+        "app/src/main/java/com/demo/util/Store.java",
+        r#"package com.demo.util;
+
+public class Store {
+    public static void save() {}
+    public static void save(String name, int retries) {}
+}
+"#,
+    );
+    let (out, stats) =
+        extract_dir_incremental(dir.path(), &id(), &mut IncrementalCache::default()).unwrap();
+    assert_eq!(stats.recomputed_files, 2);
+
+    let src = "sym:local/demo@app/src/main/java/com/demo/App.java#App.run()";
+    let no_arg = "sym:local/demo@app/src/main/java/com/demo/util/Store.java#Store.save()";
+    let two = "sym:local/demo@app/src/main/java/com/demo/util/Store.java#Store.save(String,int)";
+
+    // Each cross-file call resolves to the overload whose arity it matches.
+    edge(&out.edges, src, no_arg, "CALLS");
+    edge(&out.edges, src, two, "CALLS");
+
+    // `save(9, 9, 9)` (arity 3) matches no overload of the imported type.
+    let gap = out
+        .nodes
+        .iter()
+        .find(|node| node.label == "Gap")
+        .expect("unmatched cross-file overload gap");
+    assert_eq!(
+        gap.props["reason"],
+        "no unique overload proves this call's argument count"
+    );
+    edge(&out.edges, src, &gap.id, "CALLS");
+    assert_eq!(
+        out.nodes.iter().filter(|node| node.label == "Gap").count(),
+        1
+    );
+}
+
+#[test]
+fn same_named_types_in_different_packages_keep_separate_overload_sets() {
+    // Two packages each declare a `Store` with a zero-arg `save()`. The
+    // import resolves uniquely to `com.demo.a.Store` (#170's duplicate-FQN
+    // rule), so the overload index must scope its candidates to that exact
+    // package — not merge them with `com.demo.b.Store`'s same-named,
+    // same-arity method just because both types share the simple name
+    // "Store" (#435 review).
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "app/src/main/java/com/demo/App.java",
+        r#"package com.demo;
+
+import com.demo.a.Store;
+
+public class App {
+    void run() {
+        Store.save();
+    }
+}
+"#,
+    );
+    write(
+        dir.path(),
+        "app/src/main/java/com/demo/a/Store.java",
+        r#"package com.demo.a;
+
+public class Store {
+    public static void save() {}
+}
+"#,
+    );
+    write(
+        dir.path(),
+        "app/src/main/java/com/demo/b/Store.java",
+        r#"package com.demo.b;
+
+public class Store {
+    public static void save() {}
+}
+"#,
+    );
+    let (out, stats) =
+        extract_dir_incremental(dir.path(), &id(), &mut IncrementalCache::default()).unwrap();
+    assert_eq!(stats.recomputed_files, 3);
+
+    let src = "sym:local/demo@app/src/main/java/com/demo/App.java#App.run()";
+    let a_save = "sym:local/demo@app/src/main/java/com/demo/a/Store.java#Store.save()";
+    let b_save = "sym:local/demo@app/src/main/java/com/demo/b/Store.java#Store.save()";
+
+    // Resolves uniquely to the imported package's method...
+    edge(&out.edges, src, a_save, "CALLS");
+    // ...never to the unrelated same-named type in the other package, and
+    // the call is not left ambiguous either (exactly one CALLS edge from
+    // this call site, no overload Gap).
+    assert!(
+        !out.edges
+            .iter()
+            .any(|edge| edge.src == src && edge.dst == b_save),
+        "call must not resolve into an unrelated package's same-named type"
+    );
+    assert_eq!(
+        out.edges
+            .iter()
+            .filter(|edge| edge.src == src && edge.label == "CALLS")
+            .count(),
+        1,
+        "call must resolve unambiguously, not fail closed to a spurious overload Gap"
+    );
+    assert!(
+        !out.nodes.iter().any(|node| node.label == "Gap"),
+        "the call is resolvable and must not produce an overload Gap"
     );
 }
 
@@ -189,7 +394,7 @@ public class FakeController {
     edge(
         &out.edges,
         "ep:local/demo@GET:/api/users/{id}",
-        "sym:local/demo@src/main/java/com/demo/web/UserController.java#UserController.get",
+        "sym:local/demo@src/main/java/com/demo/web/UserController.java#UserController.get()",
         "HANDLES",
     );
 
@@ -295,7 +500,7 @@ public class Store {
     let (out, _) =
         extract_dir_incremental(dir.path(), &id(), &mut IncrementalCache::default()).unwrap();
 
-    let src = "sym:local/demo@src/main/java/com/demo/App.java#App.run";
+    let src = "sym:local/demo@src/main/java/com/demo/App.java#App.run()";
     // No Confirmed CALLS edge to either declaration…
     assert!(!out.edges.iter().any(|edge| {
         edge.label == "CALLS" && edge.src == src && edge.dst.contains("Store.save")
@@ -329,7 +534,7 @@ public class AdminController {
     assert_eq!(endpoint.props["method"], "DELETE");
     assert_eq!(
         endpoint.props["handler_sym"],
-        format!("sym:{}@{path}#AdminController.purge", "local/demo")
+        format!("sym:{}@{path}#AdminController.purge()", "local/demo")
     );
 }
 
@@ -378,14 +583,14 @@ public class VetController {
     edge(
         &out.edges,
         "ep:local/demo@GET:/clinic/vets",
-        "sym:local/demo@src/VetController.java#VetController.showResourcesVetList",
+        "sym:local/demo@src/VetController.java#VetController.showResourcesVetList()",
         "HANDLES",
     );
     for route in ["/clinic/vets.html", "/clinic/vets/all"] {
         edge(
             &out.edges,
             &format!("ep:local/demo@GET:{route}"),
-            "sym:local/demo@src/VetController.java#VetController.showVetList",
+            "sym:local/demo@src/VetController.java#VetController.showVetList()",
             "HANDLES",
         );
     }
@@ -473,7 +678,7 @@ public class DynamicController {
     }
     for handler in ["constant", "concatenated", "mixed"] {
         let handler =
-            format!("sym:local/demo@src/DynamicController.java#DynamicController.{handler}");
+            format!("sym:local/demo@src/DynamicController.java#DynamicController.{handler}()");
         assert!(
             out.edges.iter().any(|edge| edge.label == "HANDLES"
                 && edge.dst == handler
@@ -608,7 +813,7 @@ public class ApiController {
     edge(
         &out.edges,
         "ep:local/demo@GET:/api/",
-        "sym:local/demo@src/ApiController.java#ApiController.root",
+        "sym:local/demo@src/ApiController.java#ApiController.root()",
         "HANDLES",
     );
 
