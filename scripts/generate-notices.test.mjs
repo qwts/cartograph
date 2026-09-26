@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { join } from 'node:path';
 
-import { collectJsPackages, readJsLicense } from './generate-notices.mjs';
+import { collectJsPackages, readJsLicense, tsModule } from './generate-notices.mjs';
 
 // Synthetic lockfile exercising every inventory rule (#340): the production
 // closure starts at the root manifest's dependencies/optionalDependencies/
@@ -145,4 +145,24 @@ test('the output is deterministically sorted by name then version', () => {
     .filter((p) => p.name === 'shared')
     .map((p) => p.version);
   assert.deepEqual(sharedVersions, ['3.0.0', '3.5.0']);
+});
+
+// #547: the generated TS module holds one string per markdown line, so it
+// round-trips exactly and a one-line notices change is a one-line module diff.
+function evalModule(ts) {
+  const body = ts.replace('export const THIRD_PARTY_NOTICES =', 'return');
+  return new Function(body)();
+}
+
+test('tsModule round-trips the notices markdown exactly', () => {
+  const markdown = '# Notices\n\n- a "quoted" \\ crate 1.0\n\ttabbed   line\n\n';
+  assert.equal(evalModule(tsModule(markdown)), markdown);
+});
+
+test('tsModule turns a one-line notices change into a one-line module change', () => {
+  const before = tsModule('# Notices\n- alpha 1.0\n- beta 2.0\n').split('\n');
+  const after = tsModule('# Notices\n- alpha 1.1\n- beta 2.0\n').split('\n');
+  assert.equal(before.length, after.length);
+  const changed = before.filter((line, i) => line !== after[i]);
+  assert.deepEqual(changed, ['  "- alpha 1.0",']);
 });
