@@ -41,7 +41,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 usearch = { version = "2.26", default-features = false }
 regex = "1"
 wasmtime = { version = "49", features = ["cranelift"] }
-wasmtime-wasi = "48"
+wasmtime-wasi = "49"
 
 # Internal crates (SPEC-00 §8.1 crate map)
 core-graph = { path = "crates/core-graph" }
