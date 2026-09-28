@@ -9556,7 +9556,7 @@ export const THIRD_PARTY_NOTICES = [
   "SOFTWARE.",
   "```",
   "",
-  "## material-symbols 0.47.4",
+  "## material-symbols 0.47.5",
   "",
   "License: Apache-2.0",
   "",

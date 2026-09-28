@@ -9553,7 +9553,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## material-symbols 0.47.4
+## material-symbols 0.47.5
 
 License: Apache-2.0
 
