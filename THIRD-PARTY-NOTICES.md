@@ -6158,9 +6158,9 @@ Used by:
 - tauri-utils 2.9.3 — https://github.com/tauri-apps/tauri
 - tauri 2.11.6 — https://github.com/tauri-apps/tauri
 - thiserror-impl 1.0.69 — https://github.com/dtolnay/thiserror
-- thiserror-impl 2.0.20 — https://github.com/dtolnay/thiserror
+- thiserror-impl 2.0.21 — https://github.com/dtolnay/thiserror
 - thiserror 1.0.69 — https://github.com/dtolnay/thiserror
-- thiserror 2.0.20 — https://github.com/dtolnay/thiserror
+- thiserror 2.0.21 — https://github.com/dtolnay/thiserror
 - time-core 0.1.9 — https://github.com/time-rs/time
 - time-macros 0.2.31 — https://github.com/time-rs/time
 - time 0.3.53 — https://github.com/time-rs/time
